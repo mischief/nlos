@@ -404,7 +404,7 @@ vsnprintf(char *buf, size_t n, const char *fmt, va_list ap)
 				v = va_arg(ap, long);
 			else
 				v = va_arg(ap, int);
-			fmt_int(&o, v < 0 ? -(unsigned long long)v : v,
+			fmt_int(&o, v < 0 ? -(unsigned long long)v : (unsigned long long)v,
 			    v < 0, 10, false, prec, width, flags);
 			break;
 		}

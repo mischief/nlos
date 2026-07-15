@@ -1,4 +1,5 @@
 #include <time.h>
+#include "platform.h"
 
 /* TODO: wire to EFI GetTime / a real tick source.
  * good enough to feed lua's random seed for now.

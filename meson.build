@@ -102,12 +102,47 @@ lua_src = files(
 
 pe_ld = meson.current_source_dir() / 'src/pe.ld'
 
+# hardening warnings for OUR code only (the lua submodule stays
+# vanilla and compiles with plain -Wall). adapted from c-template;
+# checked per-flag so compiler upgrades don't break the build.
+hardening_args = ['-Wextra', '-Werror']
+foreach a : [
+  '-Wnull-dereference',
+  '-Warray-bounds',
+  '-Wformat=2',
+  '-Wformat-security',
+  '-Wuninitialized',
+  '-Wshadow',
+  '-Wimplicit-fallthrough',
+  '-Wswitch',
+  '-Wstrict-prototypes',
+  '-Wmissing-prototypes',
+  '-Wmissing-declarations',
+  '-Wvla',
+  '-Walloca',
+  '-Wshift-overflow',
+  '-Wframe-larger-than=4096',
+  '-Wno-unused-parameter',
+  '-fsanitize-trap=all',
+]
+  if cc.has_argument(a)
+    hardening_args += a
+  endif
+endforeach
+
+# vanilla lua, warnings left to upstream
+lua_lib = static_library('lua54', lua_src,
+  include_directories: inc,
+)
+
 # the elf intermediate: base 0, RELATIVE relocs only, self-relocated at
 # entry. gcc drives ld; -nostdlib keeps crt/libc out.
 luaos_elf = shared_library('luaos',
-  kernel_src + libc_src + arch_src + lua_src,
+  kernel_src + libc_src + arch_src,
   name_prefix: '',
   include_directories: inc,
+  c_args: hardening_args,
+  link_with: lua_lib,
   link_args: [
     '-nostdlib',
     '-Wl,-Bsymbolic',

@@ -1,4 +1,5 @@
 /* x86_64 machine bits */
+#include "platform.h"
 
 unsigned long long
 platform_ticks(void)

@@ -4,6 +4,7 @@
  */
 
 #include <stdint.h>
+#include "platform.h"
 
 #define R_X86_64_RELATIVE 8
 

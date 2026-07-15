@@ -2,6 +2,8 @@
  * console. this is the 9p wire.
  */
 
+#include "platform.h"
+
 #define COM2 0x2f8
 
 #define RBR 0	/* receive buffer */

@@ -37,6 +37,8 @@ static const luaL_Reg efilib[] = {
 	{ NULL, NULL }
 };
 
+int luaopen_los_efi(lua_State *L);
+
 int
 luaopen_los_efi(lua_State *L)
 {

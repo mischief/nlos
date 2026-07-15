@@ -21,6 +21,7 @@
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
+#include "platform.h"
 
 #define MAXPROCS	32
 #define MAXPORTS	128
@@ -506,7 +507,7 @@ api_send(lua_State *L)
 {
 	struct kproc *p = self(L);
 	struct right *r = right_get(p, luaL_checkinteger(L, 1));
-	struct wbuf w = { 0, 0, 0 };
+	struct wbuf w = { 0 };
 
 	if (!r)
 		return luaL_error(L, "bad right");
@@ -686,8 +687,13 @@ api_spawn(lua_State *L)
 
 	if (pid < 0)
 		return luaL_error(L, "spawn failed");
+
+	struct kproc *child = find_proc(pid);
+
+	if (!child)
+		return luaL_error(L, "spawn: child vanished");
 	/* hand parent a send right on the child's self port */
-	int h = right_new(p, find_proc(pid)->rights[0].port, 0);
+	int h = right_new(p, child->rights[0].port, 0);
 
 	if (h < 0)
 		return luaL_error(L, "out of rights");

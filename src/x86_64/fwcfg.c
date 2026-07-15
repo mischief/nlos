@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include "platform.h"
 
 #define SEL_PORT	0x510
 #define DATA_PORT	0x511
@@ -51,7 +52,7 @@ be16(uint16_t v)
 }
 
 /* find a named file; on success allocate and read its contents.
- * returns 0 and sets *buf/*len, or -1.
+ * returns 0 and sets buf/len, or -1.
  */
 int
 fwcfg_load(const char *name, char **buf, size_t *len)

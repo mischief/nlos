@@ -5,8 +5,8 @@
 #include "efi.h"
 #include "fs.h"
 #include "kernel.h"
+#include "platform.h"
 
-int fwcfg_load(const char *name, char **buf, size_t *len);
 
 EFI_SYSTEM_TABLE *ST;
 EFI_BOOT_SERVICES *BS;
@@ -96,6 +96,8 @@ serial_takeover(void)
 	}
 	BS->FreePool(handles);
 }
+
+EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st);
 
 EFI_STATUS
 efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)

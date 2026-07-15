@@ -3,6 +3,8 @@
 #include <ctype.h>
 #include <math.h>
 #include <errno.h>
+#include <assert.h>
+#include "platform.h"
 
 int errno;
 

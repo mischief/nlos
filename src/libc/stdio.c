@@ -12,6 +12,7 @@ extern void console_write(const char *s, size_t n);
 extern int console_getchar(void);
 
 #include "fs.h"
+#include "platform.h"
 
 #define T_STDIN		0
 #define T_STDOUT	1
