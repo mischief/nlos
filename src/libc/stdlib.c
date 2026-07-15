@@ -57,7 +57,7 @@ labs(long x)
 double
 strtod(const char *s, char **end)
 {
-	const char *p = s, *start;
+	const char *p = s;
 	unsigned long long mant = 0;
 	int exp10 = 0, esign = 1, e = 0;
 	int sign = 1, digits = 0, any = 0;
@@ -68,7 +68,6 @@ strtod(const char *s, char **end)
 	if (*p == '+' || *p == '-')
 		sign = (*p++ == '-') ? -1 : 1;
 
-	start = p;
 	for (; isdigit(*p); p++) {
 		any = 1;
 		if (digits < 19) {
@@ -106,7 +105,6 @@ strtod(const char *s, char **end)
 			exp10 += esign * e;
 		}
 	}
-	(void)start;
 
 	r = (double)mant;
 	if (exp10 > 0) {
@@ -122,7 +120,12 @@ strtod(const char *s, char **end)
 		}
 		r /= pow(10.0, -exp10);
 	}
+	/* r is the non-negative magnitude (sign applied on return), so this
+	 * catches overflow of either sign. flag underflow to zero too.
+	 */
 	if (r == HUGE_VAL)
+		errno = ERANGE;
+	else if (r == 0.0 && mant != 0)
 		errno = ERANGE;
 	if (end)
 		*end = (char *)p;
