@@ -9,18 +9,20 @@ built from scratch: no gnu-efi, no mingw, no edk2, no glibc.
 ## how to run
 
 ```
-make qemu          # com1 = console on stdio, com2 = 9p on ./9p.sock
+meson setup build
+meson compile -C build
+ninja -C build qemu    # com1 = console on stdio, com2 = 9p on build/9p.sock
 ```
 
 talk 9p to it from the host (plan9port):
 
 ```
-9p -a 'unix!'$PWD'/9p.sock' ls /
-9p -a 'unix!'$PWD'/9p.sock' read README
-9p -a 'unix!'$PWD'/9p.sock' read proc/list
+9p -a 'unix!'$PWD'/build/9p.sock' ls /
+9p -a 'unix!'$PWD'/build/9p.sock' read README
+9p -a 'unix!'$PWD'/build/9p.sock' read proc/list
 ```
 
-on real hardware: `dd` luaos.img to a usb stick and uefi-boot it.
+on real hardware: `dd` build/luaos.img to a usb stick and uefi-boot it.
 
 ## architecture
 
