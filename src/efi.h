@@ -105,8 +105,28 @@ typedef enum {
 	EfiMaxMemoryType
 } EFI_MEMORY_TYPE;
 
-/* boot services (prefixes of the real table; unused slots are void*) */
+/* device paths (enough to identify the com2 serial controller) */
 
+#define END_DEVICE_PATH_TYPE	0x7f
+#define ACPI_DEVICE_PATH	0x02	/* Type */
+#define ACPI_DP			0x01	/* SubType: ACPI(_HID,_UID) */
+
+/* compressed EISA id for "PNP0501" (16550 serial): (0x0501 << 16) | 0x41d0 */
+#define EISA_PNP_ID_SERIAL	0x050141d0
+
+typedef struct EFI_DEVICE_PATH_PROTOCOL {
+	UINT8 Type;
+	UINT8 SubType;
+	UINT8 Length[2];	/* little-endian, includes this header */
+} EFI_DEVICE_PATH_PROTOCOL;
+
+typedef struct {
+	EFI_DEVICE_PATH_PROTOCOL Header;
+	UINT32 HID;
+	UINT32 UID;
+} ACPI_HID_DEVICE_PATH;
+
+/* boot services (prefixes of the real table; unused slots are void*) */
 typedef struct {
 	EFI_TABLE_HEADER Hdr;
 
@@ -150,6 +170,18 @@ typedef struct {
 	void *GetNextMonotonicCount;
 	EFI_STATUS (EFIAPI *Stall)(UINTN Microseconds);
 	void *SetWatchdogTimer;
+
+	/* uefi 1.1 driver model (we only need a few) */
+	void *ConnectController;
+	EFI_STATUS (EFIAPI *DisconnectController)(EFI_HANDLE Controller,
+	    EFI_HANDLE DriverImageHandle, EFI_HANDLE ChildHandle);
+	void *OpenProtocol;
+	void *CloseProtocol;
+	void *OpenProtocolInformation;
+	void *ProtocolsPerHandle;
+	EFI_STATUS (EFIAPI *LocateHandleBuffer)(int SearchType,
+	    EFI_GUID *Protocol, void *SearchKey, UINTN *NoHandles,
+	    EFI_HANDLE **Buffer);
 } EFI_BOOT_SERVICES;
 
 /* files */
