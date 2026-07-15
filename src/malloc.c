@@ -1,10 +1,14 @@
 /* malloc over EFI boot services pool.
- * 16-byte header keeps the size so realloc can copy.
+ * 16-byte header keeps the size (so realloc can copy) and a magic word
+ * we validate on free/realloc to catch double-frees and heap
+ * corruption loudly instead of scribbling the pool.
  */
 
 #include <stdlib.h>
 #include <string.h>
 #include "efi.h"
+
+extern _Noreturn void platform_abort(const char *why);
 
 struct hdr {
 	size_t size;
@@ -35,6 +39,8 @@ free(void *p)
 	if (!p)
 		return;
 	h = (struct hdr *)p - 1;
+	if (h->magic != MAGIC)
+		platform_abort("free: bad heap magic (double free or corruption)");
 	h->magic = 0;
 	BS->FreePool(h);
 }
@@ -42,6 +48,9 @@ free(void *p)
 void *
 calloc(size_t nmemb, size_t size)
 {
+	if (size != 0 && nmemb > (size_t)-1 / size)
+		return 0;	/* nmemb * size would overflow */
+
 	size_t n = nmemb * size;
 	void *p = malloc(n);
 
@@ -63,6 +72,8 @@ realloc(void *p, size_t n)
 		return 0;
 	}
 	h = (struct hdr *)p - 1;
+	if (h->magic != MAGIC)
+		platform_abort("realloc: bad heap magic (double free or corruption)");
 	q = malloc(n);
 	if (!q)
 		return 0;
