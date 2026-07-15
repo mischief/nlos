@@ -9,7 +9,7 @@ print("")
 -- it gets the serial receive right in its first message.
 local _, ninesrv = los.spawn([[
 	local p9 = require("ninep")
-	local m = recv(los.SELF)
+	local m = sys.recv(los.SELF)
 	local serial = m.serial.__right
 
 	local msgs = 0
@@ -35,7 +35,7 @@ local _, ninesrv = los.spawn([[
 	})
 
 	p9.serve(root,
-	    function() return recv(serial) end,
+	    function() return sys.recv(serial) end,
 	    los.serwrite)
 ]])
 
@@ -54,14 +54,14 @@ local function evaluate(line)
 end
 
 while true do
-	local line = readline("> ")
+	local line = sys.readline("> ")
 	if line == nil then
 		break
 	end
 	if #line > 0 then
 		local chunk, err = evaluate(line)
 		while not chunk and err and err:sub(-5) == "<eof>" do
-			local more = readline(">> ")
+			local more = sys.readline(">> ")
 			if more == nil then
 				break
 			end

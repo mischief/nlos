@@ -11,7 +11,7 @@ los.SERIAL = 2	-- proc 0 only
 
 -- ---- thread scheduler ----
 
-thread = {
+local thread = {
 	_runq = {},
 	_parked = {},	-- co -> reason: {port=h} | {ports={...}} | {chan=c}
 	_n = 0,
@@ -98,10 +98,10 @@ end
 
 -- ---- Channel (libthread flavor; cap 0 = rendezvous) ----
 
-Channel = {}
+local Channel = {}
 Channel.__index = Channel
 
-function chancreate(cap)
+local function chancreate(cap)
 	return setmetatable({
 		cap = cap or 0,
 		buf = {},
@@ -193,7 +193,7 @@ end
 -- returns index, value. note: alt-send on unbuffered channels only
 -- pairs with an already-parked receiver.
 
-function alt(cases)
+local function alt(cases)
 	while true do
 		for i, cs in ipairs(cases) do
 			if cs.port then
@@ -236,10 +236,10 @@ end
 
 -- ---- qlock (plan9 QLock; only matters across yields) ----
 
-QLock = {}
+local QLock = {}
 QLock.__index = QLock
 
-function qlockcreate()
+local function qlockcreate()
 	return setmetatable({ held = false, q = chancreate(0) }, QLock)
 end
 
@@ -258,7 +258,7 @@ end
 -- ---- port sugar ----
 
 -- blocking recv on a port right; thread-aware.
-function recv(h)
+local function recv(h)
 	while true do
 		local ok, msg = los.tryrecv(h)
 		if ok then
@@ -273,7 +273,7 @@ function recv(h)
 end
 
 -- line editor over the keyboard port (proc 0 only)
-function readline(prompt)
+local function readline(prompt)
 	if prompt then
 		io.write(prompt)
 	end
@@ -298,3 +298,19 @@ function readline(prompt)
 		end
 	end
 end
+
+-- ---- exports ----
+-- everything above is local; hang the proc runtime off one namespace
+-- (sys) instead of scattering thread/Channel/alt/recv/... across _G of
+-- every proc. los stays the kernel/efi surface; sys is the lua furniture.
+
+sys = {
+	thread = thread,
+	Channel = Channel,
+	chancreate = chancreate,
+	alt = alt,
+	QLock = QLock,
+	qlockcreate = qlockcreate,
+	recv = recv,
+	readline = readline,
+}
