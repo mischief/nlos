@@ -185,9 +185,17 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		return wput(w, s, n);
 	}
 	case LUA_TTABLE: {
-		/* {__right = handle} transfers a right */
+		/* {__right = handle} transfers a right. if __right is present
+		 * but not an integer handle it's a mistake (e.g. a float);
+		 * refuse it rather than silently shipping the table as data
+		 * and dropping the intended capability.
+		 */
 		lua_getfield(L, idx, "__right");
-		if (lua_isinteger(L, -1)) {
+		if (!lua_isnil(L, -1)) {
+			if (!lua_isinteger(L, -1)) {
+				lua_pop(L, 1);
+				return -1;
+			}
 			struct right *r = right_get(sender,
 			    lua_tointeger(L, -1));
 
@@ -227,8 +235,10 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 
 static int
 deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
-    struct kproc *receiver)
+    struct kproc *receiver, int depth)
 {
+	if (depth > MAXDEPTH)
+		return -1;
 	if (*off >= len)
 		return -1;
 	unsigned char tag = p[(*off)++];
@@ -283,10 +293,16 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 			return -1;
 		memcpy(&n, p + *off, sizeof n);
 		*off += sizeof n;
+		/* each pair is >= 2 bytes (two tags); reject a count that
+		 * can't fit in what's left so a corrupt n can't drive a
+		 * huge lua_createtable preallocation.
+		 */
+		if (n > (len - *off) / 2)
+			return -1;
 		lua_createtable(L, 0, n);
 		for (unsigned int i = 0; i < n; i++) {
-			if (deserialize(L, p, len, off, receiver) ||
-			    deserialize(L, p, len, off, receiver))
+			if (deserialize(L, p, len, off, receiver, depth + 1) ||
+			    deserialize(L, p, len, off, receiver, depth + 1))
 				return -1;
 			lua_settable(L, -3);
 		}
@@ -407,7 +423,7 @@ api_tryrecv(lua_State *L)
 	size_t off = 0;
 
 	lua_pushboolean(L, 1);
-	if (deserialize(L, m->data, m->len, &off, p)) {
+	if (deserialize(L, m->data, m->len, &off, p, 0)) {
 		free(m);
 		return luaL_error(L, "corrupt message");
 	}
