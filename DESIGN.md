@@ -91,6 +91,58 @@ by qemu); protocol code gets exercised against real external clients
 (plan9port 9p, python). host-testable pieces (libc string/float code,
 the serializer, ninep.lua) get host tests. no green, no merge.
 
+### 9. the kernel is a reactor of reactors
+
+`kernel_run` is an event loop in the same family as ~/code/c/clm and
+~/code/c/mbt: gather what's ready, run it, and when nothing is ready,
+block in a single "wait for the next thing" call instead of polling
+hot. the ready-set comes from device pumps (`pump_keyboard`,
+`pump_serial`, eventually tcp4 completion tokens) that translate
+platform readiness into port pushes; the blocking call is
+`BS->WaitForEvent` over an array of EFI Events (`ConIn.WaitForKey`,
+the periodic tick, eventually per-io completion tokens) — playing
+exactly the role `poll()`/`epoll_wait()`/`kevent()` play in mbt's
+`ev_poll.c`/`ev_sd.c` backends.
+
+one precise difference: EFI Events are completion-token based, not
+readiness based. `poll()` says "this fd is readable now, go read
+whatever's there"; an EFI network Receive() issues the read up front
+and signals its own Event only when *that specific op* finishes —
+closer to IOCP/io_uring than POSIX poll. same shape, different flavor;
+matters for how the tcp4 work gets structured, not for the overall
+architecture.
+
+there are two of these reactors, nested, at different granularities:
+
+- **outer (C, kernel_run)**: schedules whole procs (isolated
+  lua_States) at proc granularity. blocks in `WaitForEvent`.
+- **inner (lua, los.thread)**: schedules coroutines within one proc,
+  sharing that proc's heap. blocks by returning control to the outer
+  loop — a proc with every thread parked simply stops being READY, so
+  the inner reactor's exhaustion becomes the signal the outer one
+  waits on. no explicit handoff protocol needed; it falls out of
+  "yield when nothing is runnable" at both levels.
+
+the real divergence from clm/mbt: their task unit is a callback closure
+(state threaded explicitly, no first-class continuation). ours is a
+real stackful coroutine — `thread.recv(h)` returns a value and the
+caller's code below it just continues, because `lua_yield`/
+`lua_resume` capture and restore the whole call stack. same trick as
+libtask (Russ Cox's C fiber scheduler, itself descended from Plan 9's
+libthread — where los.thread's shape came from) or Go's goroutines
+over its netpoller. so: reactor core like clm/mbt, but the scheduled
+unit is a fiber, not a callback.
+
+clm/mbt are pluggable by design (`ev_poll`/`ev_libevent`/`ev_sd`, same
+app logic, swappable backend) because they target multiple host OSes.
+we have exactly one backend today — EFI Events — because pillar 7
+already quarantines firmware access to a single seam rather than
+abstracting it. that stops being a single-backend given the moment
+docs/microvm-plan.md lands: no EFI there, so kernel_run's "wait for
+the next thing" primitive becomes real interrupts + our own IDT +
+lapic timer. at that point kernel_run needs exactly the backend seam
+clm/mbt already have, just not framed that way until now.
+
 ## open questions (OPEN)
 
 ### bluepilled vs redpilled: do we ever ExitBootServices?
@@ -151,3 +203,5 @@ when a change is proposed, ask:
 4. does it add a dependency? (pillar 5)
 5. does it leak arch or efi knowledge past its quarantine? (6, 7)
 6. where is its TAP test? (pillar 8)
+7. does it add a new "wait for the next thing" primitive, or reuse
+   the existing reactor-of-reactors shape? (pillar 9)
