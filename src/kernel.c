@@ -28,17 +28,28 @@
 #define HOOKCOUNT	200000
 #define MAXMSG		(64 * 1024)
 #define MAXDEPTH	16
+#define MAXMSGRIGHTS	8	/* rights per message */
+#define MAXWATCH	8	/* monitors per proc */
 
 enum { DEAD, READY, BLOCKED };
 
 struct kmsg {
 	struct kmsg *next;
 	size_t len;
+	/* ports referenced by in-flight rights in this message. they hold
+	 * a ref each so a port can't be freed (and its index reused) while
+	 * the only right to it sits in a queue.
+	 */
+	unsigned char refs[MAXMSGRIGHTS];
+	int nrefs;
 	unsigned char data[];
 };
 
 struct kport {
 	int used;
+	int nrights;	/* rights + in-flight message refs + kernel refs */
+	int nrecv;	/* receive rights among those */
+	int dead;	/* no receive right left; sends are dropped */
 	struct kmsg *head, *tail;
 };
 
@@ -56,19 +67,31 @@ struct right {
 
 struct kproc {
 	int status;
-	int id;
+	int id;			/* unique forever; slots are reused, ids not */
 	lua_State *L;		/* owning state */
 	lua_State *co;		/* thread the chunk runs on */
 	struct kport *waiting;	/* blocked on this port */
 	struct kport *wset[MAXWSET];	/* or on any of these (alt) */
 	int nwset;
 	struct right rights[MAXRIGHTS];
+	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
+	int nwatch;
 };
 
 static struct kproc procs[MAXPROCS];
 static struct kport ports[MAXPORTS];
 static struct kport *kbdport;
 static int nlive;
+static int nextpid;
+
+static struct kproc *
+find_proc(int pid)
+{
+	for (int i = 0; i < MAXPROCS; i++)
+		if (procs[i].status != DEAD && procs[i].id == pid)
+			return &procs[i];
+	return 0;
+}
 
 extern void console_write(const char *s, size_t n);
 void luaL_openlibs(lua_State *L);	/* our linit */
@@ -88,27 +111,60 @@ port_new(void)
 		if (!ports[i].used) {
 			ports[i].used = 1;
 			ports[i].head = ports[i].tail = 0;
+			ports[i].nrights = 0;
+			ports[i].nrecv = 0;
+			ports[i].dead = 0;
 			return &ports[i];
 		}
 	return 0;
 }
 
-/* release a port and any queued messages. only safe when no right
- * still references it (used today on the proc_new failure paths).
- */
+static void port_unref(struct kport *port);
+
+/* free one message, releasing the in-flight right refs it carries */
 static void
-port_free(struct kport *port)
+msg_free(struct kmsg *m)
+{
+	for (int i = 0; i < m->nrefs; i++)
+		port_unref(&ports[m->refs[i]]);
+	free(m);
+}
+
+/* flush the queue (delivery no longer possible) */
+static void
+port_flush(struct kport *port)
 {
 	struct kmsg *m = port->head;
 
+	port->head = port->tail = 0;
 	while (m) {
 		struct kmsg *next = m->next;
 
-		free(m);
+		msg_free(m);
 		m = next;
 	}
-	port->head = port->tail = 0;
-	port->used = 0;
+}
+
+/* drop one reference; the last ref frees the port. dropping the last
+ * *receive* right marks the port dead and flushes the queue -- nobody
+ * can ever take those messages. flushing may recursively unref other
+ * ports whose only rights were in the flushed messages.
+ */
+static void
+port_unref(struct kport *port)
+{
+	if (--port->nrights <= 0) {
+		port_flush(port);
+		port->used = 0;
+		port->dead = 0;
+		port->nrights = 0;
+		port->nrecv = 0;
+		return;
+	}
+	if (port->nrecv == 0 && !port->dead) {
+		port->dead = 1;
+		port_flush(port);
+	}
 }
 
 static int
@@ -119,9 +175,23 @@ right_new(struct kproc *p, struct kport *port, int recv)
 			p->rights[i].used = 1;
 			p->rights[i].port = port;
 			p->rights[i].recv = recv;
+			port->nrights++;
+			if (recv)
+				port->nrecv++;
 			return i;
 		}
 	return -1;
+}
+
+static void
+right_drop(struct right *r)
+{
+	struct kport *port = r->port;
+
+	r->used = 0;
+	if (r->recv)
+		port->nrecv--;
+	port_unref(port);
 }
 
 static struct right *
@@ -140,6 +210,12 @@ right_get(struct kproc *p, lua_Integer h)
 struct wbuf {
 	unsigned char *p;
 	size_t len, cap;
+	/* ports referenced by rights serialized into this message; each
+	 * holds a ref taken at serialize time (released on send failure,
+	 * or by msg_free once delivered/flushed)
+	 */
+	unsigned char refs[MAXMSGRIGHTS];
+	int nrefs;
 };
 
 static int
@@ -222,13 +298,18 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 			    lua_tointeger(L, -1));
 
 			lua_pop(L, 1);
-			if (!r)
+			if (!r || w->nrefs >= MAXMSGRIGHTS)
 				return -1;
 			unsigned char pi = (unsigned char)(r->port - ports);
 
 			if (wbyte(w, 'R') || wbyte(w, pi))
 				return -1;
-			return wbyte(w, (unsigned char)r->recv);
+			if (wbyte(w, (unsigned char)r->recv))
+				return -1;
+			/* in-flight ref keeps the port alive in the queue */
+			w->refs[w->nrefs++] = pi;
+			r->port->nrights++;
+			return 0;
 		}
 		lua_pop(L, 1);
 
@@ -375,15 +456,29 @@ wake:
 	}
 }
 
+/* queue a message. refs/nrefs are in-flight right refs (may be null).
+ * a dead port silently drops -- erlang semantics, the sender learns
+ * from the monitor, not the send.
+ */
 static int
-port_push(struct kport *port, const unsigned char *data, size_t len)
+port_push(struct kport *port, const unsigned char *data, size_t len,
+    const unsigned char *refs, int nrefs)
 {
+	if (port->dead) {
+		for (int i = 0; i < nrefs; i++)
+			port_unref(&ports[refs[i]]);
+		return 0;
+	}
+
 	struct kmsg *m = malloc(sizeof *m + len);
 
 	if (!m)
 		return -1;
 	m->next = 0;
 	m->len = len;
+	m->nrefs = nrefs;
+	for (int i = 0; i < nrefs; i++)
+		m->refs[i] = refs[i];
 	memcpy(m->data, data, len);
 	if (port->tail)
 		port->tail->next = m;
@@ -413,15 +508,28 @@ api_send(lua_State *L)
 		return luaL_error(L, "bad right");
 	luaL_checkany(L, 2);
 	if (serialize(L, 2, &w, p, 0)) {
+		/* release refs taken for rights serialized before the
+		 * failure point
+		 */
+		for (int i = 0; i < w.nrefs; i++)
+			port_unref(&ports[w.refs[i]]);
 		free(w.p);
 		return luaL_error(L, "unserializable message");
 	}
-	int rc = port_push(r->port, w.p, w.len);
+	if (r->port->dead) {
+		for (int i = 0; i < w.nrefs; i++)
+			port_unref(&ports[w.refs[i]]);
+		free(w.p);
+		lua_pushboolean(L, 0);	/* dead port: dropped */
+		return 1;
+	}
+	int rc = port_push(r->port, w.p, w.len, w.refs, w.nrefs);
 
 	free(w.p);
 	if (rc)
-		return luaL_error(L, "port full");
-	return 0;
+		return luaL_error(L, "out of memory queueing message");
+	lua_pushboolean(L, 1);
+	return 1;
 }
 
 static int
@@ -446,10 +554,11 @@ api_tryrecv(lua_State *L)
 
 	lua_pushboolean(L, 1);
 	if (deserialize(L, m->data, m->len, &off, p, 0)) {
-		free(m);
+		msg_free(m);
 		return luaL_error(L, "corrupt message");
 	}
-	free(m);
+	/* receiver now holds its own refs (right_new); drop in-flight */
+	msg_free(m);
 	return 2;
 }
 
@@ -546,6 +655,7 @@ api_newport(lua_State *L)
 
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
     int is_file);
+static void notify_exit(struct kproc *watcher, int pid, const char *reason);
 
 static int
 api_spawn(lua_State *L)
@@ -558,13 +668,77 @@ api_spawn(lua_State *L)
 	if (pid < 0)
 		return luaL_error(L, "spawn failed");
 	/* hand parent a send right on the child's self port */
-	int h = right_new(p, procs[pid].rights[0].port, 0);
+	int h = right_new(p, find_proc(pid)->rights[0].port, 0);
 
 	if (h < 0)
 		return luaL_error(L, "out of rights");
 	lua_pushinteger(L, pid);
 	lua_pushinteger(L, h);
 	return 2;
+}
+
+/* watch a proc: when it dies, {exit=pid, normal=, reason=?} arrives on
+ * our self port. watching a dead/unknown pid delivers noproc at once.
+ */
+static int
+api_monitor(lua_State *L)
+{
+	struct kproc *p = self(L);
+	int pid = (int)luaL_checkinteger(L, 1);
+	struct kproc *target = find_proc(pid);
+
+	if (!target) {
+		notify_exit(p, pid, "noproc");
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+	if (target == p)
+		return luaL_error(L, "cannot monitor self");
+	for (int i = 0; i < target->nwatch; i++)
+		if (target->watchers[i] == p->id) {
+			lua_pushboolean(L, 1);
+			return 1;	/* already watching */
+		}
+	if (target->nwatch >= MAXWATCH)
+		return luaL_error(L, "too many watchers");
+	target->watchers[target->nwatch++] = p->id;
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* explicitly drop a right. handle 0 (self port) is not closable. */
+static int
+api_close(lua_State *L)
+{
+	struct kproc *p = self(L);
+	lua_Integer h = luaL_checkinteger(L, 1);
+	struct right *r = right_get(p, h);
+
+	if (!r)
+		return luaL_error(L, "bad right");
+	if (h == 0)
+		return luaL_error(L, "cannot close self port");
+	right_drop(r);
+	return 0;
+}
+
+static int
+api_stats(lua_State *L)
+{
+	int nports = 0, nprocs = 0;
+
+	for (int i = 0; i < MAXPORTS; i++)
+		if (ports[i].used)
+			nports++;
+	for (int i = 0; i < MAXPROCS; i++)
+		if (procs[i].status != DEAD)
+			nprocs++;
+	lua_createtable(L, 0, 2);
+	lua_pushinteger(L, nports);
+	lua_setfield(L, -2, "ports");
+	lua_pushinteger(L, nprocs);
+	lua_setfield(L, -2, "procs");
+	return 1;
 }
 
 static int
@@ -604,6 +778,9 @@ static const luaL_Reg kapi[] = {
 	{ "yield", api_yield },
 	{ "newport", api_newport },
 	{ "spawn", api_spawn },
+	{ "monitor", api_monitor },
+	{ "close", api_close },
+	{ "stats", api_stats },
 	{ "self", api_self },
 	{ "procs", api_procs },
 	{ "ticks", api_ticks },
@@ -659,6 +836,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 		return -1;
 
 	memset(p->rights, 0, sizeof p->rights);
+	p->nwatch = 0;
 	p->L = luaL_newstate();
 	if (!p->L)
 		return -1;
@@ -667,7 +845,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 	 * the coroutine's extra space too.
 	 */
 	*(struct kproc **)lua_getextraspace(p->L) = p;
-	p->id = (int)(p - procs);
+	p->id = nextpid++;	/* unique forever; slots recycle, pids don't */
 	luaL_openlibs(p->L);
 
 	/* self port = right handle 0 */
@@ -675,7 +853,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 
 	if (!port || right_new(p, port, 1) != 0) {
 		if (port)
-			port_free(port);
+			port->used = 0;	/* no rights were taken */
 		lua_close(p->L);
 		return -1;
 	}
@@ -718,7 +896,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 		kputs("proc load error: ");
 		kputs(lua_tostring(p->co, -1));
 		kputs("\n");
-		port_free(port);
+		right_drop(&p->rights[0]);
 		lua_close(p->L);
 		return -1;
 	}
@@ -733,13 +911,61 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 	return p->id;
 }
 
+/* build and deliver an exit notification: {exit=pid, normal=bool,
+ * reason=string?} to the watcher's self port.
+ */
+static void
+notify_exit(struct kproc *watcher, int pid, const char *reason)
+{
+	struct wbuf w = { 0 };
+	unsigned int npairs = reason ? 3 : 2;
+	lua_Integer id = pid;
+
+	if (wbyte(&w, 'B') || wput(&w, &npairs, 4))
+		goto fail;
+
+	unsigned int klen = 4;
+
+	if (wbyte(&w, 'S') || wput(&w, &klen, 4) || wput(&w, "exit", 4) ||
+	    wbyte(&w, 'I') || wput(&w, &id, sizeof id))
+		goto fail;
+
+	klen = 6;
+	if (wbyte(&w, 'S') || wput(&w, &klen, 4) || wput(&w, "normal", 6) ||
+	    wbyte(&w, reason ? 'F' : 'T'))
+		goto fail;
+
+	if (reason) {
+		unsigned int rlen = strlen(reason);
+
+		if (rlen > 200)
+			rlen = 200;
+		klen = 6;
+		if (wbyte(&w, 'S') || wput(&w, &klen, 4) ||
+		    wput(&w, "reason", 6) || wbyte(&w, 'S') ||
+		    wput(&w, &rlen, 4) || wput(&w, reason, rlen))
+			goto fail;
+	}
+	port_push(watcher->rights[0].port, w.p, w.len, 0, 0);
+fail:
+	free(w.p);
+}
+
 static void
 proc_kill(struct kproc *p, const char *why)
 {
-	if (why) {
-		char buf[128];
+	char reason[224];
 
-		snprintf(buf, sizeof buf, "proc %d died: %s\n", p->id, why);
+	/* copy the reason out: it usually points into the lua state we
+	 * are about to close
+	 */
+	if (why) {
+		snprintf(reason, sizeof reason, "%s", why);
+
+		char buf[256];
+
+		snprintf(buf, sizeof buf, "proc %d died: %s\n", p->id,
+		    reason);
 		kputs(buf);
 	}
 	lua_close(p->L);
@@ -747,6 +973,22 @@ proc_kill(struct kproc *p, const char *why)
 	p->L = 0;
 	p->co = 0;
 	nlive--;
+
+	/* release every right this proc held; ports lose refs, orphaned
+	 * queues flush, unreferenced ports free
+	 */
+	for (int i = 0; i < MAXRIGHTS; i++)
+		if (p->rights[i].used)
+			right_drop(&p->rights[i]);
+
+	/* erlang-style DOWN: tell the watchers */
+	for (int i = 0; i < p->nwatch; i++) {
+		struct kproc *w = find_proc(p->watchers[i]);
+
+		if (w)
+			notify_exit(w, p->id, why ? reason : 0);
+	}
+	p->nwatch = 0;
 }
 
 /* ---- serial pump (9p wire on com2) ---- */
@@ -771,7 +1013,7 @@ pump_serial(void)
 	/* serialized string message: tag, u32 len, bytes */
 	buf[0] = 'S';
 	memcpy(buf + 1, &n, 4);
-	port_push(serport, buf, 5 + n);
+	port_push(serport, buf, 5 + n, 0, 0);
 }
 
 /* ---- keyboard pump ---- */
@@ -788,7 +1030,7 @@ pump_keyboard(void)
 		if (key.UnicodeChar == 0 || key.UnicodeChar >= 0x80)
 			continue;
 		msg[5] = (unsigned char)key.UnicodeChar;
-		port_push(kbdport, msg, sizeof msg);
+		port_push(kbdport, msg, sizeof msg, 0, 0);
 	}
 }
 
@@ -800,7 +1042,12 @@ kernel_init(void)
 	uart_init();
 	kbdport = port_new();
 	serport = port_new();
-	return (kbdport && serport) ? 0 : -1;
+	if (!kbdport || !serport)
+		return -1;
+	/* kernel refs: the pumps hold these ports forever */
+	kbdport->nrights++;
+	serport->nrights++;
+	return 0;
 }
 
 int
@@ -810,8 +1057,10 @@ kernel_spawn_file(const char *path)
 
 	if (pid >= 0 && kbdport) {
 		/* proc 0: handle 1 = keyboard, handle 2 = serial */
-		right_new(&procs[pid], kbdport, 1);
-		right_new(&procs[pid], serport, 1);
+		struct kproc *p = find_proc(pid);
+
+		right_new(p, kbdport, 1);
+		right_new(p, serport, 1);
 	}
 	return pid;
 }
@@ -848,17 +1097,21 @@ kernel_run(void)
 			int nres = 0;
 			int rc = lua_resume(p->co, 0, 0, &nres);
 
-			lua_pop(p->co, nres);
 			/* a proc can run a full hook window (200k insns)
 			 * before yielding; drain the 16-byte fifo now so it
 			 * can't overflow between serial pumps.
 			 */
 			uart_poll();
-			if (rc == LUA_YIELD)
+			if (rc == LUA_YIELD) {
+				lua_pop(p->co, nres);
 				continue;	/* READY or BLOCKED */
+			}
 			if (rc == LUA_OK)
 				proc_kill(p, 0);
 			else
+				/* error object is on the stack; read it
+				 * before proc_kill closes the state
+				 */
 				proc_kill(p, lua_tostring(p->co, -1));
 		}
 		if (!ran) {

@@ -69,6 +69,14 @@ toolchain notes that cost blood:
   transfer via `{__right=h}` markers. functions and cycles refused.
   64k cap.
 - `los.altblock({h...})` = mach port-set blocking, backs alt.
+- **lifecycle**: ports are refcounted (rights + in-flight message refs
+  + kernel refs). last receive right gone -> port dead, queue flushed,
+  sends return false (erlang: the monitor tells you, not the send).
+  last ref gone -> port freed. pids are unique forever (slots recycle,
+  ids don't). `sys.monitor(pid)` delivers {exit=pid, normal=, reason=?}
+  to the watcher's self port on death; monitoring a dead pid delivers
+  noproc immediately. `sys.close(h)` drops a right early; `sys.stats()`
+  counts live ports/procs (leak tests).
 - keyboard and com2-serial are pumped into ports by the kernel; the
   line editor is lua (los.thread), the 9p wire is a port like any other.
 
@@ -161,9 +169,6 @@ state at `lua_newthread`. no more auto-run prelude.
 
 ## known debts (still open)
 
-- **dead procs still leak their ports/rights** (no refcount, no port
-  death notification). proc_new's error paths are fixed, but a proc
-  that runs and dies still leaks. needs refcount + death notify.
 - serializer: no cycles, no functions; strtod ~1ulp; pow(neg, int)
   basic; time() is rdtsc
 - 9p server: no auth, no create/remove/wstat, single connection,
