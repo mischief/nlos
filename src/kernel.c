@@ -48,7 +48,11 @@ struct right {
 	int used;
 };
 
-#define MAXWSET 8
+/* a proc holds at most MAXRIGHTS distinct rights, so it can never park
+ * on more than that many distinct ports; size the wait set to match so
+ * a legitimate gather can't be rejected.
+ */
+#define MAXWSET MAXRIGHTS
 
 struct kproc {
 	int status;
@@ -87,6 +91,24 @@ port_new(void)
 			return &ports[i];
 		}
 	return 0;
+}
+
+/* release a port and any queued messages. only safe when no right
+ * still references it (used today on the proc_new failure paths).
+ */
+static void
+port_free(struct kport *port)
+{
+	struct kmsg *m = port->head;
+
+	while (m) {
+		struct kmsg *next = m->next;
+
+		free(m);
+		m = next;
+	}
+	port->head = port->tail = 0;
+	port->used = 0;
 }
 
 static int
@@ -455,8 +477,8 @@ api_altblock(lua_State *L)
 
 	luaL_checktype(L, 1, LUA_TTABLE);
 	n = (int)luaL_len(L, 1);
-	if (n < 1 || n > MAXWSET)
-		return luaL_error(L, "altblock: 1..%d ports", MAXWSET);
+	if (n < 1)
+		return luaL_error(L, "altblock: need at least one port");
 
 	p->nwset = 0;
 	for (int i = 1; i <= n; i++) {
@@ -471,7 +493,18 @@ api_altblock(lua_State *L)
 			p->nwset = 0;
 			return 0;	/* already ready, don't sleep */
 		}
-		p->wset[p->nwset++] = r->port;
+		/* dedup: the caller may list the same handle more than once
+		 * (alt cases share ports). distinct ports are bounded by
+		 * MAXRIGHTS == MAXWSET, so the set can never overflow.
+		 */
+		int seen = 0;
+		for (int j = 0; j < p->nwset; j++)
+			if (p->wset[j] == r->port) {
+				seen = 1;
+				break;
+			}
+		if (!seen)
+			p->wset[p->nwset++] = r->port;
 	}
 	p->status = BLOCKED;
 	return lua_yield(L, 0);
@@ -601,6 +634,8 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 	struct kport *port = port_new();
 
 	if (!port || right_new(p, port, 1) != 0) {
+		if (port)
+			port_free(port);
 		lua_close(p->L);
 		return -1;
 	}
@@ -624,6 +659,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 		kputs("proc load error: ");
 		kputs(lua_tostring(p->co, -1));
 		kputs("\n");
+		port_free(port);
 		lua_close(p->L);
 		return -1;
 	}
