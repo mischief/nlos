@@ -1,8 +1,9 @@
 -- tap: minimal TAP producer for boot tests. output goes to the
 -- console (com1 serial); scripts/boottest.sh extracts it. done()
--- powers the vm off so the harness sees a clean qemu exit.
+-- powers the vm off (via conio, the only task allowed to touch
+-- platform power) so the harness sees a clean qemu exit.
 
-local efi = require("los.efi")
+local sys = require("los.sys")
 
 local M = { n = 0, failed = 0 }
 
@@ -36,7 +37,7 @@ end
 
 function M.done()
 	print("# test complete, powering off")
-	efi.reset("shutdown")
+	sys.send(sys.CONIO, { op = "reset", mode = "shutdown" })
 end
 
 return M

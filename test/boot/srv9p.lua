@@ -1,5 +1,6 @@
 -- 9p server payload for the host-driven 9p test: same server the real
--- init runs, minus the repl. proc 0 keeps the serial right directly.
+-- init runs, minus the repl. proc 0 keeps the serial and conio rights
+-- directly (both granted at boot, same as the real init).
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -32,4 +33,4 @@ local root = p9.synth({
 print("9p test server ready")
 p9.serve(root,
     function() return thread.recv(sys.SERIAL) end,
-    sys.serwrite)
+    function(bytes) sys.send(sys.CONIO, { op = "write", data = bytes }) end)

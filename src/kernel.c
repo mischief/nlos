@@ -624,18 +624,6 @@ api_altblock(lua_State *L)
 	return lua_yield(L, 0);
 }
 
-extern void uart_tx(const char *s, unsigned long n);
-
-static int
-api_serwrite(lua_State *L)
-{
-	size_t n;
-	const char *s = luaL_checklstring(L, 1, &n);
-
-	uart_tx(s, n);
-	return 0;
-}
-
 static int
 api_yield(lua_State *L)
 {
@@ -659,7 +647,7 @@ api_newport(lua_State *L)
 }
 
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
-    int is_file, int reductions, size_t mem_limit);
+    int is_file, int reductions, size_t mem_limit, int privileged);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason);
 
 static int
@@ -683,7 +671,11 @@ api_spawn(lua_State *L)
 		lua_pop(L, 1);
 	}
 
-	int pid = proc_new(code, n, "=spawn", 0, reductions, mem_limit);
+	/* sys.spawn can never mint a privileged (conio-class) proc: that
+	 * bit is set only by the kernel's own boot-time spawn_conio call,
+	 * never reachable from lua.
+	 */
+	int pid = proc_new(code, n, "=spawn", 0, reductions, mem_limit, 0);
 
 	if (pid < 0)
 		return luaL_error(L, "spawn failed");
@@ -835,7 +827,6 @@ static const luaL_Reg kapi[] = {
 	{ "tryrecv", api_tryrecv },
 	{ "block", api_block },
 	{ "altblock", api_altblock },
-	{ "serwrite", api_serwrite },
 	{ "yield", api_yield },
 	{ "newport", api_newport },
 	{ "spawn", api_spawn },
@@ -850,11 +841,12 @@ static const luaL_Reg kapi[] = {
 	{ NULL, NULL }
 };
 
-extern int luaopen_los_efi(lua_State *L);	/* los.c: firmware bindings */
+extern int luaopen_los_efi(lua_State *L);	/* los.c: firmware info */
+extern int luaopen_los_platform(lua_State *L);	/* conio.c: conio-only */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
- * kernel-owned primitives that outlive efi (ticks, serwrite). registered
- * in package.preload by proc_new; a chunk pulls it in with an explicit
+ * kernel-owned primitives that outlive efi (ticks). registered in
+ * package.preload by proc_new; a chunk pulls it in with an explicit
  * require("los.sys"). the proc pointer comes from the state's extra
  * space, so the api needs no upvalues.
  */
@@ -864,7 +856,12 @@ los_sys_open(lua_State *L)
 	luaL_newlib(L, kapi);
 
 	/* well-known right handles. 0 (own receive port) holds for every
-	 * proc; 1/2 are the keyboard/serial rights handed to proc 0 at boot.
+	 * proc; 1/2 are the keyboard/serial rights handed to proc 0 at
+	 * boot; 3 is a send-right to conio's mailbox, also handed to
+	 * proc 0 at boot -- conio is the only proc anywhere with
+	 * los.platform (raw console-write, reset, stall) registered, so
+	 * writing the console or touching machine power means sending it
+	 * a message, never a direct call.
 	 */
 	lua_pushinteger(L, 0);
 	lua_setfield(L, -2, "SELF");
@@ -872,6 +869,8 @@ los_sys_open(lua_State *L)
 	lua_setfield(L, -2, "KBD");
 	lua_pushinteger(L, 2);
 	lua_setfield(L, -2, "SERIAL");
+	lua_pushinteger(L, 3);
+	lua_setfield(L, -2, "CONIO");
 	return 1;
 }
 
@@ -916,7 +915,7 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 
 static int
 proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
-    int reductions, size_t mem_limit)
+    int reductions, size_t mem_limit, int privileged)
 {
 	struct kproc *p = 0;
 
@@ -973,6 +972,16 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 
 	lua_pushcfunction(p->L, luaopen_los_efi);
 	lua_setfield(p->L, -2, "los.efi");
+
+	/* los.platform (raw console-write, reset, stall) is registered
+	 * ONLY for the conio task -- not gated by a runtime check, simply
+	 * absent from package.preload everywhere else, so there is no
+	 * check to get wrong: the function isn't reachable to call.
+	 */
+	if (privileged) {
+		lua_pushcfunction(p->L, luaopen_los_platform);
+		lua_setfield(p->L, -2, "los.platform");
+	}
 
 	if (luaL_loadfile(p->L, "/lib/thread.lua") == LUA_OK) {
 		lua_setfield(p->L, -2, "los.thread");
@@ -1153,19 +1162,43 @@ kernel_init(void)
 	return 0;
 }
 
+/* spawn conio: the sole task anywhere with los.platform (raw
+ * console-write, reset, stall). no device rights, no lua-visible
+ * spawn path -- privileged=1 is set only here, in the kernel's own
+ * boot sequence, never reachable from sys.spawn.
+ */
+static int
+spawn_conio(void)
+{
+	int pid = proc_new("/lib/conio.lua", 0, "=conio", 1, 0, 0, 1);
+
+	if (pid < 0)
+		kputs("warning: conio failed to start; console-write and "
+		    "reset/stall are unavailable this boot\n");
+	return pid;
+}
+
 /* spawn the init proc (from a file path or an injected buffer) and
- * hand it the device rights: handle 1 = keyboard, handle 2 = serial.
+ * hand it the device rights: handle 1 = keyboard, handle 2 = serial,
+ * handle 3 = a send-right to conio's mailbox.
  */
 static int
 spawn_init(const char *code, size_t len, int is_file)
 {
-	int pid = proc_new(code, len, "=init", is_file, 0, 0);
+	int conio_pid = spawn_conio();
+	int pid = proc_new(code, len, "=init", is_file, 0, 0, 0);
 
 	if (pid >= 0 && kbdport) {
 		struct kproc *p = find_proc(pid);
 
 		right_new(p, kbdport, 1);
 		right_new(p, serport, 1);
+		if (conio_pid >= 0) {
+			struct kproc *conio = find_proc(conio_pid);
+
+			if (conio)
+				right_new(p, conio->rights[0].port, 0);
+		}
 	}
 	return pid;
 }

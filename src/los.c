@@ -1,9 +1,10 @@
-/* the los.efi module: firmware/boot-services bindings.
+/* the los.efi module: read-only firmware/boot info.
  *
- * this is the transitional layer -- everything here calls efi boot or
- * runtime services and goes away once we ExitBootServices and own the
- * machine. kernel primitives that outlive efi (ticks, serwrite) live in
- * los.sys, not here.
+ * no authority lives here on purpose -- actions (console write, reset,
+ * stall) are los.platform, registered only for the conio task (see
+ * conio.c and kernel.c's spawn_conio). every other proc, including
+ * this one's caller, can read firmware/firmware_revision but cannot
+ * touch the machine through this module.
  */
 
 #include "efi.h"
@@ -11,29 +12,7 @@
 #include "lua.h"
 #include "lauxlib.h"
 
-static int
-los_reset(lua_State *L)
-{
-	static const char *const modes[] =
-	    { "cold", "warm", "shutdown", NULL };
-	static const EFI_RESET_TYPE types[] =
-	    { EfiResetCold, EfiResetWarm, EfiResetShutdown };
-	int opt = luaL_checkoption(L, 1, "cold", modes);
-
-	ST->RuntimeServices->ResetSystem(types[opt], EFI_SUCCESS, 0, 0);
-	return 0;	/* unreachable */
-}
-
-static int
-los_stall(lua_State *L)
-{
-	BS->Stall((UINTN)luaL_checkinteger(L, 1));
-	return 0;
-}
-
 static const luaL_Reg efilib[] = {
-	{ "reset", los_reset },
-	{ "stall", los_stall },
 	{ NULL, NULL }
 };
 

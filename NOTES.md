@@ -135,15 +135,28 @@ nothing is a global anymore; everything is an explicit `require`, most
 of it via `package.preload` (no disk search). `los` itself is a bare
 namespace — there is no monolithic `los` table.
 
-- **los.efi** (C, src/los.c) — firmware/boot-services bindings only:
-  `reset`, `stall`, `firmware`, `firmware_revision`. the transitional
-  layer; this is what gets swapped/deleted if we ever ExitBootServices.
+- **los.efi** (C, src/los.c) — read-only firmware info only now:
+  `firmware`, `firmware_revision`. no authority lives here anymore
+  (reset/stall moved out, see los.platform below); still the layer
+  that gets swapped/deleted if we ever ExitBootServices.
+- **los.platform** (C, src/conio.c) — raw `serwrite`, `reset`, `stall`.
+  registered in package.preload ONLY for the conio task (see below) —
+  no other proc's require() can ever see this key. not gated by a
+  check; simply absent everywhere else.
 - **los.sys** (C, src/kernel.c) — the microkernel abi: `send`,
-  `tryrecv`, `block`, `altblock`, `newport`, `spawn`, `self`, `procs`,
-  `yield`, plus kernel-owned primitives that outlive efi (`ticks` =
-  rdtsc, `serwrite` = com2), plus the `SELF`/`KBD`/`SERIAL` handles.
+  `tryrecv`, `block`, `altblock`, `newport`, `spawn`, `monitor`,
+  `close`, `stats`, `meminfo`, `preempt`, `self`, `procs`, `yield`,
+  `ticks` (rdtsc), plus the `SELF`/`KBD`/`SERIAL`/`CONIO` handles.
 - **los.thread** (lua, lib/thread.lua) — the cooperative runtime,
   built on `los.sys`.
+- **conio** (lua, lib/conio.lua) — the sole task with los.platform.
+  spawned by the kernel before init/any test payload, holds no
+  device rights of its own, just a request/reply loop: `{op="write",
+  data=}` / `{op="reset", mode=}` / `{op="stall", us=}` on its self
+  port. every other proc gets, at most, a send-right to its mailbox
+  (`sys.CONIO`, granted to proc 0 at boot alongside KBD/SERIAL);
+  writing the console or touching machine power means sending conio
+  a message, never a direct call. `sys.serwrite` no longer exists.
 
 mechanics: the proc pointer lives in the lua_State's extra space
 (`lua_getextraspace`), so the kapi needs no upvalues and the whole
@@ -165,6 +178,16 @@ state at `lua_newthread`. no more auto-run prelude.
    root-caused the com2 hang (firmware console contention) and added
    serial_takeover; made los a real preload module then split it into
    los.efi / los.sys / los.thread; killed all globals.
+8. meson port, fw_cfg+TAP test infra (7 tests), per-proc reduction
+   budgets and memory limits (found the 1e6 strtod bug), compiler
+   hardening (-Werror + sanitize-trap on our own code).
+9. port refcounts + death notification + erlang-style monitors;
+   DESIGN.md written (pillars, litmus tests); microvm and namespace
+   designs parked in docs/; conio: closed the require()-loophole by
+   moving console-write/reset/stall into a single kernel-spawned task
+   with an exclusive module registration — no other proc can reach
+   the raw primitive at all, checked or otherwise. 8 tests, 56
+   subtests.
 
 ## fixed in the hardening pass
 
@@ -196,7 +219,9 @@ state at `lua_newthread`. no more auto-run prelude.
   9P2000 only (no .u/.L dialects — linux v9fs prefers those)
 - alt-send on unbuffered channels only pairs with already-parked
   receivers
-- kbd/serial rights are positional handles (1, 2) in proc 0
+- kbd/serial/conio rights are positional handles (1, 2, 3) in proc 0
+  — the namespace-design mount-table work is the eventual fix, not
+  urgent since these three are well-known and stable
 - ninep is still a disk `require` via LUA_PATH (could be preloaded like
   los.thread); src/los.c hosts the los.efi module (filename lags)
 

@@ -10,13 +10,16 @@ print("mach-lite kernel + plan9 furniture (threads, channels, alt, 9p)")
 print("")
 
 -- 9p server proc: serves a synthetic namespace on com2.
--- it gets the serial receive right in its first message.
+-- it gets the serial receive right and a conio send-right in its
+-- first message: conio is the only task with raw console-write
+-- access, so writing the wire means sending it a message.
 local _, ninesrv = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
 	local p9 = require("ninep")
 	local m = thread.recv(sys.SELF)
 	local serial = m.serial.__right
+	local conio = m.conio.__right
 
 	local root = p9.synth({
 		["README"] = "this is lua-os, mounted over 9p. hello!\n",
@@ -41,11 +44,15 @@ local _, ninesrv = sys.spawn([[
 
 	p9.serve(root,
 	    function() return thread.recv(serial) end,
-	    sys.serwrite)
+	    function(bytes) sys.send(conio, { op = "write", data = bytes }) end)
 ]])
 
--- hand over the serial receive right (proc 0 owns handle 2 at boot)
-sys.send(ninesrv, { serial = { __right = sys.SERIAL } })
+-- hand over the serial receive right and a conio send-right
+-- (proc 0 owns handles 2 and 3 at boot)
+sys.send(ninesrv, {
+	serial = { __right = sys.SERIAL },
+	conio = { __right = sys.CONIO },
+})
 print("9p server listening on com2 (mount me!)")
 print("")
 

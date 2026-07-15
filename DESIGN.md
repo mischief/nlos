@@ -49,8 +49,48 @@ arrives only inside a message ({__right=h}), mach-style. device access
 (keyboard, serial) is a right like any other, handed out at boot or
 passed along — not a global anyone can open.
 
-known violations get tracked as debt, not shrugged at (today:
-sys.serwrite is ambient; the kbd/serial handles are positional).
+known violations get tracked as debt, not shrugged at (today: the
+kbd/serial handles are positional).
+
+**the require() loophole, and how it's closed.** a lua module
+registered in `package.preload` is reachable by every proc that can
+spell its name — `require()` is bare name lookup, no delivery, no
+unforgeability. that's fine for a module whose functions take the
+actual authority as an *argument* (`los.sys.send(h, msg)` does nothing
+without a valid right `h` in the caller's own table — anyone can call
+`send`, the handle is what's checked). it is **not** fine for a
+function where the authority *is* the function — raw console-write,
+`ResetSystem`, eventually raw `inb`/`outb` — because there is no
+handle to check; calling it does the privileged thing, full stop. a
+module like that being universally `require()`-able is ambient
+authority through the back door, no different in kind from plan9
+`bind`-by-name (see docs/namespace-design.md's devcap section for the
+fuller argument).
+
+closing this needs to go one step further than "gate the call behind a
+checked right" (a right-check is still a function present in *every*
+proc's own C surface, one bug in the check away from every proc having
+a path to the metal). the actual fix: the function must not be
+*registered* anywhere except in the one task that owns the resource.
+`los.platform` (console-write, reset, stall) is compiled once
+(src/conio.c) but only ever put into `package.preload` for conio — a
+single, kernel-spawned task with no lua-visible spawn path
+(`sys.spawn` cannot set the privileged flag; only the kernel's own
+boot sequence does). every other proc, including init/proc 0, gets at
+most a send-right to conio's mailbox (`sys.CONIO`) and talks to it by
+message: `sys.send(sys.CONIO, {op="write", data=s})`. there is no
+check to get wrong anywhere else, because the function reference does
+not exist anywhere else. verified in test/boot/test_conio.lua: an
+ordinary proc cannot `require("los.platform")` and a spawned child
+with no rights beyond its own self-port cannot reach `sys.CONIO`
+either.
+
+the same pattern generalizes to every future privileged resource:
+one task owns the raw primitive (a *driver*, not a checked library),
+everyone else holds a right to that task's mailbox. networking will
+work the same way once it exists — one net task, everyone else granted
+a right to it — and so would raw hardware io if a driver ever needs it
+(see docs/microvm-plan.md's reactor-backend discussion).
 
 ### 4. everything is a port; 9p is the boundary protocol
 
@@ -205,3 +245,6 @@ when a change is proposed, ask:
 6. where is its TAP test? (pillar 8)
 7. does it add a new "wait for the next thing" primitive, or reuse
    the existing reactor-of-reactors shape? (pillar 9)
+8. does it register a privileged raw primitive (not gated by an
+   argument) anywhere except the one task that owns it? (pillar 3,
+   the require()-loophole)

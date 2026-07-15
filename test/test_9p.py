@@ -145,7 +145,11 @@ def main():
         c.rpc(112, 10, struct.pack("<IB", 3, 0))
         r = c.rpc(116, 11, struct.pack("<IQI", 3, 0, 4096))
         n = struct.unpack("<I", r[:4])[0]
-        ok(r[4:4 + n].decode().strip() == "0", "proc/list dynamic read")
+        # conio is always proc 0 (spawned before any init/payload), so
+        # a fresh boot has exactly {conio, the payload itself} alive.
+        pids = r[4:4 + n].decode().strip().split()
+        ok(len(pids) == 2 and all(p.isdigit() for p in pids),
+           "proc/list dynamic read")
 
         # walk to a nonexistent file errors
         try:
