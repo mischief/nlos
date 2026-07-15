@@ -1,12 +1,33 @@
--- lua-os init: banner + repl
+-- lua-os init (proc 0): spawn a demo service, then repl
 
 print(("%s on %s (fw rev 0x%x)"):format(_VERSION, los.firmware,
     los.firmware_revision))
-print("lua-os repl. ctrl-d on empty line exits, los.reset('shutdown') powers off.")
+print("mach-lite kernel. procs are isolated lua states; talk via ports.")
+print("try: pid, srv = los.spawn(code) / los.send(srv, msg) / recv(port)")
 print("")
 
+-- demo: echo service in its own lua state
+local _, echo = los.spawn([[
+	while true do
+		local m = recv(los.SELF)
+		if type(m) == "table" and m.reply then
+			-- transferred rights arrive as {__right = handle}
+			los.send(m.reply.__right,
+			    { echoed = m.text, from = "echo-proc" })
+		end
+	end
+]])
+
+-- prove round trip: make a reply port, send, block on answer
+local replyport = los.newport()
+los.send(echo, { text = "kernel says hi", reply = { __right = replyport } })
+local answer = recv(replyport)
+print(("echo service answered: %q (from %s)"):format(answer.echoed,
+    answer.from))
+print("")
+
+-- repl
 local function evaluate(line)
-	-- expression first, statement second (standard repl trick)
 	local chunk, err = load("return " .. line, "=repl")
 	if not chunk then
 		chunk, err = load(line, "=repl")
@@ -14,21 +35,15 @@ local function evaluate(line)
 	return chunk, err
 end
 
-local function incomplete(err)
-	return err and err:sub(-5) == "<eof>"
-end
-
 while true do
-	io.write("> ")
-	local line = los.readline()
+	local line = readline("> ")
 	if line == nil then
 		break
 	end
 	if #line > 0 then
 		local chunk, err = evaluate(line)
-		while not chunk and incomplete(err) do
-			io.write(">> ")
-			local more = los.readline()
+		while not chunk and err and err:sub(-5) == "<eof>" do
+			local more = readline(">> ")
 			if more == nil then
 				break
 			end
@@ -50,4 +65,4 @@ while true do
 	end
 end
 
-print("repl done. bye.")
+print("init exiting. bye.")

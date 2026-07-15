@@ -38,6 +38,7 @@ OBJS=\
 	build/libc/math.o\
 	build/console.o\
 	build/fs.o\
+	build/kernel.o\
 	build/los.o\
 	build/malloc.o\
 	build/linit.o\
@@ -75,7 +76,7 @@ $(EFIBIN): build/luaos.so
 	$(OBJCOPY) -O binary $< $@
 
 # 48M gpt disk, one esp partition, fat via mtools (no root needed)
-$(EFIIMG): $(EFIBIN) init.lua
+$(EFIIMG): $(EFIBIN) init.lua prelude.lua
 	test -e $@ || (dd if=/dev/zero of=$@ bs=512 count=93750 2>/dev/null && \
 		$(SGDISK) -Z $@ >/dev/null && \
 		$(SGDISK) -N 1 $@ >/dev/null && \
@@ -87,6 +88,7 @@ $(EFIIMG): $(EFIBIN) init.lua
 	)
 	mcopy -o -i $@@@1M $(EFIBIN) ::efi/boot/bootx64.efi
 	mcopy -o -i $@@@1M init.lua ::init.lua
+	mcopy -o -i $@@@1M prelude.lua ::prelude.lua
 	touch $@
 
 build/OVMF_VARS.fd: | build
