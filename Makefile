@@ -16,7 +16,8 @@ EFIIMG=luaos.img
 
 GCCINC=$(shell $(CC) -print-file-name=include)
 
-CFLAGS=-O2 -Wall -std=gnu11 -ffreestanding -fpic -fno-stack-protector \
+LUAPATH=-DLUA_PATH_DEFAULT='"/?.lua;/lib/?.lua"' -DLUA_CPATH_DEFAULT='""'
+CFLAGS=$(LUAPATH) -O2 -Wall -std=gnu11 -ffreestanding -fpic -fno-stack-protector \
 	-fno-strict-aliasing -mno-red-zone -msse4.1 -fshort-wchar \
 	-fvisibility=hidden -nostdinc -Iinclude -isystem $(GCCINC) -Isrc -Ilua
 
@@ -92,7 +93,7 @@ build/OVMF_VARS.fd: | build
 	cp $(OVMF_VARS) $@
 
 qemu: $(EFIIMG) build/OVMF_VARS.fd
-	qemu-system-x86_64 -enable-kvm -cpu max -net none -serial mon:stdio \
+	qemu-system-x86_64 -nographic -enable-kvm -cpu max -net none -serial mon:stdio \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
 		-drive format=raw,file=$(EFIIMG)

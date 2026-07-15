@@ -8,6 +8,7 @@ int luaopen_los(lua_State *L);
 
 static const luaL_Reg loadedlibs[] = {
 	{ "los", luaopen_los },
+	{ LUA_LOADLIBNAME, luaopen_package },
 	{ LUA_IOLIBNAME, luaopen_io },
 	{ LUA_GNAME, luaopen_base },
 	{ LUA_COLIBNAME, luaopen_coroutine },
