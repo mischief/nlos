@@ -1,5 +1,7 @@
 # lua-os: lua on bare UEFI, hand-rolled PE header, no gnu-efi/mingw/edk2.
-# image assembly and qemu invocation adapted from efivim.
+# freestanding: only our include/ plus the compiler's own headers.
+
+ARCH=x86_64
 
 CC=gcc
 LD=ld
@@ -12,29 +14,59 @@ OVMF_VARS=/usr/share/edk2-ovmf/OVMF_VARS.fd
 EFIBIN=luaos.efi
 EFIIMG=luaos.img
 
-CFLAGS=-Wall -Wextra -std=gnu11 -ffreestanding -fpic -fno-stack-protector \
-	-fno-strict-aliasing -mno-red-zone -fshort-wchar -Isrc
+GCCINC=$(shell $(CC) -print-file-name=include)
+
+CFLAGS=-O2 -Wall -std=gnu11 -ffreestanding -fpic -fno-stack-protector \
+	-fno-strict-aliasing -mno-red-zone -msse4.1 -fshort-wchar \
+	-fvisibility=hidden -nostdinc -Iinclude -isystem $(GCCINC) -Isrc -Ilua
 
 LDFLAGS=-nostdlib -shared -Bsymbolic -znocombreloc -T src/pe.ld
 
 OBJS=\
-	build/header.o\
-	build/reloc.o\
+	build/$(ARCH)/header.o\
+	build/$(ARCH)/reloc.o\
+	build/$(ARCH)/setjmp.o\
+	build/$(ARCH)/machine.o\
+	build/$(ARCH)/math.o\
+	build/libc/string.o\
+	build/libc/stdlib.o\
+	build/libc/stdio.o\
+	build/libc/vsnprintf.o\
+	build/libc/locale.o\
+	build/libc/time.o\
+	build/libc/math.o\
+	build/console.o\
+	build/malloc.o\
+	build/linit.o\
 	build/main.o\
+
+LUA_SRC=$(filter-out lua/lua.c lua/luac.c lua/onelua.c lua/linit.c \
+	lua/liolib.c lua/loslib.c lua/ltests.c,\
+	$(wildcard lua/*.c))
+LUA_OBJS=$(patsubst lua/%.c,build/lua/%.o,$(LUA_SRC))
 
 all: $(EFIBIN)
 
-build:
-	mkdir -p build
+build build/$(ARCH) build/libc build/lua:
+	mkdir -p $@
 
-build/%.o: src/%.S | build
+build/$(ARCH)/%.o: src/$(ARCH)/%.S | build/$(ARCH)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/$(ARCH)/%.o: src/$(ARCH)/%.c | build/$(ARCH)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/libc/%.o: src/libc/%.c | build/libc
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/lua/%.o: lua/%.c | build/lua
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 build/%.o: src/%.c | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-build/luaos.so: $(OBJS) src/pe.ld
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+build/luaos.so: $(OBJS) $(LUA_OBJS) src/pe.ld
+	$(LD) $(LDFLAGS) -o $@ $(OBJS) $(LUA_OBJS)
 
 $(EFIBIN): build/luaos.so
 	$(OBJCOPY) -O binary $< $@
@@ -57,7 +89,7 @@ build/OVMF_VARS.fd: | build
 	cp $(OVMF_VARS) $@
 
 qemu: $(EFIIMG) build/OVMF_VARS.fd
-	qemu-system-x86_64 -enable-kvm -net none -serial mon:stdio \
+	qemu-system-x86_64 -enable-kvm -cpu max -net none -serial mon:stdio \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
 		-drive format=raw,file=$(EFIIMG)
