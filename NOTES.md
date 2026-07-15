@@ -179,31 +179,10 @@ state at `lua_newthread`. no more auto-run prelude.
 - ninep is still a disk `require` via LUA_PATH (could be preloaded like
   los.thread); src/los.c hosts the los.efi module (filename lags)
 
-## open question: bluepilled vs redpilled (UNDECIDED)
+## open question: bluepilled vs redpilled
 
-do we ever ExitBootServices, or live in efi land forever? not deciding
-yet, just recording the discussion.
-
-- **stay bluepilled (efi as a HAL):** efi hands us a working allocator
-  and *device drivers* (NIC via TCP4/SNP, BlockIo, GOP, USB) for free —
-  the soul-crushing part. the interesting layer (procs/ports/caps/9p,
-  los.sys/los.thread) is firmware-agnostic and doesn't care. and
-  `los.efi` is already the isolation seam, so this costs nothing we
-  can't reverse. consequence: 9p-over-efi-tcp becomes *permanent*
-  infra, not throwaway scaffolding.
-- **cost of bluepilled:** boot services isn't a runtime — we live inside
-  the firmware TPL (one big cooperative lock), must keep the watchdog
-  disabled, no true preemption/interrupts (we poll), and vendor
-  firmware is a quirk minefield (we already ate com2-console contention
-  + the WaitForEvent hang). rich protocols (tcp4, mp_services) aren't
-  guaranteed on minimal/real hardware.
-- **redpill (own the machine)** only buys interrupt-driven io,
-  preemption, MP, power. for a 9p-serving lua playground we may never
-  hit that wall. and it's expensive: lose AllocatePool, ConOut, Stall,
-  and — the killer — SimpleFileSystem (our edit-lua-and-reboot loop).
-- **leaning:** treat phase-2 as "someday if we hit a wall," keep
-  `los.efi` clean as the seam, don't treat the exit as an obligation.
-  but not locked in.
+moved to DESIGN.md (open questions). DESIGN.md now records constraints,
+pillars, and open arguments; this file stays day-to-day status/debts.
 
 ## near-term order (proposed, not committed)
 
@@ -213,8 +192,9 @@ yet, just recording the discussion.
    in los.sys (proc status, blocked-on, right count, port queue depth).
    also makes the dead-proc leak *visible*.
 2. **scheduler/timers** — timer wheel (`sleep(ms)`, timeouts on
-   recv/alt) + port-death notifications → supervision. crack the
-   WaitForEvent/idle hang here; it unblocks hlt idle *and* efi tcp.
+   recv/alt). (port-death notifications + monitors: DONE. the
+   WaitForEvent/idle hang: SOLVED — it was the com2 contention; hlt
+   idle is in. efi tcp is unblocked.)
 3. **9p over efi tcp** — the payoff transport; permanent infra if we
    stay bluepilled. event-driven, so it wants step 2 first.
 4. **(maybe) redpill** — see above; demoted to optional.
