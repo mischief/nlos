@@ -45,14 +45,10 @@ ldexp(double x, int n)
 	return x * b.d;
 }
 
-/* out-of-line symbols for the inline-header functions, in case gcc
- * decides to emit real calls (built with the header inlines suppressed)
+/* emit external symbols for the c99 inline definitions in math.h,
+ * for whenever gcc chooses a real call over inlining
  */
-#define EMIT(name) \
-	double __luaos_##name(double x) asm(#name); \
-	double __luaos_##name(double x) { return __builtin_##name(x); }
-
-EMIT(fabs)
-EMIT(sqrt)
-EMIT(floor)
-EMIT(ceil)
+extern inline double fabs(double x);
+extern inline double sqrt(double x);
+extern inline double floor(double x);
+extern inline double ceil(double x);

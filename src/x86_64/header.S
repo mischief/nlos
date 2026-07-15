@@ -132,3 +132,4 @@ _start:
 	.long	0			/* PageRVA */
 	.long	10			/* BlockSize */
 	.short	0			/* IMAGE_REL_BASED_ABSOLUTE */
+	.section .note.GNU-stack, "", @progbits

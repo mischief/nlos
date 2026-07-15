@@ -5,11 +5,13 @@
 #define NAN		(__builtin_nan(""))
 #define INFINITY	(__builtin_inf())
 
-/* expanded inline by gcc (sse2/sse4.1), symbols also provided */
-static inline double fabs(double x)  { return __builtin_fabs(x); }
-static inline double sqrt(double x)  { return __builtin_sqrt(x); }
-static inline double floor(double x) { return __builtin_floor(x); }
-static inline double ceil(double x)  { return __builtin_ceil(x); }
+/* expanded inline by gcc (sse2/sse4.1); c99 inline definitions,
+ * external symbols emitted by src/libc/math.c
+ */
+inline double fabs(double x)  { return __builtin_fabs(x); }
+inline double sqrt(double x)  { return __builtin_sqrt(x); }
+inline double floor(double x) { return __builtin_floor(x); }
+inline double ceil(double x)  { return __builtin_ceil(x); }
 
 double	fmod(double x, double y);
 double	pow(double x, double y);
