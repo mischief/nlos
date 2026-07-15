@@ -106,19 +106,30 @@ strtod(const char *s, char **end)
 		}
 	}
 
+	/* powers of ten up to 1e22 are exactly representable in a double;
+	 * scaling with this table keeps round decimals exact (1e6 must be
+	 * 1000000.0, not pow()'s 999999.99999999984 -- lua for-loops with
+	 * float limits lose an iteration otherwise).
+	 */
+	static const double p10[] = {
+		1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10,
+		1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
+		1e20, 1e21, 1e22,
+	};
+
 	r = (double)mant;
 	if (exp10 > 0) {
 		while (exp10 >= 22) {
 			r *= 1e22;
 			exp10 -= 22;
 		}
-		r *= pow(10.0, exp10);
+		r *= p10[exp10];
 	} else if (exp10 < 0) {
 		while (exp10 <= -22) {
 			r /= 1e22;
 			exp10 += 22;
 		}
-		r /= pow(10.0, -exp10);
+		r /= p10[-exp10];
 	}
 	/* r is the non-negative magnitude (sign applied on return), so this
 	 * catches overflow of either sign. flag underflow to zero too.

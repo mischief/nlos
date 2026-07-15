@@ -34,10 +34,10 @@ function thread.spawn(fn, ...)
 	local co = coroutine.create(function()
 		fn(table.unpack(args, 1, args.n))
 	end)
-	-- count hook: busy threads yield back to the scheduler
-	debug.sethook(co, function()
-		coroutine.yield()
-	end, "", 100000)
+	-- kernel count hook: busy threads yield back to the scheduler.
+	-- (a lua-function hook can't yield across the C hook boundary,
+	-- so the kernel installs its own C hook for us.)
+	sys.preempt(co, 25000)
 	thread._n = thread._n + 1
 	thread._runq[#thread._runq + 1] = co
 	return co

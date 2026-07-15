@@ -25,7 +25,7 @@
 #define MAXPROCS	32
 #define MAXPORTS	128
 #define MAXRIGHTS	64
-#define HOOKCOUNT	200000
+#define REDUCTIONS	25000	/* default instruction budget per slice */
 #define MAXMSG		(64 * 1024)
 #define MAXDEPTH	16
 #define MAXMSGRIGHTS	8	/* rights per message */
@@ -76,6 +76,10 @@ struct kproc {
 	struct right rights[MAXRIGHTS];
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
+	int reductions;		/* instruction budget per slice */
+	size_t mem_used;	/* live bytes in this proc's lua heap */
+	size_t mem_peak;
+	size_t mem_limit;	/* 0 = unlimited */
 };
 
 static struct kproc procs[MAXPROCS];
@@ -654,7 +658,7 @@ api_newport(lua_State *L)
 }
 
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
-    int is_file);
+    int is_file, int reductions, size_t mem_limit);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason);
 
 static int
@@ -663,7 +667,22 @@ api_spawn(lua_State *L)
 	struct kproc *p = self(L);
 	size_t n;
 	const char *code = luaL_checklstring(L, 1, &n);
-	int pid = proc_new(code, n, "=spawn", 0);
+	int reductions = 0;
+	size_t mem_limit = 0;
+
+	if (!lua_isnoneornil(L, 2)) {
+		luaL_checktype(L, 2, LUA_TTABLE);
+		lua_getfield(L, 2, "reductions");
+		if (!lua_isnil(L, -1))
+			reductions = (int)luaL_checkinteger(L, -1);
+		lua_pop(L, 1);
+		lua_getfield(L, 2, "mem");
+		if (!lua_isnil(L, -1))
+			mem_limit = (size_t)luaL_checkinteger(L, -1);
+		lua_pop(L, 1);
+	}
+
+	int pid = proc_new(code, n, "=spawn", 0, reductions, mem_limit);
 
 	if (pid < 0)
 		return luaL_error(L, "spawn failed");
@@ -720,6 +739,42 @@ api_close(lua_State *L)
 		return luaL_error(L, "cannot close self port");
 	right_drop(r);
 	return 0;
+}
+
+static void preempt_hook(lua_State *L, lua_Debug *ar);
+
+/* install the kernel's count hook on a coroutine. lua-side hook
+ * functions cannot yield ("attempt to yield across a C-call
+ * boundary"), so in-state schedulers (los.thread) must use this to
+ * preempt busy threads.
+ */
+static int
+api_preempt(lua_State *L)
+{
+	lua_State *co = lua_tothread(L, 1);
+	lua_Integer count = luaL_optinteger(L, 2, REDUCTIONS);
+
+	if (!co)
+		return luaL_error(L, "preempt: not a coroutine");
+	lua_sethook(co, preempt_hook, LUA_MASKCOUNT, (int)count);
+	return 0;
+}
+
+/* memory accounting: meminfo([pid]) -> used, peak, limit */
+static int
+api_meminfo(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	if (!lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+	lua_pushinteger(L, (lua_Integer)p->mem_used);
+	lua_pushinteger(L, (lua_Integer)p->mem_peak);
+	lua_pushinteger(L, (lua_Integer)p->mem_limit);
+	return 3;
 }
 
 static int
@@ -781,6 +836,8 @@ static const luaL_Reg kapi[] = {
 	{ "monitor", api_monitor },
 	{ "close", api_close },
 	{ "stats", api_stats },
+	{ "meminfo", api_meminfo },
+	{ "preempt", api_preempt },
 	{ "self", api_self },
 	{ "procs", api_procs },
 	{ "ticks", api_ticks },
@@ -814,6 +871,35 @@ los_sys_open(lua_State *L)
 
 /* ---- proc lifecycle ---- */
 
+/* lua allocator with per-proc accounting. note lua's convention: when
+ * ptr is NULL, osize carries the object type, not a size.
+ */
+static void *
+kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
+{
+	struct kproc *p = ud;
+	size_t real_osize = ptr ? osize : 0;
+
+	if (nsize == 0) {
+		free(ptr);
+		p->mem_used -= real_osize;
+		return 0;
+	}
+	/* enforce the limit only on growth so gc/shrink always succeeds */
+	if (p->mem_limit && nsize > real_osize &&
+	    p->mem_used - real_osize + nsize > p->mem_limit)
+		return 0;
+
+	void *q = realloc(ptr, nsize);
+
+	if (!q)
+		return 0;
+	p->mem_used += nsize - real_osize;
+	if (p->mem_used > p->mem_peak)
+		p->mem_peak = p->mem_used;
+	return q;
+}
+
 static void
 preempt_hook(lua_State *L, lua_Debug *ar)
 {
@@ -823,7 +909,8 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 }
 
 static int
-proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
+proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
+    int reductions, size_t mem_limit)
 {
 	struct kproc *p = 0;
 
@@ -837,7 +924,16 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 
 	memset(p->rights, 0, sizeof p->rights);
 	p->nwatch = 0;
-	p->L = luaL_newstate();
+	p->reductions = reductions > 0 ? reductions : REDUCTIONS;
+	p->mem_used = 0;
+	p->mem_peak = 0;
+	/* the limit goes live only after setup: base state + libraries
+	 * are counted but never refused, so a tiny limit can't panic
+	 * openlibs. the chunk's first over-limit allocation then fails
+	 * inside the protected resume (clean LUA_ERRMEM death).
+	 */
+	p->mem_limit = 0;
+	p->L = lua_newstate(kalloc, p);
 	if (!p->L)
 		return -1;
 	/* stash the proc pointer where the kernel api finds it (self()).
@@ -904,7 +1000,8 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 	/* the lua runtime (los.thread) is a preloaded module now, pulled in
 	 * on demand by require("los.thread") -- no auto-run bootstrap.
 	 */
-	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, HOOKCOUNT);
+	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, p->reductions);
+	p->mem_limit = mem_limit;
 	p->status = READY;
 	p->waiting = 0;
 	nlive++;
@@ -1056,7 +1153,7 @@ kernel_init(void)
 static int
 spawn_init(const char *code, size_t len, int is_file)
 {
-	int pid = proc_new(code, len, "=init", is_file);
+	int pid = proc_new(code, len, "=init", is_file, 0, 0);
 
 	if (pid >= 0 && kbdport) {
 		struct kproc *p = find_proc(pid);

@@ -188,8 +188,10 @@ state at `lua_newthread`. no more auto-run prelude.
 
 ## known debts (still open)
 
-- serializer: no cycles, no functions; strtod ~1ulp; pow(neg, int)
-  basic; time() is rdtsc
+- serializer: no cycles, no functions; pow(neg, int) basic; time()
+  is rdtsc. strtod now scales by an exact power-of-ten table (round
+  decimals like 1e6 are exact); last-ulp correctness for arbitrary
+  mantissas is still not guaranteed.
 - 9p server: no auth, no create/remove/wstat, single connection,
   9P2000 only (no .u/.L dialects — linux v9fs prefers those)
 - alt-send on unbuffered channels only pairs with already-parked
