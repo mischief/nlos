@@ -30,6 +30,48 @@ capability-driven from birth, not pruned after the fact: a proc's
 namespace can only ever contain mounts built from rights it was
 actually given — never a copy of ambient anything.
 
+## Chan/Dev vs 9p wire: the boundary we're actually locating
+
+worth being precise about where plan9's *own* kernel draws this line,
+because it settles a question that comes up naturally once ports
+exist: should procs talk to each other in 9p?
+
+no. plan9's in-kernel `Chan` (portdat.h) is a plain C struct — qid,
+offset, mount-union links, a pointer — with no wire bytes anywhere in
+it. every `Dev` (devcons, devsrv, ...) is called through direct
+function pointers (`walk`, `read`, `write`) operating on that struct;
+zero serialization between in-kernel participants. the 9p wire codec
+(`convM2S`/`convS2M`) only appears in `devmnt.c` — the one driver
+whose entire job is being the seam to something that is *not*
+in-kernel: a mounted remote 9p server, a user-space file server via
+`srv`/`exportfs`. the instant a `Chan` needs to leave the kernel's
+address space it gets flattened to bytes on the wire; the moment
+something comes back in, it's rehydrated into a `Chan` and every other
+device forgets the wire existed.
+
+that is exactly our split, already built, before this doc was written:
+
+- `struct kport`/`struct right` (kernel.c) ≈ `Chan` — live, in-process,
+  function-call/memcpy cheap, referenced by index, never serialized
+  between procs that share our kernel.
+- `lib/ninep.lua`'s wire codec ≈ `devmnt.c` — the one place doing
+  `convM2S`/`convS2M`-equivalent work, and only because the far end
+  (an external plan9port client today, eventually a real host mount
+  over microvm virtio-9p) genuinely does not share our address space.
+
+so the namespace mount table's 9p-*shaped* walking (prefix -> mount,
+longest-match, remaining path as a walk) borrows plan9's naming idea
+without borrowing 9p's wire format — same as `Chan` does internally.
+proc-to-proc IPC should stay on the native port serializer forever;
+routing it through 9p framing between procs that already share a
+kernel would be re-inventing `devmnt.c` for a boundary that doesn't
+exist. arguably we can be *more* disciplined here than plan9's own
+in-kernel devices (`devcap` among them), which sometimes reach for
+string-y encodings out of convenience even when nothing is crossing
+the wire — our serializer stays a native structured format (tables,
+ints, floats, rights) precisely because nothing forces stringification
+until an actual boundary is crossed.
+
 ## the shape
 
 - **namespace = per-proc lua table**: `{prefix -> mountpoint}`, where
