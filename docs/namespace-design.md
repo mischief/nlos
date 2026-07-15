@@ -92,6 +92,50 @@ actually given — never a copy of ambient anything.
    namespace-as-capability isn't a retrofit here, it's the only way
    it could work.
 
+## devcap: what plan9 actually has, and why it doesn't cover this
+
+plan9 does have a capability primitive — `#^` (devcap.c, see `cap(3)`)
+— but it is narrower than a general object capability, and its
+existence is evidence *for* the argument above, not against it: a
+bearer token good for one thing only, changing a process's user id.
+
+shape: a trusted process (the host owner, e.g. factotum) writes
+`old@new@key` as an hmac hash into `caphash`. an untrusted process
+running as `old` writes the plaintext `old@new@key` into `capuse`; if
+the kernel finds a matching hash it flips that process's uid to `new`.
+the hash is freed after one use or after 60 seconds. classic use:
+`telnetd` proves its legitimacy to factotum, gets a capability, execs
+a login shell as the target user, the shell redeems it.
+
+two readings:
+
+1. **it confirms the gap.** plan9's fd/namespace/bind model has no
+   unforgeability property of its own, so getting one required an
+   entirely separate device with its own hash table and write
+   protocol — and it only patches *identity change*, not general
+   object access. our rights are unforgeable everywhere, by
+   construction, not through an opt-in side channel.
+2. **but it names a real problem our rights don't solve yet:
+   delegation across a channel that isn't live, or through an
+   intermediary you don't fully trust to relay honestly.** devcap's
+   whole reason to exist is that the capability must travel as a
+   *string* — through exec argv, a pipe, a config file — not through
+   a shared live channel. our rights, by contrast, only work while
+   they stay inside the kernel's in-memory rights tables: a message
+   carrying `{__right=h}` is safe because the kernel does the
+   translation, and a relaying proc can forward it unread. the moment
+   a capability needs to leave that world — serialized to disk so a
+   restarted proc keeps its permissions, handed to a *different*
+   lua-os instance across a 9p boundary that doesn't share our rights
+   table, or embedded in something that must be a plain string — it
+   is no longer unforgeable by construction, it is just bytes. that
+   is exactly the hole devcap plugs for plan9 (kernel-checked,
+   single-use, time-limited bearer hash), and it is a real future gap
+   here too, not a rebuttal of the design: worth a devcap-alike
+   (single-use hmac'd token, kernel-side redemption) for whichever of
+   the namespace/sponsor-broker scenarios above ends up needing a
+   capability to survive outside a live port.
+
 ## open questions (not yet answered)
 
 - **runtime self-mount vs frozen-at-spawn.** does a proc get to build
