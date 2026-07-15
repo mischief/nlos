@@ -135,35 +135,64 @@ nothing is a global anymore; everything is an explicit `require`, most
 of it via `package.preload` (no disk search). `los` itself is a bare
 namespace — there is no monolithic `los` table.
 
-- **los.efi** (C, src/los.c) — read-only firmware info only now:
-  `firmware`, `firmware_revision`. no authority lives here anymore
-  (reset/stall moved out, see los.platform below); still the layer
-  that gets swapped/deleted if we ever ExitBootServices.
-- **los.platform** (C, src/conio.c) — raw `serwrite`, `reset`, `stall`.
-  registered in package.preload ONLY for the conio task (see below) —
-  no other proc's require() can ever see this key. not gated by a
-  check; simply absent everywhere else.
+- **los.efi** (C, src/los.c) — read-only firmware info only:
+  `firmware`, `firmware_revision`. no authority lives here (reset/
+  stall live in los.platform.power); still the layer that gets
+  swapped/deleted if we ever ExitBootServices.
+- **los.platform.{cons,wire,power}** (C, src/drivers.c) — raw
+  `console_write` / `uart_tx` / `reset`+`stall` respectively. each
+  registered in package.preload ONLY for its one owning task (below)
+  — no other proc's require() can ever see any of these three keys.
+  not gated by a check; simply absent everywhere else.
 - **los.sys** (C, src/kernel.c) — the microkernel abi: `send`,
   `tryrecv`, `block`, `altblock`, `newport`, `spawn`, `monitor`,
   `close`, `stats`, `meminfo`, `preempt`, `self`, `procs`, `yield`,
-  `ticks` (rdtsc), plus the `SELF`/`KBD`/`SERIAL`/`CONIO` handles.
+  `ticks` (rdtsc), plus the `SELF`/`CONS`/`WIRE`/`POWER`/`DISK`
+  handles.
 - **los.thread** (lua, lib/thread.lua) — the cooperative runtime,
   built on `los.sys`.
-- **conio** (lua, lib/conio.lua) — the sole task with los.platform.
-  spawned by the kernel before init/any test payload, holds no
-  device rights of its own, just a request/reply loop: `{op="write",
-  data=}` / `{op="reset", mode=}` / `{op="stall", us=}` on its self
-  port. every other proc gets, at most, a send-right to its mailbox
-  (`sys.CONIO`, granted to proc 0 at boot alongside KBD/SERIAL);
-  writing the console or touching machine power means sending conio
-  a message, never a direct call. `sys.serwrite` no longer exists.
+- **ninep** (lua, lib/ninep.lua) — universally preloaded (same
+  mechanism as los.thread, not disk-gated require) since it's trusted
+  system code, not a proc's own file access; a plain sys.spawn child
+  can speak 9p without a DISK grant.
+- **cons** (lua, lib/cons.lua) — the sole task with los.platform.cons
+  and the raw keyboard recv right, held directly. readline (echo,
+  backspace, ctrl-d) lives entirely here; `{op="write", data=}` /
+  `{op="readline", reply={__right=}}` on its self port.
+- **wire** (lua, lib/wire.lua) — the sole task with los.platform.wire
+  and the raw serial recv right, held directly. bridges async bytes
+  against pending reads via thread.alt over its mailbox + the raw
+  right. `{op="write", data=}` / `{op="read", reply={__right=}}`.
+- **power** (lua, lib/power.lua) — reset/stall only, deliberately not
+  bundled with cons or wire (an earlier "conio" version made exactly
+  that mistake). `{op="reset", mode=}` / `{op="stall", us=}`.
+
+every other proc, including init/proc 0, gets at most a send-right to
+one of these three mailboxes (`sys.CONS`/`sys.WIRE`/`sys.POWER`,
+granted to the boot payload at fixed handles 1/2/3) plus the DISK
+capability (handle 4) — talking to console/wire/power is always a
+message, never a direct call. `sys.serwrite` no longer exists.
+
+**disk is different, and deliberately so**: `io.open` is liolib.c
+calling our `fopen()` as plain C with no lua_State — there's no
+require() boundary to defend there at all. instead `fopen()` checks
+whether `current_proc` (tracked by kernel_run, set once per
+lua_resume) holds a right to a reserved `diskport` capability token.
+this is the weaker checked-right form, kept only because liolib's
+shape leaves no alternative — see DESIGN.md pillar 3 for the full
+argument. a `kernel_loading` bypass covers the file loads that happen
+during proc construction itself (a new proc's own chunk, and the
+universally-preloaded los.thread/ninep), which aren't a running
+proc's own io.open at all.
 
 mechanics: the proc pointer lives in the lua_State's extra space
 (`lua_getextraspace`), so the kapi needs no upvalues and the whole
 thing registers as a plain preload opener. proc_new registers
-`los.sys`/`los.efi` (C openers) and `los.thread` (loadfile'd once) in
-`package.preload`; the coroutine inherits the extra space from the main
-state at `lua_newthread`. no more auto-run prelude.
+`los.sys`/`los.efi` (C openers), `los.thread`/`ninep` (loadfile'd
+once each) unconditionally, and `los.platform.{cons,wire,power}`
+(C openers) only when its `priv` argument says so, in
+`package.preload`; the coroutine inherits the extra space from the
+main state at `lua_newthread`. no more auto-run prelude.
 
 ## milestones (git log tells the story)
 
@@ -183,11 +212,12 @@ state at `lua_newthread`. no more auto-run prelude.
    hardening (-Werror + sanitize-trap on our own code).
 9. port refcounts + death notification + erlang-style monitors;
    DESIGN.md written (pillars, litmus tests); microvm and namespace
-   designs parked in docs/; conio: closed the require()-loophole by
-   moving console-write/reset/stall into a single kernel-spawned task
-   with an exclusive module registration — no other proc can reach
-   the raw primitive at all, checked or otherwise. 8 tests, 56
-   subtests.
+   designs parked in docs/; closed the require()-loophole, first
+   with a single "conio" task (console-write/reset/stall), then split
+   properly into cons/wire/power (one exclusive task per resource,
+   conio's own bundling was the same mistake it fixed) plus a disk
+   capability for the one resource (fopen, via liolib.c) that can't
+   use exclusive registration at all. 8 tests, 60 subtests.
 
 ## fixed in the hardening pass
 
@@ -219,9 +249,11 @@ state at `lua_newthread`. no more auto-run prelude.
   9P2000 only (no .u/.L dialects — linux v9fs prefers those)
 - alt-send on unbuffered channels only pairs with already-parked
   receivers
-- kbd/serial/conio rights are positional handles (1, 2, 3) in proc 0
-  — the namespace-design mount-table work is the eventual fix, not
-  urgent since these three are well-known and stable
+- CONS/WIRE/POWER/DISK rights are positional handles (1-4) in the
+  boot payload — the namespace-design mount-table work is the
+  eventual fix, not urgent since these four are well-known and stable
+- disk uses a checked-right (not exclusive-registration) mechanism,
+  weaker in kind than cons/wire/power — see DESIGN.md pillar 3
 - ninep is still a disk `require` via LUA_PATH (could be preloaded like
   los.thread); src/los.c hosts the los.efi module (filename lags)
 

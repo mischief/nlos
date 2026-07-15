@@ -50,7 +50,7 @@ arrives only inside a message ({__right=h}), mach-style. device access
 passed along — not a global anyone can open.
 
 known violations get tracked as debt, not shrugged at (today: the
-kbd/serial handles are positional).
+CONS/WIRE/POWER/DISK handles are positional).
 
 **the require() loophole, and how it's closed.** a lua module
 registered in `package.preload` is reachable by every proc that can
@@ -72,25 +72,63 @@ checked right" (a right-check is still a function present in *every*
 proc's own C surface, one bug in the check away from every proc having
 a path to the metal). the actual fix: the function must not be
 *registered* anywhere except in the one task that owns the resource.
-`los.platform` (console-write, reset, stall) is compiled once
-(src/conio.c) but only ever put into `package.preload` for conio — a
-single, kernel-spawned task with no lua-visible spawn path
-(`sys.spawn` cannot set the privileged flag; only the kernel's own
-boot sequence does). every other proc, including init/proc 0, gets at
-most a send-right to conio's mailbox (`sys.CONIO`) and talks to it by
-message: `sys.send(sys.CONIO, {op="write", data=s})`. there is no
-check to get wrong anywhere else, because the function reference does
-not exist anywhere else. verified in test/boot/test_conio.lua: an
-ordinary proc cannot `require("los.platform")` and a spawned child
-with no rights beyond its own self-port cannot reach `sys.CONIO`
-either.
+every physical/platform resource is now split this way, one exclusive
+owner each, no exceptions:
 
-the same pattern generalizes to every future privileged resource:
-one task owns the raw primitive (a *driver*, not a checked library),
-everyone else holds a right to that task's mailbox. networking will
-work the same way once it exists — one net task, everyone else granted
-a right to it — and so would raw hardware io if a driver ever needs it
-(see docs/microvm-plan.md's reactor-backend discussion).
+- **cons** (lib/cons.lua) — the sole task with `los.platform.cons`
+  (console_write) and the raw keyboard recv right, held directly.
+  line editing (echo, backspace, ctrl-d) lives entirely inside cons,
+  so every requester gets identical behavior regardless of who's
+  asking; `readline` elsewhere is a request/reply wrapper, not its
+  own copy of the editing logic.
+- **wire** (lib/wire.lua) — the sole task with `los.platform.wire`
+  (uart_tx) and the raw serial recv right. bridges asynchronous raw
+  bytes against pending read requests (buffers bytes with no waiting
+  requester; remembers a requester with no bytes yet).
+- **power** (lib/power.lua) — reset/stall only; deliberately not
+  bundled with cons or wire, since it has nothing to do with serial
+  transport (an earlier version of this fix, "conio", made exactly
+  that mistake).
+
+each is compiled once (src/drivers.c) but its `los.platform.*` module
+is only ever put into `package.preload` for its one owning task — a
+kernel-spawned proc with no lua-visible spawn path (`sys.spawn` cannot
+mint a privileged proc; only the kernel's own boot sequence can).
+every other proc, including init/proc 0, gets at most a send-right to
+the owning task's mailbox (`sys.CONS`/`sys.WIRE`/`sys.POWER`) and
+talks to it by message. there is no check to get wrong anywhere else,
+because the function reference does not exist anywhere else. verified
+in test/boot/test_drivers.lua: an ordinary proc cannot
+`require("los.platform.*")` and a spawned child with no rights beyond
+its own self-port cannot reach any of the three mailboxes either.
+
+**disk is the one resource that cannot use this trick, and that's
+worth being honest about.** `io.open` is vanilla lua's liolib.c
+calling our `fopen()` as *plain C, with no lua_State parameter at
+all* — there is no require()/package.preload boundary to defend,
+because liolib.c is not proc-aware in the first place. the only
+mechanism that actually fits: `kernel_run` tracks `current_proc` (who
+is resumed right now, set once per `lua_resume` call), and `fopen()`
+checks whether `current_proc` holds a right to a reserved capability
+port (`DISK`). this is the *weaker* checked-right form (a function
+present everywhere, gated by a check, not an absent function) —
+exactly the form the cons/wire/power fix deliberately moved past —
+kept here only because liolib's C-level shape leaves no alternative.
+a `kernel_loading` bypass flag covers the handful of file loads that
+happen during proc *construction* itself (loading a new proc's own
+chunk, and the universally-preloaded `los.thread`/`ninep` system
+libraries) — those are kernel-privileged reads deciding what a new
+proc runs, before it has executed anything of its own, not a running
+proc's own `io.open` call.
+
+the cons/wire/power pattern generalizes to every future task-shaped
+privileged resource: one task owns the raw primitive, everyone else
+holds a right to that task's mailbox. networking will work this way
+once it exists — one net task, everyone else granted a right to it
+(see docs/microvm-plan.md's reactor-backend discussion). resources
+that, like disk, are reached through a C API with no proc identity
+threaded through will need disk's checked-capability form instead —
+know which one a new resource needs before building it.
 
 ### 4. everything is a port; 9p is the boundary protocol
 
