@@ -58,6 +58,7 @@ libc_src = files(
 )
 
 arch_src = files(
+  'src/x86_64/fwcfg.c',
   'src/x86_64/header.S',
   'src/x86_64/machine.c',
   'src/x86_64/math.c',
@@ -128,6 +129,7 @@ luaos_efi = custom_target('luaos.efi',
 lua_payload = files(
   'init.lua',
   'lib/ninep.lua',
+  'lib/tap.lua',
   'lib/thread.lua',
 )
 
@@ -143,4 +145,29 @@ luaos_img = custom_target('luaos.img',
 # mount from host: 9p -a 'unix!<builddir>/9p.sock' ls /
 run_target('qemu',
   command: [files('scripts/qemu.sh'), luaos_img],
+)
+
+# ---- tests ----
+# boot tests: the payload is injected via fw_cfg and replaces
+# /init.lua; the guest emits TAP on com1 and powers off. the harness
+# extracts the TAP for meson.
+
+boottest = files('scripts/boottest.sh')
+
+boot_tests = ['channel', 'proc', 'recovery', 'ipc']
+foreach t : boot_tests
+  test('boot-' + t, boottest,
+    args: [luaos_img, files('test/boot/test_' + t + '.lua')],
+    protocol: 'tap',
+    timeout: 90,
+    is_parallel: true,
+  )
+endforeach
+
+# host-driven 9p protocol test: real 9P2000 over the com2 socket
+python = find_program('python3')
+test('9p-protocol', python,
+  args: [files('test/test_9p.py'), luaos_img, files('test/boot/srv9p.lua')],
+  protocol: 'tap',
+  timeout: 90,
 )

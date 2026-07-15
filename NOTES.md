@@ -24,6 +24,23 @@ talk 9p to it from the host (plan9port):
 
 on real hardware: `dd` build/luaos.img to a usb stick and uefi-boot it.
 
+## how to test
+
+```
+meson test -C build            # full suite, parallel, TAP
+meson test -C build boot-proc  # one test
+meson test -C build --print-errorlogs
+```
+
+boot tests (test/boot/*.lua) are injected via qemu fw_cfg
+(opt/org.luaos.test) and replace /init.lua as proc 0; the guest emits
+TAP over com1 and powers off via los.efi reset("shutdown").
+scripts/boottest.sh extracts the TAP; on failure or timeout it dumps
+the whole serial trace as diagnostics. -snapshot keeps the shared
+image read-only so tests run in parallel. test/test_9p.py drives the
+9p server from the host over the com2 socket, speaking raw 9P2000.
+lib/tap.lua is the guest-side TAP producer.
+
 ## architecture
 
 ```

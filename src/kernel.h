@@ -7,6 +7,7 @@
 
 int	kernel_init(void);
 int	kernel_spawn_file(const char *path);	/* returns pid or -1 */
+int	kernel_spawn_buffer(const char *code, unsigned long len);
 void	kernel_run(void);			/* until all procs die */
 
 #endif

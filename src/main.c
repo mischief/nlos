@@ -1,8 +1,12 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
 
 #include "efi.h"
 #include "fs.h"
 #include "kernel.h"
+
+int fwcfg_load(const char *name, char **buf, size_t *len);
 
 EFI_SYSTEM_TABLE *ST;
 EFI_BOOT_SERVICES *BS;
@@ -115,7 +119,20 @@ efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 		puts8("kernel_init failed\n");
 		goto out;
 	}
-	if (kernel_spawn_file("/init.lua") < 0) {
+	/* test harness: a payload injected via qemu fw_cfg replaces
+	 * /init.lua as proc 0 (see scripts/boottest.sh)
+	 */
+	char *testbuf;
+	size_t testlen;
+
+	if (fwcfg_load("opt/org.luaos.test", &testbuf, &testlen) == 0) {
+		puts8("running fw_cfg test payload\n");
+		if (kernel_spawn_buffer(testbuf, testlen) < 0) {
+			puts8("failed to spawn test payload\n");
+			goto out;
+		}
+		free(testbuf);
+	} else if (kernel_spawn_file("/init.lua") < 0) {
 		puts8("failed to spawn /init.lua\n");
 		goto out;
 	}

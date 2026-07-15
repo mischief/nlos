@@ -1050,19 +1050,33 @@ kernel_init(void)
 	return 0;
 }
 
-int
-kernel_spawn_file(const char *path)
+/* spawn the init proc (from a file path or an injected buffer) and
+ * hand it the device rights: handle 1 = keyboard, handle 2 = serial.
+ */
+static int
+spawn_init(const char *code, size_t len, int is_file)
 {
-	int pid = proc_new(path, 0, 0, 1);
+	int pid = proc_new(code, len, "=init", is_file);
 
 	if (pid >= 0 && kbdport) {
-		/* proc 0: handle 1 = keyboard, handle 2 = serial */
 		struct kproc *p = find_proc(pid);
 
 		right_new(p, kbdport, 1);
 		right_new(p, serport, 1);
 	}
 	return pid;
+}
+
+int
+kernel_spawn_file(const char *path)
+{
+	return spawn_init(path, 0, 1);
+}
+
+int
+kernel_spawn_buffer(const char *code, size_t len)
+{
+	return spawn_init(code, len, 0);
 }
 
 void
