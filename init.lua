@@ -1,5 +1,7 @@
 -- lua-os init (proc 0): spawn the 9p file server, then repl
 
+local los = require("los")
+
 print(("%s on %s (fw rev 0x%x)"):format(_VERSION, los.firmware,
     los.firmware_revision))
 print("mach-lite kernel + plan9 furniture (threads, channels, alt, 9p)")
@@ -8,8 +10,9 @@ print("")
 -- 9p server proc: serves a synthetic namespace on com2.
 -- it gets the serial receive right in its first message.
 local _, ninesrv = los.spawn([[
+	local los = require("los")
 	local p9 = require("ninep")
-	local m = sys.recv(los.SELF)
+	local m = los.recv(los.SELF)
 	local serial = m.serial.__right
 
 	local msgs = 0
@@ -35,7 +38,7 @@ local _, ninesrv = los.spawn([[
 	})
 
 	p9.serve(root,
-	    function() return sys.recv(serial) end,
+	    function() return los.recv(serial) end,
 	    los.serwrite)
 ]])
 
@@ -54,14 +57,14 @@ local function evaluate(line)
 end
 
 while true do
-	local line = sys.readline("> ")
+	local line = los.readline("> ")
 	if line == nil then
 		break
 	end
 	if #line > 0 then
 		local chunk, err = evaluate(line)
 		while not chunk and err and err:sub(-5) == "<eof>" do
-			local more = sys.readline(">> ")
+			local more = los.readline(">> ")
 			if more == nil then
 				break
 			end

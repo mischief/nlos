@@ -58,5 +58,15 @@ luaopen_los(lua_State *L)
 	lua_pushinteger(L, ST->FirmwareRevision);
 	lua_setfield(L, -2, "firmware_revision");
 
+	/* well-known right handles. 0 (own receive port) holds for every
+	 * proc; 1/2 are the keyboard/serial rights handed to proc 0 at boot.
+	 */
+	lua_pushinteger(L, 0);
+	lua_setfield(L, -2, "SELF");
+	lua_pushinteger(L, 1);
+	lua_setfield(L, -2, "KBD");
+	lua_pushinteger(L, 2);
+	lua_setfield(L, -2, "SERIAL");
+
 	return 1;
 }

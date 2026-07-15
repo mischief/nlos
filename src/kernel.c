@@ -394,12 +394,12 @@ port_push(struct kport *port, const unsigned char *data, size_t len)
 	return 0;
 }
 
-/* ---- lua api (proc pointer in upvalue) ---- */
+/* ---- lua api (proc pointer lives in the state's extra space) ---- */
 
 static struct kproc *
 self(lua_State *L)
 {
-	return lua_touserdata(L, lua_upvalueindex(1));
+	return *(struct kproc **)lua_getextraspace(L);
 }
 
 static int
@@ -600,6 +600,21 @@ static const luaL_Reg kapi[] = {
 	{ NULL, NULL }
 };
 
+extern int luaopen_los(lua_State *L);	/* los.c: efi glue + constants */
+
+/* the "los" module: efi glue (los.c) plus this file's kernel api, hung
+ * off one table. registered in package.preload by proc_new, so chunks
+ * pull it in with an explicit require("los"). the proc pointer comes
+ * from the state's extra space, so the api needs no upvalues.
+ */
+static int
+los_module(lua_State *L)
+{
+	luaopen_los(L);			/* pushes the base los table */
+	luaL_setfuncs(L, kapi, 0);	/* add the kernel api onto it */
+	return 1;
+}
+
 /* ---- proc lifecycle ---- */
 
 static void
@@ -627,6 +642,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 	p->L = luaL_newstate();
 	if (!p->L)
 		return -1;
+	/* stash the proc pointer where the kernel api finds it (self()).
+	 * set before the thread is created so lua_newthread copies it into
+	 * the coroutine's extra space too.
+	 */
+	*(struct kproc **)lua_getextraspace(p->L) = p;
 	p->id = (int)(p - procs);
 	luaL_openlibs(p->L);
 
@@ -640,11 +660,14 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 		return -1;
 	}
 
-	/* kernel api, with the proc as upvalue */
-	lua_getglobal(p->L, "los");
-	lua_pushlightuserdata(p->L, p);
-	luaL_setfuncs(p->L, kapi, 1);
-	lua_pop(p->L, 1);
+	/* register the los module in package.preload so a chunk gets it
+	 * with require("los") -- no globals, no disk search.
+	 */
+	lua_getglobal(p->L, "package");
+	lua_getfield(p->L, -1, "preload");
+	lua_pushcfunction(p->L, los_module);
+	lua_setfield(p->L, -2, "los");
+	lua_pop(p->L, 2);
 
 	p->co = lua_newthread(p->L);
 	luaL_ref(p->L, LUA_REGISTRYINDEX);	/* anchor the thread */
@@ -664,9 +687,17 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 		return -1;
 	}
 
-	/* prelude gives every proc the lua-side sugar (recv, readline) */
-	if (luaL_dofile(p->L, "/prelude.lua") != LUA_OK)
-		lua_pop(p->L, 1);	/* optional; ignore if missing */
+	/* prelude augments the los module with the lua furniture (recv,
+	 * readline, threads, channels). it runs on the main state; the
+	 * chunk shares package.loaded, so its require("los") sees the
+	 * augmented table. it returns los, which we drop.
+	 */
+	if (luaL_dofile(p->L, "/prelude.lua") != LUA_OK) {
+		kputs("prelude error: ");
+		kputs(lua_tostring(p->L, -1));
+		kputs("\n");
+	}
+	lua_pop(p->L, 1);	/* the returned los table, or the error */
 
 	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, HOOKCOUNT);
 	p->status = READY;

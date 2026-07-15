@@ -4,10 +4,10 @@
 #include "lualib.h"
 #include "lauxlib.h"
 
-int luaopen_los(lua_State *L);
-
+/* los is not here: the kernel registers it in package.preload per proc
+ * (it needs the per-proc api), so chunks require("los") explicitly.
+ */
 static const luaL_Reg loadedlibs[] = {
-	{ "los", luaopen_los },
 	{ LUA_LOADLIBNAME, luaopen_package },
 	{ LUA_IOLIBNAME, luaopen_io },
 	{ LUA_GNAME, luaopen_base },

@@ -1,13 +1,13 @@
--- prelude: loaded into every proc before its chunk runs.
+-- prelude: loaded into every proc before its chunk runs. it augments the
+-- los module (require("los")) with the lua-level plan9 furniture, so a
+-- chunk gets everything from one namespace: require("los").
 --
 -- two-level concurrency, plan9 libthread shape:
 --   procs   = isolated lua states (kernel, cross via ports, pay copy)
 --   threads = coroutines inside this state (cheap, share heap)
 -- Channel/alt lifted from libthread; recv() blocking sugar over ports.
 
-los.SELF = 0
-los.KBD = 1	-- proc 0 only
-los.SERIAL = 2	-- proc 0 only
+local los = require("los")
 
 -- ---- thread scheduler ----
 
@@ -300,17 +300,16 @@ local function readline(prompt)
 end
 
 -- ---- exports ----
--- everything above is local; hang the proc runtime off one namespace
--- (sys) instead of scattering thread/Channel/alt/recv/... across _G of
--- every proc. los stays the kernel/efi surface; sys is the lua furniture.
+-- everything above is local; hang the proc runtime off the los module so
+-- a chunk reaches it all through require("los") -- no globals.
 
-sys = {
-	thread = thread,
-	Channel = Channel,
-	chancreate = chancreate,
-	alt = alt,
-	QLock = QLock,
-	qlockcreate = qlockcreate,
-	recv = recv,
-	readline = readline,
-}
+los.thread = thread
+los.Channel = Channel
+los.chancreate = chancreate
+los.alt = alt
+los.QLock = QLock
+los.qlockcreate = qlockcreate
+los.recv = recv
+los.readline = readline
+
+return los
