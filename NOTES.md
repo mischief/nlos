@@ -202,8 +202,10 @@ state at `lua_newthread`. no more auto-run prelude.
 
 ## open question: bluepilled vs redpilled
 
-moved to DESIGN.md (open questions). DESIGN.md now records constraints,
-pillars, and open arguments; this file stays day-to-day status/debts.
+moved to DESIGN.md (open questions). update: a concrete "both pills"
+path is now written down in docs/microvm-plan.md (parked) — microvm
+as a second platform: PVH boot, virtio-9p root, interrupts, real smp.
+efi stays.
 
 ## near-term order (proposed, not committed)
 
