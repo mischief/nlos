@@ -97,8 +97,11 @@ $(EFIIMG): $(EFIBIN) init.lua lib/thread.lua lib/ninep.lua
 build/OVMF_VARS.fd: | build
 	cp $(OVMF_VARS) $@
 
+# com1 = console (stdio), com2 = 9p wire on ./9p.sock
+# mount from host: 9p -a 'unix!'$PWD'/9p.sock' ls /
 qemu: $(EFIIMG) build/OVMF_VARS.fd
 	qemu-system-x86_64 -nographic -enable-kvm -cpu max -net none -serial mon:stdio \
+		-serial unix:9p.sock,server,nowait \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
 		-drive format=raw,file=$(EFIIMG)

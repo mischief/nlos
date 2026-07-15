@@ -819,6 +819,20 @@ kernel_spawn_file(const char *path)
 void
 kernel_run(void)
 {
+	EFI_EVENT tick = 0;
+	EFI_EVENT waits[2];
+	UINTN index;
+
+	/* periodic 1ms timer: idle becomes a real firmware sleep (hlt)
+	 * instead of a hot stall-poll. the old "timer hangs the serial
+	 * path" mystery was firmware console contention on com2, fixed
+	 * by serial_takeover().
+	 */
+	if (BS->CreateEvent(EVT_TIMER, TPL_CALLBACK, 0, 0, &tick) !=
+	    EFI_SUCCESS ||
+	    BS->SetTimer(tick, TimerPeriodic, 10000) != EFI_SUCCESS)
+		tick = 0;
+
 	while (nlive > 0) {
 		int ran = 0;
 
@@ -848,12 +862,15 @@ kernel_run(void)
 				proc_kill(p, lua_tostring(p->co, -1));
 		}
 		if (!ran) {
-			/* everyone blocked. serial has no firmware event,
-			 * so this is a poll, not a sleep. TODO: periodic
-			 * timer event + WaitForEvent hung the serial path
-			 * (unexplained); revisit for a true hlt idle.
+			/* everyone blocked: sleep until key or tick.
+			 * the tick bounds serial rx latency at ~1ms.
 			 */
-			BS->Stall(500);
+			if (tick) {
+				waits[0] = ST->ConIn->WaitForKey;
+				waits[1] = tick;
+				BS->WaitForEvent(2, waits, &index);
+			} else
+				BS->Stall(500);
 		}
 	}
 }

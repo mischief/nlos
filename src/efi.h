@@ -26,6 +26,15 @@ typedef UINT64    EFI_PHYSICAL_ADDRESS;
 typedef UINT64    EFI_VIRTUAL_ADDRESS;
 
 #define EFI_SUCCESS		0
+
+#define EVT_TIMER		0x80000000
+#define TPL_CALLBACK		8
+
+typedef enum {
+	TimerCancel,
+	TimerPeriodic,
+	TimerRelative
+} EFI_TIMER_DELAY;
 #define EFI_ERROR(s)		(((INTN)(s)) < 0)
 #define EFI_NOT_READY		(0x8000000000000000ULL | 6)
 #define EFI_BUFFER_TOO_SMALL	(0x8000000000000000ULL | 5)
@@ -142,8 +151,10 @@ typedef struct {
 	    void **Buffer);
 	EFI_STATUS (EFIAPI *FreePool)(void *Buffer);
 
-	void *CreateEvent;
-	void *SetTimer;
+	EFI_STATUS (EFIAPI *CreateEvent)(UINT32 Type, UINTN NotifyTpl,
+	    void *NotifyFunction, void *NotifyContext, EFI_EVENT *Event);
+	EFI_STATUS (EFIAPI *SetTimer)(EFI_EVENT Event, int Type,
+	    UINT64 TriggerTime);
 	EFI_STATUS (EFIAPI *WaitForEvent)(UINTN NumberOfEvents, EFI_EVENT *Event,
 	    UINTN *Index);
 	void *SignalEvent;
