@@ -353,16 +353,27 @@ function M.serve(root, rx, tx)
 		buf = buf .. rx()
 		while #buf >= 4 do
 			local size = sunpack("<I4", buf)
-			if size < 7 or size > 0x100000 then
-				buf = ""	-- desync, drop
-				break
+			-- resync rather than flush: a plausible frame is
+			-- 7..msize bytes and, once the type byte is visible,
+			-- carries an even T-message type in 100..126. on a bad
+			-- header (usually a dropped byte upstream) skip a single
+			-- byte and retry, so good frames behind the corruption
+			-- survive instead of being discarded with buf = "".
+			local ok = size >= 7 and size <= msize
+			if ok and #buf >= 5 then
+				local typ = sunpack("<B", buf, 5)
+				ok = typ >= M.Tversion and typ <= M.Twstat and
+				    typ % 2 == 0
 			end
-			if #buf < size then
-				break
+			if not ok then
+				buf = buf:sub(2)	-- drop one, re-align
+			elseif #buf < size then
+				break			-- header ok, await rest
+			else
+				local msg = buf:sub(1, size)
+				buf = buf:sub(size + 1)
+				handle(M.decode(msg))
 			end
-			local msg = buf:sub(1, size)
-			buf = buf:sub(size + 1)
-			handle(M.decode(msg))
 		end
 	end
 end
