@@ -1,29 +1,47 @@
--- lua-os init (proc 0): spawn a demo service, then repl
+-- lua-os init (proc 0): spawn the 9p file server, then repl
 
 print(("%s on %s (fw rev 0x%x)"):format(_VERSION, los.firmware,
     los.firmware_revision))
-print("mach-lite kernel. procs are isolated lua states; talk via ports.")
-print("try: pid, srv = los.spawn(code) / los.send(srv, msg) / recv(port)")
+print("mach-lite kernel + plan9 furniture (threads, channels, alt, 9p)")
 print("")
 
--- demo: echo service in its own lua state
-local _, echo = los.spawn([[
-	while true do
-		local m = recv(los.SELF)
-		if type(m) == "table" and m.reply then
-			-- transferred rights arrive as {__right = handle}
-			los.send(m.reply.__right,
-			    { echoed = m.text, from = "echo-proc" })
-		end
-	end
+-- 9p server proc: serves a synthetic namespace on com2.
+-- it gets the serial receive right in its first message.
+local _, ninesrv = los.spawn([[
+	local p9 = require("ninep")
+	local m = recv(los.SELF)
+	local serial = m.serial.__right
+
+	local msgs = 0
+	local root = p9.synth({
+		["README"] = "this is lua-os, mounted over 9p. hello!\n",
+		["uname"] = "lua-os x86_64 uefi\n",
+		["version"] = _VERSION .. "\n",
+		["ticks"] = function(off, n)
+			if off > 0 then return "" end
+			return tostring(los.ticks()) .. "\n"
+		end,
+		["proc"] = { children = {
+			["list"] = function(off, n)
+				if off > 0 then return "" end
+				local t = los.procs()
+				local out = {}
+				for i, pid in ipairs(t) do
+					out[i] = tostring(pid)
+				end
+				return table.concat(out, " ") .. "\n"
+			end,
+		}},
+	})
+
+	p9.serve(root,
+	    function() return recv(serial) end,
+	    los.serwrite)
 ]])
 
--- prove round trip: make a reply port, send, block on answer
-local replyport = los.newport()
-los.send(echo, { text = "kernel says hi", reply = { __right = replyport } })
-local answer = recv(replyport)
-print(("echo service answered: %q (from %s)"):format(answer.echoed,
-    answer.from))
+-- hand over the serial receive right (proc 0 owns handle 2 at boot)
+los.send(ninesrv, { serial = { __right = los.SERIAL } })
+print("9p server listening on com2 (mount me!)")
 print("")
 
 -- repl

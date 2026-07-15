@@ -28,6 +28,7 @@ OBJS=\
 	build/$(ARCH)/reloc.o\
 	build/$(ARCH)/setjmp.o\
 	build/$(ARCH)/machine.o\
+	build/$(ARCH)/uart.o\
 	build/$(ARCH)/math.o\
 	build/libc/string.o\
 	build/libc/stdlib.o\
@@ -76,7 +77,7 @@ $(EFIBIN): build/luaos.so
 	$(OBJCOPY) -O binary $< $@
 
 # 48M gpt disk, one esp partition, fat via mtools (no root needed)
-$(EFIIMG): $(EFIBIN) init.lua prelude.lua
+$(EFIIMG): $(EFIBIN) init.lua prelude.lua lib/ninep.lua
 	test -e $@ || (dd if=/dev/zero of=$@ bs=512 count=93750 2>/dev/null && \
 		$(SGDISK) -Z $@ >/dev/null && \
 		$(SGDISK) -N 1 $@ >/dev/null && \
@@ -84,11 +85,13 @@ $(EFIIMG): $(EFIBIN) init.lua prelude.lua
 		$(SGDISK) -c 1:"EFI" $@ >/dev/null && \
 		mformat -i $@@@1M -v EFI -F -h 32 -t 44 -n 64 -c 1 && \
 		mmd -i $@@@1M efi && \
-		mmd -i $@@@1M efi/boot \
+		mmd -i $@@@1M efi/boot && \
+		mmd -i $@@@1M lib \
 	)
 	mcopy -o -i $@@@1M $(EFIBIN) ::efi/boot/bootx64.efi
 	mcopy -o -i $@@@1M init.lua ::init.lua
 	mcopy -o -i $@@@1M prelude.lua ::prelude.lua
+	mcopy -o -i $@@@1M lib/ninep.lua ::lib/ninep.lua
 	touch $@
 
 build/OVMF_VARS.fd: | build

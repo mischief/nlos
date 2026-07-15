@@ -48,12 +48,16 @@ struct right {
 	int used;
 };
 
+#define MAXWSET 8
+
 struct kproc {
 	int status;
 	int id;
 	lua_State *L;		/* owning state */
 	lua_State *co;		/* thread the chunk runs on */
 	struct kport *waiting;	/* blocked on this port */
+	struct kport *wset[MAXWSET];	/* or on any of these (alt) */
+	int nwset;
 	struct right rights[MAXRIGHTS];
 };
 
@@ -315,11 +319,22 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 static void
 wake_receivers(struct kport *port)
 {
-	for (int i = 0; i < MAXPROCS; i++)
-		if (procs[i].status == BLOCKED && procs[i].waiting == port) {
-			procs[i].status = READY;
-			procs[i].waiting = 0;
-		}
+	for (int i = 0; i < MAXPROCS; i++) {
+		struct kproc *p = &procs[i];
+
+		if (p->status != BLOCKED)
+			continue;
+		if (p->waiting == port)
+			goto wake;
+		for (int j = 0; j < p->nwset; j++)
+			if (p->wset[j] == port)
+				goto wake;
+		continue;
+wake:
+		p->status = READY;
+		p->waiting = 0;
+		p->nwset = 0;
+	}
 }
 
 static int
@@ -415,6 +430,49 @@ api_block(lua_State *L)
 	return lua_yield(L, 0);
 }
 
+/* block until any of a set of receive rights has a message (port set) */
+static int
+api_altblock(lua_State *L)
+{
+	struct kproc *p = self(L);
+	int n;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	n = (int)luaL_len(L, 1);
+	if (n < 1 || n > MAXWSET)
+		return luaL_error(L, "altblock: 1..%d ports", MAXWSET);
+
+	p->nwset = 0;
+	for (int i = 1; i <= n; i++) {
+		lua_rawgeti(L, 1, i);
+
+		struct right *r = right_get(p, luaL_checkinteger(L, -1));
+
+		lua_pop(L, 1);
+		if (!r || !r->recv)
+			return luaL_error(L, "altblock: bad receive right");
+		if (r->port->head) {
+			p->nwset = 0;
+			return 0;	/* already ready, don't sleep */
+		}
+		p->wset[p->nwset++] = r->port;
+	}
+	p->status = BLOCKED;
+	return lua_yield(L, 0);
+}
+
+extern void uart_tx(const char *s, unsigned long n);
+
+static int
+api_serwrite(lua_State *L)
+{
+	size_t n;
+	const char *s = luaL_checklstring(L, 1, &n);
+
+	uart_tx(s, n);
+	return 0;
+}
+
 static int
 api_yield(lua_State *L)
 {
@@ -483,6 +541,8 @@ static const luaL_Reg kapi[] = {
 	{ "send", api_send },
 	{ "tryrecv", api_tryrecv },
 	{ "block", api_block },
+	{ "altblock", api_altblock },
+	{ "serwrite", api_serwrite },
 	{ "yield", api_yield },
 	{ "newport", api_newport },
 	{ "spawn", api_spawn },
@@ -579,6 +639,30 @@ proc_kill(struct kproc *p, const char *why)
 	nlive--;
 }
 
+/* ---- serial pump (9p wire on com2) ---- */
+
+extern void uart_init(void);
+extern int uart_rx(void);
+
+static struct kport *serport;
+
+static void
+pump_serial(void)
+{
+	unsigned char buf[5 + 256];
+	unsigned int n = 0;
+	int c;
+
+	while (n < 256 && (c = uart_rx()) >= 0)
+		buf[5 + n++] = (unsigned char)c;
+	if (n == 0)
+		return;
+	/* serialized string message: tag, u32 len, bytes */
+	buf[0] = 'S';
+	memcpy(buf + 1, &n, 4);
+	port_push(serport, buf, 5 + n);
+}
+
 /* ---- keyboard pump ---- */
 
 static void
@@ -602,8 +686,10 @@ pump_keyboard(void)
 int
 kernel_init(void)
 {
+	uart_init();
 	kbdport = port_new();
-	return kbdport ? 0 : -1;
+	serport = port_new();
+	return (kbdport && serport) ? 0 : -1;
 }
 
 int
@@ -612,8 +698,9 @@ kernel_spawn_file(const char *path)
 	int pid = proc_new(path, 0, 0, 1);
 
 	if (pid >= 0 && kbdport) {
-		/* proc 0 gets the keyboard receive right (handle 1) */
+		/* proc 0: handle 1 = keyboard, handle 2 = serial */
 		right_new(&procs[pid], kbdport, 1);
+		right_new(&procs[pid], serport, 1);
 	}
 	return pid;
 }
@@ -621,12 +708,11 @@ kernel_spawn_file(const char *path)
 void
 kernel_run(void)
 {
-	UINTN index;
-
 	while (nlive > 0) {
 		int ran = 0;
 
 		pump_keyboard();
+		pump_serial();
 		for (int i = 0; i < MAXPROCS; i++) {
 			struct kproc *p = &procs[i];
 
@@ -646,8 +732,8 @@ kernel_run(void)
 				proc_kill(p, lua_tostring(p->co, -1));
 		}
 		if (!ran) {
-			/* everyone blocked: sleep until a key arrives */
-			BS->WaitForEvent(1, &ST->ConIn->WaitForKey, &index);
+			/* everyone blocked; serial has no event, so poll */
+			BS->Stall(500);
 		}
 	}
 }
