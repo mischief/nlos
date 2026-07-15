@@ -586,6 +586,15 @@ api_procs(lua_State *L)
 	return 1;
 }
 
+extern unsigned long long platform_ticks(void);
+
+static int
+api_ticks(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)platform_ticks());
+	return 1;
+}
+
 static const luaL_Reg kapi[] = {
 	{ "send", api_send },
 	{ "tryrecv", api_tryrecv },
@@ -597,21 +606,32 @@ static const luaL_Reg kapi[] = {
 	{ "spawn", api_spawn },
 	{ "self", api_self },
 	{ "procs", api_procs },
+	{ "ticks", api_ticks },
 	{ NULL, NULL }
 };
 
-extern int luaopen_los(lua_State *L);	/* los.c: efi glue + constants */
+extern int luaopen_los_efi(lua_State *L);	/* los.c: firmware bindings */
 
-/* the "los" module: efi glue (los.c) plus this file's kernel api, hung
- * off one table. registered in package.preload by proc_new, so chunks
- * pull it in with an explicit require("los"). the proc pointer comes
- * from the state's extra space, so the api needs no upvalues.
+/* the los.sys module: the microkernel abi (ports, rights, procs) plus
+ * kernel-owned primitives that outlive efi (ticks, serwrite). registered
+ * in package.preload by proc_new; a chunk pulls it in with an explicit
+ * require("los.sys"). the proc pointer comes from the state's extra
+ * space, so the api needs no upvalues.
  */
 static int
-los_module(lua_State *L)
+los_sys_open(lua_State *L)
 {
-	luaopen_los(L);			/* pushes the base los table */
-	luaL_setfuncs(L, kapi, 0);	/* add the kernel api onto it */
+	luaL_newlib(L, kapi);
+
+	/* well-known right handles. 0 (own receive port) holds for every
+	 * proc; 1/2 are the keyboard/serial rights handed to proc 0 at boot.
+	 */
+	lua_pushinteger(L, 0);
+	lua_setfield(L, -2, "SELF");
+	lua_pushinteger(L, 1);
+	lua_setfield(L, -2, "KBD");
+	lua_pushinteger(L, 2);
+	lua_setfield(L, -2, "SERIAL");
 	return 1;
 }
 
@@ -660,14 +680,30 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 		return -1;
 	}
 
-	/* register the los module in package.preload so a chunk gets it
-	 * with require("los") -- no globals, no disk search.
+	/* register the los.* modules in package.preload so chunks pull in
+	 * the layers they need with an explicit require -- no globals, no
+	 * disk search. los.sys and los.efi are C openers; los.thread is the
+	 * lua runtime, loaded from disk once and preloaded (not auto-run).
 	 */
 	lua_getglobal(p->L, "package");
 	lua_getfield(p->L, -1, "preload");
-	lua_pushcfunction(p->L, los_module);
-	lua_setfield(p->L, -2, "los");
-	lua_pop(p->L, 2);
+
+	lua_pushcfunction(p->L, los_sys_open);
+	lua_setfield(p->L, -2, "los.sys");
+
+	lua_pushcfunction(p->L, luaopen_los_efi);
+	lua_setfield(p->L, -2, "los.efi");
+
+	if (luaL_loadfile(p->L, "/lib/thread.lua") == LUA_OK) {
+		lua_setfield(p->L, -2, "los.thread");
+	} else {
+		kputs("los.thread load error: ");
+		kputs(lua_tostring(p->L, -1));
+		kputs("\n");
+		lua_pop(p->L, 1);
+	}
+
+	lua_pop(p->L, 2);	/* preload, package */
 
 	p->co = lua_newthread(p->L);
 	luaL_ref(p->L, LUA_REGISTRYINDEX);	/* anchor the thread */
@@ -687,18 +723,9 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file)
 		return -1;
 	}
 
-	/* prelude augments the los module with the lua furniture (recv,
-	 * readline, threads, channels). it runs on the main state; the
-	 * chunk shares package.loaded, so its require("los") sees the
-	 * augmented table. it returns los, which we drop.
+	/* the lua runtime (los.thread) is a preloaded module now, pulled in
+	 * on demand by require("los.thread") -- no auto-run bootstrap.
 	 */
-	if (luaL_dofile(p->L, "/prelude.lua") != LUA_OK) {
-		kputs("prelude error: ");
-		kputs(lua_tostring(p->L, -1));
-		kputs("\n");
-	}
-	lua_pop(p->L, 1);	/* the returned los table, or the error */
-
 	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, HOOKCOUNT);
 	p->status = READY;
 	p->waiting = 0;

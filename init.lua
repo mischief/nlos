@@ -1,33 +1,35 @@
 -- lua-os init (proc 0): spawn the 9p file server, then repl
 
-local los = require("los")
+local sys = require("los.sys")
+local efi = require("los.efi")
+local thread = require("los.thread")
 
-print(("%s on %s (fw rev 0x%x)"):format(_VERSION, los.firmware,
-    los.firmware_revision))
+print(("%s on %s (fw rev 0x%x)"):format(_VERSION, efi.firmware,
+    efi.firmware_revision))
 print("mach-lite kernel + plan9 furniture (threads, channels, alt, 9p)")
 print("")
 
 -- 9p server proc: serves a synthetic namespace on com2.
 -- it gets the serial receive right in its first message.
-local _, ninesrv = los.spawn([[
-	local los = require("los")
+local _, ninesrv = sys.spawn([[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
 	local p9 = require("ninep")
-	local m = los.recv(los.SELF)
+	local m = thread.recv(sys.SELF)
 	local serial = m.serial.__right
 
-	local msgs = 0
 	local root = p9.synth({
 		["README"] = "this is lua-os, mounted over 9p. hello!\n",
 		["uname"] = "lua-os x86_64 uefi\n",
 		["version"] = _VERSION .. "\n",
 		["ticks"] = function(off, n)
 			if off > 0 then return "" end
-			return tostring(los.ticks()) .. "\n"
+			return tostring(sys.ticks()) .. "\n"
 		end,
 		["proc"] = { children = {
 			["list"] = function(off, n)
 				if off > 0 then return "" end
-				local t = los.procs()
+				local t = sys.procs()
 				local out = {}
 				for i, pid in ipairs(t) do
 					out[i] = tostring(pid)
@@ -38,12 +40,12 @@ local _, ninesrv = los.spawn([[
 	})
 
 	p9.serve(root,
-	    function() return los.recv(serial) end,
-	    los.serwrite)
+	    function() return thread.recv(serial) end,
+	    sys.serwrite)
 ]])
 
 -- hand over the serial receive right (proc 0 owns handle 2 at boot)
-los.send(ninesrv, { serial = { __right = los.SERIAL } })
+sys.send(ninesrv, { serial = { __right = sys.SERIAL } })
 print("9p server listening on com2 (mount me!)")
 print("")
 
@@ -57,14 +59,14 @@ local function evaluate(line)
 end
 
 while true do
-	local line = los.readline("> ")
+	local line = thread.readline("> ")
 	if line == nil then
 		break
 	end
 	if #line > 0 then
 		local chunk, err = evaluate(line)
 		while not chunk and err and err:sub(-5) == "<eof>" do
-			local more = los.readline(">> ")
+			local more = thread.readline(">> ")
 			if more == nil then
 				break
 			end

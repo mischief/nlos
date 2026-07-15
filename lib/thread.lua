@@ -1,13 +1,14 @@
--- prelude: loaded into every proc before its chunk runs. it augments the
--- los module (require("los")) with the lua-level plan9 furniture, so a
--- chunk gets everything from one namespace: require("los").
+-- los.thread: the cooperative runtime, layered on los.sys.
 --
 -- two-level concurrency, plan9 libthread shape:
 --   procs   = isolated lua states (kernel, cross via ports, pay copy)
 --   threads = coroutines inside this state (cheap, share heap)
 -- Channel/alt lifted from libthread; recv() blocking sugar over ports.
+--
+-- returned as a module: require("los.thread") gives the scheduler table
+-- with Channel/alt/QLock/recv/readline hung off it.
 
-local los = require("los")
+local sys = require("los.sys")
 
 -- ---- thread scheduler ----
 
@@ -48,7 +49,7 @@ function thread.run()
 	while thread._n > 0 do
 		rounds = rounds + 1
 		if rounds % 64 == 0 then
-			los.yield()	-- let other procs breathe
+			sys.yield()	-- let other procs breathe
 		end
 		local co = table.remove(thread._runq, 1)
 		if co then
@@ -80,7 +81,7 @@ function thread.run()
 			if #set == 0 then
 				error("deadlock: all threads parked on channels")
 			end
-			los.altblock(set)
+			sys.altblock(set)
 			-- wake every port-parked thread; they retry
 			for co2, r in pairs(thread._parked) do
 				if r.port or r.ports then
@@ -197,7 +198,7 @@ local function alt(cases)
 	while true do
 		for i, cs in ipairs(cases) do
 			if cs.port then
-				local ok, m = los.tryrecv(cs.port)
+				local ok, m = sys.tryrecv(cs.port)
 				if ok then
 					return i, m
 				end
@@ -260,14 +261,14 @@ end
 -- blocking recv on a port right; thread-aware.
 local function recv(h)
 	while true do
-		local ok, msg = los.tryrecv(h)
+		local ok, msg = sys.tryrecv(h)
 		if ok then
 			return msg
 		end
 		if inthread() then
 			thread._park({ port = h })
 		else
-			los.block(h)
+			sys.block(h)
 		end
 	end
 end
@@ -279,7 +280,7 @@ local function readline(prompt)
 	end
 	local buf = {}
 	while true do
-		local c = recv(los.KBD)
+		local c = recv(sys.KBD)
 		if c == "\r" or c == "\n" then
 			io.write("\n")
 			return table.concat(buf)
@@ -300,16 +301,16 @@ local function readline(prompt)
 end
 
 -- ---- exports ----
--- everything above is local; hang the proc runtime off the los module so
--- a chunk reaches it all through require("los") -- no globals.
+-- the module is the scheduler table with the rest of the runtime hung
+-- off it: require("los.thread") -> { spawn, run, recv, readline,
+-- Channel, chancreate, alt, QLock, qlockcreate, ... }.
 
-los.thread = thread
-los.Channel = Channel
-los.chancreate = chancreate
-los.alt = alt
-los.QLock = QLock
-los.qlockcreate = qlockcreate
-los.recv = recv
-los.readline = readline
+thread.Channel = Channel
+thread.chancreate = chancreate
+thread.alt = alt
+thread.QLock = QLock
+thread.qlockcreate = qlockcreate
+thread.recv = recv
+thread.readline = readline
 
-return los
+return thread
