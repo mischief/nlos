@@ -5,20 +5,7 @@
 #include "lua.h"
 #include "lauxlib.h"
 
-extern int console_readline(char *buf, int cap);
 extern unsigned long long platform_ticks(void);
-
-static int
-los_readline(lua_State *L)
-{
-	char buf[512];
-	int n = console_readline(buf, sizeof buf);
-
-	if (n < 0)
-		return 0;	/* nil: eof */
-	lua_pushlstring(L, buf, n);
-	return 1;
-}
 
 static int
 los_ticks(lua_State *L)
@@ -48,7 +35,6 @@ los_stall(lua_State *L)
 }
 
 static const luaL_Reg loslib[] = {
-	{ "readline", los_readline },
 	{ "ticks", los_ticks },
 	{ "reset", los_reset },
 	{ "stall", los_stall },

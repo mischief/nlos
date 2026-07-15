@@ -27,7 +27,11 @@ console_write(const char *s, size_t n)
 	}
 }
 
-/* blocking keystroke, echoed, cr -> lf. ctrl-d gives EOF (-1). */
+/* blocking keystroke, echoed, cr -> lf. ctrl-d gives EOF (-1). backs
+ * libc stdin (getc). NOTE: the kernel kbd pump also drains ConIn, so
+ * this and port-based keyboard input must not be used at the same time
+ * -- they steal keystrokes from each other.
+ */
 int
 console_getchar(void)
 {
@@ -51,46 +55,6 @@ console_getchar(void)
 
 			console_write(&c, 1);
 			return c;
-		}
-	}
-}
-
-/* line editor: echo, backspace. returns length, or -1 on ctrl-d
- * at an empty line.
- */
-int
-console_readline(char *buf, int cap)
-{
-	int len = 0;
-	EFI_INPUT_KEY key;
-	UINTN index;
-
-	for (;;) {
-		while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) !=
-		    EFI_SUCCESS)
-			BS->WaitForEvent(1, &ST->ConIn->WaitForKey, &index);
-
-		CHAR16 c = key.UnicodeChar;
-
-		if (c == 0x04 && len == 0)
-			return -1;
-		if (c == '\r') {
-			console_write("\n", 1);
-			buf[len] = 0;
-			return len;
-		}
-		if (c == 0x08 || c == 0x7f) {
-			if (len > 0) {
-				len--;
-				console_write("\b \b", 3);
-			}
-			continue;
-		}
-		if (c >= 0x20 && c < 0x80 && len < cap - 1) {
-			buf[len++] = (char)c;
-			char e = (char)c;
-
-			console_write(&e, 1);
 		}
 	}
 }
