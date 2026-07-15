@@ -152,6 +152,75 @@ typedef struct {
 	void *SetWatchdogTimer;
 } EFI_BOOT_SERVICES;
 
+/* files */
+
+#define EFI_FILE_MODE_READ	0x0000000000000001ULL
+#define EFI_FILE_MODE_WRITE	0x0000000000000002ULL
+#define EFI_FILE_MODE_CREATE	0x8000000000000000ULL
+
+typedef struct EFI_FILE_PROTOCOL EFI_FILE_PROTOCOL;
+struct EFI_FILE_PROTOCOL {
+	UINT64 Revision;
+	EFI_STATUS (EFIAPI *Open)(EFI_FILE_PROTOCOL *This,
+	    EFI_FILE_PROTOCOL **NewHandle, CHAR16 *FileName,
+	    UINT64 OpenMode, UINT64 Attributes);
+	EFI_STATUS (EFIAPI *Close)(EFI_FILE_PROTOCOL *This);
+	EFI_STATUS (EFIAPI *Delete)(EFI_FILE_PROTOCOL *This);
+	EFI_STATUS (EFIAPI *Read)(EFI_FILE_PROTOCOL *This,
+	    UINTN *BufferSize, void *Buffer);
+	EFI_STATUS (EFIAPI *Write)(EFI_FILE_PROTOCOL *This,
+	    UINTN *BufferSize, void *Buffer);
+	EFI_STATUS (EFIAPI *GetPosition)(EFI_FILE_PROTOCOL *This,
+	    UINT64 *Position);
+	EFI_STATUS (EFIAPI *SetPosition)(EFI_FILE_PROTOCOL *This,
+	    UINT64 Position);
+	EFI_STATUS (EFIAPI *GetInfo)(EFI_FILE_PROTOCOL *This,
+	    EFI_GUID *InformationType, UINTN *BufferSize, void *Buffer);
+	EFI_STATUS (EFIAPI *SetInfo)(EFI_FILE_PROTOCOL *This,
+	    EFI_GUID *InformationType, UINTN BufferSize, void *Buffer);
+	EFI_STATUS (EFIAPI *Flush)(EFI_FILE_PROTOCOL *This);
+};
+
+typedef struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
+struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL {
+	UINT64 Revision;
+	EFI_STATUS (EFIAPI *OpenVolume)(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *This,
+	    EFI_FILE_PROTOCOL **Root);
+};
+
+typedef struct {
+	UINT32 Revision;
+	EFI_HANDLE ParentHandle;
+	void *SystemTable;
+	EFI_HANDLE DeviceHandle;
+	/* rest unused */
+} EFI_LOADED_IMAGE_PROTOCOL;
+
+/* runtime services (through ResetSystem) */
+
+typedef enum {
+	EfiResetCold,
+	EfiResetWarm,
+	EfiResetShutdown,
+	EfiResetPlatformSpecific
+} EFI_RESET_TYPE;
+
+typedef struct {
+	EFI_TABLE_HEADER Hdr;
+	void *GetTime;
+	void *SetTime;
+	void *GetWakeupTime;
+	void *SetWakeupTime;
+	void *SetVirtualAddressMap;
+	void *ConvertPointer;
+	void *GetVariable;
+	void *GetNextVariableName;
+	void *SetVariable;
+	void *GetNextHighMonotonicCount;
+	void (EFIAPI *ResetSystem)(EFI_RESET_TYPE ResetType,
+	    EFI_STATUS ResetStatus, UINTN DataSize, void *ResetData);
+} EFI_RUNTIME_SERVICES;
+
 typedef struct {
 	EFI_TABLE_HEADER Hdr;
 	CHAR16 *FirmwareVendor;
@@ -162,7 +231,7 @@ typedef struct {
 	EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut;
 	EFI_HANDLE StandardErrorHandle;
 	EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *StdErr;
-	void *RuntimeServices;
+	EFI_RUNTIME_SERVICES *RuntimeServices;
 	EFI_BOOT_SERVICES *BootServices;
 	UINTN NumberOfTableEntries;
 	void *ConfigurationTable;

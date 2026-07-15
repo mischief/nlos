@@ -1,0 +1,76 @@
+/* the 'los' table: efi machinery exposed to lua */
+
+#include "efi.h"
+
+#include "lua.h"
+#include "lauxlib.h"
+
+extern int console_readline(char *buf, int cap);
+extern unsigned long long platform_ticks(void);
+
+static int
+los_readline(lua_State *L)
+{
+	char buf[512];
+	int n = console_readline(buf, sizeof buf);
+
+	if (n < 0)
+		return 0;	/* nil: eof */
+	lua_pushlstring(L, buf, n);
+	return 1;
+}
+
+static int
+los_ticks(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)platform_ticks());
+	return 1;
+}
+
+static int
+los_reset(lua_State *L)
+{
+	static const char *const modes[] =
+	    { "cold", "warm", "shutdown", NULL };
+	static const EFI_RESET_TYPE types[] =
+	    { EfiResetCold, EfiResetWarm, EfiResetShutdown };
+	int opt = luaL_checkoption(L, 1, "cold", modes);
+
+	ST->RuntimeServices->ResetSystem(types[opt], EFI_SUCCESS, 0, 0);
+	return 0;	/* unreachable */
+}
+
+static int
+los_stall(lua_State *L)
+{
+	BS->Stall((UINTN)luaL_checkinteger(L, 1));
+	return 0;
+}
+
+static const luaL_Reg loslib[] = {
+	{ "readline", los_readline },
+	{ "ticks", los_ticks },
+	{ "reset", los_reset },
+	{ "stall", los_stall },
+	{ NULL, NULL }
+};
+
+int
+luaopen_los(lua_State *L)
+{
+	char vendor[64];
+	int i;
+
+	luaL_newlib(L, loslib);
+
+	for (i = 0; i < 63 && ST->FirmwareVendor[i]; i++)
+		vendor[i] = (char)ST->FirmwareVendor[i];
+	vendor[i] = 0;
+	lua_pushstring(L, vendor);
+	lua_setfield(L, -2, "firmware");
+
+	lua_pushinteger(L, ST->FirmwareRevision);
+	lua_setfield(L, -2, "firmware_revision");
+
+	return 1;
+}

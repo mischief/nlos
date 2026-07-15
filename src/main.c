@@ -1,4 +1,5 @@
 #include "efi.h"
+#include "fs.h"
 
 #include "lua.h"
 #include "lualib.h"
@@ -20,18 +21,6 @@ puts8(const char *s)
 	console_write(s, n);
 }
 
-static const char boot_lua[] =
-	"print(_VERSION .. ' on bare UEFI')\n"
-	"print('sqrt(2)  =', math.sqrt(2))\n"
-	"print('2^0.5    =', 2^0.5)\n"
-	"print('pi       =', math.pi)\n"
-	"print('sin(pi/6)=', math.sin(math.pi/6))\n"
-	"print('fmt      =', string.format('%d %x %5.2f %s', 42, 255, 3.14159, 'ok'))\n"
-	"local t = {}\n"
-	"for i = 1, 10 do t[i] = i * i end\n"
-	"print('squares  =', table.concat(t, ' '))\n"
-	"print('coroutine=', coroutine.wrap(function() coroutine.yield('works') end)())\n";
-
 EFI_STATUS
 efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 {
@@ -44,7 +33,10 @@ efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	self_image = image;
 
 	ST->ConOut->ClearScreen(ST->ConOut);
-	puts8("lua-os booting\n\n");
+	puts8("lua-os booting\n");
+
+	if (fs_init() != 0)
+		puts8("warning: no filesystem on boot volume\n");
 
 	L = luaL_newstate();
 	if (L == NULL) {
@@ -53,15 +45,15 @@ efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	}
 	luaL_openlibs(L);
 
-	if (luaL_dostring(L, boot_lua) != LUA_OK) {
-		puts8("lua error: ");
+	if (luaL_dofile(L, "/init.lua") != LUA_OK) {
+		puts8("init.lua error: ");
 		puts8(lua_tostring(L, -1));
 		puts8("\n");
 	}
 	lua_close(L);
 
 out:
-	puts8("\npress any key to exit\n");
+	puts8("press any key to exit\n");
 	while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_NOT_READY)
 		BS->WaitForEvent(1, &ST->ConIn->WaitForKey, &index);
 	return EFI_SUCCESS;

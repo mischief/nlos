@@ -1,12 +1,14 @@
-/* custom library set: everything except io, os, package
- * (no filesystem or process world yet)
- */
+/* custom library set: everything except os and package */
 
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
 
+int luaopen_los(lua_State *L);
+
 static const luaL_Reg loadedlibs[] = {
+	{ "los", luaopen_los },
+	{ LUA_IOLIBNAME, luaopen_io },
 	{ LUA_GNAME, luaopen_base },
 	{ LUA_COLIBNAME, luaopen_coroutine },
 	{ LUA_TABLIBNAME, luaopen_table },

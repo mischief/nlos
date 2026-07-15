@@ -36,12 +36,14 @@ OBJS=\
 	build/libc/time.o\
 	build/libc/math.o\
 	build/console.o\
+	build/fs.o\
+	build/los.o\
 	build/malloc.o\
 	build/linit.o\
 	build/main.o\
 
 LUA_SRC=$(filter-out lua/lua.c lua/luac.c lua/onelua.c lua/linit.c \
-	lua/liolib.c lua/loslib.c lua/ltests.c,\
+	lua/loslib.c lua/ltests.c,\
 	$(wildcard lua/*.c))
 LUA_OBJS=$(patsubst lua/%.c,build/lua/%.o,$(LUA_SRC))
 
@@ -72,7 +74,7 @@ $(EFIBIN): build/luaos.so
 	$(OBJCOPY) -O binary $< $@
 
 # 48M gpt disk, one esp partition, fat via mtools (no root needed)
-$(EFIIMG): $(EFIBIN)
+$(EFIIMG): $(EFIBIN) init.lua
 	test -e $@ || (dd if=/dev/zero of=$@ bs=512 count=93750 2>/dev/null && \
 		$(SGDISK) -Z $@ >/dev/null && \
 		$(SGDISK) -N 1 $@ >/dev/null && \
@@ -83,6 +85,7 @@ $(EFIIMG): $(EFIBIN)
 		mmd -i $@@@1M efi/boot \
 	)
 	mcopy -o -i $@@@1M $(EFIBIN) ::efi/boot/bootx64.efi
+	mcopy -o -i $@@@1M init.lua ::init.lua
 	touch $@
 
 build/OVMF_VARS.fd: | build
