@@ -38,7 +38,7 @@ add_project_arguments(freestanding_args, language: 'c')
 inc = include_directories('include', 'src', 'lua')
 
 kernel_src = files(
-  'src/conio.c',
+  'src/drivers.c',
   'src/console.c',
   'src/fs.c',
   'src/kernel.c',
@@ -164,10 +164,12 @@ luaos_efi = custom_target('luaos.efi',
 
 lua_payload = files(
   'init.lua',
-  'lib/conio.lua',
+  'lib/cons.lua',
   'lib/ninep.lua',
+  'lib/power.lua',
   'lib/tap.lua',
   'lib/thread.lua',
+  'lib/wire.lua',
 )
 
 # 48M gpt disk with one esp, assembled with sgdisk + mtools (no root)
@@ -191,7 +193,7 @@ run_target('qemu',
 
 boottest = files('scripts/boottest.sh')
 
-boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit', 'conio']
+boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit', 'drivers']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

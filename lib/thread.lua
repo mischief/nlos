@@ -273,31 +273,23 @@ local function recv(h)
 	end
 end
 
--- line editor over the keyboard port (proc 0 only)
+-- readline: a request/reply against cons, the sole task with raw
+-- keyboard access. the prompt itself is plain io.write (ambient
+-- stdout, unaffected by any of this); only the line comes from cons.
+-- the reply port is allocated once per proc and reused, not minted
+-- fresh on every call.
+local cons_reply_port
+
 local function readline(prompt)
 	if prompt then
 		io.write(prompt)
 	end
-	local buf = {}
-	while true do
-		local c = recv(sys.KBD)
-		if c == "\r" or c == "\n" then
-			io.write("\n")
-			return table.concat(buf)
-		elseif c == "\4" then -- ctrl-d
-			if #buf == 0 then
-				return nil
-			end
-		elseif c == "\8" or c == "\127" then -- backspace
-			if #buf > 0 then
-				table.remove(buf)
-				io.write("\8 \8")
-			end
-		elseif #c == 1 and c >= " " then
-			buf[#buf + 1] = c
-			io.write(c)
-		end
+	if not cons_reply_port then
+		cons_reply_port = sys.newport()
 	end
+	sys.send(sys.CONS, { op = "readline",
+	    reply = { __right = cons_reply_port } })
+	return recv(cons_reply_port)
 end
 
 -- ---- exports ----

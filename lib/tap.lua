@@ -37,7 +37,7 @@ end
 
 function M.done()
 	print("# test complete, powering off")
-	sys.send(sys.CONIO, { op = "reset", mode = "shutdown" })
+	sys.send(sys.POWER, { op = "reset", mode = "shutdown" })
 end
 
 return M

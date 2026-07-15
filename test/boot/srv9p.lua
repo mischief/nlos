@@ -1,10 +1,21 @@
 -- 9p server payload for the host-driven 9p test: same server the real
--- init runs, minus the repl. proc 0 keeps the serial and conio rights
--- directly (both granted at boot, same as the real init).
+-- init runs, minus the repl. proc 0 (this proc) holds sys.WIRE
+-- directly (granted at boot, same as the real init).
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local p9 = require("ninep")
+
+local readreply = sys.newport()
+
+local function wire_read()
+	sys.send(sys.WIRE, { op = "read", reply = { __right = readreply } })
+	return thread.recv(readreply)
+end
+
+local function wire_write(bytes)
+	sys.send(sys.WIRE, { op = "write", data = bytes })
+end
 
 local root = p9.synth({
 	["README"] = "this is lua-os, mounted over 9p. hello!\n",
@@ -31,6 +42,4 @@ local root = p9.synth({
 })
 
 print("9p test server ready")
-p9.serve(root,
-    function() return thread.recv(sys.SERIAL) end,
-    function(bytes) sys.send(sys.CONIO, { op = "write", data = bytes }) end)
+p9.serve(root, wire_read, wire_write)

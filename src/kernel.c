@@ -33,6 +33,7 @@
 #define MAXWATCH	8	/* monitors per proc */
 
 enum { DEAD, READY, BLOCKED };
+enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER };
 
 struct kmsg {
 	struct kmsg *next;
@@ -88,6 +89,32 @@ static struct kport ports[MAXPORTS];
 static struct kport *kbdport;
 static int nlive;
 static int nextpid;
+
+/* who's running right now. kernel_run sets this before every
+ * lua_resume and clears it after. plain C code with no lua_State
+ * (stdio.c's fopen, called via liolib.c with no proc identity
+ * threaded through) uses this to find out who's asking -- the only
+ * way to check a capability from a context where self(L) isn't
+ * available at all.
+ */
+static struct kproc *current_proc;
+
+/* disk is a checked capability, not an exclusive task: liolib.c's
+ * io.open calls our fopen() as plain C with no lua_State, so there is
+ * no require()-registration boundary to exploit the way conio/cons/
+ * wire/power do. diskport is a reserved, message-free capability
+ * token; holding any right to it is what fopen() checks.
+ */
+static struct kport *diskport;
+
+/* set only while proc_new is loading a proc's own chunk or the
+ * preloaded los.thread source: these are kernel-privileged reads
+ * (deciding what code a new proc runs, before it has ever executed a
+ * single instruction of its own) and must bypass the disk check --
+ * they aren't a running proc's lua code exercising io.open, there is
+ * no proc identity to check yet.
+ */
+static int kernel_loading;
 
 static struct kproc *
 find_proc(int pid)
@@ -205,6 +232,25 @@ right_get(struct kproc *p, lua_Integer h)
 	if (h < 0 || h >= MAXRIGHTS || !p->rights[h].used)
 		return 0;
 	return &p->rights[h];
+}
+
+/* grant at a specific index rather than the first free slot. used only
+ * for the boot-time CONS/WIRE/POWER/DISK grants, so a driver that
+ * fails to spawn leaves a hole at its fixed handle number instead of
+ * shifting every later grant into the wrong slot.
+ */
+static int
+right_new_at(struct kproc *p, int idx, struct kport *port, int recv)
+{
+	if (idx < 0 || idx >= MAXRIGHTS || p->rights[idx].used)
+		return -1;
+	p->rights[idx].used = 1;
+	p->rights[idx].port = port;
+	p->rights[idx].recv = recv;
+	port->nrights++;
+	if (recv)
+		port->nrecv++;
+	return idx;
 }
 
 /* ---- serializer ----
@@ -647,7 +693,7 @@ api_newport(lua_State *L)
 }
 
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
-    int is_file, int reductions, size_t mem_limit, int privileged);
+    int is_file, int reductions, size_t mem_limit, int priv);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason);
 
 static int
@@ -671,11 +717,13 @@ api_spawn(lua_State *L)
 		lua_pop(L, 1);
 	}
 
-	/* sys.spawn can never mint a privileged (conio-class) proc: that
-	 * bit is set only by the kernel's own boot-time spawn_conio call,
-	 * never reachable from lua.
+	/* sys.spawn can never mint a privileged (cons/wire/power-class)
+	 * proc: PRIV_NONE is hardwired here. only the kernel's own boot
+	 * sequence (spawn_cons/spawn_wire/spawn_power) sets a real priv
+	 * value, never reachable from lua.
 	 */
-	int pid = proc_new(code, n, "=spawn", 0, reductions, mem_limit, 0);
+	int pid = proc_new(code, n, "=spawn", 0, reductions, mem_limit,
+	    PRIV_NONE);
 
 	if (pid < 0)
 		return luaL_error(L, "spawn failed");
@@ -841,8 +889,10 @@ static const luaL_Reg kapi[] = {
 	{ NULL, NULL }
 };
 
-extern int luaopen_los_efi(lua_State *L);	/* los.c: firmware info */
-extern int luaopen_los_platform(lua_State *L);	/* conio.c: conio-only */
+extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
+extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
+extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
+extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
  * kernel-owned primitives that outlive efi (ticks). registered in
@@ -856,21 +906,25 @@ los_sys_open(lua_State *L)
 	luaL_newlib(L, kapi);
 
 	/* well-known right handles. 0 (own receive port) holds for every
-	 * proc; 1/2 are the keyboard/serial rights handed to proc 0 at
-	 * boot; 3 is a send-right to conio's mailbox, also handed to
-	 * proc 0 at boot -- conio is the only proc anywhere with
-	 * los.platform (raw console-write, reset, stall) registered, so
-	 * writing the console or touching machine power means sending it
-	 * a message, never a direct call.
+	 * proc. 1/2/3 are send-rights to the cons/wire/power tasks, the
+	 * only procs anywhere with the corresponding los.platform.*
+	 * module registered -- talking to any of them is a message, never
+	 * a direct call. 4 is the disk capability (a checked right, not
+	 * an exclusive task -- see fopen()/kernel_current_has_disk()).
+	 * all four are handed to the boot payload (init.lua or a test
+	 * payload) at spawn; ordinary sys.spawn children get none of them
+	 * by default.
 	 */
 	lua_pushinteger(L, 0);
 	lua_setfield(L, -2, "SELF");
 	lua_pushinteger(L, 1);
-	lua_setfield(L, -2, "KBD");
+	lua_setfield(L, -2, "CONS");
 	lua_pushinteger(L, 2);
-	lua_setfield(L, -2, "SERIAL");
+	lua_setfield(L, -2, "WIRE");
 	lua_pushinteger(L, 3);
-	lua_setfield(L, -2, "CONIO");
+	lua_setfield(L, -2, "POWER");
+	lua_pushinteger(L, 4);
+	lua_setfield(L, -2, "DISK");
 	return 1;
 }
 
@@ -915,7 +969,7 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 
 static int
 proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
-    int reductions, size_t mem_limit, int privileged)
+    int reductions, size_t mem_limit, int priv)
 {
 	struct kproc *p = 0;
 
@@ -973,20 +1027,50 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	lua_pushcfunction(p->L, luaopen_los_efi);
 	lua_setfield(p->L, -2, "los.efi");
 
-	/* los.platform (raw console-write, reset, stall) is registered
-	 * ONLY for the conio task -- not gated by a runtime check, simply
+	/* los.platform.{cons,wire,power} are each registered ONLY for
+	 * their one owning task -- not gated by a runtime check, simply
 	 * absent from package.preload everywhere else, so there is no
 	 * check to get wrong: the function isn't reachable to call.
 	 */
-	if (privileged) {
-		lua_pushcfunction(p->L, luaopen_los_platform);
-		lua_setfield(p->L, -2, "los.platform");
+	switch (priv) {
+	case PRIV_CONS:
+		lua_pushcfunction(p->L, luaopen_los_platform_cons);
+		lua_setfield(p->L, -2, "los.platform.cons");
+		break;
+	case PRIV_WIRE:
+		lua_pushcfunction(p->L, luaopen_los_platform_wire);
+		lua_setfield(p->L, -2, "los.platform.wire");
+		break;
+	case PRIV_POWER:
+		lua_pushcfunction(p->L, luaopen_los_platform_power);
+		lua_setfield(p->L, -2, "los.platform.power");
+		break;
 	}
+
+	/* the two loads below are kernel-privileged (deciding what a new
+	 * proc runs, before it has executed anything of its own), not a
+	 * running proc's own io.open -- bypass the disk check for them.
+	 */
+	kernel_loading = 1;
 
 	if (luaL_loadfile(p->L, "/lib/thread.lua") == LUA_OK) {
 		lua_setfield(p->L, -2, "los.thread");
 	} else {
 		kputs("los.thread load error: ");
+		kputs(lua_tostring(p->L, -1));
+		kputs("\n");
+		lua_pop(p->L, 1);
+	}
+
+	/* ninep is trusted system code (the 9p wire codec), not a proc's
+	 * own file access -- preload it the same way for the same reason,
+	 * so a plain sys.spawn child (which never gets DISK) can still
+	 * require("ninep") to speak the wire, same as it always could.
+	 */
+	if (luaL_loadfile(p->L, "/lib/ninep.lua") == LUA_OK) {
+		lua_setfield(p->L, -2, "ninep");
+	} else {
+		kputs("ninep load error: ");
 		kputs(lua_tostring(p->L, -1));
 		kputs("\n");
 		lua_pop(p->L, 1);
@@ -1003,6 +1087,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		rc = luaL_loadfile(p->co, code);
 	else
 		rc = luaL_loadbuffer(p->co, code, codelen, chunkname);
+	kernel_loading = 0;
 	if (rc != LUA_OK) {
 		kputs("proc load error: ");
 		kputs(lua_tostring(p->co, -1));
@@ -1154,52 +1239,90 @@ kernel_init(void)
 	uart_init();
 	kbdport = port_new();
 	serport = port_new();
-	if (!kbdport || !serport)
+	diskport = port_new();
+	if (!kbdport || !serport || !diskport)
 		return -1;
-	/* kernel refs: the pumps hold these ports forever */
+	/* kernel refs: the pumps (and, for diskport, the kernel itself)
+	 * hold these ports forever
+	 */
 	kbdport->nrights++;
 	serport->nrights++;
+	diskport->nrights++;
 	return 0;
 }
 
-/* spawn conio: the sole task anywhere with los.platform (raw
- * console-write, reset, stall). no device rights, no lua-visible
- * spawn path -- privileged=1 is set only here, in the kernel's own
- * boot sequence, never reachable from sys.spawn.
+/* spawn a privileged driver task and grant it whatever raw device
+ * right it needs directly (handle 1, right after the universal
+ * self-port at 0). returns its pid, or -1 with a boot warning; the
+ * corresponding resource is simply unreachable for the rest of that
+ * boot if its task fails to start.
  */
 static int
-spawn_conio(void)
+spawn_driver(const char *path, const char *chunkname, int priv,
+    struct kport *devport, int devrecv, const char *what)
 {
-	int pid = proc_new("/lib/conio.lua", 0, "=conio", 1, 0, 0, 1);
+	int pid = proc_new(path, 0, chunkname, 1, 0, 0, priv);
 
-	if (pid < 0)
-		kputs("warning: conio failed to start; console-write and "
-		    "reset/stall are unavailable this boot\n");
+	if (pid < 0) {
+		char buf[128];
+
+		snprintf(buf, sizeof buf,
+		    "warning: %s failed to start; %s is unavailable "
+		    "this boot\n", chunkname + 1, what);
+		kputs(buf);
+		return -1;
+	}
+	if (devport) {
+		struct kproc *p = find_proc(pid);
+
+		if (p)
+			right_new(p, devport, devrecv);
+	}
 	return pid;
 }
 
-/* spawn the init proc (from a file path or an injected buffer) and
- * hand it the device rights: handle 1 = keyboard, handle 2 = serial,
- * handle 3 = a send-right to conio's mailbox.
+/* spawn the boot payload (init.lua or an injected fw_cfg test buffer)
+ * and hand it send-rights to cons/wire/power plus the disk capability
+ * -- the full boot-level grant, same shape as the old KBD/SERIAL/CONIO
+ * grant it replaces. ordinary sys.spawn children still get none of
+ * this by default; only the boot payload (analogous to pid 1 on a
+ * unix system) starts this privileged.
  */
 static int
 spawn_init(const char *code, size_t len, int is_file)
 {
-	int conio_pid = spawn_conio();
-	int pid = proc_new(code, len, "=init", is_file, 0, 0, 0);
+	int cons_pid = spawn_driver("/lib/cons.lua", "=cons", PRIV_CONS,
+	    kbdport, 1, "console");
+	int wire_pid = spawn_driver("/lib/wire.lua", "=wire", PRIV_WIRE,
+	    serport, 1, "the 9p wire");
+	int power_pid = spawn_driver("/lib/power.lua", "=power", PRIV_POWER,
+	    0, 0, "reset/stall");
 
-	if (pid >= 0 && kbdport) {
-		struct kproc *p = find_proc(pid);
+	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_NONE);
 
-		right_new(p, kbdport, 1);
-		right_new(p, serport, 1);
-		if (conio_pid >= 0) {
-			struct kproc *conio = find_proc(conio_pid);
+	if (pid < 0)
+		return pid;
 
-			if (conio)
-				right_new(p, conio->rights[0].port, 0);
-		}
-	}
+	struct kproc *p = find_proc(pid);
+
+	/* fixed handle numbers (1=CONS, 2=WIRE, 3=POWER, 4=DISK), granted
+	 * by explicit index so a driver that failed to spawn just leaves
+	 * a hole at its own number -- sys.send(sys.CONS,...) then fails
+	 * with "bad right", cleanly, instead of some other capability
+	 * silently sliding into the wrong handle.
+	 */
+	struct kproc *cons = cons_pid >= 0 ? find_proc(cons_pid) : 0;
+	struct kproc *wire = wire_pid >= 0 ? find_proc(wire_pid) : 0;
+	struct kproc *power = power_pid >= 0 ? find_proc(power_pid) : 0;
+
+	if (cons)
+		right_new_at(p, 1, cons->rights[0].port, 0);
+	if (wire)
+		right_new_at(p, 2, wire->rights[0].port, 0);
+	if (power)
+		right_new_at(p, 3, power->rights[0].port, 0);
+	if (diskport)
+		right_new_at(p, 4, diskport, 0);
 	return pid;
 }
 
@@ -1245,7 +1368,10 @@ kernel_run(void)
 			ran = 1;
 
 			int nres = 0;
+
+			current_proc = p;
 			int rc = lua_resume(p->co, 0, 0, &nres);
+			current_proc = 0;
 
 			/* a proc can run a full hook window (200k insns)
 			 * before yielding; drain the 16-byte fifo now so it
@@ -1276,4 +1402,24 @@ kernel_run(void)
 				BS->Stall(500);
 		}
 	}
+}
+
+/* disk is a checked capability (see the comment by diskport's
+ * declaration): does whoever is currently resumed hold any right to
+ * it? used by stdio.c's fopen, which has no lua_State at all --
+ * liolib.c's io.open calls it as plain C, so current_proc is the only
+ * way to learn who's asking.
+ */
+int
+kernel_current_has_disk(void)
+{
+	if (kernel_loading)
+		return 1;
+	if (!current_proc)
+		return 0;
+	for (int i = 0; i < MAXRIGHTS; i++)
+		if (current_proc->rights[i].used &&
+		    current_proc->rights[i].port == diskport)
+			return 1;
+	return 0;
 }

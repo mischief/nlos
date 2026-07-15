@@ -13,6 +13,7 @@ extern int console_getchar(void);
 
 #include "fs.h"
 #include "platform.h"
+#include "kernel.h"
 
 #define T_STDIN		0
 #define T_STDOUT	1
@@ -43,6 +44,16 @@ fopen(const char *path, const char *mode)
 	FILE *f;
 	void *fsf;
 	int write = (*mode == 'w' || *mode == 'a');
+
+	/* disk is a checked capability, not an exclusive task: liolib.c's
+	 * io.open calls us as plain C with no lua_State, so there is no
+	 * require()-registration boundary to police here the way cons/
+	 * wire/power do. an unauthorized caller just gets the same nil
+	 * (+"no such file") liolib.c already produces for any open
+	 * failure -- no special error path needed.
+	 */
+	if (!kernel_current_has_disk())
+		return 0;
 
 	fsf = fs_open(path, write);
 	if (!fsf)
