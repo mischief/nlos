@@ -695,6 +695,7 @@ proc_kill(struct kproc *p, const char *why)
 
 extern void uart_init(void);
 extern int uart_rx(void);
+extern void uart_poll(void);	/* drain the hw fifo into the rx ring */
 
 static struct kport *serport;
 
@@ -776,6 +777,11 @@ kernel_run(void)
 			int rc = lua_resume(p->co, 0, 0, &nres);
 
 			lua_pop(p->co, nres);
+			/* a proc can run a full hook window (200k insns)
+			 * before yielding; drain the 16-byte fifo now so it
+			 * can't overflow between serial pumps.
+			 */
+			uart_poll();
 			if (rc == LUA_YIELD)
 				continue;	/* READY or BLOCKED */
 			if (rc == LUA_OK)
@@ -784,7 +790,11 @@ kernel_run(void)
 				proc_kill(p, lua_tostring(p->co, -1));
 		}
 		if (!ran) {
-			/* everyone blocked; serial has no event, so poll */
+			/* everyone blocked. serial has no firmware event,
+			 * so this is a poll, not a sleep. TODO: periodic
+			 * timer event + WaitForEvent hung the serial path
+			 * (unexplained); revisit for a true hlt idle.
+			 */
 			BS->Stall(500);
 		}
 	}

@@ -42,12 +42,42 @@ uart_init(void)
 	outb(COM2 + MCR, 0x0B);		/* dtr, rts, out2 */
 }
 
+/* software rx ring. the hardware fifo is only 16 bytes and we have no
+ * rx interrupt, so anything that blocks the cpu (a big uart_tx, a proc
+ * computing for a hook window) would otherwise overflow it and corrupt
+ * the 9p stream. uart_poll() drains the fifo into this ring and is
+ * called from every such blocking spot; delivery reads the ring.
+ * size >= 9p msize so a full message can be in flight while we tx.
+ */
+#define RXRING 16384			/* power of two */
+
+static unsigned char rxbuf[RXRING];
+static unsigned int rxhead, rxtail;	/* head writes, tail reads */
+
+void
+uart_poll(void)
+{
+	while (inb(COM2 + LSR) & LSR_DR) {
+		unsigned int nh = (rxhead + 1) & (RXRING - 1);
+
+		if (nh == rxtail)
+			return;		/* ring full: leave it in the fifo */
+		rxbuf[rxhead] = inb(COM2 + RBR);
+		rxhead = nh;
+	}
+}
+
 int
 uart_rx(void)
 {
-	if (!(inb(COM2 + LSR) & LSR_DR))
+	uart_poll();
+	if (rxtail == rxhead)
 		return -1;
-	return inb(COM2 + RBR);
+
+	unsigned char c = rxbuf[rxtail];
+
+	rxtail = (rxtail + 1) & (RXRING - 1);
+	return c;
 }
 
 void
@@ -55,7 +85,7 @@ uart_tx(const char *s, unsigned long n)
 {
 	while (n--) {
 		while (!(inb(COM2 + LSR) & LSR_THRE))
-			;
+			uart_poll();	/* keep rx drained while we block */
 		outb(COM2 + THR, (unsigned char)*s++);
 	}
 }
