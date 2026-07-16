@@ -160,6 +160,14 @@ static int port_push(struct kport *port, const unsigned char *data,
  */
 static struct kport *netport;
 
+/* true once net_init() has located tcp4 and the net task has been (or
+ * will be) spawned; guards pump_net so it doesn't push into netport
+ * forever with no reader when there's no NIC -- netport would never
+ * gain a receive right in that case, so nothing would ever mark it
+ * dead, and the queue would grow unbounded.
+ */
+static int have_net;
+
 static void EFIAPI
 net_event_notify(EFI_EVENT ev, void *ctx)
 {
@@ -1288,6 +1296,25 @@ pump_serial(void)
 	port_push(serport, buf, 5 + n, 0, 0);
 }
 
+/* ---- net pump ---- */
+
+/* safety net underneath net_event_notify: unconditionally nudge
+ * netport every iteration (same ~1ms bound already accepted for
+ * serial), so net.lua's pending tokens get rechecked even if the
+ * tcp4 completion's own Event notify never actually gets dispatched
+ * -- observed in practice (a real inbound connection completed
+ * fully at the wire level, confirmed via packet capture, but the
+ * notify-only path never woke the net task to notice). cheap: one
+ * port_push, and checkpending() on the lua side is a no-op when
+ * nothing's actually done yet.
+ */
+static void
+pump_net(void)
+{
+	if (have_net && netport)
+		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
+}
+
 /* ---- keyboard pump ---- */
 
 static void
@@ -1307,8 +1334,6 @@ pump_keyboard(void)
 }
 
 /* ---- kernel ---- */
-
-static int have_net;
 
 int
 kernel_init(void)
@@ -1454,6 +1479,7 @@ kernel_run(void)
 
 		pump_keyboard();
 		pump_serial();
+		pump_net();
 		for (int i = 0; i < MAXPROCS; i++) {
 			struct kproc *p = &procs[i];
 
