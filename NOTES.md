@@ -173,17 +173,23 @@ granted to the boot payload at fixed handles 1/2/3) plus the DISK
 capability (handle 4) — talking to console/wire/power is always a
 message, never a direct call. `sys.serwrite` no longer exists.
 
-**disk is different, and deliberately so**: `io.open` is liolib.c
-calling our `fopen()` as plain C with no lua_State — there's no
-require() boundary to defend there at all. instead `fopen()` checks
-whether `current_proc` (tracked by kernel_run, set once per
-lua_resume) holds a right to a reserved `diskport` capability token.
-this is the weaker checked-right form, kept only because liolib's
-shape leaves no alternative — see DESIGN.md pillar 3 for the full
-argument. a `kernel_loading` bypass covers the file loads that happen
-during proc construction itself (a new proc's own chunk, and the
-universally-preloaded los.thread/ninep), which aren't a running
-proc's own io.open at all.
+**disk gates write/append only; read is ambient**, on purpose, not as
+a shortcut: the project's own non-goals say the threat model is buggy
+lua, not hostile users, nothing on the esp is confidentiality-
+sensitive, and a stray read can't corrupt anything the way a runaway
+write can. `fopen()` checks whether `current_proc` (tracked by
+kernel_run, set once per lua_resume) holds a right to a reserved
+`diskport` token, but only when opening for write/append -- read
+takes the check-free path it always had. this dissolved the earlier
+require()-needs-disk wrinkle entirely: `ninep` no longer needs
+universal preloading as a workaround (removed; it's back to plain
+require() via LUA_PATH like any other module), and the
+`kernel_loading` construction-time bypass is gone too, since proc
+construction only ever reads. see DESIGN.md pillar 3 for the full
+argument, including why liolib.c's plain-C fopen() rules out the
+exclusive-registration trick for write even in principle (short of a
+much bigger yieldable-C-function rewrite this project's scope doesn't
+justify).
 
 mechanics: the proc pointer lives in the lua_State's extra space
 (`lua_getextraspace`), so the kapi needs no upvalues and the whole
@@ -217,7 +223,10 @@ main state at `lua_newthread`. no more auto-run prelude.
    properly into cons/wire/power (one exclusive task per resource,
    conio's own bundling was the same mistake it fixed) plus a disk
    capability for the one resource (fopen, via liolib.c) that can't
-   use exclusive registration at all. 8 tests, 60 subtests.
+   use exclusive registration at all -- narrowed again to write/append
+   only once read turned out not to need gating under this project's
+   own stated threat model, which also dissolved the require()-needs-
+   disk wrinkle entirely. 8 tests, 60 subtests.
 
 ## fixed in the hardening pass
 
@@ -252,10 +261,12 @@ main state at `lua_newthread`. no more auto-run prelude.
 - CONS/WIRE/POWER/DISK rights are positional handles (1-4) in the
   boot payload — the namespace-design mount-table work is the
   eventual fix, not urgent since these four are well-known and stable
-- disk uses a checked-right (not exclusive-registration) mechanism,
-  weaker in kind than cons/wire/power — see DESIGN.md pillar 3
-- ninep is still a disk `require` via LUA_PATH (could be preloaded like
-  los.thread); src/los.c hosts the los.efi module (filename lags)
+- disk write uses a checked-right (not exclusive-registration)
+  mechanism, weaker in kind than cons/wire/power — see DESIGN.md
+  pillar 3 for why (liolib.c's fopen() has no lua_State to check
+  against). read needs no right at all, deliberately (see same
+  section) — this is not a gap, it's the considered state.
+- src/los.c hosts the los.efi module (filename lags the rename)
 
 ## open question: bluepilled vs redpilled
 

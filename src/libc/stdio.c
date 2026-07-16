@@ -45,14 +45,15 @@ fopen(const char *path, const char *mode)
 	void *fsf;
 	int write = (*mode == 'w' || *mode == 'a');
 
-	/* disk is a checked capability, not an exclusive task: liolib.c's
-	 * io.open calls us as plain C with no lua_State, so there is no
-	 * require()-registration boundary to police here the way cons/
-	 * wire/power do. an unauthorized caller just gets the same nil
-	 * (+"no such file") liolib.c already produces for any open
-	 * failure -- no special error path needed.
+	/* DISK gates write/append only. read is deliberately ambient: the
+	 * threat model here is buggy lua, not hostile users (DESIGN.md
+	 * non-goals), there's nothing confidentiality-sensitive on the
+	 * esp, and a stray read can't corrupt anything the way a runaway
+	 * write can (e.g. clobbering /lib/thread.lua and breaking every
+	 * future boot). this also means require()/loadfile need no
+	 * special-casing at all -- they only ever read.
 	 */
-	if (!kernel_current_has_disk())
+	if (write && !kernel_current_has_disk())
 		return 0;
 
 	fsf = fs_open(path, write);

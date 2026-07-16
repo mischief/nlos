@@ -99,22 +99,17 @@ static int nextpid;
  */
 static struct kproc *current_proc;
 
-/* disk is a checked capability, not an exclusive task: liolib.c's
- * io.open calls our fopen() as plain C with no lua_State, so there is
- * no require()-registration boundary to exploit the way conio/cons/
- * wire/power do. diskport is a reserved, message-free capability
- * token; holding any right to it is what fopen() checks.
+/* disk gates write/append only -- read is deliberately ambient (see
+ * stdio.c's fopen): the threat model is buggy lua, not hostile users
+ * (DESIGN.md non-goals), nothing on the esp is confidentiality-
+ * sensitive, and a stray read can't corrupt anything the way a
+ * runaway write can. write still can't use the exclusive-task trick
+ * cons/wire/power do (liolib.c calls our fopen() as plain C with no
+ * lua_State, so there's no require()-registration boundary to
+ * police); diskport is a reserved, message-free capability token,
+ * holding any right to it is what fopen() checks for writes.
  */
 static struct kport *diskport;
-
-/* set only while proc_new is loading a proc's own chunk or the
- * preloaded los.thread source: these are kernel-privileged reads
- * (deciding what code a new proc runs, before it has ever executed a
- * single instruction of its own) and must bypass the disk check --
- * they aren't a running proc's lua code exercising io.open, there is
- * no proc identity to check yet.
- */
-static int kernel_loading;
 
 static struct kproc *
 find_proc(int pid)
@@ -909,10 +904,11 @@ los_sys_open(lua_State *L)
 	 * proc. 1/2/3 are send-rights to the cons/wire/power tasks, the
 	 * only procs anywhere with the corresponding los.platform.*
 	 * module registered -- talking to any of them is a message, never
-	 * a direct call. 4 is the disk capability (a checked right, not
-	 * an exclusive task -- see fopen()/kernel_current_has_disk()).
-	 * all four are handed to the boot payload (init.lua or a test
-	 * payload) at spawn; ordinary sys.spawn children get none of them
+	 * a direct call. 4 is the disk-write capability (a checked right,
+	 * not an exclusive task -- see fopen()/kernel_current_has_disk());
+	 * reading a file needs no right at all, only writing/appending
+	 * does. all four are handed to the boot payload (init.lua or a
+	 * test payload) at spawn; ordinary sys.spawn children get none of them
 	 * by default.
 	 */
 	lua_pushinteger(L, 0);
@@ -1047,12 +1043,6 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		break;
 	}
 
-	/* the two loads below are kernel-privileged (deciding what a new
-	 * proc runs, before it has executed anything of its own), not a
-	 * running proc's own io.open -- bypass the disk check for them.
-	 */
-	kernel_loading = 1;
-
 	if (luaL_loadfile(p->L, "/lib/thread.lua") == LUA_OK) {
 		lua_setfield(p->L, -2, "los.thread");
 	} else {
@@ -1062,21 +1052,14 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		lua_pop(p->L, 1);
 	}
 
-	/* ninep is trusted system code (the 9p wire codec), not a proc's
-	 * own file access -- preload it the same way for the same reason,
-	 * so a plain sys.spawn child (which never gets DISK) can still
-	 * require("ninep") to speak the wire, same as it always could.
-	 */
-	if (luaL_loadfile(p->L, "/lib/ninep.lua") == LUA_OK) {
-		lua_setfield(p->L, -2, "ninep");
-	} else {
-		kputs("ninep load error: ");
-		kputs(lua_tostring(p->L, -1));
-		kputs("\n");
-		lua_pop(p->L, 1);
-	}
-
 	lua_pop(p->L, 2);	/* preload, package */
+
+	/* ninep (lib/ninep.lua) is found via plain require("ninep") --
+	 * LUA_PATH search, ordinary fopen() -- same as any other module.
+	 * it used to need a preload workaround here because reading was
+	 * disk-gated; now that read is ambient (see stdio.c's fopen),
+	 * that workaround is gone and require() just works.
+	 */
 
 	p->co = lua_newthread(p->L);
 	luaL_ref(p->L, LUA_REGISTRYINDEX);	/* anchor the thread */
@@ -1087,7 +1070,6 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		rc = luaL_loadfile(p->co, code);
 	else
 		rc = luaL_loadbuffer(p->co, code, codelen, chunkname);
-	kernel_loading = 0;
 	if (rc != LUA_OK) {
 		kputs("proc load error: ");
 		kputs(lua_tostring(p->co, -1));
@@ -1404,17 +1386,15 @@ kernel_run(void)
 	}
 }
 
-/* disk is a checked capability (see the comment by diskport's
- * declaration): does whoever is currently resumed hold any right to
- * it? used by stdio.c's fopen, which has no lua_State at all --
- * liolib.c's io.open calls it as plain C, so current_proc is the only
- * way to learn who's asking.
+/* disk gates write/append only (read is ambient, see stdio.c's
+ * fopen): does whoever is currently resumed hold any right to
+ * diskport? used from fopen, which has no lua_State at all --
+ * liolib.c's io.open calls it as plain C, so current_proc is the
+ * only way to learn who's asking.
  */
 int
 kernel_current_has_disk(void)
 {
-	if (kernel_loading)
-		return 1;
 	if (!current_proc)
 		return 0;
 	for (int i = 0; i < MAXRIGHTS; i++)

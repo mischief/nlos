@@ -102,24 +102,37 @@ in test/boot/test_drivers.lua: an ordinary proc cannot
 `require("los.platform.*")` and a spawned child with no rights beyond
 its own self-port cannot reach any of the three mailboxes either.
 
-**disk is the one resource that cannot use this trick, and that's
-worth being honest about.** `io.open` is vanilla lua's liolib.c
-calling our `fopen()` as *plain C, with no lua_State parameter at
-all* — there is no require()/package.preload boundary to defend,
-because liolib.c is not proc-aware in the first place. the only
-mechanism that actually fits: `kernel_run` tracks `current_proc` (who
-is resumed right now, set once per `lua_resume` call), and `fopen()`
-checks whether `current_proc` holds a right to a reserved capability
-port (`DISK`). this is the *weaker* checked-right form (a function
-present everywhere, gated by a check, not an absent function) —
-exactly the form the cons/wire/power fix deliberately moved past —
-kept here only because liolib's C-level shape leaves no alternative.
-a `kernel_loading` bypass flag covers the handful of file loads that
-happen during proc *construction* itself (loading a new proc's own
-chunk, and the universally-preloaded `los.thread`/`ninep` system
-libraries) — those are kernel-privileged reads deciding what a new
-proc runs, before it has executed anything of its own, not a running
-proc's own `io.open` call.
+**disk gates write/append only; read is deliberately ambient.** two
+separate reasons, not one shortcut. first, mechanism: `io.open` is
+vanilla lua's liolib.c calling our `fopen()` as *plain C, with no
+lua_State parameter at all* — there is no require()/package.preload
+boundary to defend the way cons/wire/power get. the only mechanism
+that fits at all: `kernel_run` tracks `current_proc` (who is resumed
+right now), and `fopen()` checks whether `current_proc` holds a right
+to a reserved capability port (`DISK`) — a *weaker* checked-right form
+(a function present everywhere, gated by a check) than exclusive
+registration, kept only because liolib's C-level shape leaves no
+alternative short of replacing liolib's file-object machinery with
+yieldable, continuation-based `lua_CFunction`s (structurally possible
+— Lua 5.4 supports suspending a C function Lua itself called and
+resuming via a continuation — but a much bigger rewrite than this
+project's own stated scope justifies).
+
+second, and the reason read specifically needs no gate at all: this
+project's own non-goals already say the threat model is *buggy lua,
+not hostile users*. pillar 3's "no ambient authority" argument is
+about actions with real external consequences — writing live bytes to
+a wire an external client is reading, powering off the actual
+machine. reading a static local file doesn't have that quality, and
+nothing on the esp is confidentiality-sensitive. write is a genuinely
+different risk even under "bugs not attackers": a runaway proc
+looping on a write can corrupt `/lib/thread.lua` or fill the esp,
+breaking every future boot — real blast radius, gated the same
+checked-right way. this also means `require()`/`loadfile` need no
+special-casing at all (an earlier version of this fix universally
+preloaded `ninep` as a workaround for read being gated; once read
+isn't gated, that workaround is gone and `require("ninep")` just
+works, found via `LUA_PATH` like any other module).
 
 the cons/wire/power pattern generalizes to every future task-shaped
 privileged resource: one task owns the raw primitive, everyone else
