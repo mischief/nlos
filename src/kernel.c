@@ -17,6 +17,7 @@
 
 #include "efi.h"
 #include "kernel.h"
+#include "net.h"
 
 #include "lua.h"
 #include "lualib.h"
@@ -141,6 +142,51 @@ kernel_unregister_wait_event(EFI_EVENT ev)
 			    extra_wait_events[--nextra_wait_events];
 			return;
 		}
+}
+
+static int port_push(struct kport *port, const unsigned char *data,
+    size_t len, const unsigned char *refs, int nrefs);
+
+/* net's own wakeup: a kernel-owned port, exactly like kbdport/serport,
+ * except fed by an EFI event-notify callback instead of a polled pump
+ * -- net.c's completions are token/Event based, not "bytes just show
+ * up to poll." the notify runs with no lua involved at all (it's an
+ * EFIAPI callback the firmware invokes directly), so it can only ever
+ * touch plain kernel state; port_push is exactly that, already safe
+ * to call from anywhere. whoever holds netport's recv right (the net
+ * task, once it exists) just does an ordinary thread.recv -- same
+ * proven wakeup path as every other blocking primitive here, no new
+ * primitive with its own race to get wrong.
+ */
+static struct kport *netport;
+
+static void EFIAPI
+net_event_notify(EFI_EVENT ev, void *ctx)
+{
+	(void)ev;
+	(void)ctx;
+	if (netport)
+		port_push(netport, (const unsigned char *)"", 0, 0, 0);
+}
+
+/* net.c calls this instead of BS->CreateEvent directly: wires the
+ * notify above, and registers the event in kernel_run's dynamic wait
+ * set so the machine wakes promptly (bounded otherwise by the 1ms
+ * tick, which would still be correct, just slightly slower).
+ */
+EFI_EVENT
+kernel_new_net_event(void)
+{
+	EFI_EVENT ev;
+
+	if (BS->CreateEvent(EVT_NOTIFY_SIGNAL, TPL_CALLBACK,
+	    (void *)net_event_notify, 0, &ev) != EFI_SUCCESS)
+		return 0;
+	if (kernel_register_wait_event(ev) != 0) {
+		BS->CloseEvent(ev);
+		return 0;
+	}
+	return ev;
 }
 
 static struct kproc *
@@ -1247,6 +1293,8 @@ pump_keyboard(void)
 
 /* ---- kernel ---- */
 
+static int have_net;
+
 int
 kernel_init(void)
 {
@@ -1254,14 +1302,22 @@ kernel_init(void)
 	kbdport = port_new();
 	serport = port_new();
 	diskport = port_new();
-	if (!kbdport || !serport || !diskport)
+	netport = port_new();
+	if (!kbdport || !serport || !diskport || !netport)
 		return -1;
-	/* kernel refs: the pumps (and, for diskport, the kernel itself)
-	 * hold these ports forever
+	/* kernel refs: the pumps (and, for diskport/netport, the kernel
+	 * itself) hold these ports forever
 	 */
 	kbdport->nrights++;
 	serport->nrights++;
 	diskport->nrights++;
+	netport->nrights++;
+
+	/* soft-fail: no NIC (real hardware, or qemu -net none) just means
+	 * no net task gets spawned later, same as any other optional
+	 * boot-time resource.
+	 */
+	have_net = (net_init() == 0);
 	return 0;
 }
 

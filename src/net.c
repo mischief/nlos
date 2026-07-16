@@ -127,17 +127,17 @@ net_accept_start(void *conn)
 	if (!tok)
 		return 0;
 	memset(tok, 0, sizeof *tok);
-	if (BS->CreateEvent(0, TPL_CALLBACK, 0, 0,
-	    &tok->CompletionToken.Event) != EFI_SUCCESS) {
+	tok->CompletionToken.Event = kernel_new_net_event();
+	if (!tok->CompletionToken.Event) {
 		free(tok);
 		return 0;
 	}
 	if (c->tcp->Accept(c->tcp, tok) != EFI_SUCCESS) {
+		kernel_unregister_wait_event(tok->CompletionToken.Event);
 		BS->CloseEvent(tok->CompletionToken.Event);
 		free(tok);
 		return 0;
 	}
-	kernel_register_wait_event(tok->CompletionToken.Event);
 	return tok;
 }
 
@@ -200,19 +200,19 @@ net_send_start(void *conn, const char *data, unsigned long n)
 	td->FragmentTable[0].FragmentBuffer = (void *)data;
 	tok->Packet.TxData = td;
 
-	if (BS->CreateEvent(0, TPL_CALLBACK, 0, 0,
-	    &tok->CompletionToken.Event) != EFI_SUCCESS) {
+	tok->CompletionToken.Event = kernel_new_net_event();
+	if (!tok->CompletionToken.Event) {
 		free(tok);
 		free(td);
 		return 0;
 	}
 	if (c->tcp->Transmit(c->tcp, tok) != EFI_SUCCESS) {
+		kernel_unregister_wait_event(tok->CompletionToken.Event);
 		BS->CloseEvent(tok->CompletionToken.Event);
 		free(tok);
 		free(td);
 		return 0;
 	}
-	kernel_register_wait_event(tok->CompletionToken.Event);
 	return tok;
 }
 
@@ -252,21 +252,21 @@ net_recv_start(void *conn, unsigned long maxlen)
 	rd->FragmentTable[0].FragmentBuffer = buf;
 	tok->Packet.RxData = rd;
 
-	if (BS->CreateEvent(0, TPL_CALLBACK, 0, 0,
-	    &tok->CompletionToken.Event) != EFI_SUCCESS) {
+	tok->CompletionToken.Event = kernel_new_net_event();
+	if (!tok->CompletionToken.Event) {
 		free(tok);
 		free(rd);
 		free(buf);
 		return 0;
 	}
 	if (c->tcp->Receive(c->tcp, tok) != EFI_SUCCESS) {
+		kernel_unregister_wait_event(tok->CompletionToken.Event);
 		BS->CloseEvent(tok->CompletionToken.Event);
 		free(tok);
 		free(rd);
 		free(buf);
 		return 0;
 	}
-	kernel_register_wait_event(tok->CompletionToken.Event);
 	return tok;
 }
 

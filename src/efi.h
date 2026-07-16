@@ -28,6 +28,7 @@ typedef UINT64    EFI_VIRTUAL_ADDRESS;
 #define EFI_SUCCESS		0
 
 #define EVT_TIMER		0x80000000
+#define EVT_NOTIFY_SIGNAL	0x00000200
 #define TPL_CALLBACK		8
 
 typedef enum {

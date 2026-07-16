@@ -24,4 +24,13 @@ int	kernel_current_has_disk(void);
 int	kernel_register_wait_event(void *event);
 void	kernel_unregister_wait_event(void *event);
 
+/* net.c calls this instead of BS->CreateEvent directly for every
+ * completion token it creates: wires the kernel's own notify
+ * (wakes whoever holds netport's recv right via an ordinary
+ * port_push, same mechanism as every other blocking primitive here)
+ * and registers the event in the dynamic wait-set above. returns 0
+ * (NULL) on failure, same convention as CreateEvent's out-param.
+ */
+void	*kernel_new_net_event(void);
+
 #endif
