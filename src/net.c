@@ -18,6 +18,9 @@
 #include "kernel.h"
 #include "net.h"
 
+#include "lua.h"
+#include "lauxlib.h"
+
 static EFI_GUID tcp4_sb_guid = { 0x00720665, 0x67EB, 0x4a99,
 	{ 0xBA, 0xF7, 0xD3, 0xC3, 0x3A, 0x1C, 0x7C, 0xC9 } };
 static EFI_GUID tcp4_guid = { 0x65530BC7, 0xA359, 0x410f,
@@ -75,19 +78,51 @@ netconn_new(void)
 	return c;
 }
 
+extern void console_write(const char *s, unsigned long n);
+
+static void
+debug_status(const char *label, EFI_STATUS st)
+{
+	char buf[64];
+	int n = 0;
+
+	buf[n++] = 'D';
+	buf[n++] = 'B';
+	buf[n++] = 'G';
+	buf[n++] = ' ';
+	while (*label)
+		buf[n++] = *label++;
+	buf[n++] = ':';
+	buf[n++] = ' ';
+	buf[n++] = '0';
+	buf[n++] = 'x';
+	for (int shift = 60; shift >= 0; shift -= 4) {
+		int nib = (st >> shift) & 0xf;
+
+		buf[n++] = nib < 10 ? '0' + nib : 'a' + nib - 10;
+	}
+	buf[n++] = '\n';
+	console_write(buf, n);
+}
+
 void *
 net_listen(unsigned short port)
 {
 	struct netconn *c = netconn_new();
 	EFI_TCP4_CONFIG_DATA cfg;
+	EFI_STATUS st;
 
-	if (!c)
+	if (!c) {
+		debug_status("netconn_new", 0xdead);
 		return 0;
+	}
 	memset(&cfg, 0, sizeof cfg);
 	cfg.AccessPoint.UseDefaultAddress = 1;
 	cfg.AccessPoint.StationPort = port;
 	cfg.AccessPoint.ActiveFlag = 0;
-	if (c->tcp->Configure(c->tcp, &cfg) != EFI_SUCCESS) {
+	st = c->tcp->Configure(c->tcp, &cfg);
+	if (st != EFI_SUCCESS) {
+		debug_status("Configure", st);
 		tcp4_sb->DestroyChild(tcp4_sb, c->handle);
 		free(c);
 		return 0;
@@ -132,7 +167,10 @@ net_accept_start(void *conn)
 		free(tok);
 		return 0;
 	}
-	if (c->tcp->Accept(c->tcp, tok) != EFI_SUCCESS) {
+	EFI_STATUS ast = c->tcp->Accept(c->tcp, tok);
+
+	if (ast != EFI_SUCCESS) {
+		debug_status("Accept", ast);
 		kernel_unregister_wait_event(tok->CompletionToken.Event);
 		BS->CloseEvent(tok->CompletionToken.Event);
 		free(tok);
@@ -160,6 +198,7 @@ net_accept_poll(void *token, void **out)
 	BS->CloseEvent(tok->CompletionToken.Event);
 
 	if (tok->CompletionToken.Status != EFI_SUCCESS) {
+		debug_status("accept completion", tok->CompletionToken.Status);
 		free(tok);
 		*out = 0;
 		return 1;
@@ -307,4 +346,164 @@ net_close(void *conn)
 	c->tcp->Configure(c->tcp, 0);
 	tcp4_sb->DestroyChild(tcp4_sb, c->handle);
 	free(c);
+}
+
+/* ---- los.platform.net: lua bindings, registered ONLY for the net
+ * task (see kernel.c's proc_new). raw C handles (connections, tokens)
+ * cross into lua as opaque lightuserdata -- lua code holds them but
+ * can't do anything with them except pass them back to these same
+ * functions.
+ */
+
+static int
+l_net_listen(lua_State *L)
+{
+	void *c = net_listen((unsigned short)luaL_checkinteger(L, 1));
+
+	if (!c)
+		return 0;
+	lua_pushlightuserdata(L, c);
+	return 1;
+}
+
+static int
+l_net_dial(lua_State *L)
+{
+	unsigned char octets[4];
+
+	for (int i = 0; i < 4; i++)
+		octets[i] = (unsigned char)luaL_checkinteger(L, i + 1);
+
+	unsigned int ip;
+
+	memcpy(&ip, octets, 4);
+
+	void *c = net_dial(ip, (unsigned short)luaL_checkinteger(L, 5));
+
+	if (!c)
+		return 0;
+	lua_pushlightuserdata(L, c);
+	return 1;
+}
+
+static int
+l_net_close(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+	net_close(lua_touserdata(L, 1));
+	return 0;
+}
+
+static int
+l_net_accept_start(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+
+	void *tok = net_accept_start(lua_touserdata(L, 1));
+
+	if (!tok)
+		return 0;
+	lua_pushlightuserdata(L, tok);
+	return 1;
+}
+
+static int
+l_net_accept_poll(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+
+	void *out = 0;
+	int done = net_accept_poll(lua_touserdata(L, 1), &out);
+
+	if (!done) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	lua_pushboolean(L, 1);
+	if (out) {
+		lua_pushlightuserdata(L, out);
+		return 2;
+	}
+	return 1;	/* done, but peer error: (true, nil) */
+}
+
+static int
+l_net_send_start(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+
+	size_t n;
+	const char *s = luaL_checklstring(L, 2, &n);
+	void *tok = net_send_start(lua_touserdata(L, 1), s, n);
+
+	if (!tok)
+		return 0;
+	lua_pushlightuserdata(L, tok);
+	return 1;
+}
+
+static int
+l_net_send_poll(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+	lua_pushboolean(L, net_send_poll(lua_touserdata(L, 1)));
+	return 1;
+}
+
+static int
+l_net_recv_start(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+
+	lua_Integer maxlen = luaL_optinteger(L, 2, 4096);
+	void *tok = net_recv_start(lua_touserdata(L, 1), (unsigned long)maxlen);
+
+	if (!tok)
+		return 0;
+	lua_pushlightuserdata(L, tok);
+	return 1;
+}
+
+static int
+l_net_recv_poll(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+
+	void *data = 0;
+	unsigned long len = 0;
+	int done = net_recv_poll(lua_touserdata(L, 1), &data, &len);
+
+	if (!done) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	lua_pushboolean(L, 1);
+	if (data) {
+		lua_pushlstring(L, data, len);
+		free(data);
+		return 2;
+	}
+	return 1;	/* done, but connection closed/errored: (true, nil) */
+}
+
+static const luaL_Reg netlib[] = {
+	{ "listen", l_net_listen },
+	{ "dial", l_net_dial },
+	{ "close", l_net_close },
+	{ "accept_start", l_net_accept_start },
+	{ "accept_poll", l_net_accept_poll },
+	{ "send_start", l_net_send_start },
+	{ "send_poll", l_net_send_poll },
+	{ "recv_start", l_net_recv_start },
+	{ "recv_poll", l_net_recv_poll },
+	{ NULL, NULL }
+};
+
+int luaopen_los_platform_net(lua_State *L);
+
+int
+luaopen_los_platform_net(lua_State *L)
+{
+	luaL_newlib(L, netlib);
+	return 1;
 }

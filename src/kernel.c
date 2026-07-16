@@ -34,7 +34,7 @@
 #define MAXWATCH	8	/* monitors per proc */
 
 enum { DEAD, READY, BLOCKED };
-enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER };
+enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_NET };
 
 struct kmsg {
 	struct kmsg *next;
@@ -165,8 +165,13 @@ net_event_notify(EFI_EVENT ev, void *ctx)
 {
 	(void)ev;
 	(void)ctx;
+	/* every message needs at least a serializer tag; an empty buffer
+	 * has none and the deserializer correctly refuses it as corrupt.
+	 * this is just a wakeup ping -- net.lua doesn't look at the
+	 * value, so a bare nil (tag 'N', one byte) is enough.
+	 */
 	if (netport)
-		port_push(netport, (const unsigned char *)"", 0, 0, 0);
+		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
 }
 
 /* net.c calls this instead of BS->CreateEvent directly: wires the
@@ -966,6 +971,7 @@ extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
+extern int luaopen_los_platform_net(lua_State *L);	/* net.c */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
  * kernel-owned primitives that outlive efi (ticks). registered in
@@ -985,9 +991,12 @@ los_sys_open(lua_State *L)
 	 * a direct call. 4 is the disk-write capability (a checked right,
 	 * not an exclusive task -- see fopen()/kernel_current_has_disk());
 	 * reading a file needs no right at all, only writing/appending
-	 * does. all four are handed to the boot payload (init.lua or a
-	 * test payload) at spawn; ordinary sys.spawn children get none of them
-	 * by default.
+	 * does. 5 is a send-right to net, granted only when a NIC was
+	 * actually found at boot (see have_net) -- unlike the other four,
+	 * a missing net task is the normal case on hardware without one,
+	 * not a boot failure. all are handed to the boot payload (init.lua
+	 * or a test payload) at spawn; ordinary sys.spawn children get
+	 * none of them by default.
 	 */
 	lua_pushinteger(L, 0);
 	lua_setfield(L, -2, "SELF");
@@ -999,6 +1008,8 @@ los_sys_open(lua_State *L)
 	lua_setfield(L, -2, "POWER");
 	lua_pushinteger(L, 4);
 	lua_setfield(L, -2, "DISK");
+	lua_pushinteger(L, 5);
+	lua_setfield(L, -2, "NET");
 	return 1;
 }
 
@@ -1118,6 +1129,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	case PRIV_POWER:
 		lua_pushcfunction(p->L, luaopen_los_platform_power);
 		lua_setfield(p->L, -2, "los.platform.power");
+		break;
+	case PRIV_NET:
+		lua_pushcfunction(p->L, luaopen_los_platform_net);
+		lua_setfield(p->L, -2, "los.platform.net");
 		break;
 	}
 
@@ -1367,6 +1382,12 @@ spawn_init(const char *code, size_t len, int is_file)
 	    serport, 1, "the 9p wire");
 	int power_pid = spawn_driver("/lib/power.lua", "=power", PRIV_POWER,
 	    0, 0, "reset/stall");
+	/* no NIC (real hardware, or qemu -net none) is the normal case,
+	 * not a boot failure -- don't even try spawning a task that could
+	 * never listen/dial successfully.
+	 */
+	int net_pid = have_net ? spawn_driver("/lib/net.lua", "=net",
+	    PRIV_NET, netport, 1, "networking") : -1;
 
 	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_NONE);
 
@@ -1375,15 +1396,16 @@ spawn_init(const char *code, size_t len, int is_file)
 
 	struct kproc *p = find_proc(pid);
 
-	/* fixed handle numbers (1=CONS, 2=WIRE, 3=POWER, 4=DISK), granted
-	 * by explicit index so a driver that failed to spawn just leaves
-	 * a hole at its own number -- sys.send(sys.CONS,...) then fails
-	 * with "bad right", cleanly, instead of some other capability
-	 * silently sliding into the wrong handle.
+	/* fixed handle numbers (1=CONS, 2=WIRE, 3=POWER, 4=DISK, 5=NET),
+	 * granted by explicit index so a driver that failed to spawn just
+	 * leaves a hole at its own number -- sys.send(sys.CONS,...) then
+	 * fails with "bad right", cleanly, instead of some other
+	 * capability silently sliding into the wrong handle.
 	 */
 	struct kproc *cons = cons_pid >= 0 ? find_proc(cons_pid) : 0;
 	struct kproc *wire = wire_pid >= 0 ? find_proc(wire_pid) : 0;
 	struct kproc *power = power_pid >= 0 ? find_proc(power_pid) : 0;
+	struct kproc *net = net_pid >= 0 ? find_proc(net_pid) : 0;
 
 	if (cons)
 		right_new_at(p, 1, cons->rights[0].port, 0);
@@ -1393,6 +1415,8 @@ spawn_init(const char *code, size_t len, int is_file)
 		right_new_at(p, 3, power->rights[0].port, 0);
 	if (diskport)
 		right_new_at(p, 4, diskport, 0);
+	if (net)
+		right_new_at(p, 5, net->rights[0].port, 0);
 	return pid;
 }
 

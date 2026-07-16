@@ -166,6 +166,7 @@ luaos_efi = custom_target('luaos.efi',
 lua_payload = files(
   'init.lua',
   'lib/cons.lua',
+  'lib/net.lua',
   'lib/ninep.lua',
   'lib/power.lua',
   'lib/tap.lua',
