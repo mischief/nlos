@@ -111,6 +111,38 @@ static struct kproc *current_proc;
  */
 static struct kport *diskport;
 
+/* dynamic wait-set: device layers whose completions are token/Event
+ * based (unlike the byte-stream pumps above, which are polled every
+ * iteration) register the Event they're waiting on here, so
+ * kernel_run's idle sleep can include it. net.c (EFI TCP4) is the
+ * first user -- Connect/Accept/Transmit/Receive all take a token
+ * whose completion is signaled by an Event, not by bytes just being
+ * "there" to poll.
+ */
+#define MAXWAITEVENTS 16
+static EFI_EVENT extra_wait_events[MAXWAITEVENTS];
+static int nextra_wait_events;
+
+int
+kernel_register_wait_event(EFI_EVENT ev)
+{
+	if (nextra_wait_events >= MAXWAITEVENTS)
+		return -1;
+	extra_wait_events[nextra_wait_events++] = ev;
+	return 0;
+}
+
+void
+kernel_unregister_wait_event(EFI_EVENT ev)
+{
+	for (int i = 0; i < nextra_wait_events; i++)
+		if (extra_wait_events[i] == ev) {
+			extra_wait_events[i] =
+			    extra_wait_events[--nextra_wait_events];
+			return;
+		}
+}
+
 static struct kproc *
 find_proc(int pid)
 {
@@ -1324,7 +1356,7 @@ void
 kernel_run(void)
 {
 	EFI_EVENT tick = 0;
-	EFI_EVENT waits[2];
+	EFI_EVENT waits[2 + MAXWAITEVENTS];
 	UINTN index;
 
 	/* periodic 1ms timer: idle becomes a real firmware sleep (hlt)
@@ -1373,13 +1405,20 @@ kernel_run(void)
 				proc_kill(p, lua_tostring(p->co, -1));
 		}
 		if (!ran) {
-			/* everyone blocked: sleep until key or tick.
-			 * the tick bounds serial rx latency at ~1ms.
+			/* everyone blocked: sleep until key, tick, or any
+			 * registered device completion (net.c's tcp4
+			 * tokens). the tick bounds serial rx latency at ~1ms
+			 * and, now, how promptly a fired net event gets
+			 * noticed even if something raced registration.
 			 */
 			if (tick) {
-				waits[0] = ST->ConIn->WaitForKey;
-				waits[1] = tick;
-				BS->WaitForEvent(2, waits, &index);
+				UINTN n = 0;
+
+				waits[n++] = ST->ConIn->WaitForKey;
+				waits[n++] = tick;
+				for (int i = 0; i < nextra_wait_events; i++)
+					waits[n++] = extra_wait_events[i];
+				BS->WaitForEvent(n, waits, &index);
 			} else
 				BS->Stall(500);
 		}

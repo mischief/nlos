@@ -17,4 +17,11 @@ void	kernel_run(void);			/* until all procs die */
  */
 int	kernel_current_has_disk(void);
 
+/* dynamic wait-set for token/Event-based device completions (net.c's
+ * tcp4 tokens today). register while an operation is outstanding,
+ * unregister once its Event has fired and been handled.
+ */
+int	kernel_register_wait_event(void *event);
+void	kernel_unregister_wait_event(void *event);
+
 #endif

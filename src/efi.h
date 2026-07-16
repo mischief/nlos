@@ -158,8 +158,8 @@ typedef struct {
 	EFI_STATUS (EFIAPI *WaitForEvent)(UINTN NumberOfEvents, EFI_EVENT *Event,
 	    UINTN *Index);
 	void *SignalEvent;
-	void *CloseEvent;
-	void *CheckEvent;
+	EFI_STATUS (EFIAPI *CloseEvent)(EFI_EVENT Event);
+	EFI_STATUS (EFIAPI *CheckEvent)(EFI_EVENT Event);
 
 	void *InstallProtocolInterface;
 	void *ReinstallProtocolInterface;
@@ -238,6 +238,109 @@ typedef struct {
 	EFI_HANDLE DeviceHandle;
 	/* rest unused */
 } EFI_LOADED_IMAGE_PROTOCOL;
+
+typedef struct EFI_SERVICE_BINDING_PROTOCOL EFI_SERVICE_BINDING_PROTOCOL;
+struct EFI_SERVICE_BINDING_PROTOCOL {
+	EFI_STATUS (EFIAPI *CreateChild)(EFI_SERVICE_BINDING_PROTOCOL *This,
+	    EFI_HANDLE *ChildHandle);
+	EFI_STATUS (EFIAPI *DestroyChild)(EFI_SERVICE_BINDING_PROTOCOL *This,
+	    EFI_HANDLE ChildHandle);
+};
+
+/* ---- tcp4: async, token/Event-based -- see src/net.c and
+ * kernel_register_wait_event. field order/sizes follow the UEFI spec
+ * exactly; these are called through function pointers, so layout is
+ * abi, not style.
+ */
+
+typedef struct {
+	BOOLEAN UseDefaultAddress;
+	UINT8 StationAddress[4];
+	UINT8 SubnetMask[4];
+	UINT16 StationPort;
+	UINT8 RemoteAddress[4];
+	UINT16 RemotePort;
+	BOOLEAN ActiveFlag;
+} EFI_TCP4_ACCESS_POINT;
+
+typedef struct {
+	UINT8 TypeOfService;
+	UINT8 TimeToLive;
+	EFI_TCP4_ACCESS_POINT AccessPoint;
+	void *ControlOption;	/* EFI_TCP4_OPTION*; NULL is fine */
+} EFI_TCP4_CONFIG_DATA;
+
+typedef struct {
+	EFI_EVENT Event;
+	EFI_STATUS Status;
+} EFI_TCP4_COMPLETION_TOKEN;
+
+typedef struct {
+	EFI_TCP4_COMPLETION_TOKEN CompletionToken;
+} EFI_TCP4_CONNECTION_TOKEN;
+
+typedef struct {
+	EFI_TCP4_COMPLETION_TOKEN CompletionToken;
+	EFI_HANDLE NewChildHandle;
+} EFI_TCP4_LISTEN_TOKEN;
+
+typedef struct {
+	EFI_TCP4_COMPLETION_TOKEN CompletionToken;
+	BOOLEAN AbortOnClose;
+} EFI_TCP4_CLOSE_TOKEN;
+
+typedef struct {
+	UINT32 FragmentLength;
+	void *FragmentBuffer;
+} EFI_TCP4_FRAGMENT_DATA;
+
+typedef struct {
+	BOOLEAN UrgentFlag;
+	UINT32 DataLength;
+	UINT32 FragmentCount;
+	EFI_TCP4_FRAGMENT_DATA FragmentTable[1];
+} EFI_TCP4_RECEIVE_DATA;
+
+typedef struct {
+	BOOLEAN Push;
+	BOOLEAN Urgent;
+	UINT32 DataLength;
+	UINT32 FragmentCount;
+	EFI_TCP4_FRAGMENT_DATA FragmentTable[1];
+} EFI_TCP4_TRANSMIT_DATA;
+
+typedef struct {
+	EFI_TCP4_COMPLETION_TOKEN CompletionToken;
+	union {
+		EFI_TCP4_RECEIVE_DATA *RxData;
+		EFI_TCP4_TRANSMIT_DATA *TxData;
+	} Packet;
+} EFI_TCP4_IO_TOKEN;
+
+typedef struct EFI_TCP4_PROTOCOL EFI_TCP4_PROTOCOL;
+struct EFI_TCP4_PROTOCOL {
+	EFI_STATUS (EFIAPI *GetModeData)(EFI_TCP4_PROTOCOL *This,
+	    void *Tcp4State, EFI_TCP4_CONFIG_DATA *Tcp4ConfigData,
+	    void *Ip4ModeData, void *MnpConfigData, void *SnpModeData);
+	EFI_STATUS (EFIAPI *Configure)(EFI_TCP4_PROTOCOL *This,
+	    EFI_TCP4_CONFIG_DATA *TcpConfigData);
+	EFI_STATUS (EFIAPI *Routes)(EFI_TCP4_PROTOCOL *This,
+	    BOOLEAN DeleteRoute, UINT8 *SubnetAddress, UINT8 *SubnetMask,
+	    UINT8 *GatewayAddress);
+	EFI_STATUS (EFIAPI *Connect)(EFI_TCP4_PROTOCOL *This,
+	    EFI_TCP4_CONNECTION_TOKEN *ConnectionToken);
+	EFI_STATUS (EFIAPI *Accept)(EFI_TCP4_PROTOCOL *This,
+	    EFI_TCP4_LISTEN_TOKEN *ListenToken);
+	EFI_STATUS (EFIAPI *Transmit)(EFI_TCP4_PROTOCOL *This,
+	    EFI_TCP4_IO_TOKEN *Token);
+	EFI_STATUS (EFIAPI *Receive)(EFI_TCP4_PROTOCOL *This,
+	    EFI_TCP4_IO_TOKEN *Token);
+	EFI_STATUS (EFIAPI *Close)(EFI_TCP4_PROTOCOL *This,
+	    EFI_TCP4_CLOSE_TOKEN *CloseToken);
+	EFI_STATUS (EFIAPI *Cancel)(EFI_TCP4_PROTOCOL *This,
+	    EFI_TCP4_COMPLETION_TOKEN *Token);
+	EFI_STATUS (EFIAPI *Poll)(EFI_TCP4_PROTOCOL *This);
+};
 
 /* runtime services (through ResetSystem) */
 

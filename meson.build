@@ -46,6 +46,7 @@ kernel_src = files(
   'src/los.c',
   'src/main.c',
   'src/malloc.c',
+  'src/net.c',
 )
 
 libc_src = files(
