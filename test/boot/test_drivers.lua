@@ -8,7 +8,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(9)
+tap.plan(11)
 
 -- none of the three raw modules exist for us (we are not cons/wire/power)
 tap.is((pcall(require, "los.platform.cons")), false,
@@ -71,5 +71,23 @@ if w2 then
 	w2:write("hello")
 	w2:close()
 end
+
+-- reserved handles: this test payload boots with -net none, so 5/6
+-- (TCP/UDP) were never granted. those slots must stay permanently
+-- EMPTY, not get recycled by right_new's first-free-slot search --
+-- otherwise the first sys.spawn child lands on handle 5 and
+-- sys.send(sys.TCP, ...) silently starts naming that child's mailbox
+-- instead of failing cleanly.
+local _, child = sys.spawn([[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+	thread.recv(sys.SELF)
+]], { name = "reserve-probe" })
+
+tap.ok(child ~= 5 and child ~= 6,
+    "sys.spawn does not reuse an ungranted fixed handle (got " ..
+    tostring(child) .. ")")
+tap.ok(not pcall(sys.send, sys.SELF, { p = { __right = sys.TCP } }),
+    "sys.TCP with no NIC is a clean hole, not some other capability")
 
 tap.done()

@@ -33,6 +33,7 @@
 #define MAXMSGRIGHTS	8	/* rights per message */
 #define MAXWATCH	8	/* monitors per proc */
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
+#define HANDLE_MAX	7	/* highest fixed boot handle (SCHED); see spawn_init */
 
 enum { DEAD, READY, BLOCKED };
 enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP, PRIV_UDP };
@@ -61,6 +62,14 @@ struct right {
 	struct kport *port;
 	int recv;
 	int used;
+	/* a fixed boot handle number (CONS/WIRE/.../SCHED) that this proc
+	 * did NOT get -- because the driver was disabled or failed to
+	 * spawn. the slot stays permanently empty rather than being
+	 * handed out by right_new's first-free search: otherwise the
+	 * next sys.spawn child lands on it and sys.TCP silently starts
+	 * naming that child's mailbox instead of failing cleanly.
+	 */
+	int reserved;
 };
 
 /* a proc holds at most MAXRIGHTS distinct rights, so it can never park
@@ -271,7 +280,7 @@ static int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
 	for (int i = 0; i < MAXRIGHTS; i++)
-		if (!p->rights[i].used) {
+		if (!p->rights[i].used && !p->rights[i].reserved) {
 			p->rights[i].used = 1;
 			p->rights[i].port = port;
 			p->rights[i].recv = recv;
@@ -1717,6 +1726,17 @@ spawn_init(const char *code, size_t len, int is_file)
 		right_new_at(p, 4, diskport, 0);
 	if (schedport)
 		right_new_at(p, 7, schedport, 0);
+
+	/* every fixed handle number is spoken for, whether or not the
+	 * thing behind it exists this boot. an ungranted one has to stay
+	 * an empty hole so sys.send(sys.TCP, ...) fails with "bad right"
+	 * -- without this, right_new's first-free search hands slot 5 to
+	 * the boot payload's first sys.spawn child, and sys.TCP quietly
+	 * becomes a right to that child instead.
+	 */
+	for (int h = 1; h <= HANDLE_MAX; h++)
+		if (!p->rights[h].used)
+			p->rights[h].reserved = 1;
 	return pid;
 }
 
