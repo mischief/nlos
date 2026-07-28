@@ -1,4 +1,4 @@
--- net: the sole task anywhere with los.platform.net (raw tcp4). also
+-- tcp: the sole task anywhere with los.platform.tcp (raw tcp4). also
 -- holds the raw netport recv right directly (handle 1 in this proc's
 -- own table, granted by the kernel at spawn -- not a los.sys-wide
 -- constant). every other proc holds, at most, a send-right to this
@@ -15,14 +15,17 @@
 -- token and remembers who to reply to; every netport wakeup ping
 -- (raw bytes arrived, a send finished, whatever) rechecks every
 -- outstanding token, replying to whichever actually completed.
+--
+-- udp lives in lib/udp.lua now, its own exclusive task -- los.sys.UDP,
+-- not this one. see DESIGN.md for why they're split.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
-local platform = require("los.platform.net")
+local platform = require("los.platform.tcp")
 
 local RAWNET = 1
 
-local conns = {}	-- connid -> raw connection lightuserdata
+local conns = {}	-- connid -> connection userdata (see net.c's connbox)
 local nextconnid = 1
 local pending = {}	-- {kind=, token=, reply=}, checked on every wakeup
 
@@ -67,6 +70,14 @@ local function checkpending()
 
 		if done then
 			sys.send(p.reply, result)
+			-- each client req() transfers a fresh right in with
+			-- its reply port; it must be closed once used or this
+			-- exclusive task's own (finite, MAXRIGHTS-sized)
+			-- rights table fills up permanently after enough
+			-- requests, and the NEXT incoming right transfer
+			-- fails deserialization ("corrupt message") since
+			-- there's no free slot left to land it in.
+			sys.close(p.reply)
 			table.remove(pending, i)
 		else
 			i = i + 1
@@ -86,47 +97,49 @@ while true do
 		if m.op == "listen" then
 			local raw = platform.listen(m.port)
 			sys.send(reply, raw and newconn(raw) or nil)
+			sys.close(reply)
 		elseif m.op == "dial" then
-			-- two-phase now: Configure() only prepares an active
-			-- connection, Connect() is the async step that does
-			-- the handshake (see net.c's net_dial_start).
-			local token = platform.dial_start(m.a, m.b, m.c, m.d,
-			    m.port)
+			local token = platform.dial_start(m.a, m.b, m.c, m.d, m.port)
 			if token then
 				pending[#pending + 1] =
 				    { kind = "dial", token = token,
 				      reply = reply }
 			else
 				sys.send(reply, nil)
+				sys.close(reply)
 			end
 		elseif m.op == "accept" then
-			local token = platform.accept_start(conns[m.connid])
+			local token = conns[m.connid] and
+			    platform.accept_start(conns[m.connid])
 			if token then
 				pending[#pending + 1] =
 				    { kind = "accept", token = token,
 				      reply = reply }
 			else
 				sys.send(reply, nil)
+				sys.close(reply)
 			end
 		elseif m.op == "send" then
-			local token = platform.send_start(conns[m.connid],
-			    m.data)
+			local token = conns[m.connid] and
+			    platform.send_start(conns[m.connid], m.data)
 			if token then
 				pending[#pending + 1] =
 				    { kind = "send", token = token,
 				      reply = reply }
 			else
 				sys.send(reply, false)
+				sys.close(reply)
 			end
 		elseif m.op == "recv" then
-			local token = platform.recv_start(conns[m.connid],
-			    m.maxlen)
+			local token = conns[m.connid] and
+			    platform.recv_start(conns[m.connid], m.maxlen)
 			if token then
 				pending[#pending + 1] =
 				    { kind = "recv", token = token,
 				      reply = reply }
 			else
 				sys.send(reply, nil)
+				sys.close(reply)
 			end
 		elseif m.op == "close" then
 			if conns[m.connid] then

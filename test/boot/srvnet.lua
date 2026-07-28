@@ -4,8 +4,8 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 
-if not sys.NET then
-	print("NO NET")
+if not sys.TCP then
+	print("NO TCP")
 	return
 end
 
@@ -15,7 +15,7 @@ local function req(op, extra)
 	extra = extra or {}
 	extra.op = op
 	extra.reply = { __right = replyport }
-	sys.send(sys.NET, extra)
+	sys.send(sys.TCP, extra)
 	return thread.recv(replyport)
 end
 
@@ -60,5 +60,8 @@ if data then
 	print("SENT")
 end
 
-req("close", { connid = conn })
+-- fire-and-forget: tcp.lua's "close" op never replies (see
+-- lib/tcp.lua's op table comment), so this must not go through
+-- req()/thread.recv or it blocks forever.
+sys.send(sys.TCP, { op = "close", connid = conn })
 print("DONE")

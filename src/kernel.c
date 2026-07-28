@@ -35,7 +35,7 @@
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
 
 enum { DEAD, READY, BLOCKED };
-enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_NET };
+enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP, PRIV_UDP };
 
 struct kmsg {
 	struct kmsg *next;
@@ -146,6 +146,7 @@ static int port_push(struct kport *port, const unsigned char *data,
  * wrong.
  */
 static struct kport *netport;
+static struct kport *udpport;
 
 /* true once net_init() has located tcp4 and the net task has been (or
  * will be) spawned; guards pump_net so it doesn't push into netport
@@ -154,6 +155,7 @@ static struct kport *netport;
  * dead, and the queue would grow unbounded.
  */
 static int have_net;
+static int have_udp;
 
 /* net.c calls this instead of BS->CreateEvent directly. */
 EFI_EVENT
@@ -1153,7 +1155,8 @@ extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
-extern int luaopen_los_platform_net(lua_State *L);	/* net.c */
+extern int luaopen_los_platform_tcp(lua_State *L);	/* net.c */
+extern int luaopen_los_platform_udp(lua_State *L);	/* net.c */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
  * kernel-owned primitives that outlive efi (ticks). registered in
@@ -1194,7 +1197,9 @@ los_sys_open(lua_State *L)
 	lua_pushinteger(L, 4);
 	lua_setfield(L, -2, "DISK");
 	lua_pushinteger(L, 5);
-	lua_setfield(L, -2, "NET");
+	lua_setfield(L, -2, "TCP");
+	lua_pushinteger(L, 6);
+	lua_setfield(L, -2, "UDP");
 	lua_pushinteger(L, 7);
 	lua_setfield(L, -2, "SCHED");
 	return 1;
@@ -1327,9 +1332,13 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		lua_pushcfunction(p->L, luaopen_los_platform_power);
 		lua_setfield(p->L, -2, "los.platform.power");
 		break;
-	case PRIV_NET:
-		lua_pushcfunction(p->L, luaopen_los_platform_net);
-		lua_setfield(p->L, -2, "los.platform.net");
+	case PRIV_TCP:
+		lua_pushcfunction(p->L, luaopen_los_platform_tcp);
+		lua_setfield(p->L, -2, "los.platform.tcp");
+		break;
+	case PRIV_UDP:
+		lua_pushcfunction(p->L, luaopen_los_platform_udp);
+		lua_setfield(p->L, -2, "los.platform.udp");
 		break;
 	}
 
@@ -1521,6 +1530,8 @@ pump_net(void)
 {
 	if (have_net && netport && !netport->head)
 		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
+	if (have_udp && udpport && !udpport->head)
+		port_push(udpport, (const unsigned char *)"N", 1, 0, 0);
 }
 
 /* ---- keyboard pump ---- */
@@ -1561,8 +1572,10 @@ kernel_init(void)
 	serport = port_new();
 	diskport = port_new();
 	netport = port_new();
+	udpport = port_new();
 	schedport = port_new();
-	if (!kbdport || !serport || !diskport || !netport || !schedport)
+	if (!kbdport || !serport || !diskport || !netport || !udpport ||
+	    !schedport)
 		return -1;
 	/* kernel refs: the pumps (and, for diskport/netport/schedport,
 	 * the kernel itself) hold these ports forever
@@ -1571,6 +1584,7 @@ kernel_init(void)
 	serport->nrights++;
 	diskport->nrights++;
 	netport->nrights++;
+	udpport->nrights++;
 	schedport->nrights++;
 
 	/* soft-fail: no NIC (real hardware, or qemu -net none) just means
@@ -1578,6 +1592,7 @@ kernel_init(void)
 	 * boot-time resource.
 	 */
 	have_net = (net_init() == 0);
+	have_udp = net_have_udp();
 	return 0;
 }
 
@@ -1618,21 +1633,71 @@ spawn_driver(const char *path, const char *chunkname, int priv,
  * this by default; only the boot payload (analogous to pid 1 on a
  * unix system) starts this privileged.
  */
+/* one row per driver task the boot payload gets a fixed-handle right
+ * to. "enabled" is decided before this table is built (have_net/
+ * have_udp come from the net_init() probe in kernel_init()) -- this is
+ * still a one-shot, boot-time, C-side table, not a runtime bus/
+ * match-and-attach registry. disk and sched aren't in it: there's no
+ * lua owner task for either, they're bare capability ports granted to
+ * init directly (see the handle 4/7 grants below).
+ */
+struct driver_desc {
+	const char *path;
+	const char *chunkname;
+	int priv;
+	struct kport *devport;
+	int devrecv;
+	const char *what;
+	int enabled;
+	int handle;
+};
+
 static int
 spawn_init(const char *code, size_t len, int is_file)
 {
-	int cons_pid = spawn_driver("/lib/cons.lua", "=cons", PRIV_CONS,
-	    kbdport, 1, "console");
-	int wire_pid = spawn_driver("/lib/wire.lua", "=wire", PRIV_WIRE,
-	    serport, 1, "the 9p wire");
-	int power_pid = spawn_driver("/lib/power.lua", "=power", PRIV_POWER,
-	    0, 0, "reset/stall");
-	/* no NIC (real hardware, or qemu -net none) is the normal case,
-	 * not a boot failure -- don't even try spawning a task that could
-	 * never listen/dial successfully.
+	/* fixed handle numbers (1=CONS, 2=WIRE, 3=POWER, 4=DISK, 5=TCP,
+	 * 6=UDP, 7=SCHED), granted by explicit index below so a driver
+	 * that failed to spawn (or was never enabled, eg no NIC) just
+	 * leaves a hole at its own number -- sys.send(sys.CONS, ...) then
+	 * fails with "bad right", cleanly, instead of some other
+	 * capability silently sliding into the wrong handle.
 	 */
-	int net_pid = have_net ? spawn_driver("/lib/net.lua", "=net",
-	    PRIV_NET, netport, 1, "networking") : -1;
+	struct driver_desc drivers[] = {
+		{ .path = "/lib/cons.lua", .chunkname = "=cons",
+		  .priv = PRIV_CONS, .devport = kbdport, .devrecv = 1,
+		  .what = "console", .enabled = 1, .handle = 1 },
+		{ .path = "/lib/wire.lua", .chunkname = "=wire",
+		  .priv = PRIV_WIRE, .devport = serport, .devrecv = 1,
+		  .what = "the 9p wire", .enabled = 1, .handle = 2 },
+		{ .path = "/lib/power.lua", .chunkname = "=power",
+		  .priv = PRIV_POWER, .devport = 0, .devrecv = 0,
+		  .what = "reset/stall", .enabled = 1, .handle = 3 },
+		/* no NIC (real hardware, or qemu -net none) is the normal
+		 * case, not a boot failure -- don't even try spawning a task
+		 * that could never listen/dial successfully. tcp and udp are
+		 * two separate exclusive tasks (see PRIV_TCP/PRIV_UDP),
+		 * soft-failing independently of each other.
+		 */
+		{ .path = "/lib/tcp.lua", .chunkname = "=tcp",
+		  .priv = PRIV_TCP, .devport = netport, .devrecv = 1,
+		  .what = "networking (tcp)", .enabled = have_net,
+		  .handle = 5 },
+		{ .path = "/lib/udp.lua", .chunkname = "=udp",
+		  .priv = PRIV_UDP, .devport = udpport, .devrecv = 1,
+		  .what = "networking (udp)", .enabled = have_udp,
+		  .handle = 6 },
+	};
+	size_t ndrivers = sizeof drivers / sizeof drivers[0];
+	int pids[sizeof drivers / sizeof drivers[0]];
+	size_t i;
+
+	for (i = 0; i < ndrivers; i++) {
+		pids[i] = drivers[i].enabled
+		    ? spawn_driver(drivers[i].path, drivers[i].chunkname,
+		          drivers[i].priv, drivers[i].devport,
+		          drivers[i].devrecv, drivers[i].what)
+		    : -1;
+	}
 
 	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_NONE);
 
@@ -1641,27 +1706,15 @@ spawn_init(const char *code, size_t len, int is_file)
 
 	struct kproc *p = find_proc(pid);
 
-	/* fixed handle numbers (1=CONS, 2=WIRE, 3=POWER, 4=DISK, 5=NET),
-	 * granted by explicit index so a driver that failed to spawn just
-	 * leaves a hole at its own number -- sys.send(sys.CONS,...) then
-	 * fails with "bad right", cleanly, instead of some other
-	 * capability silently sliding into the wrong handle.
-	 */
-	struct kproc *cons = cons_pid >= 0 ? find_proc(cons_pid) : 0;
-	struct kproc *wire = wire_pid >= 0 ? find_proc(wire_pid) : 0;
-	struct kproc *power = power_pid >= 0 ? find_proc(power_pid) : 0;
-	struct kproc *net = net_pid >= 0 ? find_proc(net_pid) : 0;
+	for (i = 0; i < ndrivers; i++) {
+		struct kproc *dp = pids[i] >= 0 ? find_proc(pids[i]) : 0;
 
-	if (cons)
-		right_new_at(p, 1, cons->rights[0].port, 0);
-	if (wire)
-		right_new_at(p, 2, wire->rights[0].port, 0);
-	if (power)
-		right_new_at(p, 3, power->rights[0].port, 0);
+		if (dp)
+			right_new_at(p, drivers[i].handle,
+			    dp->rights[0].port, 0);
+	}
 	if (diskport)
 		right_new_at(p, 4, diskport, 0);
-	if (net)
-		right_new_at(p, 5, net->rights[0].port, 0);
 	if (schedport)
 		right_new_at(p, 7, schedport, 0);
 	return pid;

@@ -15,6 +15,7 @@ typedef uint16_t  UINT16;
 typedef uint32_t  UINT32;
 typedef uint64_t  UINT64;
 typedef int64_t   INT64;
+typedef int16_t   INT16;
 typedef uint64_t  UINTN;
 typedef int64_t   INTN;
 typedef uint16_t  CHAR16;
@@ -169,7 +170,7 @@ typedef struct {
 	    UINT64 TriggerTime);
 	EFI_STATUS (EFIAPI *WaitForEvent)(UINTN NumberOfEvents, EFI_EVENT *Event,
 	    UINTN *Index);
-	void *SignalEvent;
+	EFI_STATUS (EFIAPI *SignalEvent)(EFI_EVENT Event);
 	EFI_STATUS (EFIAPI *CloseEvent)(EFI_EVENT Event);
 	EFI_STATUS (EFIAPI *CheckEvent)(EFI_EVENT Event);
 
@@ -352,6 +353,103 @@ struct EFI_TCP4_PROTOCOL {
 	EFI_STATUS (EFIAPI *Cancel)(EFI_TCP4_PROTOCOL *This,
 	    EFI_TCP4_COMPLETION_TOKEN *Token);
 	EFI_STATUS (EFIAPI *Poll)(EFI_TCP4_PROTOCOL *This);
+};
+
+typedef struct {
+	UINT16 Year;
+	UINT8 Month;
+	UINT8 Day;
+	UINT8 Hour;
+	UINT8 Minute;
+	UINT8 Second;
+	UINT8 Pad1;
+	UINT32 Nanosecond;
+	INT16 TimeZone;
+	UINT8 Daylight;
+	UINT8 Pad2;
+} EFI_TIME;
+
+/* ---- udp4: connectionless sibling of tcp4 above -- same token/Event
+ * async shape (Transmit/Receive, no Connect/Accept since there's no
+ * connection), field order/sizes again exactly per spec, verified
+ * against MdePkg/Include/Protocol/Udp4.h.
+ */
+
+typedef struct {
+	BOOLEAN AcceptBroadcast;
+	BOOLEAN AcceptPromiscuous;
+	BOOLEAN AcceptAnyPort;
+	BOOLEAN AllowDuplicatePort;
+	UINT8 TypeOfService;
+	UINT8 TimeToLive;
+	BOOLEAN DoNotFragment;
+	UINT32 ReceiveTimeout;
+	UINT32 TransmitTimeout;
+	BOOLEAN UseDefaultAddress;
+	UINT8 StationAddress[4];
+	UINT8 SubnetMask[4];
+	UINT16 StationPort;
+	UINT8 RemoteAddress[4];
+	UINT16 RemotePort;
+} EFI_UDP4_CONFIG_DATA;
+
+typedef struct {
+	UINT8 SourceAddress[4];
+	UINT16 SourcePort;
+	UINT8 DestinationAddress[4];
+	UINT16 DestinationPort;
+} EFI_UDP4_SESSION_DATA;
+
+typedef struct {
+	UINT32 FragmentLength;
+	void *FragmentBuffer;
+} EFI_UDP4_FRAGMENT_DATA;
+
+typedef struct {
+	EFI_UDP4_SESSION_DATA *UdpSessionData;	/* NULL: use configured default */
+	UINT8 *GatewayAddress;			/* NULL: fine for our use */
+	UINT32 DataLength;
+	UINT32 FragmentCount;
+	EFI_UDP4_FRAGMENT_DATA FragmentTable[1];
+} EFI_UDP4_TRANSMIT_DATA;
+
+typedef struct {
+	EFI_TIME TimeStamp;
+	EFI_EVENT RecycleSignal;
+	EFI_UDP4_SESSION_DATA UdpSession;
+	UINT32 DataLength;
+	UINT32 FragmentCount;
+	EFI_UDP4_FRAGMENT_DATA FragmentTable[1];
+} EFI_UDP4_RECEIVE_DATA;
+
+typedef struct {
+	EFI_EVENT Event;
+	EFI_STATUS Status;
+	union {
+		EFI_UDP4_RECEIVE_DATA *RxData;
+		EFI_UDP4_TRANSMIT_DATA *TxData;
+	} Packet;
+} EFI_UDP4_COMPLETION_TOKEN;
+
+typedef struct EFI_UDP4_PROTOCOL EFI_UDP4_PROTOCOL;
+struct EFI_UDP4_PROTOCOL {
+	EFI_STATUS (EFIAPI *GetModeData)(EFI_UDP4_PROTOCOL *This,
+	    EFI_UDP4_CONFIG_DATA *Udp4ConfigData, void *Ip4ModeData,
+	    void *MnpConfigData, void *SnpModeData);
+	EFI_STATUS (EFIAPI *Configure)(EFI_UDP4_PROTOCOL *This,
+	    EFI_UDP4_CONFIG_DATA *UdpConfigData);
+	EFI_STATUS (EFIAPI *Groups)(EFI_UDP4_PROTOCOL *This,
+	    BOOLEAN JoinFlag, UINT8 *MulticastAddress);
+	EFI_STATUS (EFIAPI *Routes)(EFI_UDP4_PROTOCOL *This,
+	    BOOLEAN DeleteRoute, UINT8 *SubnetAddress, UINT8 *SubnetMask,
+	    UINT8 *GatewayAddress);
+	EFI_STATUS (EFIAPI *Transmit)(EFI_UDP4_PROTOCOL *This,
+	    EFI_UDP4_COMPLETION_TOKEN *Token);
+	EFI_STATUS (EFIAPI *Receive)(EFI_UDP4_PROTOCOL *This,
+	    EFI_UDP4_COMPLETION_TOKEN *Token);
+	EFI_STATUS (EFIAPI *Cancel)(EFI_UDP4_PROTOCOL *This,
+	    EFI_UDP4_COMPLETION_TOKEN *Token);
+	EFI_STATUS (EFIAPI *Poll)(EFI_UDP4_PROTOCOL *This);
 };
 
 /* runtime services (through ResetSystem) */

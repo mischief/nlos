@@ -168,12 +168,13 @@ lua_payload = files(
   'lib/cons.lua',
   'lib/idle.lua',
   'lib/json.lua',
-  'lib/net.lua',
   'lib/ninep.lua',
   'lib/power.lua',
   'lib/ps.lua',
   'lib/tap.lua',
+  'lib/tcp.lua',
   'lib/thread.lua',
+  'lib/udp.lua',
   'lib/wire.lua',
 )
 

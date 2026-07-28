@@ -1,6 +1,7 @@
 -- with NET=1 the harness gives the guest a NIC on qemu's usermode
 -- network, so the net task must actually spawn and be reachable.
--- without one it is never spawned at all, and sys.NET is a hole.
+-- without one they are never spawned at all, and sys.TCP/sys.UDP are
+-- holes in the handle table.
 --
 -- NOT covered here: whether the kernel still reaches its idle sleep
 -- with a NIC present (pump_net's tick pacing). that isn't observable
@@ -13,25 +14,35 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(3)
+tap.plan(6)
 
-local has_net = pcall(sys.send, sys.SELF, { probe = { __right = sys.NET } })
-tap.ok(has_net, "sys.NET is a live right (NIC present)")
-if has_net then
-	thread.recv(sys.SELF)	-- drain the probe we sent ourselves
-end
-
-local netpid
-for _, pid in ipairs(sys.procs()) do
-	if sys.name(pid) == "net" then
-		netpid = pid
+-- probe against our OWN mailbox, not some other proc's: a successful
+-- send really does transfer the right, so probing against a bystander
+-- would hand it a capability it was never meant to have.
+local function holds(h)
+	local ok = pcall(sys.send, sys.SELF, { probe = { __right = h } })
+	if ok then
+		thread.recv(sys.SELF)	-- drain it, and drop the right with it
 	end
+	return ok
 end
-tap.ok(netpid ~= nil, "net task is running")
 
--- it should be parked in alt across its own mailbox + the raw netport,
+tap.ok(holds(sys.TCP), "sys.TCP is a live right (NIC present)")
+tap.ok(holds(sys.UDP), "sys.UDP is a live right (udp4 driver present)")
+
+local byname = {}
+for _, pid in ipairs(sys.procs()) do
+	byname[sys.name(pid)] = pid
+end
+tap.ok(byname.tcp ~= nil, "tcp task is running")
+tap.ok(byname.udp ~= nil, "udp task is running")
+
+-- each should be parked in alt across its own mailbox + its raw port,
 -- not wedged or dead.
-local w = sys.wchan(netpid)
-tap.ok(w:sub(1, 4) == "alt[", "net task is parked in alt (wchan=" .. w .. ")")
+for _, name in ipairs({ "tcp", "udp" }) do
+	local w = sys.wchan(byname[name])
+	tap.ok(w:sub(1, 4) == "alt[",
+	    name .. " task is parked in alt (wchan=" .. w .. ")")
+end
 
 tap.done()
