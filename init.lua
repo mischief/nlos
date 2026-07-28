@@ -215,14 +215,9 @@ local repl_worker_src = [[
 	-- capability (no NIC, no udp4 driver, or dns task never spawned).
 	_G.resolve = dns and dns.resolve or nil
 
-	-- halt: a real side effect (unlike ps/stats, which just report),
-	-- triggered by printing it bare -- same __tostring trick, just
-	-- consequential this time. shuts the whole machine down, not just
-	-- this session; ^d only restarts the repl.
-	_G.halt = setmetatable({}, { __tostring = function()
-		power.reset("shutdown")
-		return "halting..."
-	end })
+	-- see lib/ps.lua for why the effect needs parens and the bare
+	-- word only explains itself.
+	_G.halt = magic.halt(powerh)
 
 	local function evaluate(line)
 		local chunk, err = load("return " .. line, "=repl")

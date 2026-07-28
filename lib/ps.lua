@@ -26,4 +26,30 @@ stats_mt.__tostring = function()
 end
 M.stats = setmetatable({}, stats_mt)
 
+-- halt: unlike ps/stats above, which only report, this one has a real
+-- side effect -- so it deliberately does NOT fire from __tostring.
+-- printing it explains itself; calling it shuts the machine down.
+--
+-- it did fire from __tostring once, and the failure is worth
+-- remembering: `for k, v in pairs(_G) do print(k, v) end` powered the
+-- machine off. tostring is assumed pure by everything that introspects
+-- -- print, tab completion, a debugger, error formatters dumping
+-- locals, luaL_traceback -- so a side-effecting __tostring is a
+-- landmine that any traversal steps on.
+--
+-- a factory rather than a bare value because it needs the power
+-- capability, which is a handle the caller was granted (see caps.lua on
+-- why no wrapper here defaults to a well-known number).
+function M.halt(powerhandle)
+	return setmetatable({}, {
+		__tostring = function()
+			return "halt: type halt() to shut the machine down"
+		end,
+		__call = function()
+			sys.send(powerhandle, { op = "reset", mode = "shutdown" })
+			return "halting..."
+		end,
+	})
+end
+
 return M

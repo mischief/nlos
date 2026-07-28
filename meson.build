@@ -211,7 +211,7 @@ run_target('fetch-mcp',
 boottest = files('scripts/boottest.sh')
 
 boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
-              'drivers', 'sched', 'json', 'timer', 'readdir']
+              'drivers', 'sched', 'json', 'timer', 'readdir', 'magic']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
