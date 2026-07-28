@@ -209,6 +209,19 @@ foreach t : boot_tests
   )
 endforeach
 
+# net boot tests: same harness, but NET=1 gives the guest a real NIC
+# on qemu's usermode network. separated because dhcp costs real boot
+# seconds that the tests above have no reason to pay.
+foreach t : ['netboot']
+  test('boot-' + t, boottest,
+    args: [luaos_img, files('test/boot/test_' + t + '.lua')],
+    protocol: 'tap',
+    timeout: 120,
+    is_parallel: true,
+    env: {'NET': '1'},
+  )
+endforeach
+
 # host-driven 9p protocol test: real 9P2000 over the com2 socket
 python = find_program('python3')
 test('9p-protocol', python,

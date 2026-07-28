@@ -21,8 +21,6 @@ int	kernel_current_has_disk(void);
  * tcp4 tokens today). register while an operation is outstanding,
  * unregister once its Event has fired and been handled.
  */
-int	kernel_register_wait_event(void *event);
-void	kernel_unregister_wait_event(void *event);
 
 /* net.c calls this instead of BS->CreateEvent directly for every
  * completion token it creates: wires the kernel's own notify

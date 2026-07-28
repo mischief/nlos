@@ -12,6 +12,17 @@ TIMEOUT=${TIMEOUT:-60}
 img=$1
 payload=$2
 
+# NET=1 gives the guest a real NIC on qemu's usermode (slirp) network:
+# gateway 10.0.2.2, dns 10.0.2.3, guest 10.0.2.15 via slirp's built-in
+# dhcp. without it the guest sees no tcp4/udp4 service binding at all
+# and the net tasks are never spawned -- which is the right default
+# for tests that don't care, since dhcp costs real boot seconds.
+if [ "${NET:-0}" = "1" ]; then
+	netargs="-netdev user,id=n0 -device virtio-net-pci,netdev=n0"
+else
+	netargs="-net none"
+fi
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -22,7 +33,7 @@ cp "$OVMF_VARS" "$tmp/vars.fd"
 # -no-reboot turns any triple-fault into an exit instead of a hang.
 rc=0
 timeout "$TIMEOUT" qemu-system-x86_64 \
-	-enable-kvm -cpu max -display none -net none -monitor none \
+	-enable-kvm -cpu max -display none $netargs -monitor none \
 	-no-reboot -snapshot \
 	-serial file:"$tmp/serial.log" \
 	-serial null \

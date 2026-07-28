@@ -103,6 +103,16 @@ static int nextpid;
  */
 static struct kproc *current_proc;
 
+/* how many times kernel_run has found every proc blocked and gone to
+ * a real firmware sleep. exposed via sys.stats() as an idleness
+ * signal: a machine that is genuinely idle advances this steadily,
+ * one that is busy-spinning (some proc always READY) never does. that
+ * distinction is otherwise invisible from inside a proc -- wchan
+ * sampling can't see it, because a task woken and re-blocked between
+ * two samples looks identical to one that never woke.
+ */
+static unsigned long long nidle;
+
 /* disk gates write/append only -- read is deliberately ambient (see
  * stdio.c's fopen): the threat model is buggy lua, not hostile users
  * (DESIGN.md non-goals), nothing on the esp is confidentiality-
@@ -123,51 +133,17 @@ static struct kport *schedport;
 
 static int proc_has_port(struct kproc *p, struct kport *port);
 
-/* dynamic wait-set: device layers whose completions are token/Event
- * based (unlike the byte-stream pumps above, which are polled every
- * iteration) register the Event they're waiting on here, so
- * kernel_run's idle sleep can include it. net.c (EFI TCP4) is the
- * first user -- Connect/Accept/Transmit/Receive all take a token
- * whose completion is signaled by an Event, not by bytes just being
- * "there" to poll.
- */
-#define MAXWAITEVENTS 16
-static EFI_EVENT extra_wait_events[MAXWAITEVENTS];
-static int nextra_wait_events;
-
-int
-kernel_register_wait_event(EFI_EVENT ev)
-{
-	if (nextra_wait_events >= MAXWAITEVENTS)
-		return -1;
-	extra_wait_events[nextra_wait_events++] = ev;
-	return 0;
-}
-
-void
-kernel_unregister_wait_event(EFI_EVENT ev)
-{
-	for (int i = 0; i < nextra_wait_events; i++)
-		if (extra_wait_events[i] == ev) {
-			extra_wait_events[i] =
-			    extra_wait_events[--nextra_wait_events];
-			return;
-		}
-}
-
 static int port_push(struct kport *port, const unsigned char *data,
     size_t len, const unsigned char *refs, int nrefs);
 
 /* net's own wakeup: a kernel-owned port, exactly like kbdport/serport,
- * except fed by an EFI event-notify callback instead of a polled pump
- * -- net.c's completions are token/Event based, not "bytes just show
- * up to poll." the notify runs with no lua involved at all (it's an
- * EFIAPI callback the firmware invokes directly), so it can only ever
- * touch plain kernel state; port_push is exactly that, already safe
- * to call from anywhere. whoever holds netport's recv right (the net
- * task, once it exists) just does an ordinary thread.recv -- same
- * proven wakeup path as every other blocking primitive here, no new
- * primitive with its own race to get wrong.
+ * except fed by pump_net's ping rather than by bytes showing up --
+ * net.c's completions are token/Event based (see kernel_new_net_event
+ * below for why nothing but net.c's own poll may touch those events).
+ * whoever holds netport's recv right (the net task) just does an
+ * ordinary thread.recv -- same proven wakeup path as every other
+ * blocking primitive here, no new primitive with its own race to get
+ * wrong.
  */
 static struct kport *netport;
 
@@ -179,37 +155,30 @@ static struct kport *netport;
  */
 static int have_net;
 
-static void EFIAPI
-net_event_notify(EFI_EVENT ev, void *ctx)
-{
-	(void)ev;
-	(void)ctx;
-	/* every message needs at least a serializer tag; an empty buffer
-	 * has none and the deserializer correctly refuses it as corrupt.
-	 * this is just a wakeup ping -- net.lua doesn't look at the
-	 * value, so a bare nil (tag 'N', one byte) is enough.
-	 */
-	if (netport)
-		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
-}
-
-/* net.c calls this instead of BS->CreateEvent directly: wires the
- * notify above, and registers the event in kernel_run's dynamic wait
- * set so the machine wakes promptly (bounded otherwise by the 1ms
- * tick, which would still be correct, just slightly slower).
- */
+/* net.c calls this instead of BS->CreateEvent directly. */
 EFI_EVENT
 kernel_new_net_event(void)
 {
 	EFI_EVENT ev;
 
-	if (BS->CreateEvent(EVT_NOTIFY_SIGNAL, TPL_CALLBACK,
-	    (void *)net_event_notify, 0, &ev) != EFI_SUCCESS)
+	/* plain event, NO notify function and NOT registered in
+	 * kernel_run's own wait array. proven via test/tcp4echo (a
+	 * standalone app with no lua-os kernel at all) that a bare
+	 * CheckEvent-polled event works correctly end to end; a
+	 * notify-signal event does not, here, on this firmware -- the
+	 * notify dispatch itself appears to consume the signaled state
+	 * as a side effect of merely running, so by the time net.c's own
+	 * CheckEvent poll runs afterward the signal is already gone even
+	 * though the operation genuinely completed. same reasoning rules
+	 * out registering it in kernel_run's wait array too: kernel_run's
+	 * own WaitForEvent call would consume it there instead, before
+	 * net.c's poll ever gets a look. pump_net's netport ping (which
+	 * never touches this event's state at all) is the only wakeup
+	 * source now; net.c's own poll functions are the sole code that
+	 * ever calls CheckEvent on a tcp4 token.
+	 */
+	if (BS->CreateEvent(0, 0, 0, 0, &ev) != EFI_SUCCESS)
 		return 0;
-	if (kernel_register_wait_event(ev) != 0) {
-		BS->CloseEvent(ev);
-		return 0;
-	}
 	return ev;
 }
 
@@ -998,11 +967,13 @@ api_stats(lua_State *L)
 	for (int i = 0; i < MAXPROCS; i++)
 		if (procs[i].status != DEAD)
 			nprocs++;
-	lua_createtable(L, 0, 2);
+	lua_createtable(L, 0, 3);
 	lua_pushinteger(L, nports);
 	lua_setfield(L, -2, "ports");
 	lua_pushinteger(L, nprocs);
 	lua_setfield(L, -2, "procs");
+	lua_pushinteger(L, (lua_Integer)nidle);
+	lua_setfield(L, -2, "idles");
 	return 1;
 }
 
@@ -1518,20 +1489,37 @@ pump_serial(void)
 
 /* ---- net pump ---- */
 
-/* safety net underneath net_event_notify: unconditionally nudge
- * netport every iteration (same ~1ms bound already accepted for
- * serial), so net.lua's pending tokens get rechecked even if the
- * tcp4 completion's own Event notify never actually gets dispatched
- * -- observed in practice (a real inbound connection completed
- * fully at the wire level, confirmed via packet capture, but the
- * notify-only path never woke the net task to notice). cheap: one
- * port_push, and checkpending() on the lua side is a no-op when
- * nothing's actually done yet.
+/* tcp4 completion events created by kernel_new_net_event() are plain
+ * (no notify function, not in kernel_run's wait array) -- the owning
+ * task's own CheckEvent poll is the only thing that ever consumes
+ * their signaled state. a notify function was tried first and broke:
+ * the notify dispatch itself appeared to consume the event's signal
+ * as a side effect of running, so a real inbound connection completed
+ * fully at the wire level (confirmed via packet capture) yet the
+ * later CheckEvent poll always saw "not signaled."
+ *
+ * pump_net is therefore the sole wakeup: nudge netport so net.lua
+ * reruns checkpending() and polls its outstanding tokens directly.
+ *
+ * the ping is TICK-PACED and coalesced, not issued every lap. issuing
+ * it unconditionally (the first version of this) kept the net task
+ * permanently READY: kernel_run's `ran` flag was then set on every
+ * lap, so the WaitForEvent idle path never executed at all whenever a
+ * NIC was present and the machine spun at full tilt instead of
+ * sleeping. coalescing alone doesn't fix that -- the task drains the
+ * ping the same lap it arrives, so the next lap pushes another one.
+ *
+ * pacing it to the timer (see kernel_run) is what actually fixes it:
+ * one ping per tick period bounds completion latency exactly the way
+ * the serial pump's latency is already bounded, and between ticks
+ * every proc is blocked, so the machine reaches a real firmware
+ * sleep. the queue check on top means a slow task can't accumulate a
+ * backlog of pings it will never need.
  */
 static void
 pump_net(void)
 {
-	if (have_net && netport)
+	if (have_net && netport && !netport->head)
 		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
 }
 
@@ -1706,10 +1694,11 @@ void
 kernel_run(void)
 {
 	EFI_EVENT tick = 0;
-	EFI_EVENT waits[2 + MAXWAITEVENTS];
+	EFI_EVENT waits[2];
 	UINTN index;
 	int idle_polls = 0;
 	int tick_slow = 0;
+	int tick_fired = 0;
 
 	/* periodic timer: idle becomes a real firmware sleep (hlt)
 	 * instead of a hot stall-poll. the old "timer hangs the serial
@@ -1723,6 +1712,12 @@ kernel_run(void)
 
 	while (nlive > 0) {
 		int ran = 0;
+
+		/* CheckEvent consumes the signal, so this is also what
+		 * re-arms tick_fired for the periodic timer.
+		 */
+		if (tick && BS->CheckEvent(tick) == EFI_SUCCESS)
+			tick_fired = 1;
 
 		pump_keyboard();
 		if (pump_serial()) {
@@ -1739,7 +1734,15 @@ kernel_run(void)
 				tick_slow = 1;
 			}
 		}
-		pump_net();
+		/* see pump_net: paced to the tick so an idle machine can
+		 * still reach the WaitForEvent sleep below. with no timer
+		 * at all there's nothing to pace against, so fall back to
+		 * pinging every lap.
+		 */
+		if (tick_fired || !tick) {
+			pump_net();
+			tick_fired = 0;
+		}
 		for (int i = 0; i < MAXPROCS; i++) {
 			struct kproc *p = &procs[i];
 
@@ -1815,20 +1818,25 @@ kernel_run(void)
 			}
 		}
 		if (!ran) {
-			/* everyone blocked: sleep until key, tick, or any
-			 * registered device completion (net.c's tcp4
-			 * tokens). the tick bounds serial rx latency at ~1ms
-			 * and, now, how promptly a fired net event gets
-			 * noticed even if something raced registration.
+			/* everyone blocked: sleep until a key or the tick.
+			 * tcp4 completion events are deliberately NOT in
+			 * here -- WaitForEvent would consume their signaled
+			 * state before net.c's own CheckEvent poll could see
+			 * it (see kernel_new_net_event). the tick is what
+			 * bounds how promptly a completion gets noticed.
 			 */
+			nidle++;
 			if (tick) {
 				UINTN n = 0;
 
 				waits[n++] = ST->ConIn->WaitForKey;
 				waits[n++] = tick;
-				for (int i = 0; i < nextra_wait_events; i++)
-					waits[n++] = extra_wait_events[i];
 				BS->WaitForEvent(n, waits, &index);
+				/* woken by key or tick; either way the tick
+				 * may have been what fired, and WaitForEvent
+				 * consumed it. ping on the next lap.
+				 */
+				tick_fired = 1;
 			} else
 				BS->Stall(500);
 		}

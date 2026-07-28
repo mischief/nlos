@@ -45,6 +45,12 @@ local function checkpending()
 				done = true
 				result = raw and newconn(raw) or nil
 			end
+		elseif p.kind == "dial" then
+			local ok, raw = platform.dial_poll(p.token)
+			if ok then
+				done = true
+				result = raw and newconn(raw) or nil
+			end
 		elseif p.kind == "send" then
 			local ok = platform.send_poll(p.token)
 			if ok then
@@ -81,8 +87,18 @@ while true do
 			local raw = platform.listen(m.port)
 			sys.send(reply, raw and newconn(raw) or nil)
 		elseif m.op == "dial" then
-			local raw = platform.dial(m.a, m.b, m.c, m.d, m.port)
-			sys.send(reply, raw and newconn(raw) or nil)
+			-- two-phase now: Configure() only prepares an active
+			-- connection, Connect() is the async step that does
+			-- the handshake (see net.c's net_dial_start).
+			local token = platform.dial_start(m.a, m.b, m.c, m.d,
+			    m.port)
+			if token then
+				pending[#pending + 1] =
+				    { kind = "dial", token = token,
+				      reply = reply }
+			else
+				sys.send(reply, nil)
+			end
 		elseif m.op == "accept" then
 			local token = platform.accept_start(conns[m.connid])
 			if token then

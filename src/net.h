@@ -8,8 +8,10 @@
 int	net_init(void);
 
 void	*net_listen(unsigned short port);
-void	*net_dial(unsigned int ipv4be, unsigned short port);
 void	net_close(void *conn);
+
+void	*net_dial_start(unsigned int ipv4be, unsigned short port);
+int	net_dial_poll(void *token, void **out);
 
 void	*net_accept_start(void *listener);
 int	net_accept_poll(void *token, void **out);

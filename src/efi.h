@@ -38,6 +38,7 @@ typedef enum {
 } EFI_TIMER_DELAY;
 #define EFI_ERROR(s)		(((INTN)(s)) < 0)
 #define EFI_NOT_READY		(0x8000000000000000ULL | 6)
+#define EFI_NO_MAPPING		(0x8000000000000000ULL | 17)
 #define EFI_BUFFER_TOO_SMALL	(0x8000000000000000ULL | 5)
 
 typedef struct {
@@ -259,7 +260,7 @@ struct EFI_SERVICE_BINDING_PROTOCOL {
 };
 
 /* ---- tcp4: async, token/Event-based -- see src/net.c and
- * kernel_register_wait_event. field order/sizes follow the UEFI spec
+ * kernel_new_net_event. field order/sizes follow the UEFI spec
  * exactly; these are called through function pointers, so layout is
  * abi, not style.
  */
