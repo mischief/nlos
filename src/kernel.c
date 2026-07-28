@@ -1279,7 +1279,7 @@ extern void uart_poll(void);	/* drain the hw fifo into the rx ring */
 
 static struct kport *serport;
 
-static void
+static int
 pump_serial(void)
 {
 	unsigned char buf[5 + 256];
@@ -1289,11 +1289,12 @@ pump_serial(void)
 	while (n < 256 && (c = uart_rx()) >= 0)
 		buf[5 + n++] = (unsigned char)c;
 	if (n == 0)
-		return;
+		return 0;
 	/* serialized string message: tag, u32 len, bytes */
 	buf[0] = 'S';
 	memcpy(buf + 1, &n, 4);
 	port_push(serport, buf, 5 + n, 0, 0);
+	return 1;
 }
 
 /* ---- net pump ---- */
@@ -1467,28 +1468,54 @@ kernel_spawn_buffer(const char *code, size_t len)
 	return spawn_init(code, len, 0);
 }
 
+/* two-level poll backoff for com2 (no EFI event backs raw uart rx,
+ * see NOTES.md): 1ms while bytes are actively arriving, back off to
+ * a slower period after a run of empty polls, snap back to 1ms the
+ * instant a byte shows up. bounds the worst-case "first byte after
+ * idle" latency to one slow period while cutting wakeups the rest
+ * of the time.
+ */
+#define TICK_FAST_100NS   10000		/* 1ms */
+#define TICK_SLOW_100NS  150000		/* 15ms */
+#define TICK_IDLE_THRESHOLD 25		/* ~25ms of silence before backing off */
+
 void
 kernel_run(void)
 {
 	EFI_EVENT tick = 0;
 	EFI_EVENT waits[2 + MAXWAITEVENTS];
 	UINTN index;
+	int idle_polls = 0;
+	int tick_slow = 0;
 
-	/* periodic 1ms timer: idle becomes a real firmware sleep (hlt)
+	/* periodic timer: idle becomes a real firmware sleep (hlt)
 	 * instead of a hot stall-poll. the old "timer hangs the serial
 	 * path" mystery was firmware console contention on com2, fixed
 	 * by serial_takeover().
 	 */
 	if (BS->CreateEvent(EVT_TIMER, TPL_CALLBACK, 0, 0, &tick) !=
 	    EFI_SUCCESS ||
-	    BS->SetTimer(tick, TimerPeriodic, 10000) != EFI_SUCCESS)
+	    BS->SetTimer(tick, TimerPeriodic, TICK_FAST_100NS) != EFI_SUCCESS)
 		tick = 0;
 
 	while (nlive > 0) {
 		int ran = 0;
 
 		pump_keyboard();
-		pump_serial();
+		if (pump_serial()) {
+			idle_polls = 0;
+			if (tick_slow && tick) {
+				BS->SetTimer(tick, TimerPeriodic,
+				    TICK_FAST_100NS);
+				tick_slow = 0;
+			}
+		} else if (!tick_slow && tick) {
+			if (++idle_polls >= TICK_IDLE_THRESHOLD) {
+				BS->SetTimer(tick, TimerPeriodic,
+				    TICK_SLOW_100NS);
+				tick_slow = 1;
+			}
+		}
 		pump_net();
 		for (int i = 0; i < MAXPROCS; i++) {
 			struct kproc *p = &procs[i];
