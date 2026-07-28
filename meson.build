@@ -168,6 +168,7 @@ lua_payload = files(
   'lib/caps.lua',
   'lib/cons.lua',
   'lib/dns.lua',
+  'lib/http.lua',
   'lib/idle.lua',
   'lib/json.lua',
   'lib/ninep.lua',
@@ -225,8 +226,19 @@ foreach t : ['netboot', 'dns']
   )
 endforeach
 
-# host-driven 9p protocol test: real 9P2000 over the com2 socket
 python = find_program('python3')
+
+# host-driven http test: the guest serves on tcp/7777, forwarded to a
+# host port, driven with real HTTP/1.1. the only end-to-end cover for
+# tcp listen/accept/recv/send -- the guest can't test this itself,
+# since qemu's usermode network doesn't hairpin.
+test('http-server', python,
+  args: [files('test/test_http.py'), luaos_img, files('test/boot/srvhttp.lua')],
+  protocol: 'tap',
+  timeout: 150,
+)
+
+# host-driven 9p protocol test: real 9P2000 over the com2 socket
 test('9p-protocol', python,
   args: [files('test/test_9p.py'), luaos_img, files('test/boot/srv9p.lua')],
   protocol: 'tap',
