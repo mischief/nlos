@@ -324,10 +324,56 @@ local function readline(consHandle, prompt)
 	return recv(cons_reply_port)
 end
 
+-- ---- timers ----
+--
+-- both of these are thin sugar over sys.timer(ms), which hands back a
+-- receive right to a port that gets one message after ms. that shape is
+-- what makes them sugar rather than kernel features: a timer is just
+-- another port, so it composes with alt() for free.
+--
+-- resolution is the scheduler tick, ~10-15ms: a timer fires up to one
+-- tick late and never early. do not use these to pace anything finer.
+
+-- park for ms milliseconds. yields to the rest of the proc's threads if
+-- called under thread.run(), and blocks the whole proc otherwise --
+-- either way it PARKS rather than spinning, which is the entire point:
+-- a `while sys.ticks() - t0 < n do sys.yield() end` loop keeps the proc
+-- READY, so the kernel can never reach its idle sleep while any proc is
+-- waiting for anything.
+local function sleep(ms)
+	local t = sys.timer(ms)
+
+	if not t then
+		return false	-- timer table full; caller decides
+	end
+	recv(t)
+	sys.close(t)
+	return true
+end
+
+-- receive from port h, giving up after ms. returns the message, or nil
+-- plus "timeout". the timer is closed on both paths so a fast reply
+-- doesn't leak a timer slot until its deadline.
+local function recvtimeout(h, ms)
+	local t = sys.timer(ms)
+
+	if not t then
+		return nil, "no timer available"
+	end
+
+	local which, m = alt({ { port = h }, { port = t } })
+
+	sys.close(t)
+	if which == 2 then
+		return nil, "timeout"
+	end
+	return m
+end
+
 -- ---- exports ----
 -- the module is the scheduler table with the rest of the runtime hung
--- off it: require("los.thread") -> { spawn, run, recv, readline,
--- Channel, chancreate, alt, QLock, qlockcreate, ... }.
+-- off it: require("los.thread") -> { spawn, run, recv, readline, sleep,
+-- recvtimeout, Channel, chancreate, alt, QLock, qlockcreate, ... }.
 
 thread.Channel = Channel
 thread.chancreate = chancreate
@@ -336,5 +382,7 @@ thread.QLock = QLock
 thread.qlockcreate = qlockcreate
 thread.recv = recv
 thread.readline = readline
+thread.sleep = sleep
+thread.recvtimeout = recvtimeout
 
 return thread

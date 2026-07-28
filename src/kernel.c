@@ -34,6 +34,7 @@
 #define MAXWATCH	8	/* monitors per proc */
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
 #define MAXGRANTS	8	/* named capabilities the kernel hands a proc */
+#define MAXTIMERS	32	/* outstanding one-shot timers, machine-wide */
 
 enum { DEAD, READY, BLOCKED };
 enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP, PRIV_UDP };
@@ -152,6 +153,11 @@ static int proc_has_port(struct kproc *p, struct kport *port);
 static int port_push(struct kport *port, const unsigned char *data,
     size_t len, const unsigned char *refs, int nrefs);
 
+extern unsigned long long platform_ticks(void);
+static void port_unref(struct kport *port);
+static struct kport *port_new(void);
+static int right_new(struct kproc *p, struct kport *port, int recv);
+
 /* net's own wakeup: a kernel-owned port, exactly like kbdport/serport,
  * except fed by pump_net's ping rather than by bytes showing up --
  * net.c's completions are token/Event based (see kernel_new_net_event
@@ -172,6 +178,102 @@ static struct kport *udpport;
  */
 static int have_net;
 static int have_udp;
+
+/* cycles per millisecond, measured once at boot. platform_ticks() is a
+ * raw rdtsc -- a cycle count, not a time -- and its rate is whatever
+ * this cpu runs at, so every duration in the system was denominated in
+ * uncalibrated cycles before this existed. one 100ms Stall is enough:
+ * measured stability across boots is ~4 ppm. assumes an invariant tsc
+ * (CPUID 0x80000007 EDX bit 8), which holds everywhere we care about.
+ * see docs/uefi-notes.md.
+ */
+static unsigned long long cyc_per_ms;
+
+static void
+calibrate_clock(void)
+{
+	unsigned long long t0 = platform_ticks();
+
+	BS->Stall(100000);	/* 100ms */
+
+	unsigned long long dt = platform_ticks() - t0;
+
+	cyc_per_ms = dt / 100;
+	if (cyc_per_ms == 0)
+		cyc_per_ms = 1;	/* refuse to divide by zero later */
+}
+
+/* milliseconds since calibrate_clock(). the one time base timers and
+ * timeouts are denominated in.
+ */
+static unsigned long long
+uptime_ms(void)
+{
+	return platform_ticks() / cyc_per_ms;
+}
+
+/* one-shot timers. sys.timer(ms) mints a port, hands the caller its
+ * receive right, and records a deadline here; expire_timers() pushes one
+ * message when the deadline passes and lets the port go.
+ *
+ * a timer is a PORT rather than a sys.sleep() call because that makes
+ * recv-with-timeout fall out of thread.alt() with no new api at all:
+ *
+ *	thread.alt({ {port = reply}, {port = sys.timer(500)} })
+ *
+ * deliberately a flat unsorted array scanned linearly, not a timing
+ * wheel. a wheel buys O(1) insert at the cost of real bookkeeping, and
+ * earns that at thousands of timers; MAXPROCS is 32, so there are a few
+ * dozen at most and both things we do each lap (expire the due ones,
+ * and nothing else) are one pass over a tiny array. sorting would buy
+ * nothing either, since insertion costs the same scan.
+ *
+ * resolution is the scheduler tick, ~10-15ms (see TICK_FAST_100NS and
+ * docs/uefi-notes.md), so a timer may fire up to one tick late and
+ * never early. that is why no per-deadline EFI timer event is armed:
+ * SetTimer cannot beat 10ms anyway and every deadline in this system is
+ * hundreds of milliseconds.
+ */
+struct ktimer {
+	struct kport *port;		/* 0 = free slot */
+	unsigned long long due_ms;
+};
+
+static struct ktimer timers[MAXTIMERS];
+
+/* release slots whose port died -- the waiter closed its right or the
+ * proc holding it exited. split out of expire_timers so a caller that
+ * finds the table full can reclaim these without also delivering due
+ * timers, which is the reactor's job and not a syscall's business.
+ */
+static void
+reap_dead_timers(void)
+{
+	for (int i = 0; i < MAXTIMERS; i++)
+		if (timers[i].port && timers[i].port->dead) {
+			port_unref(timers[i].port);
+			timers[i].port = 0;
+		}
+}
+
+static void
+expire_timers(void)
+{
+	unsigned long long now = uptime_ms();
+
+	reap_dead_timers();	/* cancelled ones, before looking at deadlines */
+	for (int i = 0; i < MAXTIMERS; i++) {
+		struct ktimer *t = &timers[i];
+
+		if (!t->port)
+			continue;
+		if (now >= t->due_ms) {
+			port_push(t->port, (const unsigned char *)"T", 1, 0, 0);
+			port_unref(t->port);
+			t->port = 0;
+		}
+	}
+}
 
 /* net.c calls this instead of BS->CreateEvent directly. */
 EFI_EVENT
@@ -1154,12 +1256,76 @@ api_granted(lua_State *L)
 	return 1;
 }
 
-extern unsigned long long platform_ticks(void);
-
 static int
 api_ticks(lua_State *L)
 {
 	lua_pushinteger(L, (lua_Integer)platform_ticks());
+	return 1;
+}
+
+/* sys.timer(ms): a receive right to a fresh port that gets exactly one
+ * message (true) after roughly ms milliseconds. returns nil if the timer
+ * table or the caller's rights table is full -- callers must handle that,
+ * same as sys.newport().
+ *
+ * cancel by closing the right: the port dies, and expire_timers() reaps
+ * the slot on its next pass without ever delivering.
+ */
+static int
+api_timer(lua_State *L)
+{
+	struct kproc *p = self(L);
+	lua_Integer ms = luaL_checkinteger(L, 1);
+
+	if (ms < 0)
+		ms = 0;
+
+	int slot = -1;
+
+	for (int tries = 0; tries < 2 && slot < 0; tries++) {
+		for (int i = 0; i < MAXTIMERS; i++)
+			if (!timers[i].port) {
+				slot = i;
+				break;
+			}
+		/* full: a cancelled timer's slot is held until something
+		 * notices its port died, and the caller cannot be asked to
+		 * yield first -- thread.sleep() would need a timer of its
+		 * own to do that, which is exactly what it cannot get.
+		 * reclaim them here instead.
+		 */
+		if (slot < 0 && tries == 0)
+			reap_dead_timers();
+	}
+	if (slot < 0)
+		return 0;
+
+	struct kport *port = port_new();
+
+	if (!port)
+		return 0;
+
+	int h = right_new(p, port, 1);
+
+	if (h < 0) {
+		port->used = 0;
+		return 0;
+	}
+	port->nrights++;	/* the timer table's own ref */
+	timers[slot].port = port;
+	timers[slot].due_ms = uptime_ms() + (unsigned long long)ms;
+	lua_pushinteger(L, h);
+	return 1;
+}
+
+/* sys.uptime_ms(): milliseconds since boot, from the calibrated tsc.
+ * prefer this to sys.ticks() for anything time-shaped -- ticks() is a
+ * raw cycle counter whose rate differs per machine.
+ */
+static int
+api_uptime_ms(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)uptime_ms());
 	return 1;
 }
 
@@ -1184,6 +1350,8 @@ static const luaL_Reg kapi[] = {
 	{ "set_priority", api_set_priority },
 	{ "priority", api_priority },
 	{ "ticks", api_ticks },
+	{ "uptime_ms", api_uptime_ms },
+	{ "timer", api_timer },
 	{ NULL, NULL }
 };
 
@@ -1586,6 +1754,7 @@ pump_keyboard(void)
 int
 kernel_init(void)
 {
+	calibrate_clock();	/* before anything measures a duration */
 	uart_init();
 	kbdport = port_new();
 	serport = port_new();
@@ -1800,6 +1969,7 @@ kernel_run(void)
 		if (tick && BS->CheckEvent(tick) == EFI_SUCCESS)
 			tick_fired = 1;
 
+		expire_timers();
 		pump_keyboard();
 		if (pump_serial()) {
 			idle_polls = 0;
