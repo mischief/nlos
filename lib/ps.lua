@@ -31,6 +31,25 @@ stats_mt.__tostring = function()
 end
 M.stats = setmetatable({}, stats_mt)
 
+-- stack(pid): where another proc actually is, not just what it is
+-- blocked on. a factory rather than a bare value because it takes an
+-- argument, so unlike ps/stats it is a plain function and the
+-- __tostring question never arises.
+function M.stack(pid)
+	local frames = sys.stack(pid)
+	local out = { string.format("%s (pid %d) %s", sys.name(pid), pid,
+	    sys.wchan(pid)) }
+
+	for i, f in ipairs(frames) do
+		out[#out + 1] = string.format("  %2d %s:%d in %s",
+		    i, f.source, f.line, f.name)
+	end
+	if #frames == 0 then
+		out[#out + 1] = "  (no frames -- dead or never started)"
+	end
+	return table.concat(out, "\n")
+end
+
 -- halt: unlike ps/stats above, which only report, this one has a real
 -- side effect -- so it deliberately does NOT fire from __tostring.
 -- printing it explains itself; calling it shuts the machine down.

@@ -199,6 +199,12 @@ local repl_worker_src = [[
 	_G.efi = efi
 	local magic = require("ps")
 	_G.ps = magic.ps
+	-- stack(pid): a cross-proc traceback. safe to call on anything,
+	-- including a wedged proc, because every proc but this one is
+	-- suspended between resumes.
+	_G.stack = function(pid)
+		return magic.stack(pid or sys.self())
+	end
 	_G.stats = magic.stats
 	_G.caps = caps
 	_G.wire = caps.wire(wireh)

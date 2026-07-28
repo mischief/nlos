@@ -1445,6 +1445,71 @@ api_wchan(lua_State *L)
 	return 1;
 }
 
+/* sys.stack(pid) -> { {source=, line=, name=, what=}, ... }
+ *
+ * a traceback of ANOTHER proc, which is only safe because we are
+ * cooperative and single-threaded: every proc except the caller is
+ * suspended between lua_resume calls, and lua_getstack/lua_getinfo on a
+ * suspended coroutine are ordinary read-only debug API. no stopping the
+ * world, no signals, no race.
+ *
+ * two rules make it safe, and both were learned the hard way elsewhere
+ * in this kernel:
+ *
+ * 1. NOTHING is pushed onto the target's stack. the "Sln" info string is
+ *    push-free (unlike "f" or "L"), and every result table is built on
+ *    the CALLER's state. leave the target unbalanced and it resumes into
+ *    garbage.
+ * 2. NO lua code runs in the target. luaL_traceback would allocate in
+ *    the target's heap, charged to its mem_limit -- exactly why
+ *    kernel_run skips it on LUA_ERRMEM -- and stringifying a value could
+ *    invoke __tostring, which in this system has been known to power the
+ *    machine off. so this reports structure only: source, line, function
+ *    name. locals are values rather than structure and are deliberately
+ *    not here; when they land they want a capability, unlike this.
+ *
+ * ambient for the same reason sys.procs/name/wchan are: it says what the
+ * machine is doing, not what any proc's data is, and the threat model is
+ * buggy lua rather than hostile users.
+ */
+#define MAXFRAMES	64
+
+static int
+api_stack(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	if (!lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+
+	lua_State *co = p->co;
+	lua_Debug ar;
+	int n = 0;
+
+	lua_newtable(L);
+	for (int level = 0; level < MAXFRAMES; level++) {
+		if (!lua_getstack(co, level, &ar))
+			break;
+		if (!lua_getinfo(co, "Sln", &ar))
+			break;
+
+		lua_createtable(L, 0, 4);
+		lua_pushstring(L, ar.short_src);
+		lua_setfield(L, -2, "source");
+		lua_pushinteger(L, ar.currentline);
+		lua_setfield(L, -2, "line");
+		lua_pushstring(L, ar.name ? ar.name : "?");
+		lua_setfield(L, -2, "name");
+		lua_pushstring(L, ar.what ? ar.what : "?");
+		lua_setfield(L, -2, "what");
+		lua_rawseti(L, -2, ++n);
+	}
+	return 1;
+}
+
 /* sys.set_priority(pid, weight): a scheduling POLICY knob, not the
  * scheduler itself -- this just writes a clamped integer into the
  * target proc's kproc struct. kernel_run's dispatch loop (the
@@ -1689,6 +1754,7 @@ static const luaL_Reg kapi[] = {
 	{ "granted", api_granted },
 	{ "name", api_procname },
 	{ "wchan", api_wchan },
+	{ "stack", api_stack },
 	{ "set_priority", api_set_priority },
 	{ "priority", api_priority },
 	{ "ticks", api_ticks },
