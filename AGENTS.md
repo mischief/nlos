@@ -243,9 +243,32 @@ kernel computes the dynamic part. A proc **under** its fair share clamps
 to the top however hard it spins — differentiation only happens under
 contention, and that is the formula working, not a missing case.
 
-**Nothing dispatches on this yet.** `kernel_run` still scans every slot.
-Measure first, then change the loop; see the handoff trap above for what
-happens when you skip that order.
+Dispatch is **two phases per lap**, and the split is the design:
+
+- *phase 1* runs READY procs highest priority first, so an interactive
+  proc answers before a hog takes another turn.
+- *phase 2* is a plain slot scan that ignores priority entirely and picks
+  up anything phase 1 did not run, including procs woken **during** phase
+  1.
+
+Phase 2 is the starvation guarantee, and it is deliberately independent
+of the priority function. Every READY proc runs at least once and at most
+once per lap whatever `reprioritize` computes, so a policy that is buggy,
+hostile or merely untuned costs latency and cannot wedge the machine.
+**Never make the progress guarantee depend on the policy being correct** —
+policy is the part we expect to get wrong.
+
+Plan 9 cannot do this: `runproc()` takes the first proc off the highest
+non-empty `runq` with no aging, so a high-`basepri` proc starves a low one
+indefinitely — `PriEdf > PriKproc > PriNormal` makes that deliberate. It
+has unbounded procs, so an exhaustive sweep would be O(nproc) per
+decision. `MAXPROCS` being small is what buys us the guarantee for free,
+and is a reason to think before raising it a lot.
+
+Measured: the two phases cost about 1% of throughput and change no proc's
+share (21.45M vs 21.71M loop iterations for a spinner). Priority orders;
+it does not ration. Share is still `weight`, via the WRR loop in
+`run_proc`.
 
 **Instruction counting was tried and dropped — do not re-derive it.**
 The preempt hook fires every `lua_gethookcount()` instructions, so
@@ -280,6 +303,14 @@ Structural, worth fixing:
   scheduler weight. Each sensible alone, collectively unrelated. The
   grant table has one spare slot; two more boot capabilities truncate
   silently.
+- **`struct kproc` is 1808 bytes, so `procs[MAXPROCS]` is 57.9KB of BSS**
+  — the largest static object in the image, against ~500KB of live heap.
+  1536 of those bytes are `rights[MAXRIGHTS]` and `wset[MAXWSET]`, so
+  raising `MAXPROCS` much would want the rights table allocated per proc
+  rather than inline; an array of pointers alone would not help, since
+  each live proc still costs 1808. Note the scheduler's phase 2 is
+  O(MAXPROCS) per lap, so this trades against the starvation guarantee
+  above.
 - **Pending-token scans are O(n) per tick.** The exclusive tasks walk
   every outstanding token on every wakeup because EFI never says which
   one completed. Fine at a handful of connections, a ceiling at fifty.

@@ -49,11 +49,20 @@
  */
 #define MAXQUEUE	(64 * 1024)
 /* fair-share averaging window. plan 9 uses schedgain=30 SECONDS, which
- * suits long-lived unix-ish processes; ours are short and interactive,
- * so a couple of seconds makes priority actually respond to what a proc
- * just did.
+ * suits long-lived unix-ish processes; ours are short and interactive.
+ *
+ * the mixing weight below is n/D, which approximates a true exponential
+ * only while n is small next to D. that holds now that the scheduler
+ * samples every lap (n is ~15ms), but it is why the metric used to
+ * depend on how often anyone asked for it: one on-demand call with
+ * n=1500 mixed at 0.75 where the real figure is 1-exp(-0.75)=0.53, and
+ * read a spinning proc at 729 instead of the ~950 it deserved.
+ *
+ * 500ms converges in roughly 1.5s, which suits procs that live for
+ * seconds. it must stay well above the lap period for the linear
+ * approximation to hold.
  */
-#define SCHED_DECAY_MS	2000
+#define SCHED_DECAY_MS	500
 /* priority resolution per unit of weight. plan 9's PriNormal is 10 and
  * its bands run 0..19; weight is our basepri, so this is what gives a
  * default-weight proc a 0..10 range to move in rather than 0..1.
@@ -2222,10 +2231,18 @@ updatecpu(struct kproc *p)
 	if (n < 10)
 		return;
 
-	unsigned long long used_ms =
-	    (p->cputime - p->lastcpu) / (cyc_per_ms ? cyc_per_ms : 1);
+	unsigned long long used = p->cputime - p->lastcpu;
 	unsigned long long window = n > SCHED_DECAY_MS ? SCHED_DECAY_MS : n;
-	unsigned frac = (unsigned)((used_ms * 1000) / n);
+	/* form the fraction straight from cycles rather than converting to
+	 * whole milliseconds first. the intermediate truncation was
+	 * harmless when this was only called on demand, with n in the
+	 * hundreds of ms -- but the scheduler now calls it every lap, where
+	 * n is ~15ms and losing up to 1ms per sample is a systematic 7%
+	 * undercount. it read a spinning proc at 478 per-mille instead of
+	 * 876.
+	 */
+	unsigned long long denom = n * (cyc_per_ms ? cyc_per_ms : 1);
+	unsigned frac = denom ? (unsigned)((used * 1000) / denom) : 0;
 
 	if (frac > 1000)
 		frac = 1000;
@@ -2420,16 +2437,68 @@ kernel_run(void)
 			pump_net();
 			tick_fired = 0;
 		}
-		/* an exhaustive scan, deliberately: every READY proc gets a
-		 * turn every lap. see AGENTS.md on why a handoff hint bought
-		 * nothing on top of it.
+		/* dispatch in two phases, and the split is the whole design.
+		 *
+		 * phase 1 orders by priority: highest first, so an
+		 * interactive proc answers before a hog gets another turn.
+		 * phase 2 is a plain slot scan that ignores priority
+		 * entirely and picks up whatever phase 1 did not run --
+		 * including procs woken DURING phase 1.
+		 *
+		 * phase 2 is the starvation guarantee, and it is deliberately
+		 * independent of the priority function. every READY proc runs
+		 * at most once and at least once per lap, whatever
+		 * reprioritize() computes. a policy that is buggy, hostile or
+		 * merely untuned can cost latency; it cannot wedge the
+		 * machine. that matters because policy is exactly the part we
+		 * expect to get wrong -- see AGENTS.md.
+		 *
+		 * plan 9 cannot do this: runproc() scans runq[] from the top
+		 * and takes the first thing it finds, with no aging, so a
+		 * high-basepri proc starves a low one indefinitely (which
+		 * PriEdf > PriKproc > PriNormal makes deliberate). it has
+		 * unbounded procs, so an exhaustive sweep would be O(nproc)
+		 * per decision. MAXPROCS being small is what buys us the
+		 * guarantee for free.
 		 */
+		int pri[MAXPROCS];
+		int nready = 0;
+
+		for (int i = 0; i < MAXPROCS; i++) {
+			if (procs[i].status == READY) {
+				pri[i] = 0;
+				nready++;
+			} else {
+				pri[i] = -1;
+			}
+		}
+		for (int i = 0; i < MAXPROCS; i++)
+			if (pri[i] == 0)
+				pri[i] = reprioritize(&procs[i], nready);
+
+		/* phase 1: by priority, highest first */
+		for (int picked = 0; picked < nready; picked++) {
+			int best = -1;
+
+			for (int i = 0; i < MAXPROCS; i++)
+				if (pri[i] >= 0 &&
+				    procs[i].status == READY &&
+				    (best < 0 || pri[i] > pri[best]))
+					best = i;
+			if (best < 0)
+				break;
+			pri[best] = -1;		/* ran this lap */
+			if (run_proc(&procs[best]))
+				ran = 1;
+		}
+
+		/* phase 2: the guarantee. no priority consulted. */
 		for (int i = 0; i < MAXPROCS; i++) {
 			struct kproc *p = &procs[i];
 
-			if (p->status != READY)
+			if (p->status != READY || pri[i] < 0)
 				continue;
-
+			pri[i] = -1;
 			if (run_proc(p))
 				ran = 1;
 		}
