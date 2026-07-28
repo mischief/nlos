@@ -48,7 +48,7 @@ struct kmsg {
 	 */
 	unsigned char refs[MAXMSGRIGHTS];
 	int nrefs;
-	unsigned char data[];
+	unsigned char *data;	/* owned; freed by msg_free */
 };
 
 struct kport {
@@ -151,6 +151,8 @@ static struct kport *schedport;
 static int proc_has_port(struct kproc *p, struct kport *port);
 
 static int port_push(struct kport *port, const unsigned char *data,
+    size_t len, const unsigned char *refs, int nrefs);
+static int port_push_owned(struct kport *port, unsigned char *data,
     size_t len, const unsigned char *refs, int nrefs);
 
 extern unsigned long long platform_ticks(void);
@@ -347,6 +349,7 @@ msg_free(struct kmsg *m)
 {
 	for (int i = 0; i < m->nrefs; i++)
 		port_unref(&ports[m->refs[i]]);
+	free(m->data);
 	free(m);
 }
 
@@ -700,26 +703,38 @@ wake:
  * a dead port silently drops -- erlang semantics, the sender learns
  * from the monitor, not the send.
  */
+/* takes ownership of `data` unconditionally: on success the queued
+ * message owns it, and on every failure path (including a dead port)
+ * this frees it. callers must not free or reuse it afterwards.
+ *
+ * this exists so a serialized message is built once and queued without a
+ * second copy. the serializer already malloc'd exactly the buffer we
+ * want; copying it into a flexible array on the kmsg meant every send
+ * paid a full memcpy of its own payload for nothing.
+ */
 static int
-port_push(struct kport *port, const unsigned char *data, size_t len,
+port_push_owned(struct kport *port, unsigned char *data, size_t len,
     const unsigned char *refs, int nrefs)
 {
 	if (port->dead) {
 		for (int i = 0; i < nrefs; i++)
 			port_unref(&ports[refs[i]]);
+		free(data);
 		return 0;
 	}
 
-	struct kmsg *m = malloc(sizeof *m + len);
+	struct kmsg *m = malloc(sizeof *m);
 
-	if (!m)
+	if (!m) {
+		free(data);
 		return -1;
+	}
 	m->next = 0;
 	m->len = len;
+	m->data = data;
 	m->nrefs = nrefs;
 	for (int i = 0; i < nrefs; i++)
 		m->refs[i] = refs[i];
-	memcpy(m->data, data, len);
 	if (port->tail)
 		port->tail->next = m;
 	else
@@ -727,6 +742,25 @@ port_push(struct kport *port, const unsigned char *data, size_t len,
 	port->tail = m;
 	wake_receivers(port);
 	return 0;
+}
+
+/* copying form, for callers whose bytes are on the stack or in a string
+ * literal -- the device pumps and the timer tick. they push a handful of
+ * bytes, so the copy is not worth avoiding.
+ */
+static int
+port_push(struct kport *port, const unsigned char *data, size_t len,
+    const unsigned char *refs, int nrefs)
+{
+	unsigned char *copy = malloc(len);
+
+	if (!copy) {
+		for (int i = 0; i < nrefs; i++)
+			port_unref(&ports[refs[i]]);
+		return -1;
+	}
+	memcpy(copy, data, len);
+	return port_push_owned(port, copy, len, refs, nrefs);
 }
 
 /* ---- lua api (proc pointer lives in the state's extra space) ---- */
@@ -763,10 +797,9 @@ api_send(lua_State *L)
 		lua_pushboolean(L, 0);	/* dead port: dropped */
 		return 1;
 	}
-	int rc = port_push(r->port, w.p, w.len, w.refs, w.nrefs);
+	int rc = port_push_owned(r->port, w.p, w.len, w.refs, w.nrefs);
 
-	free(w.p);
-	if (rc)
+	if (rc)		/* w.p already freed by port_push_owned */
 		return luaL_error(L, "out of memory queueing message");
 	lua_pushboolean(L, 1);
 	return 1;
@@ -1637,7 +1670,8 @@ notify_exit(struct kproc *watcher, int pid, const char *reason)
 		    wput(&w, &rlen, 4) || wput(&w, reason, rlen))
 			goto fail;
 	}
-	port_push(watcher->rights[0].port, w.p, w.len, 0, 0);
+	port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0);
+	return;
 fail:
 	free(w.p);
 }
