@@ -305,16 +305,23 @@ end
 -- stdout, unaffected by any of this); only the line comes from cons.
 -- the reply port is allocated once per proc and reused, not minted
 -- fresh on every call.
+--
+-- consHandle defaults to sys.CONS, which is only a valid handle for
+-- whichever proc actually holds it at that fixed number (the boot
+-- payload, granted via right_new_at at boot). a proc that receives
+-- the same capability later, via an ordinary {__right=} message,
+-- lands at whatever handle right_new's first-free-slot search picks
+-- -- pass that explicitly.
 local cons_reply_port
 
-local function readline(prompt)
+local function readline(prompt, consHandle)
 	if prompt then
 		io.write(prompt)
 	end
 	if not cons_reply_port then
 		cons_reply_port = sys.newport()
 	end
-	sys.send(sys.CONS, { op = "readline",
+	sys.send(consHandle or sys.CONS, { op = "readline",
 	    reply = { __right = cons_reply_port } })
 	return recv(cons_reply_port)
 end
