@@ -187,6 +187,21 @@ at thousands of timers, and `MAXPROCS` is 32.
 - **Reserving ungranted fixed handle numbers** to stop the allocator
   aliasing them is a guard against a problem fixed numbers created.
   Removing the numbers removed the problem.
+- **A handoff hint on IPC bought nothing.** Marking a just-woken proc
+  run-next (L4's direct process switch, weakened to a hint to avoid a
+  nested `lua_resume` under the sender's live C frame) measured neutral
+  at best and 14% slower with a bug in it. The reason is structural:
+  `kernel_run` scans all `MAXPROCS` slots every lap, so every READY proc
+  already gets a turn and "run next" can only reorder *within* a lap,
+  never save one. Even a two-proc ping-pong arranged so replies travel
+  backwards through slot order came out even, because with two procs one
+  direction always runs forward.
+  Handoff pays where dispatch is a priority queue and a woken thread
+  waits behind others -- which is why L4 and seL4 have it and Plan 9,
+  which enqueues on `ready()` and lets the waker keep running, does not.
+  So it is only worth revisiting *after* a priority-queue scheduler
+  exists, not before, and it should be measured with `bench_ipc` rather
+  than reasoned about.
 - **Do not universally preload a module to work around a capability
   gate.** That was done for `ninep` and dissolved once read stopped
   being gated.

@@ -137,6 +137,7 @@ static int nextpid;
  */
 static struct kproc *current_proc;
 
+
 /* how many times kernel_run has found every proc blocked and gone to
  * a real firmware sleep. exposed via sys.stats() as an idleness
  * signal: a machine that is genuinely idle advances this steadily,
@@ -1213,6 +1214,12 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "heap_blocks");
 	lua_pushinteger(L, (lua_Integer)htotal);
 	lua_setfield(L, -2, "heap_total_allocs");
+	/* the tsc calibration, so a benchmark can time with sys.ticks()
+	 * -- sub-nanosecond -- and still report real units. uptime_ms has
+	 * 1ms granularity, which is useless over a 20ms measurement.
+	 */
+	lua_pushinteger(L, (lua_Integer)cyc_per_ms);
+	lua_setfield(L, -2, "cycles_per_ms");
 	return 1;
 }
 
@@ -2143,6 +2150,76 @@ kernel_spawn_buffer(const char *code, size_t len)
 	return spawn_init(code, len, 0);
 }
 
+/* resume one READY proc, spending its whole WRR weight. returns 1 if it
+ * ran at all, which is what tells kernel_run the machine is not idle.
+ *
+ * factored out of the dispatch loop so the handoff hint can dispatch a
+ * proc out of slot order without duplicating any of this.
+ */
+static int
+run_proc(struct kproc *p)
+{
+	int ran = 0;
+
+	/* WRR: a proc with weight>1 (see sys.set_priority) gets resumed up
+	 * to that many times in a row before we move on, instead of exactly
+	 * once -- the entire "programmable scheduler" surface is this one
+	 * loop bound reading a plain int; no lua code runs inside the
+	 * decision.
+	 */
+	for (int w = 0; w < p->weight; w++) {
+		ran = 1;
+
+		int nres = 0;
+
+		current_proc = p;
+		int rc = lua_resume(p->co, 0, 0, &nres);
+		current_proc = 0;
+
+		/* a proc can run a full hook window (200k insns) before
+		 * yielding; drain the 16-byte fifo now so it can't overflow
+		 * between serial pumps.
+		 */
+		uart_poll();
+		if (rc == LUA_YIELD) {
+			lua_pop(p->co, nres);
+			if (p->status != READY)
+				break;	/* now BLOCKED */
+			continue;	/* spend more weight */
+		}
+		if (rc == LUA_OK)
+			proc_kill(p, 0);
+		else if (rc == LUA_ERRMEM)
+			/* lua reports OOM via a static, preallocated message
+			 * specifically so it never has to allocate to report
+			 * a failure caused by having no memory left.
+			 * luaL_traceback would break that guarantee (it
+			 * allocates to build the traceback string) and, this
+			 * proc being already at its limit, fail again -- skip
+			 * it here, same plain message as before.
+			 */
+			proc_kill(p, lua_tostring(p->co, -1));
+		else {
+			/* a coroutine that errors out of lua_resume
+			 * deliberately does NOT unwind its stack -- that's
+			 * what lets luaL_traceback walk it right here, same
+			 * trick xpcall's message handler relies on, just done
+			 * from the C side after resume already returned
+			 * instead of during unwinding.
+			 *
+			 * error object is on the stack; read it before
+			 * proc_kill closes the state.
+			 */
+			const char *errmsg = lua_tostring(p->co, -1);
+
+			luaL_traceback(p->co, p->co, errmsg, 0);
+			proc_kill(p, lua_tostring(p->co, -1));
+		}
+		break;	/* proc died, nothing left to resume */
+	}
+	return ran;
+}
+
 /* two-level poll backoff for com2 (no EFI event backs raw uart rx, see
  * docs/uefi-notes.md): a faster period while bytes are actively
  * arriving, a slower one after a run of empty polls, snapping back the
@@ -2221,79 +2298,18 @@ kernel_run(void)
 			pump_net();
 			tick_fired = 0;
 		}
+		/* an exhaustive scan, deliberately: every READY proc gets a
+		 * turn every lap. see AGENTS.md on why a handoff hint bought
+		 * nothing on top of it.
+		 */
 		for (int i = 0; i < MAXPROCS; i++) {
 			struct kproc *p = &procs[i];
 
 			if (p->status != READY)
 				continue;
 
-			/* WRR: a proc with weight>1 (see sys.set_priority)
-			 * gets resumed up to that many times in a row here
-			 * before moving on to the next proc, instead of
-			 * exactly once -- the entire "programmable
-			 * scheduler" surface is this one loop bound reading
-			 * a plain int; no lua code runs inside the decision.
-			 */
-			for (int w = 0; w < p->weight; w++) {
+			if (run_proc(p))
 				ran = 1;
-
-				int nres = 0;
-
-				current_proc = p;
-				int rc = lua_resume(p->co, 0, 0, &nres);
-				current_proc = 0;
-
-				/* a proc can run a full hook window (200k
-				 * insns) before yielding; drain the 16-byte
-				 * fifo now so it can't overflow between
-				 * serial pumps.
-				 */
-				uart_poll();
-				if (rc == LUA_YIELD) {
-					lua_pop(p->co, nres);
-					if (p->status != READY)
-						break;	/* now BLOCKED */
-					continue;	/* spend more weight */
-				}
-				if (rc == LUA_OK)
-					proc_kill(p, 0);
-				else if (rc == LUA_ERRMEM)
-					/* lua reports OOM via a static,
-					 * preallocated message specifically
-					 * so it never has to allocate to
-					 * report a failure caused by having
-					 * no memory left. luaL_traceback
-					 * would break that guarantee (it
-					 * allocates to build the traceback
-					 * string) and, this proc being
-					 * already at its limit, fail again
-					 * -- skip it here, same plain
-					 * message as before.
-					 */
-					proc_kill(p, lua_tostring(p->co, -1));
-				else {
-					/* a coroutine that errors out of
-					 * lua_resume deliberately does NOT
-					 * unwind its stack -- that's what
-					 * lets luaL_traceback walk it right
-					 * here, same trick xpcall's message
-					 * handler relies on, just done from
-					 * the C side after resume already
-					 * returned instead of during
-					 * unwinding.
-					 *
-					 * error object is on the stack; read
-					 * it before proc_kill closes the
-					 * state.
-					 */
-					const char *errmsg =
-					    lua_tostring(p->co, -1);
-
-					luaL_traceback(p->co, p->co, errmsg, 0);
-					proc_kill(p, lua_tostring(p->co, -1));
-				}
-				break;	/* proc died, nothing left to resume */
-			}
 		}
 		if (!ran) {
 			/* everyone blocked: sleep until a key or the tick.
