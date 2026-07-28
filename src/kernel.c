@@ -154,6 +154,8 @@ static int port_push(struct kport *port, const unsigned char *data,
     size_t len, const unsigned char *refs, int nrefs);
 
 extern unsigned long long platform_ticks(void);
+extern void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+    unsigned long *total);
 static void port_unref(struct kport *port);
 static struct kport *port_new(void);
 static int right_new(struct kproc *p, struct kport *port, int recv);
@@ -1095,6 +1097,23 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "procs");
 	lua_pushinteger(L, (lua_Integer)nidle);
 	lua_setfield(L, -2, "idles");
+
+	/* the c heap, i.e. everything not on a per-proc lua heap: port
+	 * messages, net tokens and payload copies, loadfile buffers.
+	 * sys.meminfo(pid) covers the lua side.
+	 */
+	size_t hlive, hpeak;
+	unsigned long hblocks, htotal;
+
+	malloc_stats(&hlive, &hpeak, &hblocks, &htotal);
+	lua_pushinteger(L, (lua_Integer)hlive);
+	lua_setfield(L, -2, "heap_used");
+	lua_pushinteger(L, (lua_Integer)hpeak);
+	lua_setfield(L, -2, "heap_peak");
+	lua_pushinteger(L, (lua_Integer)hblocks);
+	lua_setfield(L, -2, "heap_blocks");
+	lua_pushinteger(L, (lua_Integer)htotal);
+	lua_setfield(L, -2, "heap_total_allocs");
 	return 1;
 }
 

@@ -17,6 +17,35 @@ struct hdr {
 
 #define MAGIC 0x6c75616f73ULL	/* "luaos" */
 
+/* accounting for everything NOT on a lua heap: port messages, net
+ * tokens and payload copies, the loadfile buffers, and our own 16-byte
+ * headers. per-proc lua heaps are tracked separately by kernel.c's
+ * allocator hook, so these two together are the whole picture.
+ *
+ * requested bytes only -- AllocatePool's own rounding and pool metadata
+ * are firmware-internal and not visible to us, so real pool usage is
+ * somewhat higher than live_bytes.
+ */
+static size_t live_bytes, peak_bytes;
+static unsigned long live_blocks, total_blocks;
+
+void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+    unsigned long *total);
+
+void
+malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+    unsigned long *total)
+{
+	if (live)
+		*live = live_bytes;
+	if (peak)
+		*peak = peak_bytes;
+	if (blocks)
+		*blocks = live_blocks;
+	if (total)
+		*total = total_blocks;
+}
+
 void *
 malloc(size_t n)
 {
@@ -28,6 +57,11 @@ malloc(size_t n)
 	h = p;
 	h->size = n;
 	h->magic = MAGIC;
+	live_bytes += n + sizeof *h;
+	if (live_bytes > peak_bytes)
+		peak_bytes = live_bytes;
+	live_blocks++;
+	total_blocks++;
 	return h + 1;
 }
 
@@ -42,6 +76,8 @@ free(void *p)
 	if (h->magic != MAGIC)
 		platform_abort("free: bad heap magic (double free or corruption)");
 	h->magic = 0;
+	live_bytes -= h->size + sizeof *h;
+	live_blocks--;
 	BS->FreePool(h);
 }
 
