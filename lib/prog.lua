@@ -245,6 +245,30 @@ local function install(ctx)
 		}
 	end
 
+	-- posix.dirent.dir maps cleanly onto ns:readdir, so it joins the
+	-- sliver. note where the sliver STOPS: ls also wants posix.pwd,
+	-- posix.grp, getopt and isatty -- users, groups and terminals this
+	-- system does not have -- so ls is the first utility better
+	-- rewritten than ported. see bin/ls.lua.
+	package.preload["posix.dirent"] = function()
+		return {
+			dir = function(path)
+				local ents, err =
+				    N:readdir(M.abspath(ctx, path or "."))
+
+				if not ents then
+					return nil, err
+				end
+				local names = { ".", ".." }
+
+				for _, e in ipairs(ents) do
+					names[#names + 1] = e.name
+				end
+				return names
+			end,
+		}
+	end
+
 	package.preload["posix.fcntl"] = function()
 		return {
 			-- the flags utilities actually pass. they are opaque
@@ -279,6 +303,19 @@ function M.abspath(ctx, path)
 	return ns.clean((ctx.cwd or "/") .. "/" .. path)
 end
 
+-- a program's own context, for programs written FOR this system rather
+-- than ported to it: prog.ns() is the namespace it was given, prog.cwd()
+-- where it started. deliberately separate from the posix.* sliver, which
+-- exists to make foreign code run unchanged -- this is the native API,
+-- and mixing the two would blur which is which.
+function M.ns()
+	return M.ctx and M.ctx.ns
+end
+
+function M.cwd()
+	return (M.ctx and M.ctx.cwd) or "/"
+end
+
 -- the sentinel os.exit raises. a program's own pcall can swallow it,
 -- which differs from a real exit() -- documented rather than worked
 -- around, because the alternative is the kernel raising, and then ANY
@@ -292,6 +329,8 @@ M.EXIT = "\1prog.exit"
 -- chunk. that keeps every program a plain lua file with no preamble.
 function M.main()
 	local ctx = thread.recv(sys.SELF)
+
+	M.ctx = ctx
 
 	ctx.stdin = ctx.stdin and M.portstream(ctx.stdin.__right) or nil
 	ctx.stdout = ctx.stdout and M.portstream(ctx.stdout.__right) or nil

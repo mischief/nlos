@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(14)
+tap.plan(22)
 
 local N = ns.new()
 
@@ -24,13 +24,19 @@ local function collector()
 	local port = sys.newport()
 	local out = {}
 
+	-- drain everything queued without blocking, and CLEAR: each call
+	-- returns what was written since the last one, not everything ever.
 	return port, out, function()
-		-- drain everything queued without blocking
 		while true do
 			local ok, m = sys.tryrecv(port)
 
 			if not ok then
-				return table.concat(out)
+				local s = table.concat(out)
+
+				for i = #out, 1, -1 do
+					out[i] = nil
+				end
+				return s
 			end
 			if m and m.op == "write" then
 				out[#out + 1] = m.data
@@ -156,5 +162,47 @@ local pstatus = dos.once(sh, "seq 3 | cat")
 tap.is(pipedrain(), "1\n2\n3\n",
     "seq 3 | cat moved bytes through a port pipeline (status " ..
     tostring(pstatus) .. ")")
+
+-- ---- the launcher, driven the way dos() drives it ----
+-- same construction init.lua's dos() performs: a namespace over the
+-- ESP plus the console handle. only thread.readline is missing, which is
+-- why the lines are scripted here rather than typed.
+local function shell()
+	local cons, _, drain = collector()
+	local s = dos.new({ ns = N, cons = cons })
+
+	return s, drain
+end
+
+local sh2, drain2 = shell()
+
+tap.is(dos.once(sh2, "pwd"), 0, "pwd builtin returns 0")
+tap.is(drain2(), "/\n", "pwd printed the cwd")
+
+tap.is(dos.once(sh2, "cd /bin"), 0, "cd into a real directory")
+dos.once(sh2, "pwd")
+tap.is(drain2(), "/bin\n", "cd changed the cwd")
+
+tap.is(dos.once(sh2, "cd /nosuch"), 1, "cd into a missing directory fails")
+drain2()
+
+-- ls is native rather than ported: it needs the namespace, not the
+-- posix sliver
+dos.once(sh2, "cd /")
+drain2()
+dos.once(sh2, "ls /bin")
+local lsout = drain2()
+
+tap.ok(lsout:find("seq.lua") ~= nil and lsout:find("cat.lua") ~= nil,
+    "ls /bin lists the programs: " .. lsout:gsub("\n", " "))
+
+-- a command that is not there
+tap.is(dos.once(sh2, "nosuchprogram"), 127, "unknown command is status 127")
+drain2()
+
+-- redirection into a file, then read it back through the namespace
+dos.once(sh2, "seq 3 > /out.txt")
+tap.is(N:readfile("/out.txt"), "1\n2\n3\n",
+    "seq 3 > /out.txt wrote through a file server")
 
 tap.done()

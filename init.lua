@@ -219,6 +219,31 @@ local repl_worker_src = [[
 	-- word only explains itself.
 	_G.halt = magic.halt(powerh)
 
+	-- dos(): hand the console to the DOS-shaped launcher. it takes over
+	-- input until you type exit, so like halt it needs parens -- a bare
+	-- __tostring must never do something this consequential.
+	--
+	-- the lua repl stays the debugging tool underneath; dos is where you
+	-- run programs from /bin. sh.lua and vi.lua, when they exist, are
+	-- programs you start FROM dos rather than alternatives to it.
+	_G.dos = setmetatable({}, {
+		__tostring = function()
+			return "dos: type dos() to start the launcher"
+		end,
+		__call = function()
+			local nsmod = require("ns")
+			local espfs = require("espfs")
+			local launcher = require("dos")
+			local N = nsmod.new()
+
+			N:mount("/", espfs.new("/"), "espfs", { root = "/" })
+			launcher.start({ ns = N, cons = consh },
+			    "lua-os. programs live in /bin; type exit to " ..
+			    "return to lua.\n")
+			return "back at the lua repl"
+		end,
+	})
+
 	local function evaluate(line)
 		local chunk, err = load("return " .. line, "=repl")
 		if not chunk then

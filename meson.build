@@ -168,6 +168,7 @@ lua_payload = files(
   'init.lua',
   # programs, at /bin/<name> -- see lib/prog.lua for the ABI they run under
   'bin/cat.lua',
+  'bin/ls.lua',
   'bin/seq.lua',
   'lib/caps.lua',
   'lib/cons.lua',
