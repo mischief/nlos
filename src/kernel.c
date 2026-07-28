@@ -1747,16 +1747,29 @@ kernel_spawn_buffer(const char *code, size_t len)
 	return spawn_init(code, len, 0);
 }
 
-/* two-level poll backoff for com2 (no EFI event backs raw uart rx,
- * see docs/uefi-notes.md): 1ms while bytes are actively arriving, back
- * a slower period after a run of empty polls, snap back to 1ms the
+/* two-level poll backoff for com2 (no EFI event backs raw uart rx, see
+ * docs/uefi-notes.md): a faster period while bytes are actively
+ * arriving, a slower one after a run of empty polls, snapping back the
  * instant a byte shows up. bounds the worst-case "first byte after
- * idle" latency to one slow period while cutting wakeups the rest
- * of the time.
+ * idle" latency to one slow period while cutting wakeups the rest of
+ * the time.
+ *
+ * these numbers are measured, not requested. SetTimer has a hard floor
+ * at the platform's timer-interrupt period -- 10ms under OVMF (100Hz)
+ * -- so anything below that is silently rounded up to it, while
+ * anything above is honoured accurately (15ms measured 14.975ms). this
+ * code used to ask for 1ms and comment "~1ms latency"; it was getting
+ * 9.98ms and had been all along. ask for what we can actually have.
+ *
+ * consequence worth knowing: the fast/slow split is a 1.5x reduction in
+ * wakeups (10ms -> 15ms), not the 15x the old constants implied. going
+ * slower is possible and cheap, but the slow period IS the
+ * first-byte-after-idle latency for interactive 9p over com2, so it is
+ * a latency/wakeup trade rather than free.
  */
-#define TICK_FAST_100NS   10000		/* 1ms */
-#define TICK_SLOW_100NS  150000		/* 15ms */
-#define TICK_IDLE_THRESHOLD 25		/* ~25ms of silence before backing off */
+#define TICK_FAST_100NS  100000		/* 10ms: the OVMF floor, measured */
+#define TICK_SLOW_100NS  150000		/* 15ms, honoured accurately */
+#define TICK_IDLE_THRESHOLD 25		/* consecutive empty polls before backing off */
 
 void
 kernel_run(void)

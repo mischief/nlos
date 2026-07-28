@@ -34,6 +34,64 @@ payload in its place.
 - Hardening (`-Wextra -Werror`, `-fsanitize-trap=all`) applies to our
   code only; the Lua submodule compiles vanilla with plain `-Wall`.
 
+## SetTimer has a hard floor at the timer-interrupt period
+
+`SetTimer`'s `TriggerTime` is in 100ns units, which invites asking for
+sub-millisecond periods. You will not get them: resolution is bounded by
+the platform's timer interrupt, and the spec guidance is to use `Stall()`
+for anything under 10ms.
+
+Measured under OVMF/qemu, TSC calibrated against `BS->Stall(100000)`
+(4,500,190 cycles/ms on this box, stable to ~4 ppm across boots):
+
+| requested | actual |
+|---|---|
+| 0.5 ms | 9.505 ms |
+| 1 ms | 9.982 ms |
+| 5 ms | 9.974 ms |
+| 10 ms | 9.975 ms |
+| 15 ms | 14.975 ms |
+| 20 ms | 19.975 ms |
+| 50 ms | 49.971 ms |
+
+So there is a hard **~10ms floor** — OVMF's timer interrupt is 100Hz —
+but above it `SetTimer` is accurate to under 30µs. It is not quantised to
+multiples of the floor, which is better than the spec guidance implies:
+a 15ms request really does fire at 15ms, not at 20.
+
+Two consequences we had wrong for a long time:
+
+- `kernel_run`'s tick asked for 1ms and its comments claimed a "~1ms
+  serial rx latency bound". It was getting 9.98ms. The constants now ask
+  for 10ms and say so.
+- Because the wakeup ping for network completions is paced to that tick,
+  completion latency is ~10ms, not ~1ms. Fine for our workloads, but it
+  is the real number.
+
+The floor is also why the timer implementation does not bother arming a
+per-deadline relative event: resolution is 10ms regardless, and every
+deadline in this system is hundreds of milliseconds. Riding the existing
+tick costs nothing in accuracy we could have used. Arming a one-shot
+`TimerRelative` to the nearest deadline would buy sub-millisecond
+precision above the floor, and is a small change if a use case ever
+appears — but note `SetTimer` keeps a single armed state per event, so
+re-arming means cancelling first.
+
+## Calibrating the TSC
+
+`platform_ticks()` is a raw `rdtsc` — a cycle count, not a time. Boot
+calibrates it once against `BS->Stall(100000)` and keeps cycles-per-
+millisecond, which is what `sys.uptime_ms()` and the timer deadlines are
+denominated in. Stability across boots is ~4 ppm, so one 100ms
+calibration is plenty; there is no need to re-calibrate or average.
+
+This assumes an invariant TSC (constant rate regardless of P-state;
+CPUID leaf 0x80000007, EDX bit 8), which holds on anything this project
+targets. Before calibration existed, every timeout in the tree was
+denominated in raw cycles, which meant the same constant was a different
+duration on every machine — and the comments describing those constants
+were wrong by 2-4x even on the machine they were written on.
+
 ## Firmware owns com2 (serial takeover)
 
 The 9P wire is raw-polled com2 (0x2f8). But OVMF binds a terminal to
