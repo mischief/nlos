@@ -22,23 +22,13 @@ end
 
 -- Configure() can fail transiently if DHCP hasn't completed yet this
 -- soon after boot; retry for a few real seconds before giving up.
--- (no sleep(ms) primitive yet -- see AGENTS.md's debts -- so this is
--- a crude rdtsc busy-wait, fine for a one-off diagnostic, not
--- something to leave lying around as a real primitive.)
-local function spin(cycles)
-	local t0 = sys.ticks()
-	while sys.ticks() - t0 < cycles do
-		sys.yield()
-	end
-end
-
 local listener
-for attempt = 1, 60 do
+for _ = 1, 60 do
 	listener = req("listen", { port = 7777 })
 	if listener then
 		break
 	end
-	spin(1000000000)
+	thread.sleep(250)
 end
 if not listener then
 	print("LISTEN FAILED")

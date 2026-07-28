@@ -102,20 +102,16 @@ local _, tcp9srv = sys.spawn([[
 	-- Configure() self-triggers DHCP but doesn't block for it (see
 	-- kernel.c/net.c's EFI_NO_MAPPING handling); retry listen for a
 	-- few real seconds rather than giving up on the first attempt.
-	local function spin(cycles)
-		local t0 = sys.ticks()
-		while sys.ticks() - t0 < cycles do
-			sys.yield()
-		end
-	end
-
+	-- thread.sleep parks, so this costs no cpu while dhcp completes --
+	-- it used to spin on sys.ticks(), which pegged the machine for the
+	-- whole of boot.
 	local listener
-	for attempt = 1, 60 do
+	for _ = 1, 60 do
 		listener = req("listen", { port = 7777 })
 		if listener then
 			break
 		end
-		spin(1000000000)
+		thread.sleep(250)
 	end
 	if not listener then
 		return

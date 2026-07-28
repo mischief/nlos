@@ -7,13 +7,13 @@
 --   {op="resolve", name=, reply={__right=}} -> "a.b.c.d" string or nil
 --
 -- udp is inherently lossy: a query or its reply can just vanish, so
--- this can't use caps.lua's blocking udp.recv() (thread.recv() with
--- no timeout -- a lost reply would hang this task forever). instead
--- it sends the request and polls its own reply port directly
--- (sys.tryrecv) against a real wall-clock deadline (sys.ticks()),
--- and explicitly cancels the outstanding recv if the deadline passes
--- -- see lib/udp.lua's "cancel" op -- so a lost reply doesn't leak a
--- pending entry in udp.lua's own table forever either.
+-- this can't use caps.lua's blocking udp.recv() (thread.recv() with no
+-- timeout -- a lost reply would hang this task forever). instead it
+-- sends the request and waits on its own reply port with a real
+-- deadline (thread.recvtimeout), then explicitly cancels the
+-- outstanding recv if that deadline passes -- see lib/udp.lua's
+-- "cancel" op -- so a lost reply doesn't leak a pending entry in
+-- udp.lua's own table forever either.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -27,13 +27,16 @@ local spack, sunpack = string.pack, string.unpack
 local RESOLVER = { 10, 0, 2, 3 }
 local RESOLVER_PORT = 53
 
--- sys.ticks() is a raw TSC read, so these are cycle counts, not
--- seconds: roughly a fifth of a second per attempt on a ~2GHz part,
--- four attempts before giving up. udp is lossy by nature and a lost
--- query or reply is normal, not exceptional.
+-- real milliseconds, via thread.sleep/recvtimeout. these used to be raw
+-- tsc cycle counts, which meant the same constant was a different
+-- duration on every machine -- and on the machine they were written on
+-- the "fifth of a second" attempt window was actually 111ms, so a
+-- resolve gave up after 444ms total. that is far too tight for a real
+-- upstream. udp is lossy by nature and a lost query or reply is normal,
+-- not exceptional, so retry generously.
 local ATTEMPTS = 4
-local ATTEMPT_CYCLES = 500000000
-local OPEN_RETRY_CYCLES = 1000000000
+local ATTEMPT_MS = 1000
+local OPEN_RETRY_MS = 250
 
 -- ---- codec ----
 
@@ -129,28 +132,19 @@ local udph = m0.udp.__right
 local udp = caps.udp(udph)
 
 local conn
-do
-	local function spin(cycles)
-		local t0 = sys.ticks()
-		while sys.ticks() - t0 < cycles do
-			sys.yield()
-		end
+for _ = 1, 60 do
+	conn = udp.open(0)	-- 0: firmware picks an ephemeral port
+	if conn then
+		break
 	end
-
-	for _ = 1, 60 do
-		conn = udp.open(0)	-- 0: firmware picks an ephemeral port
-		if conn then
-			break
-		end
-		spin(OPEN_RETRY_CYCLES)
-	end
+	thread.sleep(OPEN_RETRY_MS)	-- waiting for dhcp; park, don't spin
 end
 
 local nextid = 1
 
--- one query attempt: send, poll our own reply port up to `cycles`
--- worth of sys.ticks(), cancel-and-give-up if nothing arrived.
-local function try_once(query, id, cycles)
+-- one query attempt: send, wait up to `ms` for our own reply port,
+-- cancel-and-give-up if nothing arrived.
+local function try_once(query, id, ms)
 	local replyport = sys.newport()
 
 	sys.send(udph, { op = "recv", connid = conn, maxlen = 512,
@@ -163,17 +157,14 @@ local function try_once(query, id, cycles)
 		return nil
 	end
 
-	local t0 = sys.ticks()
-	while sys.ticks() - t0 < cycles do
-		local ok, r = sys.tryrecv(replyport)
-		if ok then
-			sys.close(replyport)
-			if r then
-				return safe_parse(r.data, id)
-			end
-			return nil
+	local r, why = thread.recvtimeout(replyport, ms)
+
+	if why == nil then
+		sys.close(replyport)
+		if r then
+			return safe_parse(r.data, id)
 		end
-		sys.yield()
+		return nil
 	end
 	-- timed out: cancel so the eventually-late (or never) reply
 	-- doesn't sit as an orphaned pending entry in udp.lua forever,
@@ -191,7 +182,7 @@ local function resolve(name)
 	for _ = 1, ATTEMPTS do
 		local id = nextid
 		nextid = (nextid % 0xFFFF) + 1
-		local ip = try_once(build_query(name, id), id, ATTEMPT_CYCLES)
+		local ip = try_once(build_query(name, id), id, ATTEMPT_MS)
 		if ip then
 			return ip
 		end

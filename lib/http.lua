@@ -143,11 +143,13 @@ end
 -- real 500 instead of taking the connection (or the whole server)
 -- down with it.
 
--- Configure() self-triggers dhcp but doesn't block for it, so a
--- listen right after boot fails with EFI_NO_MAPPING until a lease
--- lands. cycle counts, not seconds -- sys.ticks() is a raw TSC read.
+-- Configure() self-triggers dhcp but doesn't block for it, so a listen
+-- right after boot fails with EFI_NO_MAPPING until a lease lands. real
+-- milliseconds: these were raw tsc cycle counts, which made the retry
+-- window machine-dependent (and 222ms rather than the "few seconds" the
+-- comment claimed).
 local LISTEN_ATTEMPTS = 60
-local LISTEN_RETRY_CYCLES = 1000000000
+local LISTEN_RETRY_MS = 250
 
 local STATUS_TEXT = {
 	[200] = "OK", [201] = "Created", [204] = "No Content",
@@ -266,21 +268,13 @@ end
 -- and the port is accepting. there's no return value to check for
 -- that otherwise, since this never returns on success.
 function M.serve(tcp, port, handler, onready)
-	local function spin(cycles)
-		local sys = require("los.sys")
-		local t0 = sys.ticks()
-		while sys.ticks() - t0 < cycles do
-			sys.yield()
-		end
-	end
-
 	local listener
 	for _ = 1, LISTEN_ATTEMPTS do
 		listener = tcp.listen(port)
 		if listener then
 			break
 		end
-		spin(LISTEN_RETRY_CYCLES)
+		thread.sleep(LISTEN_RETRY_MS)	-- park, don't spin
 	end
 	if not listener then
 		return nil, "listen failed"
