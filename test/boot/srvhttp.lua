@@ -4,8 +4,9 @@
 local sys = require("los.sys")
 local caps = require("caps")
 local http = require("http")
+local caps_of = sys.granted()
 
-local tcp = caps.tcp(sys.TCP)
+local tcp = caps.tcp(caps_of.tcp)
 
 http.serve(tcp, 7777, function(req)
 	if req.path == "/boom" then

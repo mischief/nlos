@@ -4,6 +4,14 @@ local sys = require("los.sys")
 local efi = require("los.efi")
 local thread = require("los.thread")
 
+-- what the kernel granted us at boot, by name -> handle. handle
+-- numbers are whatever right_new picked and are not stable across
+-- boots (no NIC means no tcp/udp task, and everything after shifts
+-- down), so nothing here may hardcode one. an absent key means the
+-- machine simply doesn't have that capability -- which is also the
+-- whole availability test, no probing required.
+local caps_of = sys.granted()
+
 print(("%s on %s (fw rev 0x%x)"):format(_VERSION, efi.firmware,
     efi.firmware_revision))
 print("mach-lite kernel + plan9 furniture (threads, channels, alt, 9p)")
@@ -56,14 +64,13 @@ local _, ninesrv = sys.spawn([[
 ]], { name = "9p" })
 
 -- hand over a send-right to wire (proc 0 owns handle 2 at boot)
-sys.send(ninesrv, { wire = { __right = sys.WIRE } })
+sys.send(ninesrv, { wire = { __right = caps_of.wire } })
 print("9p server listening on com2 (mount me!)")
 
 -- same namespace, served over tcp/7777 instead of the com2 wire, via
 -- the tcp task's request/reply protocol (lib/tcp.lua) instead of
--- wire's. sys.TCP is only a real capability when a NIC was found at
--- boot (see have_net in kernel.c); the __right handoff below fails
--- loudly if it isn't, so it's wrapped in pcall and skipped quietly.
+-- wire's. tcp only exists when a NIC was found at boot (see have_net
+-- in kernel.c), in which case it appears in sys.granted().
 local _, tcp9srv = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
@@ -133,28 +140,11 @@ local _, tcp9srv = sys.spawn([[
 	end
 ]], { name = "9ptcp" })
 
-local has_tcp = pcall(sys.send, tcp9srv, { net = { __right = sys.TCP } })
-
--- probe only: does proc 0 actually hold a right at handle sys.UDP?
--- (only true if kernel.c's have_udp was set at boot -- see
--- net_have_udp()'s comment.) send it to our OWN mailbox and drain it
--- straight back: a successful sys.send really does transfer the
--- right, so probing against some other proc would silently hand that
--- proc a live UDP capability it was never meant to have, and burn a
--- slot in its rights table forever. only serialize()'s
--- right_get(sender, ...) check on our own side matters here.
-local function holds(h)
-	local ok = pcall(sys.send, sys.SELF, { probe = { __right = h } })
-
-	if ok then
-		thread.recv(sys.SELF)
-	end
-	return ok
-end
-
-local has_udp = holds(sys.UDP)
+local has_tcp = caps_of.tcp ~= nil
+local has_udp = caps_of.udp ~= nil
 
 if has_tcp then
+	sys.send(tcp9srv, { net = { __right = caps_of.tcp } })
 	print("9p server listening on tcp/7777 (mount me!)")
 end
 -- no NIC: tcp9srv just sits parked in thread.recv(sys.SELF) forever,
@@ -166,7 +156,7 @@ end
 local _, dnssrv = sys.spawn(io.open("/lib/dns.lua"):read("a"),
     { name = "dns" })
 local has_dns = has_udp and
-    pcall(sys.send, dnssrv, { udp = { __right = sys.UDP } })
+    pcall(sys.send, dnssrv, { udp = { __right = caps_of.udp } })
 
 if has_dns then
 	print("dns resolver ready")
@@ -247,14 +237,14 @@ local repl_worker_src = [[
 	end
 
 	while true do
-		local line = thread.readline("> ", consh)
+		local line = thread.readline(consh, "> ")
 		if line == nil then
 			break
 		end
 		if #line > 0 then
 			local chunk, err = evaluate(line)
 			while not chunk and err and err:sub(-5) == "<eof>" do
-				local more = thread.readline(">> ", consh)
+				local more = thread.readline(consh, ">> ")
 				if more == nil then
 					break
 				end
@@ -287,16 +277,16 @@ while true do
 	sys.monitor(pid)
 
 	local grant = {
-		cons = { __right = sys.CONS },
-		wire = { __right = sys.WIRE },
-		power = { __right = sys.POWER },
-		disk = { __right = sys.DISK },
+		cons = { __right = caps_of.cons },
+		wire = { __right = caps_of.wire },
+		power = { __right = caps_of.power },
+		disk = { __right = caps_of.disk },
 	}
 	if has_tcp then
-		grant.tcp = { __right = sys.TCP }
+		grant.tcp = { __right = caps_of.tcp }
 	end
 	if has_udp then
-		grant.udp = { __right = sys.UDP }
+		grant.udp = { __right = caps_of.udp }
 	end
 	if has_dns then
 		grant.dns = { __right = dnssrv }

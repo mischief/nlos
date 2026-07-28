@@ -5,8 +5,9 @@
 local sys = require("los.sys")
 local caps = require("caps")
 local mcp = require("mcp")
+local caps_of = sys.granted()
 
-local tcp = caps.tcp(sys.TCP)
+local tcp = caps.tcp(caps_of.tcp)
 
 mcp.serve(tcp, 7777, {
 	{

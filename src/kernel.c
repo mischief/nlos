@@ -33,7 +33,7 @@
 #define MAXMSGRIGHTS	8	/* rights per message */
 #define MAXWATCH	8	/* monitors per proc */
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
-#define HANDLE_MAX	7	/* highest fixed boot handle (SCHED); see spawn_init */
+#define MAXGRANTS	8	/* named capabilities the kernel hands a proc */
 
 enum { DEAD, READY, BLOCKED };
 enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP, PRIV_UDP };
@@ -62,14 +62,19 @@ struct right {
 	struct kport *port;
 	int recv;
 	int used;
-	/* a fixed boot handle number (CONS/WIRE/.../SCHED) that this proc
-	 * did NOT get -- because the driver was disabled or failed to
-	 * spawn. the slot stays permanently empty rather than being
-	 * handed out by right_new's first-free search: otherwise the
-	 * next sys.spawn child lands on it and sys.TCP silently starts
-	 * naming that child's mailbox instead of failing cleanly.
-	 */
-	int reserved;
+};
+
+/* what the kernel granted a proc at spawn, by NAME. handle numbers are
+ * whatever right_new's first-free search picked and are not an abi --
+ * lua reads this mapping through sys.granted() instead of hardcoding a
+ * constant. a capability that doesn't exist this boot is simply an
+ * absent key, which is both cheaper and safer than probing with a send
+ * (a successful send transfers the right for real, so a probe that
+ * "just checks" hands the capability to whoever it was aimed at).
+ */
+struct grant {
+	const char *name;
+	int handle;
 };
 
 /* a proc holds at most MAXRIGHTS distinct rights, so it can never park
@@ -94,6 +99,8 @@ struct kproc {
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
 	char name[32];		/* from chunkname, for ps/debugging */
+	struct grant grants[MAXGRANTS];
+	int ngrants;
 	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
 };
 
@@ -280,7 +287,7 @@ static int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
 	for (int i = 0; i < MAXRIGHTS; i++)
-		if (!p->rights[i].used && !p->rights[i].reserved) {
+		if (!p->rights[i].used) {
 			p->rights[i].used = 1;
 			p->rights[i].port = port;
 			p->rights[i].recv = recv;
@@ -303,31 +310,32 @@ right_drop(struct right *r)
 	port_unref(port);
 }
 
+/* grant a named capability: take a right the ordinary way (first free
+ * slot) and record what it was called, so lua can look the handle up
+ * by name. a NULL port or a full table is a no-op, which is exactly
+ * the "this capability doesn't exist this boot" case.
+ */
+static void
+grant_named(struct kproc *p, const char *name, struct kport *port, int recv)
+{
+	if (!port || p->ngrants >= MAXGRANTS)
+		return;
+
+	int h = right_new(p, port, recv);
+
+	if (h < 0)
+		return;
+	p->grants[p->ngrants].name = name;
+	p->grants[p->ngrants].handle = h;
+	p->ngrants++;
+}
+
 static struct right *
 right_get(struct kproc *p, lua_Integer h)
 {
 	if (h < 0 || h >= MAXRIGHTS || !p->rights[h].used)
 		return 0;
 	return &p->rights[h];
-}
-
-/* grant at a specific index rather than the first free slot. used only
- * for the boot-time CONS/WIRE/POWER/DISK grants, so a driver that
- * fails to spawn leaves a hole at its fixed handle number instead of
- * shifting every later grant into the wrong slot.
- */
-static int
-right_new_at(struct kproc *p, int idx, struct kport *port, int recv)
-{
-	if (idx < 0 || idx >= MAXRIGHTS || p->rights[idx].used)
-		return -1;
-	p->rights[idx].used = 1;
-	p->rights[idx].port = port;
-	p->rights[idx].recv = recv;
-	port->nrights++;
-	if (recv)
-		port->nrecv++;
-	return idx;
 }
 
 /* ---- serializer ----
@@ -1089,7 +1097,7 @@ api_wchan(lua_State *L)
  * times per lap instead of once (see kernel_run).
  *
  * gated on the scheduling capability (a right to schedport, handle
- * sys.SCHED at boot), exactly like disk writes are gated on a right
+ * "sched" in sys.granted()), exactly like disk writes are gated on a
  * to diskport. without it any ordinary sys.spawn child could hand
  * itself weight=MAXWEIGHT and starve every other proc, which is a
  * denial of service the capability model is supposed to prevent.
@@ -1128,6 +1136,24 @@ api_priority(lua_State *L)
 	return 1;
 }
 
+/* sys.granted(): {name = handle} for every capability the kernel
+ * handed this proc at spawn. empty for an ordinary sys.spawn child,
+ * which is granted nothing; populated for the boot payload. absent key
+ * means "this machine doesn't have that" -- see struct grant.
+ */
+static int
+api_granted(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	lua_createtable(L, 0, p->ngrants);
+	for (int i = 0; i < p->ngrants; i++) {
+		lua_pushinteger(L, p->grants[i].handle);
+		lua_setfield(L, -2, p->grants[i].name);
+	}
+	return 1;
+}
+
 extern unsigned long long platform_ticks(void);
 
 static int
@@ -1152,6 +1178,7 @@ static const luaL_Reg kapi[] = {
 	{ "preempt", api_preempt },
 	{ "self", api_self },
 	{ "procs", api_procs },
+	{ "granted", api_granted },
 	{ "name", api_procname },
 	{ "wchan", api_wchan },
 	{ "set_priority", api_set_priority },
@@ -1178,39 +1205,22 @@ los_sys_open(lua_State *L)
 {
 	luaL_newlib(L, kapi);
 
-	/* well-known right handles. 0 (own receive port) holds for every
-	 * proc. 1/2/3 are send-rights to the cons/wire/power tasks, the
-	 * only procs anywhere with the corresponding los.platform.*
-	 * module registered -- talking to any of them is a message, never
-	 * a direct call. 4 is the disk-write capability (a checked right,
-	 * not an exclusive task -- see fopen()/kernel_current_has_disk());
-	 * reading a file needs no right at all, only writing/appending
-	 * does. 5 is a send-right to net, granted only when a NIC was
-	 * actually found at boot (see have_net) -- unlike the other four,
-	 * a missing net task is the normal case on hardware without one,
-	 * not a boot failure. 7 is the scheduling capability, another
-	 * checked right with no task behind it (see api_set_priority) --
-	 * without it, any child could hand itself weight=MAXWEIGHT and
-	 * starve everyone else. all are handed to the boot payload
-	 * (init.lua or a test payload) at spawn; ordinary sys.spawn
-	 * children get none of them by default.
+	/* SELF is the only well-known handle, and the only one that can
+	 * be: it is how a proc receives at all, so there is nothing to
+	 * bootstrap it from. everything else -- cons, wire, power, disk,
+	 * tcp, udp, sched -- is granted at whatever slot right_new picked
+	 * and looked up BY NAME through sys.granted(). the numbers are
+	 * not an abi and nothing may hardcode them.
+	 *
+	 * they used to be fixed constants, which broke exactly the way
+	 * fixed numbers do: an ungranted one (no NIC, so no tcp task)
+	 * left an empty slot, right_new's first-free search handed that
+	 * slot to the next sys.spawn child, and sys.TCP silently became
+	 * a right to that child. a name that isn't in the mapping cannot
+	 * alias anything.
 	 */
 	lua_pushinteger(L, 0);
 	lua_setfield(L, -2, "SELF");
-	lua_pushinteger(L, 1);
-	lua_setfield(L, -2, "CONS");
-	lua_pushinteger(L, 2);
-	lua_setfield(L, -2, "WIRE");
-	lua_pushinteger(L, 3);
-	lua_setfield(L, -2, "POWER");
-	lua_pushinteger(L, 4);
-	lua_setfield(L, -2, "DISK");
-	lua_pushinteger(L, 5);
-	lua_setfield(L, -2, "TCP");
-	lua_pushinteger(L, 6);
-	lua_setfield(L, -2, "UDP");
-	lua_pushinteger(L, 7);
-	lua_setfield(L, -2, "SCHED");
 	return 1;
 }
 
@@ -1642,13 +1652,12 @@ spawn_driver(const char *path, const char *chunkname, int priv,
  * this by default; only the boot payload (analogous to pid 1 on a
  * unix system) starts this privileged.
  */
-/* one row per driver task the boot payload gets a fixed-handle right
- * to. "enabled" is decided before this table is built (have_net/
- * have_udp come from the net_init() probe in kernel_init()) -- this is
- * still a one-shot, boot-time, C-side table, not a runtime bus/
- * match-and-attach registry. disk and sched aren't in it: there's no
- * lua owner task for either, they're bare capability ports granted to
- * init directly (see the handle 4/7 grants below).
+/* one row per driver task the boot payload gets a right to. "enabled"
+ * is decided before this table is built (have_net/have_udp come from
+ * the net_init() probe in kernel_init()) -- this is still a one-shot,
+ * boot-time, C-side table, not a runtime bus/match-and-attach
+ * registry. disk and sched aren't in it: there's no lua owner task for
+ * either, they're bare capability ports granted to init directly.
  */
 struct driver_desc {
 	const char *path;
@@ -1658,29 +1667,22 @@ struct driver_desc {
 	int devrecv;
 	const char *what;
 	int enabled;
-	int handle;
+	const char *capname;	/* what sys.granted() calls it */
 };
 
 static int
 spawn_init(const char *code, size_t len, int is_file)
 {
-	/* fixed handle numbers (1=CONS, 2=WIRE, 3=POWER, 4=DISK, 5=TCP,
-	 * 6=UDP, 7=SCHED), granted by explicit index below so a driver
-	 * that failed to spawn (or was never enabled, eg no NIC) just
-	 * leaves a hole at its own number -- sys.send(sys.CONS, ...) then
-	 * fails with "bad right", cleanly, instead of some other
-	 * capability silently sliding into the wrong handle.
-	 */
 	struct driver_desc drivers[] = {
 		{ .path = "/lib/cons.lua", .chunkname = "=cons",
 		  .priv = PRIV_CONS, .devport = kbdport, .devrecv = 1,
-		  .what = "console", .enabled = 1, .handle = 1 },
+		  .what = "console", .enabled = 1, .capname = "cons" },
 		{ .path = "/lib/wire.lua", .chunkname = "=wire",
 		  .priv = PRIV_WIRE, .devport = serport, .devrecv = 1,
-		  .what = "the 9p wire", .enabled = 1, .handle = 2 },
+		  .what = "the 9p wire", .enabled = 1, .capname = "wire" },
 		{ .path = "/lib/power.lua", .chunkname = "=power",
 		  .priv = PRIV_POWER, .devport = 0, .devrecv = 0,
-		  .what = "reset/stall", .enabled = 1, .handle = 3 },
+		  .what = "reset/stall", .enabled = 1, .capname = "power" },
 		/* no NIC (real hardware, or qemu -net none) is the normal
 		 * case, not a boot failure -- don't even try spawning a task
 		 * that could never listen/dial successfully. tcp and udp are
@@ -1690,11 +1692,11 @@ spawn_init(const char *code, size_t len, int is_file)
 		{ .path = "/lib/tcp.lua", .chunkname = "=tcp",
 		  .priv = PRIV_TCP, .devport = netport, .devrecv = 1,
 		  .what = "networking (tcp)", .enabled = have_net,
-		  .handle = 5 },
+		  .capname = "tcp" },
 		{ .path = "/lib/udp.lua", .chunkname = "=udp",
 		  .priv = PRIV_UDP, .devport = udpport, .devrecv = 1,
 		  .what = "networking (udp)", .enabled = have_udp,
-		  .handle = 6 },
+		  .capname = "udp" },
 	};
 	size_t ndrivers = sizeof drivers / sizeof drivers[0];
 	int pids[sizeof drivers / sizeof drivers[0]];
@@ -1715,28 +1717,21 @@ spawn_init(const char *code, size_t len, int is_file)
 
 	struct kproc *p = find_proc(pid);
 
+	/* handles are allocated first-free, in this order, and reported
+	 * by name through sys.granted(). nothing anywhere depends on the
+	 * numbers: a driver that was disabled or failed to spawn simply
+	 * doesn't appear in the mapping, and everything after it shifts
+	 * down a slot harmlessly.
+	 */
 	for (i = 0; i < ndrivers; i++) {
 		struct kproc *dp = pids[i] >= 0 ? find_proc(pids[i]) : 0;
 
 		if (dp)
-			right_new_at(p, drivers[i].handle,
+			grant_named(p, drivers[i].capname,
 			    dp->rights[0].port, 0);
 	}
-	if (diskport)
-		right_new_at(p, 4, diskport, 0);
-	if (schedport)
-		right_new_at(p, 7, schedport, 0);
-
-	/* every fixed handle number is spoken for, whether or not the
-	 * thing behind it exists this boot. an ungranted one has to stay
-	 * an empty hole so sys.send(sys.TCP, ...) fails with "bad right"
-	 * -- without this, right_new's first-free search hands slot 5 to
-	 * the boot payload's first sys.spawn child, and sys.TCP quietly
-	 * becomes a right to that child instead.
-	 */
-	for (int h = 1; h <= HANDLE_MAX; h++)
-		if (!p->rights[h].used)
-			p->rights[h].reserved = 1;
+	grant_named(p, "disk", diskport, 0);
+	grant_named(p, "sched", schedport, 0);
 	return pid;
 }
 

@@ -9,10 +9,11 @@ local sys = require("los.sys")
 local caps = require("caps")
 local http = require("http")
 local mcp = require("mcp")
+local caps_of = sys.granted()
 
 local MCP_PORT = 8090
 
-if not sys.TCP then
+if not caps_of.tcp then
 	print("NO TCP")
 	return
 end
@@ -21,15 +22,15 @@ end
 -- payload replaced it), same pattern init.lua itself uses.
 local _, dnssrv = sys.spawn(io.open("/lib/dns.lua"):read("a"),
     { name = "dns" })
-local has_udp = sys.UDP ~= nil and
-    pcall(sys.send, dnssrv, { udp = { __right = sys.UDP } })
+local has_udp = caps_of.udp ~= nil and
+    pcall(sys.send, dnssrv, { udp = { __right = caps_of.udp } })
 
 if not has_udp then
 	print("NO UDP/DNS")
 	return
 end
 
-local tcp = caps.tcp(sys.TCP)
+local tcp = caps.tcp(caps_of.tcp)
 local dns = caps.dns(dnssrv)	-- dnssrv is already a handle, see sys.spawn
 
 mcp.serve(tcp, MCP_PORT, {

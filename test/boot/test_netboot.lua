@@ -1,7 +1,7 @@
 -- with NET=1 the harness gives the guest a NIC on qemu's usermode
 -- network, so the net task must actually spawn and be reachable.
--- without one they are never spawned at all, and sys.TCP/sys.UDP are
--- holes in the handle table.
+-- without one they are never spawned at all, and tcp/udp are simply
+-- absent from sys.granted().
 --
 -- NOT covered here: whether the kernel still reaches its idle sleep
 -- with a NIC present (pump_net's tick pacing). that isn't observable
@@ -16,19 +16,13 @@ local tap = require("tap")
 
 tap.plan(6)
 
--- probe against our OWN mailbox, not some other proc's: a successful
--- send really does transfer the right, so probing against a bystander
--- would hand it a capability it was never meant to have.
-local function holds(h)
-	local ok = pcall(sys.send, sys.SELF, { probe = { __right = h } })
-	if ok then
-		thread.recv(sys.SELF)	-- drain it, and drop the right with it
-	end
-	return ok
-end
+-- availability is a plain table lookup now. it used to be a probe
+-- send, which was never "just a check": a successful send genuinely
+-- transfers the right to whoever it was aimed at.
+local g = sys.granted()
 
-tap.ok(holds(sys.TCP), "sys.TCP is a live right (NIC present)")
-tap.ok(holds(sys.UDP), "sys.UDP is a live right (udp4 driver present)")
+tap.ok(g.tcp ~= nil, "tcp is in the grant table (NIC present)")
+tap.ok(g.udp ~= nil, "udp is in the grant table (udp4 driver present)")
 
 local byname = {}
 for _, pid in ipairs(sys.procs()) do

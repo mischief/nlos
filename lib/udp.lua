@@ -11,8 +11,8 @@
 --   {op="close", connid=}
 --   {op="cancel", connid=}
 --
--- separate task from tcp (lib/tcp.lua), separate port (los.sys.UDP,
--- not TCP), soft-fails independently at boot -- a firmware/NIC combo
+-- separate task from tcp (lib/tcp.lua), separate capability and
+-- separate port, soft-fails independently at boot -- a firmware/NIC combo
 -- missing the udp4 driver doesn't take tcp down with it, and vice
 -- versa. connectionless: no listen/accept/dial, every send names its
 -- destination, every recv reports the sender's.

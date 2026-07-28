@@ -9,14 +9,12 @@
 -- udp, there's no exclusive-task round trip to hide for console
 -- output).
 --
--- each wrapper is a FACTORY, not a ready-made table: sys.WIRE/TCP/
--- UDP/POWER are only valid handle numbers for whichever proc got them
--- via right_new_at at boot (the boot payload/supervisor). a proc that
--- receives the same capability later, via an ordinary message (the
--- {__right=} convention), gets it at whatever handle right_new's
--- first-free-slot search happens to land on -- not necessarily the
--- same number. pass that handle in explicitly; omit it only from the
--- one proc that actually holds the fixed constant.
+-- each wrapper is a FACTORY taking an explicit handle. there are no
+-- well-known capability numbers to default to: the boot payload learns
+-- its own from sys.granted(), and any other proc learns them from the
+-- {__right=} message that granted them. either way the number is
+-- whatever right_new's first-free search picked, so it has to be
+-- passed in.
 local sys = require("los.sys")
 local thread = require("los.thread")
 
@@ -44,7 +42,6 @@ local function requester(target)
 end
 
 function M.wire(handle)
-	handle = handle or sys.WIRE
 	local req = requester(handle)
 	local w = { handle = handle }	-- for re-granting to a spawned child: {__right = w.handle}
 
@@ -58,7 +55,6 @@ function M.wire(handle)
 end
 
 function M.tcp(handle)
-	handle = handle or sys.TCP
 	local req = requester(handle)
 	local n = { handle = handle }	-- for re-granting to a spawned child: {__right = n.handle}
 
@@ -90,7 +86,6 @@ function M.tcp(handle)
 end
 
 function M.udp(handle)
-	handle = handle or sys.UDP
 	local req = requester(handle)
 	local u = { handle = handle }	-- for re-granting to a spawned child: {__right = u.handle}
 
@@ -119,10 +114,10 @@ function M.udp(handle)
 	return u
 end
 
--- dns isn't one of the boot-time fixed handles (there's no sys.DNS --
--- it's an ordinary spawned proc, not a kernel-registered exclusive
--- task, see lib/dns.lua), so unlike the others this has no fallback
--- default and always needs an explicit handle.
+-- dns is an ordinary spawned proc rather than a kernel-registered
+-- exclusive task (see lib/dns.lua), so it never appears in
+-- sys.granted() at all -- its handle is simply whatever sys.spawn
+-- returned.
 function M.dns(handle)
 	local req = requester(handle)
 	local d = { handle = handle }
@@ -134,7 +129,6 @@ function M.dns(handle)
 end
 
 function M.power(handle)
-	handle = handle or sys.POWER
 	local p = { handle = handle }	-- for re-granting to a spawned child: {__right = p.handle}
 
 	function p.reset(mode)

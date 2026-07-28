@@ -8,7 +8,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(11)
+tap.plan(12)
 
 -- none of the three raw modules exist for us (we are not cons/wire/power)
 tap.is((pcall(require, "los.platform.cons")), false,
@@ -27,9 +27,14 @@ tap.is((pcall(require, "los.platform.power")), false,
 local pid, w = sys.spawn([[
 	local sys = require("los.sys")
 	assert(not pcall(require, "los.platform.cons"))
-	assert(not pcall(function() return sys.send(sys.CONS, {}) end))
-	assert(not pcall(function() return sys.send(sys.WIRE, {}) end))
-	assert(not pcall(function() return sys.send(sys.POWER, {}) end))
+	-- an ordinary child is granted nothing, so its grant table is
+	-- empty; there is no constant it could try to send to instead.
+	local g = sys.granted()
+	assert(next(g) == nil, "a spawned child is granted no capability")
+	-- and it cannot reach a driver by guessing handle numbers either
+	for h = 1, 12 do
+		assert(not pcall(function() return sys.send(h, {}) end))
+	end
 	assert(io.open("/init.lua", "r") ~= nil,
 	    "read is ambient -- a spawned child should still be able to "
 	    .. "read a real esp file")
@@ -45,14 +50,20 @@ tap.is(m.normal, true,
     .. tostring(m.reason))
 sys.close(w)
 
--- proc 0 (us) DOES hold real CONS/WIRE/POWER/DISK, granted at boot
-tap.ok(sys.CONS ~= nil and sys.WIRE ~= nil and sys.POWER ~= nil and
-    sys.DISK ~= nil, "proc 0 holds all four well-known handles")
+-- proc 0 (us) DOES hold cons/wire/power/disk, granted at boot and
+-- reported by name. this payload boots with -net none, so tcp/udp are
+-- legitimately absent -- an absent key IS the availability test.
+local g = sys.granted()
+
+tap.ok(g.cons and g.wire and g.power and g.disk and g.sched,
+    "proc 0's grant table names every capability it was given")
+tap.ok(g.tcp == nil and g.udp == nil,
+    "no NIC: tcp/udp are simply absent from the grant table")
 
 -- and they are real, working sends/capabilities
-tap.ok(pcall(sys.send, sys.CONS, { op = "write", data = "" }),
+tap.ok(pcall(sys.send, g.cons, { op = "write", data = "" }),
     "proc 0's cons send does not error")
-tap.ok(pcall(sys.send, sys.WIRE, { op = "write", data = "" }),
+tap.ok(pcall(sys.send, g.wire, { op = "write", data = "" }),
     "proc 0's wire send does not error")
 
 -- disk read: any proc can do this, but prove it still works for us too
@@ -72,22 +83,20 @@ if w2 then
 	w2:close()
 end
 
--- reserved handles: this test payload boots with -net none, so 5/6
--- (TCP/UDP) were never granted. those slots must stay permanently
--- EMPTY, not get recycled by right_new's first-free-slot search --
--- otherwise the first sys.spawn child lands on handle 5 and
--- sys.send(sys.TCP, ...) silently starts naming that child's mailbox
--- instead of failing cleanly.
+-- handle numbers are not an abi: a sys.spawn child may legitimately
+-- land on any free slot, including one a driver would have taken on a
+-- machine that had that driver. that is only safe because nothing
+-- looks capabilities up by number -- the grant table above is by name,
+-- and an absent capability has no number at all to collide with.
 local _, child = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
 	thread.recv(sys.SELF)
-]], { name = "reserve-probe" })
+]], { name = "slot-probe" })
 
-tap.ok(child ~= 5 and child ~= 6,
-    "sys.spawn does not reuse an ungranted fixed handle (got " ..
+tap.ok(type(child) == "number", "sys.spawn returns a handle (" ..
     tostring(child) .. ")")
-tap.ok(not pcall(sys.send, sys.SELF, { p = { __right = sys.TCP } }),
-    "sys.TCP with no NIC is a clean hole, not some other capability")
+tap.ok(g.tcp == nil,
+    "an absent capability has no handle to be aliased by that child")
 
 tap.done()

@@ -2,11 +2,13 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(5)
+tap.plan(6)
 
--- init holds sys.SCHED at boot
+tap.ok(sys.granted().sched ~= nil, "sched is in the grant table")
+
+-- the boot payload is granted the sched capability
 local ok = pcall(sys.set_priority, sys.self(), 4)
-tap.ok(ok, "init can set_priority (holds SCHED)")
+tap.ok(ok, "init can set_priority (granted sched)")
 tap.is(sys.priority(sys.self()), 4, "weight took effect")
 
 -- clamp

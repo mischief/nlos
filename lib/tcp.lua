@@ -16,8 +16,8 @@
 -- (raw bytes arrived, a send finished, whatever) rechecks every
 -- outstanding token, replying to whichever actually completed.
 --
--- udp lives in lib/udp.lua now, its own exclusive task -- los.sys.UDP,
--- not this one. see DESIGN.md for why they're split.
+-- udp lives in lib/udp.lua now, its own exclusive task with its own
+-- capability. see DESIGN.md for why they're split.
 
 local sys = require("los.sys")
 local thread = require("los.thread")

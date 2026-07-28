@@ -3,8 +3,9 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
+local caps_of = sys.granted()
 
-if not sys.TCP then
+if not caps_of.tcp then
 	print("NO TCP")
 	return
 end
@@ -15,7 +16,7 @@ local function req(op, extra)
 	extra = extra or {}
 	extra.op = op
 	extra.reply = { __right = replyport }
-	sys.send(sys.TCP, extra)
+	sys.send(caps_of.tcp, extra)
 	return thread.recv(replyport)
 end
 
@@ -63,5 +64,5 @@ end
 -- fire-and-forget: tcp.lua's "close" op never replies (see
 -- lib/tcp.lua's op table comment), so this must not go through
 -- req()/thread.recv or it blocks forever.
-sys.send(sys.TCP, { op = "close", connid = conn })
+sys.send(caps_of.tcp, { op = "close", connid = conn })
 print("DONE")

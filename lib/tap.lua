@@ -37,7 +37,16 @@ end
 
 function M.done()
 	print("# test complete, powering off")
-	sys.send(sys.POWER, { op = "reset", mode = "shutdown" })
+	-- a tap payload is always the boot payload (injected via fw_cfg in
+	-- place of init.lua), so the power capability is in its own grant
+	-- table. there is no well-known handle number to use instead.
+	local power = sys.granted().power
+
+	if power then
+		sys.send(power, { op = "reset", mode = "shutdown" })
+	else
+		print("# no power capability; cannot power off")
+	end
 end
 
 return M

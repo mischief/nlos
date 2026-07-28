@@ -1,20 +1,21 @@
 -- 9p server payload for the host-driven 9p test: same server the real
--- init runs, minus the repl. proc 0 (this proc) holds sys.WIRE
+-- init runs, minus the repl. proc 0 (this proc) holds caps_of.wire
 -- directly (granted at boot, same as the real init).
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local p9 = require("ninep")
+local caps_of = sys.granted()
 
 local readreply = sys.newport()
 
 local function wire_read()
-	sys.send(sys.WIRE, { op = "read", reply = { __right = readreply } })
+	sys.send(caps_of.wire, { op = "read", reply = { __right = readreply } })
 	return thread.recv(readreply)
 end
 
 local function wire_write(bytes)
-	sys.send(sys.WIRE, { op = "write", data = bytes })
+	sys.send(caps_of.wire, { op = "write", data = bytes })
 end
 
 local root = p9.synth({

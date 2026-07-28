@@ -4,12 +4,13 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local caps = require("caps")
 local tap = require("tap")
+local caps_of = sys.granted()
 
 tap.plan(3)
 
 local dnspid, dnsh = sys.spawn(io.open("/lib/dns.lua"):read("a"),
     { name = "dns" })
-sys.send(dnsh, { udp = { __right = sys.UDP } })
+sys.send(dnsh, { udp = { __right = caps_of.udp } })
 
 local dns = caps.dns(dnsh)
 
