@@ -413,6 +413,10 @@ M.register("espfs", function(args)
 	return require("espfs").new((args and args.root) or "/")
 end)
 
+M.register("procfs", function()
+	return require("procfs").new()
+end)
+
 M.register("mem", function(args)
 	-- the tree is plain data, so it genuinely does survive the trip
 	return dev.mem((args and args.tree) or {})

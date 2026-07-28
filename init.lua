@@ -243,6 +243,7 @@ local repl_worker_src = [[
 			local N = nsmod.new()
 
 			N:mount("/", espfs.new("/"), "espfs", { root = "/" })
+			N:mount("/proc", require("procfs").new(), "procfs")
 			launcher.start({ ns = N, cons = consh },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")

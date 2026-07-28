@@ -183,6 +183,7 @@ lua_payload = files(
   'lib/ns.lua',
   'lib/dos.lua',
   'lib/power.lua',
+  'lib/procfs.lua',
   'lib/prog.lua',
   'lib/ps.lua',
   'lib/tap.lua',
@@ -220,7 +221,8 @@ run_target('fetch-mcp',
 boottest = files('scripts/boottest.sh')
 
 boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
-              'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup']
+              'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
+              'procfs']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
