@@ -2461,6 +2461,17 @@ kernel_run(void)
 		 * per decision. MAXPROCS being small is what buys us the
 		 * guarantee for free.
 		 */
+		/* two distinct negatives, and conflating them was a real bug:
+		 * PRI_SKIP means "not READY when the lap started", PRI_RAN
+		 * means "already had its turn". with one marker for both, a
+		 * proc woken DURING phase 1 still carried the snapshot's
+		 * marker and phase 2 skipped it -- so the guarantee did not
+		 * guarantee, and every IPC round trip waited an extra lap.
+		 * cost 45% on cross-proc latency, invisible to a
+		 * single-proc throughput test.
+		 */
+		enum { PRI_SKIP = -1, PRI_RAN = -2 };
+
 		int pri[MAXPROCS];
 		int nready = 0;
 
@@ -2469,7 +2480,7 @@ kernel_run(void)
 				pri[i] = 0;
 				nready++;
 			} else {
-				pri[i] = -1;
+				pri[i] = PRI_SKIP;
 			}
 		}
 		for (int i = 0; i < MAXPROCS; i++)
@@ -2487,7 +2498,7 @@ kernel_run(void)
 					best = i;
 			if (best < 0)
 				break;
-			pri[best] = -1;		/* ran this lap */
+			pri[best] = PRI_RAN;
 			if (run_proc(&procs[best]))
 				ran = 1;
 		}
@@ -2496,9 +2507,9 @@ kernel_run(void)
 		for (int i = 0; i < MAXPROCS; i++) {
 			struct kproc *p = &procs[i];
 
-			if (p->status != READY || pri[i] < 0)
+			if (p->status != READY || pri[i] == PRI_RAN)
 				continue;
-			pri[i] = -1;
+			pri[i] = PRI_RAN;
 			if (run_proc(p))
 				ran = 1;
 		}
