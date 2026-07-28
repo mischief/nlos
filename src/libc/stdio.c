@@ -46,7 +46,7 @@ fopen(const char *path, const char *mode)
 	int write = (*mode == 'w' || *mode == 'a');
 
 	/* DISK gates write/append only. read is deliberately ambient: the
-	 * threat model here is buggy lua, not hostile users (DESIGN.md
+	 * threat model here is buggy lua, not hostile users (AGENTS.md
 	 * non-goals), there's nothing confidentiality-sensitive on the
 	 * esp, and a stray read can't corrupt anything the way a runaway
 	 * write can (e.g. clobbering /lib/thread.lua and breaking every

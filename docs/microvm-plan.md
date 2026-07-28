@@ -1,7 +1,7 @@
 # microvm plan (parked)
 
 the deeper redpill, recorded for another day. status: PLANNED, not
-started. see DESIGN.md "bluepilled vs redpilled" — this resolves that
+started. see AGENTS.md "bluepilled vs redpilled" — this resolves that
 question as "both pills, one body": microvm becomes a second platform,
 efi stays. nothing here obligates anything.
 
@@ -26,7 +26,8 @@ key insight that kills the two scariest costs:
   pillar and is not required:
   - v1: virtio-vsock-device = stream to host, 9p rides it
   - v2: virtio-net + arp/icmp/udp in lua (trivial protocols)
-  - endgame: tcp in lua — tcp is pure policy, pillar 1 says it
+  - endgame: tcp in lua — tcp is pure policy, and "c is mechanism,
+    lua is policy" says it
     belongs there. slow is fine.
   - lwip: never.
 
@@ -55,7 +56,8 @@ key insight that kills the two scariest costs:
 
 ## structure
 
-platform split per DESIGN pillar 7: the kernel core
+platform split per AGENTS.md's only-los.efi-touches-firmware rule:
+the kernel core
 (procs/ports/rights/serializer/scheduler) is already firmware-blind.
 
 ```

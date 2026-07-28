@@ -1,7 +1,7 @@
 /* tcp4echo: minimal standalone EFI TCP4 accept+echo, deliberately
  * independent of the lua-os kernel/scheduler/notify machinery. built
  * to isolate whether "Accept() never completes despite the wire-
- * level connection genuinely finishing" (see NOTES.md/DESIGN.md's
+ * level connection genuinely finishing" (see docs/uefi-notes.md's
  * net debugging trail) is a bug in our own tcp4 usage, or something
  * specific to how lua-os's kernel_run drives EFI events. no malloc,
  * no libc, no lua -- just efi.h and BS/ST, busy-polling CheckEvent

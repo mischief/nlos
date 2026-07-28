@@ -17,7 +17,7 @@
 -- outstanding token, replying to whichever actually completed.
 --
 -- udp lives in lib/udp.lua now, its own exclusive task with its own
--- capability. see DESIGN.md for why they're split.
+-- capability. see AGENTS.md for why they're split.
 
 local sys = require("los.sys")
 local thread = require("los.thread")

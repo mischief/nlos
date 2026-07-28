@@ -131,7 +131,7 @@ static unsigned long long nidle;
 
 /* disk gates write/append only -- read is deliberately ambient (see
  * stdio.c's fopen): the threat model is buggy lua, not hostile users
- * (DESIGN.md non-goals), nothing on the esp is confidentiality-
+ * (AGENTS.md non-goals), nothing on the esp is confidentiality-
  * sensitive, and a stray read can't corrupt anything the way a
  * runaway write can. write still can't use the exclusive-task trick
  * cons/wire/power do (liolib.c calls our fopen() as plain C with no
@@ -1748,7 +1748,7 @@ kernel_spawn_buffer(const char *code, size_t len)
 }
 
 /* two-level poll backoff for com2 (no EFI event backs raw uart rx,
- * see NOTES.md): 1ms while bytes are actively arriving, back off to
+ * see docs/uefi-notes.md): 1ms while bytes are actively arriving, back
  * a slower period after a run of empty polls, snap back to 1ms the
  * instant a byte shows up. bounds the worst-case "first byte after
  * idle" latency to one slow period while cutting wakeups the rest

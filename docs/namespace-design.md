@@ -130,7 +130,8 @@ until an actual boundary is crossed.
 4. plan9 never got real capability confinement because the Bell Labs
    fd model predates and is entangled with unix fd-inheritance-via-
    fork. we have no fork and no ambient fd table — proc birth is a
-   clean slate by construction (DESIGN pillars 2/3), so
+   clean slate by construction (see AGENTS.md's process and
+   authority rules), so
    namespace-as-capability isn't a retrofit here, it's the only way
    it could work.
 
@@ -190,7 +191,7 @@ two readings:
   allow mounting a right that wasn't received some other way.
 - **default namespace for children.** parent's namespace by default,
   opt-out (plan9-style), or empty by default, opt-in (capability-
-  style)? DESIGN pillar 3 (no ambient authority) says empty-by-default
+  style)? AGENTS.md's no-ambient-authority rule says empty-by-default
   is the only consistent answer: a spawn with no `ns` option gets
   nothing, must request io/serial explicitly, same as the kbd/serial
   handles today. more annoying than plan9. that's the point.
