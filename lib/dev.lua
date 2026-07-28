@@ -46,15 +46,78 @@
 -- provide either; dev.check does not demand them, so check before
 -- calling.
 --
--- every call returns nil plus a message on failure, never raises. a
--- backend that raises is a bug, because ns.lua resolves paths on behalf
--- of whoever asked and must not inherit their error handling.
+-- ---- errors are raised, plan 9 style ----
+--
+-- backends call dev.error(dev.Enonexist) rather than returning nil plus
+-- a message. that is 9front's error() idiom, and it is the same
+-- mechanism rather than an analogy: lua_error longjmps to the nearest
+-- pcall frame exactly as error() longjmps to the nearest waserror().
+--
+-- the reason is depth. resolving one path runs ns.resolve -> walkpath ->
+-- walk (once per element) -> the backend's own stat, and threading
+-- nil+err back through all of it is precisely the noise plan 9 invented
+-- error() to delete. it is also easier to get wrong: a caller that
+-- forgets to check gets "attempt to index a nil value" several frames
+-- from the actual fault, which is how the first version of the dev test
+-- failed.
+--
+-- catch at entry points, one pcall each, mirroring the syscall
+-- entrypoint: ns.lua's public calls, a 9P server's per-message dispatch
+-- (where the caught string becomes Rerror directly), a shell running a
+-- command. INSIDE the stack, nothing checks.
+--
+-- messages are bare strings with no position prefix -- dev.error passes
+-- level 0 -- because an Rerror carrying "espfs.lua:88:" would be
+-- nonsense to a 9P client. the constants below are 9front's, from
+-- /sys/src/9/port/error.h, so a client sees what it would see from a
+-- real plan 9 box.
+--
+-- cleanup is where we beat the C kernel. plan 9 needs explicit
+-- waserror/nexterror frames to close a Chan while unwinding, because C
+-- has no destructors. lua 5.4 has to-be-closed variables, so
+--
+--	local h <close> = ns.open(path)
+--
+-- clunks on the way out whether the scope ends normally or an error
+-- blows through it. backends mark their open handles closable via
+-- dev.closable, so this works without any per-backend effort.
 --
 -- offsets are explicit and handles carry no position, matching 9P. a
 -- stream with a position is a convenience ns.lua can layer on top; it is
 -- not something backends should each reinvent differently.
 
 local M = {}
+
+-- 9front's error strings (/sys/src/9/port/error.h), the subset a
+-- filesystem backend actually raises.
+M.Enonexist  = "file does not exist"
+M.Eexist     = "file already exists"
+M.Enotdir    = "not a directory"
+M.Eisdir     = "file is a directory"
+M.Eperm      = "permission denied"
+M.Ebadarg    = "bad arg in system call"
+M.Eio        = "i/o error"
+M.Ebadusefd  = "inappropriate use of fd"
+M.Enotimpl   = "not implemented"
+
+-- raise without a position prefix: these cross a protocol boundary, and
+-- "espfs.lua:88: file does not exist" is not an Rerror.
+function M.error(msg)
+	error(msg, 0)
+end
+
+-- run fn(...) as an entry point: the one pcall that mirrors plan 9's
+-- syscall boundary. returns ok plus either results or the bare message.
+function M.protect(fn, ...)
+	return pcall(fn, ...)
+end
+
+-- mark an open handle to-be-closed, so `local h <close> = ...` clunks it
+-- on the way out of scope, including while an error unwinds. this is
+-- what plan 9 spells waserror/cclose/nexterror.
+function M.closable(B, h)
+	return setmetatable(h, { __close = function(x) B.clunk(x) end })
+end
 
 local REQUIRED = {
 	"attach", "walk", "stat", "open", "create", "read", "write",
@@ -67,11 +130,11 @@ local REQUIRED = {
 function M.check(backend, name)
 	name = name or "backend"
 	if type(backend) ~= "table" then
-		return nil, name .. ": not a table"
+		M.error(name .. ": not a table")
 	end
 	for _, m in ipairs(REQUIRED) do
 		if type(backend[m]) ~= "function" then
-			return nil, name .. ": missing " .. m .. "()"
+			M.error(name .. ": missing " .. m .. "()")
 		end
 	end
 	return backend
@@ -79,18 +142,23 @@ end
 
 -- walk several elements, which every consumer needs and none should
 -- write twice. empty elements and "." are skipped, so "/a//b/./c" walks
--- a, b, c. stops at the first failure and reports which element failed,
--- since "no such file" without the name is a poor error.
+-- a, b, c.
+--
+-- no error checking, which is the point of the idiom: a failing walk
+-- raises from inside the backend and this function never sees it. the
+-- element name is appended on the way past so the message says which
+-- component was missing, since "file does not exist" without the name is
+-- a poor error -- that is plan 9's own habit of adding context while
+-- unwinding, minus the frame bookkeeping.
 function M.walkpath(backend, h, path)
 	for elem in tostring(path):gmatch("[^/]+") do
 		if elem ~= "." then
-			local nh, err = backend.walk(h, elem)
+			local ok, res = pcall(backend.walk, h, elem)
 
-			if not nh then
-				return nil, (err or "walk failed") ..
-				    " at '" .. elem .. "'"
+			if not ok then
+				M.error(tostring(res) .. ": '" .. elem .. "'")
 			end
-			h = nh
+			h = res
 		end
 	end
 	return h
@@ -121,7 +189,7 @@ function M.mem(tree)
 
 	function B.walk(h, name)
 		if type(h.node) ~= "table" then
-			return nil, "not a directory"
+			M.error(M.Enotdir)
 		end
 		if name == ".." then
 			-- the mem tree keeps no parent links; ns.lua resolves
@@ -132,7 +200,7 @@ function M.mem(tree)
 		local child = h.node[name]
 
 		if child == nil then
-			return nil, "no such file"
+			M.error(M.Enonexist)
 		end
 		return h_of(child, name,
 		    (h.path == "/" and "/" or h.path .. "/") .. name)
@@ -150,17 +218,17 @@ function M.mem(tree)
 
 	function B.open(h, mode)
 		if mode ~= "r" and type(h.node) == "table" then
-			return nil, "is a directory"
+			M.error(M.Eisdir)
 		end
-		return h
+		return M.closable(B, h)
 	end
 
 	function B.create(h, name, mode)
 		if type(h.node) ~= "table" then
-			return nil, "not a directory"
+			M.error(M.Enotdir)
 		end
 		if h.node[name] ~= nil then
-			return nil, "already exists"
+			M.error(M.Eexist)
 		end
 		h.node[name] = ""
 		return B.open(B.walk(h, name), mode or "rw")
@@ -168,14 +236,14 @@ function M.mem(tree)
 
 	function B.read(h, off, n)
 		if type(h.node) == "table" then
-			return nil, "is a directory"
+			M.error(M.Eisdir)
 		end
 		return h.node:sub(off + 1, off + n)
 	end
 
 	function B.write(h, off, data)
 		if type(h.node) == "table" then
-			return nil, "is a directory"
+			M.error(M.Eisdir)
 		end
 		-- find our slot in the parent so the tree, not just this
 		-- handle, sees the change
@@ -189,7 +257,7 @@ function M.mem(tree)
 			end
 		end
 		if not key then
-			return nil, "cannot locate file in tree"
+			M.error(M.Eio)
 		end
 		local cur = parent[key]
 		local head = cur:sub(1, off) .. string.rep("\0", off - #cur)
@@ -201,7 +269,7 @@ function M.mem(tree)
 
 	function B.readdir(h)
 		if type(h.node) ~= "table" then
-			return nil, "not a directory"
+			M.error(M.Enotdir)
 		end
 		local out = {}
 

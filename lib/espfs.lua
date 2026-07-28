@@ -3,9 +3,12 @@
 -- reads and enumeration go through los.fs, which is ambient for the same
 -- reason io.open's read path is. WRITES go through io.open in write
 -- mode, which is gated on the disk capability -- so a proc without it
--- gets a clean "permission denied" from write() and everything else
--- still works. that is deliberate: the gate belongs where the risk is,
--- and reading the esp is not the risk.
+-- raises Eperm from create()/open() and everything else still works.
+-- that is deliberate: the gate belongs where the risk is, and reading
+-- the esp is not the risk.
+--
+-- failures are raised, not returned; see lib/dev.lua on why, and catch
+-- with pcall at whatever counts as an entry point.
 --
 -- this is a plain backend, not a task. making it an exclusive task that
 -- owns the esp outright -- so no other proc holds the disk capability at
@@ -14,8 +17,11 @@
 -- behind a port. see docs/shell-namespace-draft.md.
 
 local fs = require("los.fs")
+local dev = require("dev")
 
 local M = {}
+
+local err = dev.error
 
 -- join a parent path and one element, keeping exactly one slash and no
 -- trailing one. "/" .. "lib" must not become "//lib": EFI's Open() is
@@ -55,14 +61,14 @@ function M.new(root)
 		local st = fs.stat(root)
 
 		if not st then
-			return nil, "cannot stat " .. root
+			err(dev.Enonexist)
 		end
 		return h_of(root, st.dir)
 	end
 
 	function B.walk(h, name)
 		if not h.dir then
-			return nil, "not a directory"
+			err(dev.Enotdir)
 		end
 		if name == ".." then
 			local up = parent(h.path)
@@ -80,7 +86,7 @@ function M.new(root)
 		local st = fs.stat(path)
 
 		if not st then
-			return nil, "no such file"
+			err(dev.Enonexist)
 		end
 		return h_of(path, st.dir)
 	end
@@ -89,7 +95,7 @@ function M.new(root)
 		local st = fs.stat(h.path)
 
 		if not st then
-			return nil, "cannot stat " .. h.path
+			err(dev.Enonexist)
 		end
 		-- report the element name, not the full path: that is what
 		-- 9P's stat carries and what a listing wants.
@@ -100,20 +106,20 @@ function M.new(root)
 	function B.open(h, mode)
 		if h.dir then
 			if mode ~= "r" then
-				return nil, "is a directory"
+				err(dev.Eisdir)
 			end
 			return h		-- readdir needs no open file
 		end
 
-		local f, err = io.open(h.path, mode == "r" and "r" or "w")
+		local f = io.open(h.path, mode == "r" and "r" or "w")
 
 		if not f then
 			-- write mode without the disk capability lands here,
 			-- and so does a genuinely missing file
-			return nil, tostring(err or ("cannot open " .. h.path))
+			err(mode == "r" and dev.Enonexist or dev.Eperm)
 		end
 		h.f = f
-		return h
+		return dev.closable(B, h)
 	end
 
 	-- create and open in one step, like 9P's Tcreate. io.open in write
@@ -122,14 +128,15 @@ function M.new(root)
 	-- than a half-made file.
 	function B.create(h, name, mode)
 		if not h.dir then
-			return nil, "not a directory"
+			err(dev.Enotdir)
 		end
 
 		local path = join(h.path, name)
-		local f, err = io.open(path, "w")
+		local f = io.open(path, "w")
 
 		if not f then
-			return nil, tostring(err or ("cannot create " .. path))
+			-- no disk capability, or an unwritable path
+			err(dev.Eperm)
 		end
 
 		local nh = h_of(path, false)
@@ -141,51 +148,49 @@ function M.new(root)
 			f:close()
 			nh.f = io.open(path, "r")
 			if not nh.f then
-				return nil, "created but cannot reopen " .. path
+				err(dev.Eio)
 			end
 		end
-		return nh
+		return dev.closable(B, nh)
 	end
 
 	function B.read(h, off, n)
 		if h.dir then
-			return nil, "is a directory"
+			err(dev.Eisdir)
 		end
 		if not h.f then
-			return nil, "not open"
+			err(dev.Ebadusefd)
 		end
 		if not h.f:seek("set", off) then
-			return nil, "seek failed"
+			err(dev.Eio)
 		end
 		return h.f:read(n) or ""	-- nil at eof; "" is the contract
 	end
 
 	function B.write(h, off, data)
 		if h.dir then
-			return nil, "is a directory"
+			err(dev.Eisdir)
 		end
 		if not h.f then
-			return nil, "not open"
+			err(dev.Ebadusefd)
 		end
 		if not h.f:seek("set", off) then
-			return nil, "seek failed"
+			err(dev.Eio)
 		end
-		local ok, err = h.f:write(data)
-
-		if not ok then
-			return nil, tostring(err or "write failed")
+		if not h.f:write(data) then
+			err(dev.Eio)
 		end
 		return #data
 	end
 
 	function B.readdir(h)
 		if not h.dir then
-			return nil, "not a directory"
+			err(dev.Enotdir)
 		end
-		local ents, err = fs.readdir(h.path)
+		local ents = fs.readdir(h.path)
 
 		if not ents then
-			return nil, err
+			err(dev.Eio)
 		end
 		-- los.fs already returns {name=, size=, dir=}, which is the
 		-- stat shape; drop "." and ".." so callers do not have to.
