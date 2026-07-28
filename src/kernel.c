@@ -83,6 +83,7 @@ struct kproc {
 	size_t mem_used;	/* live bytes in this proc's lua heap */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
+	char name[32];		/* from chunkname, for ps/debugging */
 };
 
 static struct kproc procs[MAXPROCS];
@@ -782,14 +783,73 @@ static int proc_new(const char *code, size_t codelen, const char *chunkname,
     int is_file, int reductions, size_t mem_limit, int priv);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason);
 
+struct dumpbuf {
+	char *data;
+	size_t len, cap;
+};
+
+static int
+dump_writer(lua_State *L, const void *src, size_t sz, void *ud)
+{
+	struct dumpbuf *b = ud;
+
+	(void)L;
+	if (b->len + sz > b->cap) {
+		size_t ncap = b->cap ? b->cap : 256;
+
+		while (ncap < b->len + sz)
+			ncap *= 2;
+		char *nd = realloc(b->data, ncap);
+
+		if (!nd)
+			return 1;	/* nonzero aborts lua_dump */
+		b->data = nd;
+		b->cap = ncap;
+	}
+	memcpy(b->data + b->len, src, sz);
+	b->len += sz;
+	return 0;
+}
+
+/* sys.spawn(code_or_fn, opts): code_or_fn may be a source string (as
+ * before) or an actual lua function value. a function is lua_dump'd
+ * to a bytecode buffer here, which crosses into the child exactly
+ * like a string would (luaL_loadbuffer auto-detects binary chunks) --
+ * still bytes at runtime, just no explicit string.dump() at the call
+ * site. only plain lua closures dump (lua_dump rejects C functions);
+ * upvalues beyond _ENV don't carry values across -- same isolation
+ * limit as passing source text, just easier to trip since a closure
+ * makes it easy to accidentally capture an outer local.
+ */
 static int
 api_spawn(lua_State *L)
 {
 	struct kproc *p = self(L);
 	size_t n;
-	const char *code = luaL_checklstring(L, 1, &n);
+	const char *code;
+	struct dumpbuf buf = { 0 };
+	int is_dumped = 0;
+
+	if (lua_isfunction(L, 1)) {
+		if (lua_iscfunction(L, 1))
+			return luaL_error(L,
+			    "spawn: cannot dump a C function");
+		lua_pushvalue(L, 1);
+		if (lua_dump(L, dump_writer, &buf, 0) != 0) {
+			free(buf.data);
+			return luaL_error(L,
+			    "spawn: could not dump function (odd upvalues?)");
+		}
+		lua_pop(L, 1);
+		code = buf.data;
+		n = buf.len;
+		is_dumped = 1;
+	} else {
+		code = luaL_checklstring(L, 1, &n);
+	}
 	int reductions = 0;
 	size_t mem_limit = 0;
+	char chunkname[32] = "=spawn";
 
 	if (!lua_isnoneornil(L, 2)) {
 		luaL_checktype(L, 2, LUA_TTABLE);
@@ -801,6 +861,11 @@ api_spawn(lua_State *L)
 		if (!lua_isnil(L, -1))
 			mem_limit = (size_t)luaL_checkinteger(L, -1);
 		lua_pop(L, 1);
+		lua_getfield(L, 2, "name");
+		if (!lua_isnil(L, -1))
+			snprintf(chunkname, sizeof chunkname, "=%s",
+			    luaL_checkstring(L, -1));
+		lua_pop(L, 1);
 	}
 
 	/* sys.spawn can never mint a privileged (cons/wire/power-class)
@@ -808,8 +873,11 @@ api_spawn(lua_State *L)
 	 * sequence (spawn_cons/spawn_wire/spawn_power) sets a real priv
 	 * value, never reachable from lua.
 	 */
-	int pid = proc_new(code, n, "=spawn", 0, reductions, mem_limit,
+	int pid = proc_new(code, n, chunkname, 0, reductions, mem_limit,
 	    PRIV_NONE);
+
+	if (is_dumped)
+		free(buf.data);	/* proc_new/luaL_loadbuffer copies, doesn't keep it */
 
 	if (pid < 0)
 		return luaL_error(L, "spawn failed");
@@ -1094,6 +1162,16 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	*(struct kproc **)lua_getextraspace(p->L) = p;
 	p->id = nextpid++;	/* unique forever; slots recycle, pids don't */
+	{
+		/* lua chunknames conventionally lead with '=' (shown as-is)
+		 * or '@' (a file); strip that marker for display purposes.
+		 */
+		const char *nm = chunkname;
+
+		if (nm && (*nm == '=' || *nm == '@'))
+			nm++;
+		snprintf(p->name, sizeof p->name, "%s", nm ? nm : "?");
+	}
 	luaL_openlibs(p->L);
 
 	/* self port = right handle 0 */
