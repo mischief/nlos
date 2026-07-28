@@ -171,6 +171,7 @@ lua_payload = files(
   'lib/http.lua',
   'lib/idle.lua',
   'lib/json.lua',
+  'lib/mcp.lua',
   'lib/ninep.lua',
   'lib/power.lua',
   'lib/ps.lua',
@@ -193,6 +194,12 @@ luaos_img = custom_target('luaos.img',
 # mount from host: 9p -a 'unix!<builddir>/9p.sock' ls /
 run_target('qemu',
   command: [files('scripts/qemu.sh'), luaos_img],
+)
+
+# boots test/boot/fetch_mcp.lua instead of init.lua (single-url mcp
+# fetch server), mcp reachable on host tcp/8090
+run_target('fetch-mcp',
+  command: [files('scripts/fetch-mcp.sh'), luaos_img],
 )
 
 # ---- tests ----
@@ -234,6 +241,14 @@ python = find_program('python3')
 # since qemu's usermode network doesn't hairpin.
 test('http-server', python,
   args: [files('test/test_http.py'), luaos_img, files('test/boot/srvhttp.lua')],
+  protocol: 'tap',
+  timeout: 150,
+)
+
+# host-driven mcp test: real JSON-RPC 2.0 over HTTP POST against the
+# guest. covers tcp + http + json + mcp composed together.
+test('mcp-server', python,
+  args: [files('test/test_mcp.py'), luaos_img, files('test/boot/srvmcp.lua')],
   protocol: 'tap',
   timeout: 150,
 )
