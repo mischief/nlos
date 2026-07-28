@@ -236,8 +236,9 @@ local function alt(cases)
 		else
 			-- top-level caller (no thread.run() driving us, e.g.
 			-- an exclusive task's main chunk calling alt()
-			-- directly -- wire.lua does exactly this):
-			-- thread._park is a bare coroutine.yield(),
+			-- directly -- wire.lua, tcp.lua and udp.lua all do
+			-- exactly this): thread._park is a bare
+			-- coroutine.yield(),
 			-- meaningless without thread.run()'s own loop to
 			-- notice "everyone parked" and call the real
 			-- sys.altblock on our behalf. with no such loop, that
@@ -245,7 +246,7 @@ local function alt(cases)
 			-- lua_resume without ever setting this proc BLOCKED
 			-- -- kernel_run then just resumes it again next lap,
 			-- forever, a busy-spin disguised as blocking (this
-			-- was a real bug: ps showed wire stuck "ready"
+			-- was a real bug: ps showed wire/tcp stuck "ready"
 			-- forever, churning memory, never actually parking).
 			-- channel cases make no sense here either way (recvq
 			-- is purely in-process), so only port cases are
