@@ -210,6 +210,20 @@ typedef struct {
 
 /* files */
 
+typedef struct {
+	UINT16 Year;
+	UINT8 Month;
+	UINT8 Day;
+	UINT8 Hour;
+	UINT8 Minute;
+	UINT8 Second;
+	UINT8 Pad1;
+	UINT32 Nanosecond;
+	INT16 TimeZone;
+	UINT8 Daylight;
+	UINT8 Pad2;
+} EFI_TIME;
+
 #define EFI_FILE_MODE_READ	0x0000000000000001ULL
 #define EFI_FILE_MODE_WRITE	0x0000000000000002ULL
 #define EFI_FILE_MODE_CREATE	0x8000000000000000ULL
@@ -236,6 +250,29 @@ struct EFI_FILE_PROTOCOL {
 	    EFI_GUID *InformationType, UINTN BufferSize, void *Buffer);
 	EFI_STATUS (EFIAPI *Flush)(EFI_FILE_PROTOCOL *This);
 };
+
+/* GetInfo(EFI_FILE_INFO_ID) metadata, and what Read() returns for each
+ * entry when the handle is a directory rather than a file. FileName is a
+ * variable-length CHAR16 array, so Size covers the whole record and the
+ * struct can only be used as a view over a caller-supplied buffer --
+ * never sizeof'd for allocation.
+ */
+#define EFI_FILE_READ_ONLY	0x0000000000000001ULL
+#define EFI_FILE_HIDDEN		0x0000000000000002ULL
+#define EFI_FILE_SYSTEM		0x0000000000000004ULL
+#define EFI_FILE_DIRECTORY	0x0000000000000010ULL
+#define EFI_FILE_ARCHIVE	0x0000000000000020ULL
+
+typedef struct {
+	UINT64 Size;		/* of this whole record, name included */
+	UINT64 FileSize;
+	UINT64 PhysicalSize;
+	EFI_TIME CreateTime;
+	EFI_TIME LastAccessTime;
+	EFI_TIME ModificationTime;
+	UINT64 Attribute;
+	CHAR16 FileName[];
+} EFI_FILE_INFO;
 
 typedef struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
 struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL {
@@ -354,20 +391,6 @@ struct EFI_TCP4_PROTOCOL {
 	    EFI_TCP4_COMPLETION_TOKEN *Token);
 	EFI_STATUS (EFIAPI *Poll)(EFI_TCP4_PROTOCOL *This);
 };
-
-typedef struct {
-	UINT16 Year;
-	UINT8 Month;
-	UINT8 Day;
-	UINT8 Hour;
-	UINT8 Minute;
-	UINT8 Second;
-	UINT8 Pad1;
-	UINT32 Nanosecond;
-	INT16 TimeZone;
-	UINT8 Daylight;
-	UINT8 Pad2;
-} EFI_TIME;
 
 /* ---- udp4: connectionless sibling of tcp4 above -- same token/Event
  * async shape (Transmit/Receive, no Connect/Accept since there's no

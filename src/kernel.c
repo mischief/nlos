@@ -1375,6 +1375,7 @@ static const luaL_Reg kapi[] = {
 };
 
 extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
+extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
@@ -1519,6 +1520,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 
 	lua_pushcfunction(p->L, luaopen_los_efi);
 	lua_setfield(p->L, -2, "los.efi");
+	/* ambient, like io.open's read path -- see dirs.c on why, and on
+	 * why it moves once espfs owns the esp.
+	 */
+	lua_pushcfunction(p->L, luaopen_los_fs);
+	lua_setfield(p->L, -2, "los.fs");
 
 	/* los.platform.{cons,wire,power} are each registered ONLY for
 	 * their one owning task -- not gated by a runtime check, simply

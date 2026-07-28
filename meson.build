@@ -38,6 +38,7 @@ add_project_arguments(freestanding_args, language: 'c')
 inc = include_directories('include', 'src', 'lua')
 
 kernel_src = files(
+  'src/dirs.c',
   'src/drivers.c',
   'src/console.c',
   'src/fs.c',
@@ -210,7 +211,7 @@ run_target('fetch-mcp',
 boottest = files('scripts/boottest.sh')
 
 boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
-              'drivers', 'sched', 'json', 'timer']
+              'drivers', 'sched', 'json', 'timer', 'readdir']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
