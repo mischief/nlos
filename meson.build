@@ -165,6 +165,7 @@ luaos_efi = custom_target('luaos.efi',
 
 lua_payload = files(
   'init.lua',
+  'lib/caps.lua',
   'lib/cons.lua',
   'lib/idle.lua',
   'lib/json.lua',
