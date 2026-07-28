@@ -12,7 +12,7 @@ local dev = require("dev")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(29)
+tap.plan(34)
 
 -- ---- the conformance suite, run against anything claiming to be a dev
 local function conforms(what, B, known, knowncontent, knowndir)
@@ -70,6 +70,18 @@ local function conforms(what, B, known, knowncontent, knowndir)
 	-- and the message carries no lua source position
 	tap.ok(tostring(werr):find("%.lua:%d") == nil,
 	    name("message has no position prefix"))
+
+	-- a DIRECTORY handle must come back closable too, not just a file
+	-- handle: otherwise <close> works for one and raises for the other,
+	-- which is a difference no caller should have to know about.
+	local cdok = dev.protect(function()
+		local root = B.attach()
+		local d <close> = B.open(B.walk(root, knowndir), "r")
+
+		return d
+	end)
+
+	tap.ok(cdok, name("an open directory handle is closable"))
 
 	-- reading a directory as a file raises Eisdir
 	local dok, derr = dev.protect(function()
@@ -169,6 +181,26 @@ tap.ok(not cok and tostring(cerr):find("missing") ~= nil,
     "dev.check names the missing method: " .. tostring(cerr))
 tap.ok(not (dev.protect(dev.check, "not a table")),
     "dev.check rejects a non-table")
+
+-- ---- closable must not eat a backend's own metatable ----
+-- dev.closable is called by every backend, so a plain setmetatable there
+-- would silently delete an __index or __tostring the backend relies on.
+local marked = dev.mem({ f = "z" })
+local realopen = marked.open
+
+marked.open = function(h, mode)
+	setmetatable(h, {
+		__index = { mine = true },
+		__tostring = function() return "custom" end,
+	})
+	return realopen(h, mode)
+end
+
+local mh2 = marked.open(dev.walkpath(marked, marked.attach(), "f"), "r")
+
+tap.ok(mh2.mine == true, "closable preserves the backend's __index")
+tap.is(tostring(mh2), "custom", "closable preserves __tostring")
+tap.ok(getmetatable(mh2).__close ~= nil, "and still added __close")
 
 -- ---- not-implemented is absence, not a raising stub ----
 -- remove/wstat are checkable before calling, which a stub would destroy.

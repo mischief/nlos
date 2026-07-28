@@ -115,8 +115,29 @@ end
 -- mark an open handle to-be-closed, so `local h <close> = ...` clunks it
 -- on the way out of scope, including while an error unwinds. this is
 -- what plan 9 spells waserror/cclose/nexterror.
+--
+-- an existing metatable is PRESERVED rather than replaced. a plain
+-- setmetatable here would silently delete a backend's own __index,
+-- __tostring or __eq -- neither backend has one today, but this is a
+-- shared helper every future backend will call, and losing a metatable
+-- is the kind of bug that shows up far from its cause.
+--
+-- the copy means a handle's metatable is its own, so a backend cannot
+-- rely on getmetatable(h) == its shared table for identity. no backend
+-- does, and per-handle metatables cost one table each, which is what a
+-- closable handle costs anyway.
 function M.closable(B, h)
-	return setmetatable(h, { __close = function(x) B.clunk(x) end })
+	local old = getmetatable(h)
+	local mt = { __close = function(x) B.clunk(x) end }
+
+	if old then
+		for k, v in pairs(old) do
+			if k ~= "__close" then
+				mt[k] = v
+			end
+		end
+	end
+	return setmetatable(h, mt)
 end
 
 local REQUIRED = {

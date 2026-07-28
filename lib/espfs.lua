@@ -108,7 +108,14 @@ function M.new(root)
 			if mode ~= "r" then
 				err(dev.Eisdir)
 			end
-			return h		-- readdir needs no open file
+			-- a directory needs no open file behind it, but it
+			-- must still come back closable: otherwise
+			-- `local h <close> = open(...)` works for a file and
+			-- raises "got a non-closable value" for a directory,
+			-- which is a difference no caller should have to know
+			-- about. mem's open makes everything closable, so
+			-- this is also the two backends agreeing.
+			return dev.closable(B, h)
 		end
 
 		local f = io.open(h.path, mode == "r" and "r" or "w")
