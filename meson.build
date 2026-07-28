@@ -166,6 +166,8 @@ luaos_efi = custom_target('luaos.efi',
 lua_payload = files(
   'init.lua',
   'lib/cons.lua',
+  'lib/idle.lua',
+  'lib/json.lua',
   'lib/net.lua',
   'lib/ninep.lua',
   'lib/power.lua',
@@ -197,7 +199,7 @@ run_target('qemu',
 boottest = files('scripts/boottest.sh')
 
 boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
-              'drivers', 'sched']
+              'drivers', 'sched', 'json']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
