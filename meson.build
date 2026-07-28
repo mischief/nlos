@@ -254,6 +254,17 @@ test('mcp-server', python,
   timeout: 150,
 )
 
+# ---- benchmarks ----
+# not run by `meson test`; run with `meson test --benchmark` or
+# `ninja benchmark`. meson runs benchmarks serially rather than in
+# parallel, which is what makes the numbers worth reading.
+benchmark('ipc', boottest,
+  args: [luaos_img, files('test/bench_ipc.lua')],
+  protocol: 'tap',
+  timeout: 180,
+  env: {'TIMEOUT': '150'},
+)
+
 # host-driven 9p protocol test: real 9P2000 over the com2 socket
 test('9p-protocol', python,
   args: [files('test/test_9p.py'), luaos_img, files('test/boot/srv9p.lua')],

@@ -66,6 +66,17 @@ Three kinds of test, all real boots:
 `scripts/boottest.sh` extracts the TAP and dumps the whole serial trace
 as diagnostics on failure. `lib/tap.lua` is the guest-side producer.
 
+Benchmarks are separate from tests and are not run by `meson test`:
+
+```sh
+ninja -C build benchmark            # or: meson test -C build --benchmark
+```
+
+They assert nothing beyond "it ran" — a throughput floor would be flaky
+on a loaded host — so read the numbers from
+`build/meson-logs/benchmarklog.txt`. Meson runs benchmarks serially,
+which is what makes them comparable between runs.
+
 ## Reading further
 
 - [AGENTS.md](AGENTS.md) — the rules a change has to pass, traps already

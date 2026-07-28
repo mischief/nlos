@@ -1,11 +1,14 @@
 -- IPC throughput: where does the time in a send actually go?
 --
--- NOT a meson test, on purpose -- it has no assertions, and a
--- throughput floor asserted in CI would be flaky on a loaded host. run
--- it by hand when touching the serializer, the port queue or the
--- scheduler:
+-- registered with meson's benchmark(), not test(): it asserts nothing
+-- beyond "it ran", and a throughput floor in CI would be flaky on a
+-- loaded host. `meson test` skips it; run it deliberately with
 --
---   TIMEOUT=120 ./scripts/boottest.sh build/luaos.img test/bench_ipc.lua
+--   meson test -C build --benchmark        (or: ninja -C build benchmark)
+--
+-- meson runs benchmarks serially rather than in parallel, which is what
+-- makes the numbers worth comparing between runs. read them from the
+-- TAP diagnostics with --print-errorlogs, or from meson-logs/.
 --
 -- what it showed when written (see docs/uefi-notes.md for the machine):
 -- intra-proc bulk runs ~1 GB/s and cross-proc ~470 MB/s at 60KB, while
