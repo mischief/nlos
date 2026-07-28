@@ -2,7 +2,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(6)
+tap.plan(15)
 
 tap.ok(sys.granted().sched ~= nil, "sched is in the grant table")
 
@@ -30,5 +30,75 @@ local r = thread.recv(rp)
 tap.ok(not r.ok, "spawn child denied set_priority")
 tap.ok(r.err:find("no scheduling capability") ~= nil,
     "denied with the right error: " .. r.err)
+
+-- ---- scheduling feedback: measure, do not yet dispatch ----
+--
+-- assertions are on DIRECTION, not magnitude: exact cpu numbers depend
+-- on how much else is runnable and on host load, but a spinner must
+-- always end up above a blocker and priced lower for it.
+local hogpid = sys.spawn([[
+	local sys = require("los.sys")
+	local t0 = sys.uptime_ms()
+
+	while sys.uptime_ms() - t0 < 2200 do end
+]], { name = "hog" })
+
+local idlepid = sys.spawn([[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+
+	thread.recv(sys.newport())
+]], { name = "idler" })
+
+-- long enough for the decay window to fill: cpu is an average over
+-- SCHED_DECAY_MS, so a hog measured after 500ms of a 2000ms window reads
+-- ~250 per-mille no matter how hard it spins.
+thread.sleep(1800)
+
+local hw, hpri, hcpu, hreds = sys.priority(hogpid)
+local iw, ipri, icpu, ireds = sys.priority(idlepid)
+
+tap.ok(hcpu > icpu,
+    "a spinning proc accrues cpu over a blocked one (" .. hcpu ..
+    " vs " .. icpu .. ")")
+tap.ok(hcpu > 500, "and it is most of wall time (" .. hcpu .. ")")
+tap.is(icpu, 0, "a proc that never ran accrues none")
+
+-- differentiation only happens under contention: a proc using LESS than
+-- an equal share clamps to the top however much it spins, which is plan
+-- 9's formula working as intended rather than a missing case.
+tap.ok(hpri < ipri,
+    "over its share, the spinner is priced below the idler (" .. hpri ..
+    " vs " .. ipri .. ")")
+tap.is(ipri, iw * 10, "an idle proc clamps to weight * PRI_BASE")
+tap.ok(hpri >= 0, "and priority never goes negative (" .. hpri .. ")")
+
+-- reductions: the hook fires every lua_gethookcount() instructions, so
+-- counting fires is an exact instruction count for anything that runs
+-- long enough to reach its period
+tap.ok(hreds > 0,
+    "a spinning proc accumulates reductions (" .. hreds .. ")")
+tap.is(ireds, 0, "a proc that never ran accumulates none")
+
+-- and the documented blind spot: work too short to reach the hook period
+-- registers no reductions at all, which is precisely why cpu is measured
+-- in cycles rather than derived from reds.
+local shortpid = sys.spawn([[
+	local sys = require("los.sys")
+	local n = 0
+
+	for i = 1, 100 do
+		n = n + i
+	end
+]], { name = "brief" })
+
+sys.monitor(shortpid)
+local sm
+
+repeat
+	sm = thread.recv(sys.SELF)
+until sm.exit == shortpid
+
+tap.ok(sm.normal, "a brief proc ran and exited normally")
 
 tap.done()

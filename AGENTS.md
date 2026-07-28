@@ -229,6 +229,40 @@ across, and any spin loop doing the measuring is what keeps the machine
 busy. That one was verified from outside by qemu CPU time. Prefer an
 honest external measurement over an assertion that cannot fail.
 
+## Scheduling feedback
+
+Every proc carries `cputime` (TSC cycles actually spent in `lua_resume`),
+`reds` (Lua VM instructions), and `cpu` — a decaying average of the
+fraction of wall time it spent running, in per-mille. `sys.priority(pid)`
+returns weight, the computed priority, cpu and reds; `ps` shows all four.
+
+Priority is Plan 9's `reprioritize`: inversely proportional to recent cpu
+against an equal share, clamped to the proc's weight. So
+`sys.set_priority` stays the static, capability-gated policy knob and the
+kernel computes the dynamic part. A proc **under** its fair share clamps
+to the top however hard it spins — differentiation only happens under
+contention, and that is the formula working, not a missing case.
+
+**Nothing dispatches on this yet.** `kernel_run` still scans every slot.
+Measure first, then change the loop; see the handoff trap above for what
+happens when you skip that order.
+
+Two measurement facts worth knowing:
+
+- **`reds` has a floor.** `LUA_MASKCOUNT` fires every N instructions and
+  Lua exposes no way to read the partial countdown, so a proc that yields
+  before reaching its period registers zero — which is most IPC-bound
+  work, including cons/wire/tcp. Exact reductions would mean patching the
+  VM, and vanilla Lua is a pillar. As a *scheduling* signal the floor is
+  arguably correct: a proc that yields early is not CPU-bound and should
+  keep priority. As an *accounting* signal it is a hole.
+- **`cpu` is therefore derived from cycles, not reds**, which has no
+  floor and also catches time spent in C. It does attribute qemu and
+  firmware overhead to whoever was running, which `reds` -- being
+  deterministic and machine-independent -- does not. Keeping both is why
+  neither weakness is load-bearing, and why a proc cannot look
+  interactive by yielding just under its hook period.
+
 ## Known debts — do not report these as discoveries
 
 Structural, worth fixing:

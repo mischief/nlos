@@ -8,11 +8,16 @@ local M = {}
 
 local ps_mt = {}
 ps_mt.__tostring = function()
-	local lines = { "  PID NAME                 USED      PEAK     LIMIT   WT WCHAN" }
+	local lines = { "  PID NAME                USED     PEAK  WT PRI  CPU      REDS WCHAN" }
 	for _, pid in ipairs(sys.procs()) do
-		local used, peak, limit = sys.meminfo(pid)
-		lines[#lines + 1] = string.format("%5d %-18s %9d %9d %9d %4d %s",
-		    pid, sys.name(pid), used, peak, limit, sys.priority(pid),
+		local used, peak = sys.meminfo(pid)
+		local wt, pri, cpu, reds = sys.priority(pid)
+
+		-- cpu is per-mille of wall time, decayed; reds is lua vm
+		-- instructions. nothing dispatches on pri yet.
+		lines[#lines + 1] = string.format(
+		    "%5d %-16s %8d %8d %3d %3d %4d %9d %s",
+		    pid, sys.name(pid), used, peak, wt, pri, cpu, reds,
 		    sys.wchan(pid))
 	end
 	return table.concat(lines, "\n")

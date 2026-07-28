@@ -48,6 +48,17 @@
  * which is at least a real signal rather than silent growth.
  */
 #define MAXQUEUE	(64 * 1024)
+/* fair-share averaging window. plan 9 uses schedgain=30 SECONDS, which
+ * suits long-lived unix-ish processes; ours are short and interactive,
+ * so a couple of seconds makes priority actually respond to what a proc
+ * just did.
+ */
+#define SCHED_DECAY_MS	2000
+/* priority resolution per unit of weight. plan 9's PriNormal is 10 and
+ * its bands run 0..19; weight is our basepri, so this is what gives a
+ * default-weight proc a 0..10 range to move in rather than 0..1.
+ */
+#define PRI_BASE	10
 
 enum { DEAD, READY, BLOCKED };
 enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP, PRIV_UDP };
@@ -115,6 +126,14 @@ struct kproc {
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
 	char name[32];		/* from chunkname, for ps/debugging */
+	/* scheduling feedback. cputime/reds are raw accumulators; cpu is
+	 * the decaying fair-share estimate derived from them.
+	 */
+	unsigned long long cputime;	/* tsc cycles actually spent running */
+	unsigned long long reds;	/* lua vm instructions executed */
+	unsigned long long lastupdate;	/* uptime_ms at the last updatecpu */
+	unsigned long long lastcpu;	/* cputime as of that update */
+	unsigned cpu;			/* per-mille of wall time, decayed */
 	struct grant grants[MAXGRANTS];
 	int ngrants;
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
@@ -179,6 +198,8 @@ extern void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
 static void port_unref(struct kport *port);
 static void wake_receivers(struct kport *port);
+static int reprioritize(struct kproc *p, int nrunnable);
+static int count_runnable(void);
 
 /* release a right that was serialized into a message but never
  * delivered (send failed, or the queue was flushed). a receive right in
@@ -1351,6 +1372,14 @@ api_set_priority(lua_State *L)
 /* reading a weight is not gated: it's the same class of information
  * sys.procs()/sys.meminfo() already hand out for free.
  */
+/* sys.priority(pid) -> weight, pri, cpu, reds
+ *
+ * weight is the static capability-gated knob; pri is what the feedback
+ * currently computes from it; cpu is per-mille of wall time, decayed;
+ * reds is lua instructions executed. nothing dispatches on pri yet -- it
+ * is exposed first so the numbers can be watched before anything bets on
+ * them.
+ */
 static int
 api_priority(lua_State *L)
 {
@@ -1360,7 +1389,10 @@ api_priority(lua_State *L)
 	if (!p)
 		return luaL_error(L, "no such proc");
 	lua_pushinteger(L, p->weight);
-	return 1;
+	lua_pushinteger(L, reprioritize(p, count_runnable()));
+	lua_pushinteger(L, (lua_Integer)p->cpu);
+	lua_pushinteger(L, (lua_Integer)p->reds);
+	return 4;
 }
 
 /* sys.granted(): {name = handle} for every capability the kernel
@@ -1628,7 +1660,24 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 static void
 preempt_hook(lua_State *L, lua_Debug *ar)
 {
+	struct kproc *p = *(struct kproc **)lua_getextraspace(L);
+
 	(void)ar;
+	/* the hook fires every lua_gethookcount() vm instructions, so
+	 * counting fires IS an instruction count -- a reduction count in
+	 * the BEAM sense. asking for the count rather than assuming
+	 * p->reductions matters because thread coroutines get their own
+	 * period via sys.preempt.
+	 *
+	 * the blind spot: a proc that yields before reaching its period
+	 * registers nothing, so short IPC-bound work looks free. that is
+	 * why cpu is derived from measured cycles instead, and reds is
+	 * kept alongside as the deterministic, machine-independent
+	 * counterpart -- it is immune to the qemu and firmware overhead
+	 * that dominates wall time here.
+	 */
+	if (p)
+		p->reds += (unsigned)lua_gethookcount(L);
 	if (lua_isyieldable(L))
 		lua_yield(L, 0);
 }
@@ -1778,6 +1827,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, p->reductions);
 	p->mem_limit = mem_limit;
 	p->weight = 1;
+	p->cputime = 0;
+	p->reds = 0;
+	p->cpu = 0;
+	p->lastupdate = uptime_ms();
+	p->lastcpu = 0;
 	p->exitcode = 0;
 	p->exitmsg[0] = 0;
 	p->status = READY;
@@ -2156,6 +2210,81 @@ kernel_spawn_buffer(const char *code, size_t len)
  * factored out of the dispatch loop so the handoff hint can dispatch a
  * proc out of slot order without duplicating any of this.
  */
+/* exponentially-weighted average of the fraction of wall time this proc
+ * spent running, in per-mille.
+ *
+ * plan 9's updatecpu samples "was this proc running at the tick" and
+ * decays from there, which suits a tick-driven kernel. ours resumes
+ * procs for tens of microseconds at a time, far below the 1ms clock, so
+ * sampling would read zero forever. we have measured cycles instead, so
+ * the fraction is computed directly and then averaged.
+ *
+ * lazy on purpose: the decay is a closed form over the elapsed interval,
+ * so a proc untouched for five seconds decays correctly in one call and
+ * no periodic sweep is needed.
+ */
+static void
+updatecpu(struct kproc *p)
+{
+	unsigned long long now = uptime_ms();
+	unsigned long long n = now - p->lastupdate;
+
+	/* below this the fraction is mostly quantisation noise */
+	if (n < 10)
+		return;
+
+	unsigned long long used_ms =
+	    (p->cputime - p->lastcpu) / (cyc_per_ms ? cyc_per_ms : 1);
+	unsigned long long window = n > SCHED_DECAY_MS ? SCHED_DECAY_MS : n;
+	unsigned frac = (unsigned)((used_ms * 1000) / n);
+
+	if (frac > 1000)
+		frac = 1000;
+
+	p->cpu = (unsigned)(((unsigned long long)p->cpu *
+	    (SCHED_DECAY_MS - window) + (unsigned long long)frac * window) /
+	    SCHED_DECAY_MS);
+	p->lastupdate = now;
+	p->lastcpu = p->cputime;
+}
+
+/* dynamic priority: inversely proportional to recent cpu use against an
+ * equal share, clamped to the proc's static weight. straight from plan
+ * 9's reprioritize, with weight playing basepri's part -- so
+ * sys.set_priority stays the capability-gated POLICY knob and the kernel
+ * computes the rest, which is the split we already had.
+ *
+ * a proc using exactly its share lands at its weight; a hog sinks toward
+ * zero; one that has been starved has cpu near zero and clamps to the
+ * top. nobody is demoted by a rule.
+ */
+static int
+reprioritize(struct kproc *p, int nrunnable)
+{
+	updatecpu(p);
+
+	if (nrunnable <= 0)
+		nrunnable = 1;
+
+	unsigned fair = 1000u / (unsigned)nrunnable;
+	unsigned n = p->cpu ? p->cpu : 1;
+	unsigned cap = (unsigned)p->weight * PRI_BASE;
+	unsigned long long r = ((unsigned long long)fair * cap) / n;
+
+	return (int)(r > cap ? cap : r);
+}
+
+static int
+count_runnable(void)
+{
+	int n = 0;
+
+	for (int i = 0; i < MAXPROCS; i++)
+		if (procs[i].status == READY)
+			n++;
+	return n;
+}
+
 static int
 run_proc(struct kproc *p)
 {
@@ -2173,7 +2302,11 @@ run_proc(struct kproc *p)
 		int nres = 0;
 
 		current_proc = p;
+
+		unsigned long long t0 = platform_ticks();
 		int rc = lua_resume(p->co, 0, 0, &nres);
+
+		p->cputime += platform_ticks() - t0;
 		current_proc = 0;
 
 		/* a proc can run a full hook window (200k insns) before
