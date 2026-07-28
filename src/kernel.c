@@ -32,6 +32,7 @@
 #define MAXDEPTH	16
 #define MAXMSGRIGHTS	8	/* rights per message */
 #define MAXWATCH	8	/* monitors per proc */
+#define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
 
 enum { DEAD, READY, BLOCKED };
 enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_NET };
@@ -84,6 +85,7 @@ struct kproc {
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
 	char name[32];		/* from chunkname, for ps/debugging */
+	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
 };
 
 static struct kproc procs[MAXPROCS];
@@ -112,6 +114,14 @@ static struct kproc *current_proc;
  * holding any right to it is what fopen() checks for writes.
  */
 static struct kport *diskport;
+
+/* the scheduling capability, same shape as diskport: a kernel-owned
+ * port that is never sent to or received from. holding a right to it
+ * IS the authorization -- see api_set_priority.
+ */
+static struct kport *schedport;
+
+static int proc_has_port(struct kproc *p, struct kport *port);
 
 /* dynamic wait-set: device layers whose completions are token/Event
  * based (unlike the byte-stream pumps above, which are polled every
@@ -1015,6 +1025,127 @@ api_procs(lua_State *L)
 	return 1;
 }
 
+static int
+api_procname(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	if (!lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+	lua_pushstring(L, p->name);
+	return 1;
+}
+
+/* sys.wchan(pid): a unix-"wchan"-style debugging hint -- what a
+ * blocked proc is actually waiting on, exposed as the receive port's
+ * index in the global ports[] table (the same number serialize()
+ * already uses to tag right transfers, not a friendly name, but
+ * stable and unique -- good enough for ps/debugging). "ready"/"dead"
+ * for the other two states; "alt[...]" lists every port a
+ * thread.alt() is waiting across.
+ */
+static int
+api_wchan(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	if (!lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+	switch (p->status) {
+	case DEAD:
+		lua_pushliteral(L, "dead");
+		return 1;
+	case READY:
+		lua_pushliteral(L, "ready");
+		return 1;
+	case BLOCKED:
+		if (p->waiting) {
+			lua_pushfstring(L, "port#%d",
+			    (int)(p->waiting - ports));
+			return 1;
+		}
+		if (p->nwset > 0) {
+			luaL_Buffer b;
+
+			luaL_buffinit(L, &b);
+			luaL_addstring(&b, "alt[");
+			for (int i = 0; i < p->nwset; i++) {
+				char tmp[16];
+
+				snprintf(tmp, sizeof tmp, "%s%d",
+				    i ? "," : "",
+				    (int)(p->wset[i] - ports));
+				luaL_addstring(&b, tmp);
+			}
+			luaL_addstring(&b, "]");
+			luaL_pushresult(&b);
+			return 1;
+		}
+		lua_pushliteral(L, "blocked");
+		return 1;
+	}
+	lua_pushliteral(L, "?");
+	return 1;
+}
+
+/* sys.set_priority(pid, weight): a scheduling POLICY knob, not the
+ * scheduler itself -- this just writes a clamped integer into the
+ * target proc's kproc struct. kernel_run's dispatch loop (the
+ * mechanism) reads it mechanically every lap; no lua code ever runs
+ * synchronously inside a scheduling decision, so a crashing "sched"
+ * proc that computes weights however it likes can never wedge or
+ * corrupt the dispatch loop itself -- same reason sched_ext's eBPF
+ * programs are verified/bounded rather than being the dispatcher.
+ * weight=1 is the default (plain round-robin); higher weight is a
+ * proportionally bigger share, via getting resumed up to `weight`
+ * times per lap instead of once (see kernel_run).
+ *
+ * gated on the scheduling capability (a right to schedport, handle
+ * sys.SCHED at boot), exactly like disk writes are gated on a right
+ * to diskport. without it any ordinary sys.spawn child could hand
+ * itself weight=MAXWEIGHT and starve every other proc, which is a
+ * denial of service the capability model is supposed to prevent.
+ */
+static int
+api_set_priority(lua_State *L)
+{
+	int pid = (int)luaL_checkinteger(L, 1);
+	int weight = (int)luaL_checkinteger(L, 2);
+	struct kproc *p = find_proc(pid);
+
+	if (!proc_has_port(self(L), schedport))
+		return luaL_error(L, "no scheduling capability");
+	if (!p)
+		return luaL_error(L, "no such proc");
+	if (weight < 1)
+		weight = 1;
+	if (weight > MAXWEIGHT)
+		weight = MAXWEIGHT;
+	p->weight = weight;
+	return 0;
+}
+
+/* reading a weight is not gated: it's the same class of information
+ * sys.procs()/sys.meminfo() already hand out for free.
+ */
+static int
+api_priority(lua_State *L)
+{
+	int pid = (int)luaL_checkinteger(L, 1);
+	struct kproc *p = find_proc(pid);
+
+	if (!p)
+		return luaL_error(L, "no such proc");
+	lua_pushinteger(L, p->weight);
+	return 1;
+}
+
 extern unsigned long long platform_ticks(void);
 
 static int
@@ -1039,6 +1170,10 @@ static const luaL_Reg kapi[] = {
 	{ "preempt", api_preempt },
 	{ "self", api_self },
 	{ "procs", api_procs },
+	{ "name", api_procname },
+	{ "wchan", api_wchan },
+	{ "set_priority", api_set_priority },
+	{ "priority", api_priority },
 	{ "ticks", api_ticks },
 	{ NULL, NULL }
 };
@@ -1070,9 +1205,12 @@ los_sys_open(lua_State *L)
 	 * does. 5 is a send-right to net, granted only when a NIC was
 	 * actually found at boot (see have_net) -- unlike the other four,
 	 * a missing net task is the normal case on hardware without one,
-	 * not a boot failure. all are handed to the boot payload (init.lua
-	 * or a test payload) at spawn; ordinary sys.spawn children get
-	 * none of them by default.
+	 * not a boot failure. 7 is the scheduling capability, another
+	 * checked right with no task behind it (see api_set_priority) --
+	 * without it, any child could hand itself weight=MAXWEIGHT and
+	 * starve everyone else. all are handed to the boot payload
+	 * (init.lua or a test payload) at spawn; ordinary sys.spawn
+	 * children get none of them by default.
 	 */
 	lua_pushinteger(L, 0);
 	lua_setfield(L, -2, "SELF");
@@ -1086,6 +1224,8 @@ los_sys_open(lua_State *L)
 	lua_setfield(L, -2, "DISK");
 	lua_pushinteger(L, 5);
 	lua_setfield(L, -2, "NET");
+	lua_pushinteger(L, 7);
+	lua_setfield(L, -2, "SCHED");
 	return 1;
 }
 
@@ -1263,6 +1403,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, p->reductions);
 	p->mem_limit = mem_limit;
+	p->weight = 1;
 	p->status = READY;
 	p->waiting = 0;
 	nlive++;
@@ -1432,15 +1573,17 @@ kernel_init(void)
 	serport = port_new();
 	diskport = port_new();
 	netport = port_new();
-	if (!kbdport || !serport || !diskport || !netport)
+	schedport = port_new();
+	if (!kbdport || !serport || !diskport || !netport || !schedport)
 		return -1;
-	/* kernel refs: the pumps (and, for diskport/netport, the kernel
-	 * itself) hold these ports forever
+	/* kernel refs: the pumps (and, for diskport/netport/schedport,
+	 * the kernel itself) hold these ports forever
 	 */
 	kbdport->nrights++;
 	serport->nrights++;
 	diskport->nrights++;
 	netport->nrights++;
+	schedport->nrights++;
 
 	/* soft-fail: no NIC (real hardware, or qemu -net none) just means
 	 * no net task gets spawned later, same as any other optional
@@ -1531,6 +1674,8 @@ spawn_init(const char *code, size_t len, int is_file)
 		right_new_at(p, 4, diskport, 0);
 	if (net)
 		right_new_at(p, 5, net->rights[0].port, 0);
+	if (schedport)
+		right_new_at(p, 7, schedport, 0);
 	return pid;
 }
 
@@ -1600,52 +1745,73 @@ kernel_run(void)
 
 			if (p->status != READY)
 				continue;
-			ran = 1;
 
-			int nres = 0;
-
-			current_proc = p;
-			int rc = lua_resume(p->co, 0, 0, &nres);
-			current_proc = 0;
-
-			/* a proc can run a full hook window (200k insns)
-			 * before yielding; drain the 16-byte fifo now so it
-			 * can't overflow between serial pumps.
+			/* WRR: a proc with weight>1 (see sys.set_priority)
+			 * gets resumed up to that many times in a row here
+			 * before moving on to the next proc, instead of
+			 * exactly once -- the entire "programmable
+			 * scheduler" surface is this one loop bound reading
+			 * a plain int; no lua code runs inside the decision.
 			 */
-			uart_poll();
-			if (rc == LUA_YIELD) {
-				lua_pop(p->co, nres);
-				continue;	/* READY or BLOCKED */
-			}
-			if (rc == LUA_OK)
-				proc_kill(p, 0);
-			else if (rc == LUA_ERRMEM)
-				/* lua reports OOM via a static, preallocated
-				 * message specifically so it never has to
-				 * allocate to report a failure caused by
-				 * having no memory left. luaL_traceback would
-				 * break that guarantee (it allocates to build
-				 * the traceback string) and, this proc being
-				 * already at its limit, fail again -- skip it
-				 * here, same plain message as before.
-				 */
-				proc_kill(p, lua_tostring(p->co, -1));
-			else {
-				/* a coroutine that errors out of lua_resume
-				 * deliberately does NOT unwind its stack --
-				 * that's what lets luaL_traceback walk it
-				 * right here, same trick xpcall's message
-				 * handler relies on, just done from the C
-				 * side after resume already returned instead
-				 * of during unwinding.
-				 *
-				 * error object is on the stack; read it
-				 * before proc_kill closes the state.
-				 */
-				const char *errmsg = lua_tostring(p->co, -1);
+			for (int w = 0; w < p->weight; w++) {
+				ran = 1;
 
-				luaL_traceback(p->co, p->co, errmsg, 0);
-				proc_kill(p, lua_tostring(p->co, -1));
+				int nres = 0;
+
+				current_proc = p;
+				int rc = lua_resume(p->co, 0, 0, &nres);
+				current_proc = 0;
+
+				/* a proc can run a full hook window (200k
+				 * insns) before yielding; drain the 16-byte
+				 * fifo now so it can't overflow between
+				 * serial pumps.
+				 */
+				uart_poll();
+				if (rc == LUA_YIELD) {
+					lua_pop(p->co, nres);
+					if (p->status != READY)
+						break;	/* now BLOCKED */
+					continue;	/* spend more weight */
+				}
+				if (rc == LUA_OK)
+					proc_kill(p, 0);
+				else if (rc == LUA_ERRMEM)
+					/* lua reports OOM via a static,
+					 * preallocated message specifically
+					 * so it never has to allocate to
+					 * report a failure caused by having
+					 * no memory left. luaL_traceback
+					 * would break that guarantee (it
+					 * allocates to build the traceback
+					 * string) and, this proc being
+					 * already at its limit, fail again
+					 * -- skip it here, same plain
+					 * message as before.
+					 */
+					proc_kill(p, lua_tostring(p->co, -1));
+				else {
+					/* a coroutine that errors out of
+					 * lua_resume deliberately does NOT
+					 * unwind its stack -- that's what
+					 * lets luaL_traceback walk it right
+					 * here, same trick xpcall's message
+					 * handler relies on, just done from
+					 * the C side after resume already
+					 * returned instead of during
+					 * unwinding.
+					 *
+					 * error object is on the stack; read
+					 * it before proc_kill closes the
+					 * state.
+					 */
+					const char *errmsg =
+					    lua_tostring(p->co, -1);
+
+					luaL_traceback(p->co, p->co, errmsg, 0);
+					proc_kill(p, lua_tostring(p->co, -1));
+				}
+				break;	/* proc died, nothing left to resume */
 			}
 		}
 		if (!ran) {
@@ -1675,14 +1841,19 @@ kernel_run(void)
  * liolib.c's io.open calls it as plain C, so current_proc is the
  * only way to learn who's asking.
  */
+static int
+proc_has_port(struct kproc *p, struct kport *port)
+{
+	if (!p || !port)
+		return 0;
+	for (int i = 0; i < MAXRIGHTS; i++)
+		if (p->rights[i].used && p->rights[i].port == port)
+			return 1;
+	return 0;
+}
+
 int
 kernel_current_has_disk(void)
 {
-	if (!current_proc)
-		return 0;
-	for (int i = 0; i < MAXRIGHTS; i++)
-		if (current_proc->rights[i].used &&
-		    current_proc->rights[i].port == diskport)
-			return 1;
-	return 0;
+	return proc_has_port(current_proc, diskport);
 }

@@ -169,6 +169,7 @@ lua_payload = files(
   'lib/net.lua',
   'lib/ninep.lua',
   'lib/power.lua',
+  'lib/ps.lua',
   'lib/tap.lua',
   'lib/thread.lua',
   'lib/wire.lua',
@@ -195,7 +196,8 @@ run_target('qemu',
 
 boottest = files('scripts/boottest.sh')
 
-boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit', 'drivers']
+boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
+              'drivers', 'sched']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
