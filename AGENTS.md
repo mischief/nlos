@@ -131,8 +131,36 @@ trick as libtask or goroutines, which is where `los.thread`'s shape
 comes from.
 
 **Corollary: anything that busy-spins instead of parking breaks both
-levels at once.** There is no `sleep(ms)` yet, so existing code spins
-on `sys.ticks()`. Do not add more of it; see the debts below.
+levels at once.** `sys.yield()` keeps a proc READY, so the outer loop's
+"is anything runnable" test is always yes and it never reaches its idle
+sleep. Use `sys.timer(ms)` and the `thread.sleep`/`thread.recvtimeout`
+sugar over it — never a `sys.ticks()` deadline loop. Booting with a NIC
+once cost 5.2s of CPU per 15s purely because the DHCP retry spun;
+parking on a timer took it to 1.6s.
+
+## Time
+
+`platform_ticks()`/`sys.ticks()` is a raw `rdtsc` — a cycle count, not a
+duration. Boot calibrates it against `BS->Stall` and everything
+time-shaped is denominated in milliseconds via `sys.uptime_ms()`. Do not
+reintroduce cycle-denominated constants; the same number was a different
+duration on every machine, and the comments describing them were wrong
+by 2-4x even on the machine they were written on.
+
+`sys.timer(ms)` returns a receive right to a port that gets one message
+at the deadline. It is a port rather than a `sleep()` call so that
+recv-with-timeout falls out of `alt` composition with no new API:
+
+    thread.alt({ {port = reply}, {port = sys.timer(500)} })
+
+Resolution is the scheduler tick, so a timer fires up to one tick late
+and never early. `SetTimer` cannot beat ~10ms on this platform anyway
+(measured — see `docs/uefi-notes.md`), and every deadline here is
+hundreds of milliseconds, so no per-deadline EFI event is armed.
+
+The timer table is a flat unsorted array scanned once per lap,
+deliberately not a timing wheel: a wheel buys O(1) insert and earns that
+at thousands of timers, and `MAXPROCS` is 32.
 
 ## Traps already walked — do not re-derive these
 
@@ -199,11 +227,6 @@ Structural, worth fixing:
   the one place the capability rule is not followed through. The fix is
   a port per connection, so holding it *is* the authorization. Urgent
   the moment TCP is granted to anything less trusted than the repl.
-- **No timers.** No `sleep(ms)`, no timeout on recv/alt, so every
-  deadline is a `sys.ticks()` spin: it busy-spins, is denominated in raw
-  TSC cycles so one constant means different wall time per machine, and
-  cannot be tested against. A timer wheel deletes all of it. Highest
-  value missing primitive.
 - **Resource ceilings are ad-hoc** — reductions per slice, memory per
   proc, message size, rights per proc, grants per proc, HTTP body size,
   scheduler weight. Each sensible alone, collectively unrelated. The
@@ -214,8 +237,9 @@ Structural, worth fixing:
   one completed. Fine at a handful of connections, a ceiling at fifty.
   Possibly forced by the platform — confirm before designing around it.
 
-Bounded and understood: HTTP has no timeout (a peer that connects and
-never sends parks a coroutine forever); no chunked transfer-encoding
+Bounded and understood: HTTP has no timeout on its reads, so a peer that
+connects and never sends parks a coroutine forever — `thread.recvtimeout`
+now exists to fix this and it simply hasn't been applied; no chunked transfer-encoding
 either direction; the serializer refuses cycles and functions and
 `time()` is rdtsc; strtod is exact for round decimals but not last-ulp
 for arbitrary mantissas; the 9P server has no auth or
