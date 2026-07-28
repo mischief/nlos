@@ -28,12 +28,32 @@
 --
 -- which is idiomatic, rather than this module offering two APIs.
 --
+-- ---- unions ----
+--
+-- several backends may share a prefix, plan 9 style. mount() takes an
+-- order -- "replace" (the default), "before" or "after", matching MREPL,
+-- MBEFORE and MAFTER -- and lookups try each member in turn until one
+-- succeeds. readdir merges them, first mount to claim a name wins.
+--
+-- the mount table is ALSO a contributor to readdir, and that is what
+-- makes a mount point visible. mounting procfs at /proc creates nothing
+-- on the filesystem serving /, so without this `ls /` would not show
+-- proc even though `cd /proc` worked. plan 9 avoids the question by only
+-- letting you mount onto a directory that already exists -- its root is
+-- devroot, a real device with a built-in Dirtab listing proc, dev, net
+-- and friends. ours is derived from the mount table instead of fixed,
+-- so it needs no bootstrap step and dynamic mounts appear on their own.
+--
+-- note that unions alone would NOT have fixed that: even with them,
+-- something still has to contribute the name at /. the win is that with
+-- unions it stops being a special case in readdir and becomes one more
+-- contributor.
+--
 -- ---- what is not here yet ----
 --
--- union mounts (plan 9 allows several servers at one prefix; here a
--- second mount at the same prefix replaces the first), and remove(),
--- which needs both a backend method and EFI_FILE_PROTOCOL->Delete
--- wrapped in src/fs.c. both are named in docs/shell-namespace-draft.md.
+-- remove(), which needs both a backend method and
+-- EFI_FILE_PROTOCOL->Delete wrapped in src/fs.c. see
+-- docs/shell-namespace-draft.md.
 
 local dev = require("dev")
 
@@ -154,31 +174,56 @@ function M.new()
 	return setmetatable({ mounts = {} }, NS)
 end
 
--- mount(prefix, backend, kind, args)
+-- mount(prefix, backend, kind, args, order)
+--
+-- order is "replace" (default), "before" or "after" -- plan 9's MREPL,
+-- MBEFORE and MAFTER. before/after union with whatever is already there;
+-- replace evicts it.
 --
 -- kind/args are optional and only used by describe(): they record how to
 -- rebuild this backend in another proc. a mount without them still
 -- works, it just cannot be inherited.
-function NS:mount(prefix, backend, kind, args)
+function NS:mount(prefix, backend, kind, args, order)
 	local ok, err = pcall(dev.check, backend, kind or "backend")
 
 	if not ok then
 		return nil, err
 	end
 	prefix = clean(prefix)
+	order = order or "replace"
 
-	-- a second mount at the same prefix replaces the first. plan 9
-	-- would union them; that is a real feature and a real complication,
-	-- and nothing here needs it yet.
-	for i, m in ipairs(self.mounts) do
-		if m.prefix == prefix then
-			table.remove(self.mounts, i)
-			break
-		end
-	end
-	self.mounts[#self.mounts + 1] = {
+	local entry = {
 		prefix = prefix, B = backend, kind = kind, args = args,
 	}
+
+	if order == "replace" then
+		for i = #self.mounts, 1, -1 do
+			if self.mounts[i].prefix == prefix then
+				table.remove(self.mounts, i)
+			end
+		end
+		self.mounts[#self.mounts + 1] = entry
+		return true
+	end
+
+	-- find the span already at this prefix; union order is list order
+	local first, last
+
+	for i, m in ipairs(self.mounts) do
+		if m.prefix == prefix then
+			first = first or i
+			last = i
+		end
+	end
+	if not first then
+		self.mounts[#self.mounts + 1] = entry
+	elseif order == "before" then
+		table.insert(self.mounts, first, entry)
+	elseif order == "after" then
+		table.insert(self.mounts, last + 1, entry)
+	else
+		return nil, dev.Ebadarg
+	end
 	return true
 end
 
@@ -193,12 +238,56 @@ function NS:unmount(prefix)
 	return nil, "not mounted"
 end
 
+-- if `path` is a proper prefix of a mount, return the next component of
+-- that mount below it. that is how a mount point becomes visible:
+-- mounting procfs at /proc does not create anything on the filesystem
+-- serving /, so nothing would list it, and `ls /` would not show proc
+-- even though `cd /proc` worked.
+--
+-- plan 9 dodges this by only letting you mount onto a directory that
+-- already exists, so the mount point is always already listed. we do not
+-- want that rule -- it would mean creating an empty /proc on the ESP --
+-- so the namespace, which is the thing that knows the mount exists,
+-- synthesises the entry instead.
+--
+-- it returns the FIRST component, so /mnt/host mounted with nothing at
+-- /mnt still makes "mnt" appear in /, and /mnt itself behaves as a
+-- directory containing "host".
+local function child_under(path, prefix)
+	if prefix == path then
+		return nil		-- the directory itself, not a child
+	end
+
+	local base = (path == "/") and "/" or (path .. "/")
+
+	if prefix:sub(1, #base) ~= base then
+		return nil
+	end
+	return prefix:sub(#base + 1):match("^[^/]+")
+end
+
+-- every mount point visible directly under `path`, as stat entries
+function NS:mountpoints(path)
+	local out, seen = {}, {}
+
+	for _, m in ipairs(self.mounts) do
+		local name = child_under(path, m.prefix)
+
+		if name and not seen[name] then
+			seen[name] = true
+			out[#out + 1] = { name = name, dir = true, size = 0 }
+		end
+	end
+	return out
+end
+
 -- longest matching prefix wins, so /mnt/host beats / for /mnt/host/x.
--- returns the mount and the path relative to it.
+-- returns EVERY mount at that prefix, in union order, and the path
+-- relative to them.
 function NS:lookup(path)
 	path = clean(path)
 
-	local best, bestlen
+	local bestlen
 
 	for _, m in ipairs(self.mounts) do
 		local p = m.prefix
@@ -213,26 +302,57 @@ function NS:lookup(path)
 			    path:sub(#p + 1, #p + 1) == "/"
 		end
 		if matches and (not bestlen or #p > bestlen) then
-			best, bestlen = m, #p
+			bestlen = #p
 		end
 	end
-	if not best then
+	if not bestlen then
 		return nil, "no mount for " .. path
 	end
-	local rest = best.prefix == "/" and path or path:sub(#best.prefix + 1)
 
-	return best, rest
+	local group = {}
+	local prefix
+
+	for _, m in ipairs(self.mounts) do
+		if #m.prefix == bestlen then
+			local p = m.prefix
+			local matches = (p == "/") or (path == p) or
+			    (path:sub(1, #p) == p and
+			     path:sub(#p + 1, #p + 1) == "/")
+
+			if matches then
+				group[#group + 1] = m
+				prefix = p
+			end
+		end
+	end
+	local rest = prefix == "/" and path or path:sub(#prefix + 1)
+
+	return group, rest
 end
 
--- resolve to (backend, handle). raises, because it is called from the
--- inside of the other methods; the public wrappers are what pcall.
+-- resolve to (backend, handle), trying each union member in order and
+-- taking the first that resolves -- plan 9's semantics. raises, because
+-- it is called from inside the other methods; the public wrappers pcall.
 function NS:walk(path)
-	local m, rest = self:lookup(path)
+	local group, rest = self:lookup(path)
 
-	if not m then
+	if not group then
 		dev.error(rest)
 	end
-	return m.B, dev.walkpath(m.B, m.B.attach(), rest)
+
+	local lasterr = dev.Enonexist
+
+	for _, m in ipairs(group) do
+		local ok, res = pcall(function()
+			return dev.walkpath(m.B, m.B.attach(), rest)
+		end)
+
+		if ok then
+			return m.B, res
+		end
+		lasterr = res
+	end
+	dev.error(tostring(lasterr))
 end
 
 -- ---- public API: each of these pcalls exactly once ----
@@ -287,24 +407,64 @@ function NS:stat(path)
 	end)
 
 	if not ok then
+		-- same reasoning as readdir: a path with mounts below it is a
+		-- directory even if no backend serves it
+		if #self:mountpoints(path) > 0 then
+			local cleaned = clean(path)
+
+			return { name = cleaned:match("[^/]+$") or "/",
+			    dir = true, size = 0 }
+		end
 		return nil, res
 	end
 	return res
 end
 
+-- the union: every backend at this prefix in mount order, then the mount
+-- points below it. first to claim a name wins, matching plan 9.
 function NS:readdir(path)
-	local ok, res = pcall(function()
-		local B, h = self:walk(path)
-		local ents = B.readdir(h)
+	local group, rest = self:lookup(path)
+	local out, seen = {}, {}
+	local any = false
+	local lasterr = dev.Enonexist
 
-		B.clunk(h)
-		return ents
-	end)
+	for _, m in ipairs(group or {}) do
+		local ok, ents = pcall(function()
+			local h = dev.walkpath(m.B, m.B.attach(), rest)
+			local e = m.B.readdir(h)
 
-	if not ok then
-		return nil, res
+			m.B.clunk(h)
+			return e
+		end)
+
+		if ok then
+			any = true
+			for _, e in ipairs(ents) do
+				if not seen[e.name] then
+					seen[e.name] = true
+					out[#out + 1] = e
+				end
+			end
+		else
+			lasterr = ents
+		end
 	end
-	return res
+
+	-- a path with mounts below it IS a directory, even with nothing
+	-- serving it: /mnt exists because /mnt/host does
+	for _, e in ipairs(self:mountpoints(path)) do
+		if not seen[e.name] then
+			seen[e.name] = true
+			out[#out + 1] = e
+			any = true
+		end
+	end
+
+	if not any then
+		return nil, group and lasterr or rest
+	end
+	table.sort(out, function(a, b) return a.name < b.name end)
+	return out
 end
 
 -- convenience: whole-file read and write, which is most of what a shell
@@ -372,6 +532,8 @@ function NS:describe()
 
 	for _, m in ipairs(self.mounts) do
 		if m.kind then
+			-- list order IS union order, and restore replays it,
+			-- so "after" reproduces the same sequence
 			out[#out + 1] = {
 				prefix = m.prefix, kind = m.kind, args = m.args,
 			}
@@ -397,7 +559,7 @@ function M.restore(desc)
 			return nil, "cannot rebuild " .. d.kind .. ": " ..
 			    tostring(B)
 		end
-		local mok, merr = ns:mount(d.prefix, B, d.kind, d.args)
+		local mok, merr = ns:mount(d.prefix, B, d.kind, d.args, "after")
 
 		if not mok then
 			return nil, merr

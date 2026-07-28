@@ -12,7 +12,7 @@ local ns = require("ns")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(30)
+tap.plan(39)
 
 -- ---- path cleaning, before any backend is involved ----
 tap.is(ns.clean("/a/b/../c"), "/a/c", "clean resolves ..")
@@ -82,8 +82,68 @@ for _, e in ipairs(ents or {}) do
 	names[#names + 1] = e.name
 end
 table.sort(names)
-tap.is(table.concat(names, ","), "hello.txt,made.txt,sub",
-    "readdir lists the root mount's entries")
+-- "mnt" is here because /mnt/other is mounted below it, not because the
+-- backend serving / has any such directory -- see NS:mountpoints
+tap.is(table.concat(names, ","), "hello.txt,made.txt,mnt,sub",
+    "readdir lists the root mount's entries plus visible mount points")
+
+-- ---- mount points are visible in their parent ----
+--
+-- mounting at /mnt/other creates nothing on the backend serving /, so
+-- without the namespace contributing the name, `ls /` would not show mnt
+-- even though `cd /mnt/other` worked. plan 9 sidesteps this by only
+-- letting you mount onto an existing directory -- its root is devroot,
+-- a real device with a built-in Dirtab. ours is derived from the mount
+-- table, so dynamic mounts appear on their own.
+local mntents = {}
+
+for _, e in ipairs(N:readdir("/mnt") or {}) do
+	mntents[e.name] = e
+end
+tap.ok(mntents["other"] ~= nil, "/mnt lists the mount below it")
+
+local mst = N:stat("/mnt")
+
+tap.ok(mst ~= nil and mst.dir,
+    "an intermediate path with mounts below it stats as a directory")
+
+-- ---- unions: several backends at one prefix ----
+local U = ns.new()
+
+U:mount("/", dev.mem({ a = "from first\n", shared = "first wins\n" }))
+U:mount("/", dev.mem({ b = "from second\n", shared = "second loses\n" }),
+    nil, nil, "after")
+
+local unames = {}
+
+for _, e in ipairs(U:readdir("/") or {}) do
+	unames[#unames + 1] = e.name
+end
+table.sort(unames)
+tap.is(table.concat(unames, ","), "a,b,shared",
+    "readdir unions both backends at the prefix")
+
+tap.is(U:readfile("/a"), "from first\n", "a file from the first member")
+tap.is(U:readfile("/b"), "from second\n",
+    "walk falls through to the second when the first lacks it")
+tap.is(U:readfile("/shared"), "first wins\n",
+    "on a duplicate name the earlier member wins")
+
+-- "before" puts a backend ahead of what is already there
+U:mount("/", dev.mem({ shared = "jumped the queue\n" }), nil, nil, "before")
+tap.is(U:readfile("/shared"), "jumped the queue\n",
+    "mounting before takes precedence")
+
+-- "replace" evicts the whole union at that prefix
+U:mount("/", dev.mem({ only = "alone\n" }))
+local ronly = {}
+
+for _, e in ipairs(U:readdir("/") or {}) do
+	ronly[#ronly + 1] = e.name
+end
+tap.is(table.concat(ronly, ","), "only",
+    "replace evicts every member at the prefix")
+tap.ok(U:readfile("/a") == nil, "and the evicted members are gone")
 
 -- ---- a namespace is inherited as a capability ----
 -- describe() produces plain data, so it crosses a port; the child
