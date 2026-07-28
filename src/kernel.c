@@ -27,7 +27,10 @@
 #define MAXPROCS	32
 #define MAXPORTS	128
 #define MAXRIGHTS	64
-#define REDUCTIONS	25000	/* default instruction budget per slice */
+/* fallback if calibration fails; normally replaced at boot by a measured
+ * value -- see calibrate_reductions().
+ */
+#define REDUCTIONS	25000
 #define MAXMSG		(64 * 1024)
 #define MAXDEPTH	16
 #define MAXMSGRIGHTS	8	/* rights per message */
@@ -273,6 +276,73 @@ static unsigned long long cyc_per_ms;
 /* QUANTUM_MS in cycles, set once cyc_per_ms is known */
 static unsigned long long quantum_cycles;
 
+/* how often the preempt hook samples the clock, in lua VM instructions.
+ * measured at boot rather than fixed, because the right value depends
+ * entirely on how fast this machine executes bytecode.
+ *
+ * since the hook now yields on elapsed TIME, this count is a sampling
+ * rate and not a slice length: a proc can overshoot its quantum by at
+ * most one period. a fixed count therefore means very different
+ * behaviour on different hardware. measured here: ~32 cycles per
+ * instruction, so 25000 is 176us (9% of a 2ms quantum) and 100000 is
+ * 705us (35%) -- both fine. on a machine four times slower, 100000 would
+ * be 2.8ms, longer than the quantum itself, and time-slicing would
+ * quietly degrade back into instruction-slicing.
+ *
+ * calibrating targets a fixed FRACTION of the quantum instead, so the
+ * overshoot bound holds on any machine.
+ */
+static int default_reductions = REDUCTIONS;
+
+/* time a known number of VM instructions and pick a hook period worth
+ * about an eighth of a quantum. the loop body is a local increment, so
+ * roughly two instructions per iteration (ADD, FORLOOP) -- the cheapest
+ * realistic opcode mix, and therefore the worst case for a period
+ * measured in instructions.
+ */
+static void
+calibrate_reductions(void)
+{
+	lua_State *L = luaL_newstate();
+
+	if (!L)
+		return;
+
+	static const char src[] =
+	    "local x = 0 for _ = 1, 100000 do x = x + 1 end";
+
+	if (luaL_loadstring(L, src) != LUA_OK) {
+		lua_close(L);
+		return;
+	}
+
+	unsigned long long t0 = platform_ticks();
+
+	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+		lua_close(L);
+		return;
+	}
+
+	unsigned long long d = platform_ticks() - t0;
+
+	lua_close(L);
+
+	unsigned long long insns = 200000;	/* ~2 per iteration */
+	unsigned long long cyc_per_insn = d / insns;
+
+	if (cyc_per_insn == 0)
+		cyc_per_insn = 1;
+
+	unsigned long long target = (quantum_cycles / 8) / cyc_per_insn;
+
+	/* keep it sane on absurdly fast or slow machines */
+	if (target < 2000)
+		target = 2000;
+	if (target > 500000)
+		target = 500000;
+	default_reductions = (int)target;
+}
+
 static void
 calibrate_clock(void)
 {
@@ -286,6 +356,7 @@ calibrate_clock(void)
 	if (cyc_per_ms == 0)
 		cyc_per_ms = 1;	/* refuse to divide by zero later */
 	quantum_cycles = cyc_per_ms * QUANTUM_MS;
+	calibrate_reductions();
 }
 
 /* milliseconds since calibrate_clock(). the one time base timers and
@@ -1196,7 +1267,7 @@ static int
 api_preempt(lua_State *L)
 {
 	lua_State *co = lua_tothread(L, 1);
-	lua_Integer count = luaL_optinteger(L, 2, REDUCTIONS);
+	lua_Integer count = luaL_optinteger(L, 2, default_reductions);
 
 	if (!co)
 		return luaL_error(L, "preempt: not a coroutine");
@@ -1262,6 +1333,8 @@ api_stats(lua_State *L)
 	 */
 	lua_pushinteger(L, (lua_Integer)cyc_per_ms);
 	lua_setfield(L, -2, "cycles_per_ms");
+	lua_pushinteger(L, default_reductions);
+	lua_setfield(L, -2, "reductions");
 	return 1;
 }
 
@@ -1732,7 +1805,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 
 	memset(p->rights, 0, sizeof p->rights);
 	p->nwatch = 0;
-	p->reductions = reductions > 0 ? reductions : REDUCTIONS;
+	p->reductions = reductions > 0 ? reductions : default_reductions;
 	p->mem_used = 0;
 	p->mem_peak = 0;
 	/* the limit goes live only after setup: base state + libraries

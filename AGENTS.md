@@ -270,7 +270,35 @@ share (21.45M vs 21.71M loop iterations for a spinner). Priority orders;
 it does not ration. Share is still `weight`, via the WRR loop in
 `run_proc`.
 
-**Instruction counting was tried and dropped — do not re-derive it.**
+**Slices are wall-clock, not instruction counts.** The preempt hook fires
+every `p->reductions` VM instructions but only *yields* once `QUANTUM_MS`
+of real time has elapsed, so the instruction count is a **sampling rate**
+and not a slice length. A proc can overshoot its quantum by at most one
+period.
+
+That is why `default_reductions` is **calibrated at boot** rather than
+fixed: the right count depends entirely on how fast the machine executes
+bytecode. Measured here at ~24-32 cycles per instruction, 25000 is 176us
+and 100000 is 705us against a 2ms quantum — both fine. On a machine four
+times slower, 100000 would be 2.8ms, longer than the quantum itself, and
+time-slicing would quietly degrade back into instruction-slicing.
+Calibration targets a fixed fraction of the quantum instead, so the
+overshoot bound holds anywhere. `sys.stats().reductions` reports what it
+picked.
+
+Note the direction of the trade, which is the opposite of what "add a
+time bound" suggests: slices got **longer**, not shorter. A compute-bound
+proc holds the CPU for 2ms instead of yielding every ~176us. That is +4%
+throughput for up to 2ms of added latency, paid only when something is
+genuinely compute-bound.
+
+Nothing here fixes the real hole, and nothing can while we are inside
+boot services: the hook cannot fire inside a single C call, so
+`string.rep("x", 1e8)` holds the machine for as long as it takes. Plan
+9's clock interrupt would preempt it.
+
+**Instruction counting as a *scheduling metric* was tried and dropped —
+do not re-derive it.**
 The preempt hook fires every `lua_gethookcount()` instructions, so
 counting fires is an exact reduction count in the BEAM sense, and it is
 tempting because it is deterministic and machine-independent. It has a
