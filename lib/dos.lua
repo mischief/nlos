@@ -21,76 +21,25 @@ local ns = require("ns")
 
 local M = {}
 
--- ---- a pipe is a port, which is the whole trick ----
+-- ---- a pipe IS a port ----
 --
--- one proc reads, one writes, and the port already refcounts: when the
--- writer exits and its send right drops, the reader's next read returns
--- nil, which the ABI turns into eof. no pipe(), no dup2(), no
--- close-the-other-end dance, and no SIGPIPE -- it falls out of the
--- lifecycle rules the kernel already has.
+-- one writer sends {op="write", data=} into it, one reader takes them
+-- off, and sys.hungup tells the reader when nobody else holds a right,
+-- which is eof. no server sits in the middle: the port queue is the
+-- buffer and the kernel reports the hangup.
 --
--- the pipe server is a coroutine in the launcher rather than a proc,
--- because it only moves bytes and does not need its own heap. that means
--- the launcher MUST be driven by thread.run() -- see M.start.
+-- there WAS a server here -- a coroutine relaying between two ports --
+-- and it was wrong twice over. it cost 3 messages and 2 proc switches
+-- per chunk where a bare port costs 1 and 1, because it lived in the
+-- launcher, a third proc between the two ends. and it needed a
+-- two-signal shutdown protocol, {op="close"} then {op="stop"}, purely to
+-- synthesise an eof the kernel could not report. plan 9 puts pipes in
+-- the kernel for exactly this reason: devpipe hands out Chans, but the
+-- bytes go through Queues in kernel memory, never through a server
+-- process.
 --
--- eof needs the launcher's help, and it needs TWO signals, which is
--- worth understanding because one is not enough.
---
--- when a writer proc exits, its send right to `datap` drops -- but the
--- pipe server still holds the RECEIVE right, so the port is not dead and
--- nothing here can distinguish "writer gone" from "writer busy". the
--- launcher monitors every stage, so it sends {op="close"} when the writer
--- dies. that is signal one.
---
--- signal two is why the first version hung. after close, with the buffer
--- drained, it looked finished and returned -- but the READER had one more
--- read to issue, and its request arrived at a port nobody was listening
--- to, so it blocked forever. between "writer done" and "reader done" this
--- must keep answering eof to every read. only the launcher knows when the
--- reader is finished, so it sends {op="stop"} once every stage has
--- exited.
-local function pipeserver(reqp, datap)
-	return function()
-		local buf = {}
-		local waiting = nil
-		local closed = false
-
-		local stop = false
-
-		while not stop do
-			-- serve a pending reader as soon as we can
-			if waiting and #buf > 0 then
-				sys.send(waiting, table.remove(buf, 1))
-				sys.close(waiting)
-				waiting = nil
-			elseif waiting and closed then
-				sys.send(waiting, nil)	-- eof, as often as asked
-				sys.close(waiting)
-				waiting = nil
-			end
-
-			local which, m = thread.alt({
-				{ port = datap }, { port = reqp },
-			})
-
-			if which == 1 then
-				if m == nil or m.op == "close" then
-					closed = true
-				elseif m.op == "stop" then
-					stop = true
-				elseif m.op == "write" then
-					buf[#buf + 1] = m.data
-				end
-			elseif m and m.op == "stop" then
-				stop = true
-			elseif m and m.op == "read" then
-				waiting = m.reply and m.reply.__right
-			end
-		end
-	end
-end
-
-M.pipeserver = pipeserver
+-- the launcher must drop its own right to a pipe once both ends are
+-- handed out, or it stays a holder and the reader never sees eof.
 
 -- ---- word splitting and redirection ----
 --
@@ -287,6 +236,9 @@ function Sh:spawn1(path, argv, streams)
 			msg[k] = { __right = streams[k] }
 		end
 	end
+	if msg.stdin and streams.stdinpull then
+		msg.stdin.pull = true
+	end
 	sys.send(h, msg)
 	sys.close(h)
 	return pid
@@ -318,9 +270,9 @@ function Sh:run(line)
 	end
 
 	local pids = {}
-	local closeon = {}	-- pid -> port to send {op="close"} to on exit
-	local servers = {}	-- ports to send {op="stop"} to when all done
-	local prev = nil	-- request port for the next stage to read from
+	local toclose = {}	-- our own rights to drop once handed out
+	local servers = {}	-- file servers, which still need stopping
+	local prev = nil	-- the pipe the next stage reads from
 
 	for i, part in ipairs(stages) do
 		local words = split(part)
@@ -366,17 +318,19 @@ function Sh:run(line)
 			thread.spawn(M.filereader(f, rp))
 			servers[#servers + 1] = rp
 			streams.stdin = rp
+			streams.stdinpull = true
 		end
 
 		-- stdout: a pipe to the next stage, a redirect, or the console
 		if i < #stages then
-			local datap = sys.newport()	-- writer sends here
-			local reqp = sys.newport()	-- reader asks here
+			local pipe = sys.newport()
 
-			thread.spawn(pipeserver(reqp, datap))
-			servers[#servers + 1] = datap
-			streams.stdout = datap
-			prev = reqp
+			streams.stdout = pipe
+			prev = pipe
+			-- both ends are the same port; we hand a right to the
+			-- writer now and to the reader next lap, then drop our
+			-- own so the reader can ever see eof
+			toclose[#toclose + 1] = pipe
 		elseif r.stdout then
 			local f = self.ns:create(
 			    ns.clean(self.cwd .. "/" .. r.stdout), "w")
@@ -402,12 +356,15 @@ function Sh:run(line)
 			return 1
 		end
 		pids[#pids + 1] = pid
-		-- remember to close this stage's output when it dies, so the
-		-- next stage sees eof (see pipeserver's comment)
-		if streams.stdout ~= self.cons then
-			closeon[pid] = streams.stdout
-		end
 		sys.monitor(pid)
+	end
+
+	-- every end is handed out, so drop ours. until this happens the
+	-- launcher is still a holder and sys.hungup stays false for the
+	-- reader, which would hang the pipeline exactly as the old server
+	-- did when its close signal went missing.
+	for _, port in ipairs(toclose) do
+		sys.close(port)
 	end
 
 	local last = pids[#pids]
@@ -425,15 +382,11 @@ function Sh:run(line)
 		-- only OUR stages count. sys.SELF is a general mailbox and may
 		-- hold an unrelated monitor notification; counting one of those
 		-- made this return early, which meant the {op="close"} below was
-		-- never sent, which left a pipeserver coroutine looping forever
-		-- and hung thread.run(). a fun three-step failure.
+		-- never sent, and back when a pipe had a server that meant the
+		-- server looped forever and hung thread.run().
 		if m and m.exit and mine[m.exit] then
 			left = left - 1
 			mine[m.exit] = nil
-			if closeon[m.exit] then
-				sys.send(closeon[m.exit], { op = "close" })
-				closeon[m.exit] = nil
-			end
 			if m.exit == last then
 				if m.normal then
 					status = m.status or 0
@@ -446,13 +399,8 @@ function Sh:run(line)
 		end
 	end
 
-	-- every stage has exited, so no reader can ask again: tear the
-	-- servers down. without this thread.run() never returns, because a
-	-- pipeserver's job is to keep answering eof until told otherwise.
-	for pid, port in pairs(closeon) do
-		sys.send(port, { op = "close" })
-		closeon[pid] = nil
-	end
+	-- file servers are still coroutines and still need stopping; pipes
+	-- do not, having never had a server.
 	for _, port in ipairs(servers) do
 		sys.send(port, { op = "stop" })
 	end
@@ -460,9 +408,9 @@ function Sh:run(line)
 end
 
 -- serve an ns File to a program as a readable stream port
--- keeps answering eof after the file runs out, for the same reason
--- pipeserver does: the reader may ask again, and only {op="stop"} means
--- nobody will.
+-- keeps answering eof after the file runs out: the reader may ask again,
+-- and only {op="stop"} means nobody will. files still need this because
+-- they are pull-style; pipes do not, having no server at all.
 function M.filereader(f, port)
 	return function()
 		while true do

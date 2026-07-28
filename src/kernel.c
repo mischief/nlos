@@ -35,6 +35,19 @@
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
 #define MAXGRANTS	8	/* named capabilities the kernel hands a proc */
 #define MAXTIMERS	32	/* outstanding one-shot timers, machine-wide */
+/* per-port queue ceiling. plan 9's pipes are Queues with a limit
+ * (conf.pipeqsize, 256KB) and a writer that sleeps when it is reached;
+ * ours had no bound at all, so a fast writer into a slow reader grew the
+ * kernel heap without limit -- and that memory is charged to no proc's
+ * mem_limit, so it did not even show up in the containment story.
+ *
+ * this is the interim: over the limit, the send FAILS rather than
+ * blocking. that closes the memory hole without inventing send-side
+ * blocking, which needs a new blocked-on-write proc state and a wakeup
+ * when the queue drains. a writer outrunning its reader gets an error,
+ * which is at least a real signal rather than silent growth.
+ */
+#define MAXQUEUE	(64 * 1024)
 
 enum { DEAD, READY, BLOCKED };
 enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP, PRIV_UDP };
@@ -47,6 +60,7 @@ struct kmsg {
 	 * the only right to it sits in a queue.
 	 */
 	unsigned char refs[MAXMSGRIGHTS];
+	unsigned char refrecv[MAXMSGRIGHTS];	/* was each one a recv right? */
 	int nrefs;
 	unsigned char *data;	/* owned; freed by msg_free */
 };
@@ -56,6 +70,7 @@ struct kport {
 	int nrights;	/* rights + in-flight message refs + kernel refs */
 	int nrecv;	/* receive rights among those */
 	int dead;	/* no receive right left; sends are dropped */
+	size_t qbytes;	/* queued payload, against MAXQUEUE */
 	struct kmsg *head, *tail;
 };
 
@@ -155,12 +170,33 @@ static int proc_has_port(struct kproc *p, struct kport *port);
 static int port_push(struct kport *port, const unsigned char *data,
     size_t len, const unsigned char *refs, int nrefs);
 static int port_push_owned(struct kport *port, unsigned char *data,
-    size_t len, const unsigned char *refs, int nrefs);
+    size_t len, const unsigned char *refs, const unsigned char *refrecv,
+    int nrefs);
 
 extern unsigned long long platform_ticks(void);
 extern void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
 static void port_unref(struct kport *port);
+static void wake_receivers(struct kport *port);
+
+/* release a right that was serialized into a message but never
+ * delivered (send failed, or the queue was flushed). a receive right in
+ * flight was counted in nrecv when it was serialized, so it has to be
+ * uncounted here -- and BEFORE port_unref, which decides port death by
+ * looking at nrecv.
+ */
+static void
+release_inflight(const unsigned char *refs, const unsigned char *refrecv,
+    int n)
+{
+	for (int i = 0; i < n; i++) {
+		struct kport *port = &ports[refs[i]];
+
+		if (refrecv && refrecv[i])
+			port->nrecv--;
+		port_unref(port);
+	}
+}
 static struct kport *port_new(void);
 static int right_new(struct kproc *p, struct kport *port, int recv);
 
@@ -338,6 +374,7 @@ port_new(void)
 			ports[i].nrights = 0;
 			ports[i].nrecv = 0;
 			ports[i].dead = 0;
+			ports[i].qbytes = 0;
 			return &ports[i];
 		}
 	return 0;
@@ -349,8 +386,7 @@ static void port_unref(struct kport *port);
 static void
 msg_free(struct kmsg *m)
 {
-	for (int i = 0; i < m->nrefs; i++)
-		port_unref(&ports[m->refs[i]]);
+	release_inflight(m->refs, m->refrecv, m->nrefs);
 	free(m->data);
 	free(m);
 }
@@ -362,6 +398,7 @@ port_flush(struct kport *port)
 	struct kmsg *m = port->head;
 
 	port->head = port->tail = 0;
+	port->qbytes = 0;
 	while (m) {
 		struct kmsg *next = m->next;
 
@@ -390,6 +427,12 @@ port_unref(struct kport *port)
 		port->dead = 1;
 		port_flush(port);
 	}
+	/* a dropped reference can make sys.hungup() true for whoever is
+	 * left, so anyone parked on this port has to re-check. without this
+	 * a pipe reader blocked for data would sleep through its writer's
+	 * exit and never see eof.
+	 */
+	wake_receivers(port);
 }
 
 static int
@@ -460,6 +503,7 @@ struct wbuf {
 	 * or by msg_free once delivered/flushed)
 	 */
 	unsigned char refs[MAXMSGRIGHTS];
+	unsigned char refrecv[MAXMSGRIGHTS];
 	int nrefs;
 };
 
@@ -551,9 +595,19 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 				return -1;
 			if (wbyte(w, (unsigned char)r->recv))
 				return -1;
-			/* in-flight ref keeps the port alive in the queue */
+			/* in-flight refs keep the port alive in the queue --
+			 * and a receive right in flight must count toward
+			 * nrecv straight away. it does not exist in the
+			 * receiver yet, so without this the sender closing
+			 * its own copy drops nrecv to zero, marks the port
+			 * dead and FLUSHES the queue, while a perfectly good
+			 * receive right is still on its way to its owner.
+			 */
+			w->refrecv[w->nrefs] = (unsigned char)r->recv;
 			w->refs[w->nrefs++] = pi;
 			r->port->nrights++;
+			if (r->recv)
+				r->port->nrecv++;
 			return 0;
 		}
 		lua_pop(L, 1);
@@ -716,13 +770,18 @@ wake:
  */
 static int
 port_push_owned(struct kport *port, unsigned char *data, size_t len,
-    const unsigned char *refs, int nrefs)
+    const unsigned char *refs, const unsigned char *refrecv, int nrefs)
 {
 	if (port->dead) {
-		for (int i = 0; i < nrefs; i++)
-			port_unref(&ports[refs[i]]);
+		release_inflight(refs, refrecv, nrefs);
 		free(data);
 		return 0;
+	}
+
+	if (port->qbytes + len > MAXQUEUE) {
+		release_inflight(refs, refrecv, nrefs);
+		free(data);
+		return -2;		/* full, distinct from out of memory */
 	}
 
 	struct kmsg *m = malloc(sizeof *m);
@@ -735,13 +794,16 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 	m->len = len;
 	m->data = data;
 	m->nrefs = nrefs;
-	for (int i = 0; i < nrefs; i++)
+	for (int i = 0; i < nrefs; i++) {
 		m->refs[i] = refs[i];
+		m->refrecv[i] = refrecv ? refrecv[i] : 0;
+	}
 	if (port->tail)
 		port->tail->next = m;
 	else
 		port->head = m;
 	port->tail = m;
+	port->qbytes += len;
 	wake_receivers(port);
 	return 0;
 }
@@ -757,12 +819,11 @@ port_push(struct kport *port, const unsigned char *data, size_t len,
 	unsigned char *copy = malloc(len);
 
 	if (!copy) {
-		for (int i = 0; i < nrefs; i++)
-			port_unref(&ports[refs[i]]);
+		release_inflight(refs, 0, nrefs);
 		return -1;
 	}
 	memcpy(copy, data, len);
-	return port_push_owned(port, copy, len, refs, nrefs);
+	return port_push_owned(port, copy, len, refs, 0, nrefs);
 }
 
 /* ---- lua api (proc pointer lives in the state's extra space) ---- */
@@ -787,21 +848,22 @@ api_send(lua_State *L)
 		/* release refs taken for rights serialized before the
 		 * failure point
 		 */
-		for (int i = 0; i < w.nrefs; i++)
-			port_unref(&ports[w.refs[i]]);
+		release_inflight(w.refs, w.refrecv, w.nrefs);
 		free(w.p);
 		return luaL_error(L, "unserializable message");
 	}
 	if (r->port->dead) {
-		for (int i = 0; i < w.nrefs; i++)
-			port_unref(&ports[w.refs[i]]);
+		release_inflight(w.refs, w.refrecv, w.nrefs);
 		free(w.p);
 		lua_pushboolean(L, 0);	/* dead port: dropped */
 		return 1;
 	}
-	int rc = port_push_owned(r->port, w.p, w.len, w.refs, w.nrefs);
+	int rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv,
+	    w.nrefs);
 
-	if (rc)		/* w.p already freed by port_push_owned */
+	if (rc == -2)	/* w.p already freed by port_push_owned */
+		return luaL_error(L, "port queue full");
+	if (rc)
 		return luaL_error(L, "out of memory queueing message");
 	lua_pushboolean(L, 1);
 	return 1;
@@ -824,6 +886,7 @@ api_tryrecv(lua_State *L)
 	r->port->head = m->next;
 	if (!r->port->head)
 		r->port->tail = 0;
+	r->port->qbytes -= m->len;
 
 	size_t off = 0;
 
@@ -1373,6 +1436,37 @@ api_timer(lua_State *L)
 	return 1;
 }
 
+/* sys.hungup(h): is this proc the ONLY holder of the port behind h?
+ *
+ * that is our eof, and the formulation matters. plan 9's devpipe counts
+ * opens of each end (qref) and calls qhangup on the peer's queue when a
+ * count hits zero -- it can, because a Chan is explicitly a read or a
+ * write end. our rights make no such distinction: api_send never checks
+ * r->recv, so ANY right can send, and recv only feeds port-death
+ * bookkeeping. "no senders left" is therefore not a question our model
+ * can answer.
+ *
+ * "am I the only holder" is, and for a pipe it means the same thing: if
+ * nobody else has a right, nobody can ever write again, so whatever is
+ * queued is all there will be. in-flight rights inside undelivered
+ * messages still count toward nrights, so a right on its way to a new
+ * writer correctly keeps the pipe open.
+ *
+ * the pipe's creator must drop its own right after handing the ends out,
+ * or it stays a holder forever and eof never arrives.
+ */
+static int
+api_hungup(lua_State *L)
+{
+	struct kproc *p = self(L);
+	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+
+	if (!r)
+		return luaL_error(L, "bad right");
+	lua_pushboolean(L, r->port->nrights <= 1);
+	return 1;
+}
+
 /* sys.setexit(status): record this proc's exit status, reported to
  * whoever monitors it. does NOT terminate anything -- the proc goes on
  * to end however it was going to.
@@ -1451,6 +1545,7 @@ static const luaL_Reg kapi[] = {
 	{ "uptime_ms", api_uptime_ms },
 	{ "timer", api_timer },
 	{ "setexit", api_setexit },
+	{ "hungup", api_hungup },
 	{ NULL, NULL }
 };
 
@@ -1741,7 +1836,7 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 		    wput(&w, &rlen, 4) || wput(&w, reason, rlen))
 			goto fail;
 	}
-	port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0);
+	port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0);
 	return;
 fail:
 	free(w.p);

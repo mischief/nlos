@@ -8,10 +8,16 @@
 --     env    = { PATH = "/bin", HOME = "/" },
 --     cwd    = "/",
 --     nsdesc = <ns:describe(), so the namespace is inherited>,
---     stdin  = { __right = h } | nil,
+--     stdin  = { __right = h, pull = <bool> } | nil,
 --     stdout = { __right = h } | nil,
 --     stderr = { __right = h } | nil,
 --   }
+--
+-- WRITING is the same whatever is on the other end -- cons, a pipe and a
+-- file server all take {op="write", data=} -- so stdout/stderr need no
+-- shape flag. READING differs: a pipe is drained straight off the port
+-- queue, while cons and a file redirect must be ASKED
+-- ({op="read", reply=}) because they produce on demand. hence pull.
 --
 -- that is main(argc, argv, envp) plus fds 0/1/2, delivered as a
 -- capability handoff rather than inherited numbers -- exact rather than
@@ -53,6 +59,54 @@ local M = {}
 -- program write the same way to a terminal, a pipe or a file without
 -- ever learning which it has.
 
+-- a PIPE stream: the port IS the pipe. the writer sends
+-- {op="write", data=} straight into the port queue, the reader takes
+-- them off it, and sys.hungup tells the reader when no other holder
+-- remains, which is eof.
+--
+-- there is no server in the middle. an earlier version had one -- a
+-- coroutine in the launcher relaying between two ports -- which cost 3
+-- messages and 2 proc switches per chunk instead of 1 and 1, and needed
+-- its own two-signal shutdown protocol to synthesise the eof the kernel
+-- can now report directly.
+local PipeStream = {}
+
+PipeStream.__index = PipeStream
+
+function M.pipestream(h)
+	return setmetatable({ h = h }, PipeStream)
+end
+
+function PipeStream:write(data)
+	sys.send(self.h, { op = "write", data = data })
+	return #data
+end
+
+function PipeStream:read(_)
+	while true do
+		local ok, m = sys.tryrecv(self.h)
+
+		if ok then
+			return (m and m.data) or ""
+		end
+		-- empty AND nobody else holds the port: no more is coming
+		if sys.hungup(self.h) then
+			return ""
+		end
+		-- park until something arrives OR a right is dropped;
+		-- port_unref wakes receivers precisely so the hungup check
+		-- above gets re-run after a writer exits
+		thread.park(self.h)
+	end
+end
+
+function PipeStream:close()
+	sys.close(self.h)
+end
+
+-- a PULL stream: {op="read", reply={__right=}}, which is what cons and
+-- wire speak. needed where data arrives asynchronously from hardware and
+-- the far end must be asked rather than drained.
 local PortStream = {}
 
 PortStream.__index = PortStream
@@ -332,9 +386,12 @@ function M.main()
 
 	M.ctx = ctx
 
-	ctx.stdin = ctx.stdin and M.portstream(ctx.stdin.__right) or nil
-	ctx.stdout = ctx.stdout and M.portstream(ctx.stdout.__right) or nil
-	ctx.stderr = ctx.stderr and M.portstream(ctx.stderr.__right) or nil
+	ctx.stdin = ctx.stdin and
+	    (ctx.stdin.pull and M.portstream(ctx.stdin.__right) or
+	     M.pipestream(ctx.stdin.__right)) or nil
+	-- writes are uniform, so the cheap stream will do for both
+	ctx.stdout = ctx.stdout and M.pipestream(ctx.stdout.__right) or nil
+	ctx.stderr = ctx.stderr and M.pipestream(ctx.stderr.__right) or nil
 
 	local N, nerr = ns.restore(ctx.nsdesc)
 

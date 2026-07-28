@@ -380,6 +380,18 @@ thread.chancreate = chancreate
 thread.alt = alt
 thread.QLock = QLock
 thread.qlockcreate = qlockcreate
+-- park on a port once, thread-aware, without consuming anything. for
+-- callers that need to re-check some other condition (a hangup, say)
+-- after waking rather than just taking the next message.
+local function park(h)
+	if inthread() then
+		thread._park({ port = h })
+	else
+		sys.block(h)
+	end
+end
+
+thread.park = park
 thread.recv = recv
 thread.readline = readline
 thread.sleep = sleep
