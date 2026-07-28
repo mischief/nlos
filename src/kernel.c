@@ -102,6 +102,8 @@ struct kproc {
 	char name[32];		/* from chunkname, for ps/debugging */
 	struct grant grants[MAXGRANTS];
 	int ngrants;
+	int exitcode;		/* sys.setexit(); reported by notify_exit */
+	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
 	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
 };
 
@@ -916,7 +918,8 @@ api_newport(lua_State *L)
 
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
     int is_file, int reductions, size_t mem_limit, int priv);
-static void notify_exit(struct kproc *watcher, int pid, const char *reason);
+static void notify_exit(struct kproc *watcher, int pid, const char *reason,
+    int status, const char *exitmsg);
 
 struct dumpbuf {
 	char *data;
@@ -1042,7 +1045,7 @@ api_monitor(lua_State *L)
 	struct kproc *target = find_proc(pid);
 
 	if (!target) {
-		notify_exit(p, pid, "noproc");
+		notify_exit(p, pid, "noproc", -1, 0);
 		lua_pushboolean(L, 1);
 		return 1;
 	}
@@ -1370,6 +1373,49 @@ api_timer(lua_State *L)
 	return 1;
 }
 
+/* sys.setexit(status): record this proc's exit status, reported to
+ * whoever monitors it. does NOT terminate anything -- the proc goes on
+ * to end however it was going to.
+ *
+ * split that way on purpose. a real exit() has to unwind from arbitrary
+ * depth, which from C means raising, and a raise can be swallowed by any
+ * pcall between here and the top. keeping the status separate from the
+ * unwinding means lib/prog.lua implements os.exit() as "record, then
+ * raise a sentinel it catches itself", and the kernel needs no special
+ * case in its error path at all.
+ *
+ * status may be a NUMBER or a STRING, and both are meant:
+ *
+ *   nil / 0     success, plan 9's exits(nil)
+ *   n           posix status n, what a ported utility's os.exit(1) does
+ *   "why"       plan 9's exits("why") -- also reported as status 1, so
+ *               a numeric consumer still sees failure
+ *
+ * plan 9 makes exit status a string for the same reason 9P makes Rerror
+ * one: a number is useless without a table to look it up in. we already
+ * took that argument for errors (see lib/dev.lua's 9front strings), so
+ * taking it here too is consistency rather than novelty. the number
+ * survives because the utilities being ported call os.exit(1) and the
+ * whole point is that they need no diff.
+ */
+static int
+api_setexit(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	p->exitmsg[0] = 0;
+	if (lua_isnoneornil(L, 1)) {
+		p->exitcode = 0;
+	} else if (lua_type(L, 1) == LUA_TSTRING) {
+		snprintf(p->exitmsg, sizeof p->exitmsg, "%s",
+		    lua_tostring(L, 1));
+		p->exitcode = 1;
+	} else {
+		p->exitcode = (int)luaL_checkinteger(L, 1);
+	}
+	return 0;
+}
+
 /* sys.uptime_ms(): milliseconds since boot, from the calibrated tsc.
  * prefer this to sys.ticks() for anything time-shaped -- ticks() is a
  * raw cycle counter whose rate differs per machine.
@@ -1404,6 +1450,7 @@ static const luaL_Reg kapi[] = {
 	{ "ticks", api_ticks },
 	{ "uptime_ms", api_uptime_ms },
 	{ "timer", api_timer },
+	{ "setexit", api_setexit },
 	{ NULL, NULL }
 };
 
@@ -1629,6 +1676,8 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, p->reductions);
 	p->mem_limit = mem_limit;
 	p->weight = 1;
+	p->exitcode = 0;
+	p->exitmsg[0] = 0;
 	p->status = READY;
 	p->waiting = 0;
 	nlive++;
@@ -1639,11 +1688,18 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
  * reason=string?} to the watcher's self port.
  */
 static void
-notify_exit(struct kproc *watcher, int pid, const char *reason)
+notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
+    const char *exitmsg)
 {
 	struct wbuf w = { 0 };
-	unsigned int npairs = reason ? 3 : 2;
+	unsigned int npairs = 3;
 	lua_Integer id = pid;
+	lua_Integer st = status;
+
+	if (reason)
+		npairs++;
+	if (exitmsg && exitmsg[0])
+		npairs++;
 
 	if (wbyte(&w, 'B') || wput(&w, &npairs, 4))
 		goto fail;
@@ -1658,6 +1714,21 @@ notify_exit(struct kproc *watcher, int pid, const char *reason)
 	if (wbyte(&w, 'S') || wput(&w, &klen, 4) || wput(&w, "normal", 6) ||
 	    wbyte(&w, reason ? 'F' : 'T'))
 		goto fail;
+
+	klen = 6;
+	if (wbyte(&w, 'S') || wput(&w, &klen, 4) || wput(&w, "status", 6) ||
+	    wbyte(&w, 'I') || wput(&w, &st, sizeof st))
+		goto fail;
+
+	if (exitmsg && exitmsg[0]) {
+		unsigned int mlen = strlen(exitmsg);
+
+		klen = 7;
+		if (wbyte(&w, 'S') || wput(&w, &klen, 4) ||
+		    wput(&w, "exitmsg", 7) || wbyte(&w, 'S') ||
+		    wput(&w, &mlen, 4) || wput(&w, exitmsg, mlen))
+			goto fail;
+	}
 
 	if (reason) {
 		unsigned int rlen = strlen(reason);
@@ -1711,7 +1782,9 @@ proc_kill(struct kproc *p, const char *why)
 		struct kproc *w = find_proc(p->watchers[i]);
 
 		if (w)
-			notify_exit(w, p->id, why ? reason : 0);
+			notify_exit(w, p->id, why ? reason : 0,
+			    why ? -1 : p->exitcode,
+			    why ? 0 : p->exitmsg);
 	}
 	p->nwatch = 0;
 }

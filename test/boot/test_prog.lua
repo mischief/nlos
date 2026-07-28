@@ -1,0 +1,160 @@
+-- the program ABI (lib/prog.lua) and the launcher (lib/dos.lua).
+--
+-- the claim being tested: two real utilities from ~/code/lua/os run here
+-- UNCHANGED. bin/seq.lua and bin/cat.lua differ from their originals only
+-- in the shebang line. if the posix sliver in prog.lua is right, they
+-- need no port at all.
+local sys = require("los.sys")
+local thread = require("los.thread")
+local dev = require("dev")
+local ns = require("ns")
+local espfs = require("espfs")
+local dos = require("dos")
+local tap = require("tap")
+
+tap.plan(14)
+
+local N = ns.new()
+
+N:mount("/", espfs.new("/"), "espfs", { root = "/" })
+
+-- ---- a collector: stands in for a terminal, so we can read what a
+-- ---- program actually wrote
+local function collector()
+	local port = sys.newport()
+	local out = {}
+
+	return port, out, function()
+		-- drain everything queued without blocking
+		while true do
+			local ok, m = sys.tryrecv(port)
+
+			if not ok then
+				return table.concat(out)
+			end
+			if m and m.op == "write" then
+				out[#out + 1] = m.data
+			end
+		end
+	end
+end
+
+-- run one program to completion, returning its output and status
+local function run(path, argv, stdinport)
+	local outport, out, drain = collector()
+	local pid, h = sys.spawn('require("prog").main()', { name = argv[1] })
+
+	sys.monitor(pid)
+	sys.send(h, {
+		path = path,
+		name = argv[1],
+		args = argv,
+		env = { PATH = "/bin" },
+		cwd = "/",
+		nsdesc = N:describe(),
+		stdin = stdinport and { __right = stdinport } or nil,
+		stdout = { __right = outport },
+		stderr = { __right = outport },
+	})
+	sys.close(h)
+
+	local status, exitmsg, normal
+	local deadline = sys.uptime_ms() + 5000
+
+	while sys.uptime_ms() < deadline do
+		local ok, m = sys.tryrecv(sys.SELF)
+
+		if ok and m and m.exit == pid then
+			status, exitmsg, normal = m.status, m.exitmsg, m.normal
+			break
+		end
+		-- keep draining so a chatty program cannot fill the port
+		drain()
+		sys.yield()
+	end
+	return drain(), status, exitmsg, normal
+end
+
+-- ---- seq: needs only arg, unistd.write, os.exit ----
+local sout, sstatus = run("/bin/seq.lua", { "seq", "5" })
+
+tap.is(sout, "1\n2\n3\n4\n5\n", "seq 5 produced 1..5 unchanged")
+tap.is(sstatus, 0, "seq exited 0")
+
+local s2 = run("/bin/seq.lua", { "seq", "2", "2", "8" })
+
+tap.is(s2, "2\n4\n6\n8\n", "seq 2 2 8 honours first/incr/last")
+
+-- a bad invocation must reach stderr and exit nonzero
+local berr, bstatus = run("/bin/seq.lua", { "seq", "notanumber" })
+
+tap.ok(berr:find("invalid argument") ~= nil,
+    "seq wrote its usage error to stderr: " .. berr:gsub("\n", ""))
+tap.is(bstatus, 1, "seq exited 1 via os.exit")
+
+-- ---- cat: needs fcntl.open, a numeric fd, unistd.read ----
+local cout, cstatus = run("/bin/cat.lua", { "cat", "/bin/seq.lua" })
+
+tap.ok(cout:find("SPDX", 1, true) ~= nil,
+    "cat read a real file through fcntl.open + a numeric fd")
+tap.is(cstatus, 0, "cat exited 0")
+
+local cbad, cbadstatus = run("/bin/cat.lua", { "cat", "/nope" })
+
+tap.ok(cbad:find("cat:") ~= nil, "cat reported a missing file: " ..
+    cbad:gsub("\n", ""))
+tap.is(cbadstatus, 1, "cat exited 1 on a missing file")
+
+-- ---- a program that was handed no stdout does not crash ----
+local nopid, noh = sys.spawn('require("prog").main()', { name = "quiet" })
+
+sys.monitor(nopid)
+sys.send(noh, {
+	path = "/bin/seq.lua", name = "seq", args = { "seq", "3" },
+	env = {}, cwd = "/", nsdesc = N:describe(),
+})
+sys.close(noh)
+
+local qm
+
+repeat
+	qm = thread.recv(sys.SELF)
+until qm.exit == nopid
+tap.ok(qm.normal, "a program with no stdout still exits normally")
+
+-- ---- plan 9 style exits("why") carries a string ----
+N:writefile("/bin/failing.lua", 'exits("deliberately unhappy")\n')
+
+local _, fstatus, fmsg = run("/bin/failing.lua", { "failing" })
+
+tap.is(fstatus, 1, "exits(string) reports status 1 for numeric consumers")
+tap.is(fmsg, "deliberately unhappy",
+    "and the exit MESSAGE survives to the monitor: " .. tostring(fmsg))
+
+-- ---- the launcher's own parsing ----
+local words = dos.split([[echo "two words" 'and more' bare]])
+
+tap.is(table.concat(words, "|"), "echo|two words|and more|bare",
+    "dos.split handles both quote styles")
+
+-- ---- a pipeline: seq into cat, joined by a port ----
+-- this is the piece that needs no pipe(), no dup2() and no SIGPIPE: the
+-- writer exiting drops its right, and the reader sees eof.
+-- drain any monitor notifications the tests above left behind, so the
+-- launcher's wait loop starts from a clean mailbox
+while select(1, sys.tryrecv(sys.SELF)) do end
+
+local sh = dos.new({ ns = N, cons = select(1, collector()) })
+local pipeout, pipeacc, pipedrain = collector()
+
+sh.cons = pipeout
+
+local pstatus = dos.once(sh, "seq 3 | cat")
+
+-- the launcher drives its pipe coroutines inside run(), so by the time
+-- it returns the output has been delivered
+tap.is(pipedrain(), "1\n2\n3\n",
+    "seq 3 | cat moved bytes through a port pipeline (status " ..
+    tostring(pstatus) .. ")")
+
+tap.done()

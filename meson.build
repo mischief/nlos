@@ -166,6 +166,9 @@ luaos_efi = custom_target('luaos.efi',
 
 lua_payload = files(
   'init.lua',
+  # programs, at /bin/<name> -- see lib/prog.lua for the ABI they run under
+  'bin/cat.lua',
+  'bin/seq.lua',
   'lib/caps.lua',
   'lib/cons.lua',
   'lib/dev.lua',
@@ -177,7 +180,9 @@ lua_payload = files(
   'lib/mcp.lua',
   'lib/ninep.lua',
   'lib/ns.lua',
+  'lib/dos.lua',
   'lib/power.lua',
+  'lib/prog.lua',
   'lib/ps.lua',
   'lib/tap.lua',
   'lib/tcp.lua',
@@ -214,7 +219,7 @@ run_target('fetch-mcp',
 boottest = files('scripts/boottest.sh')
 
 boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
-              'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns']
+              'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
