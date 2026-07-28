@@ -286,6 +286,15 @@ Calibration targets a fixed fraction of the quantum instead, so the
 overshoot bound holds anywhere. `sys.stats().reductions` reports what it
 picked.
 
+It is approximate under frequency scaling, and that is fine. The TSC is
+invariant by design — constant rate whatever the P-state — which is what
+makes it a usable clock and also why it does not track how fast
+instructions retire. The *quantum* check stays exact regardless (both
+sides are TSC units); only the sampling granularity drifts, bounded by
+one period. If it ever matters, the fix is self-correcting rather than
+more calibration: the hook already knows elapsed time, so a proc that
+consistently overshoots could have its own period lowered.
+
 Note the direction of the trade, which is the opposite of what "add a
 time bound" suggests: slices got **longer**, not shorter. A compute-bound
 proc holds the CPU for 2ms instead of yielding every ~176us. That is +4%

@@ -291,6 +291,25 @@ static unsigned long long quantum_cycles;
  *
  * calibrating targets a fixed FRACTION of the quantum instead, so the
  * overshoot bound holds on any machine.
+ *
+ * frequency scaling makes this approximate, and deliberately so. the TSC
+ * is invariant -- constant rate whatever the P-state -- which is exactly
+ * what makes it a usable clock, and exactly why it does not track how
+ * fast instructions actually retire. so this measures TSC ticks per
+ * instruction at whatever frequency the machine happened to be running
+ * at during boot, which is typically not the frequency it will settle
+ * at.
+ *
+ * it degrades gracefully. the quantum check itself stays correct
+ * regardless: both sides of it are TSC units, so a 2ms slice is 2ms.
+ * only the sampling GRANULARITY drifts, and the overshoot stays bounded
+ * by one period. calibrating while throttled and then boosting just
+ * means checking more often than needed; the other direction costs a
+ * little more overshoot. neither is a correctness problem.
+ *
+ * if it ever needs to be better, the fix is self-correcting rather than
+ * more calibration: the hook already knows the elapsed time, so a proc
+ * that consistently overshoots could have its own period lowered.
  */
 static int default_reductions = REDUCTIONS;
 
