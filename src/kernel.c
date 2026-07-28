@@ -130,7 +130,6 @@ struct kproc {
 	 * the decaying fair-share estimate derived from them.
 	 */
 	unsigned long long cputime;	/* tsc cycles actually spent running */
-	unsigned long long reds;	/* lua vm instructions executed */
 	unsigned long long lastupdate;	/* uptime_ms at the last updatecpu */
 	unsigned long long lastcpu;	/* cputime as of that update */
 	unsigned cpu;			/* per-mille of wall time, decayed */
@@ -1372,13 +1371,12 @@ api_set_priority(lua_State *L)
 /* reading a weight is not gated: it's the same class of information
  * sys.procs()/sys.meminfo() already hand out for free.
  */
-/* sys.priority(pid) -> weight, pri, cpu, reds
+/* sys.priority(pid) -> weight, pri, cpu
  *
- * weight is the static capability-gated knob; pri is what the feedback
- * currently computes from it; cpu is per-mille of wall time, decayed;
- * reds is lua instructions executed. nothing dispatches on pri yet -- it
- * is exposed first so the numbers can be watched before anything bets on
- * them.
+ * weight is the static capability-gated knob, pri what the feedback
+ * computes from it, cpu per-mille of wall time decayed. nothing
+ * dispatches on pri yet -- it is exposed first so the numbers can be
+ * watched before anything bets on them.
  */
 static int
 api_priority(lua_State *L)
@@ -1391,8 +1389,7 @@ api_priority(lua_State *L)
 	lua_pushinteger(L, p->weight);
 	lua_pushinteger(L, reprioritize(p, count_runnable()));
 	lua_pushinteger(L, (lua_Integer)p->cpu);
-	lua_pushinteger(L, (lua_Integer)p->reds);
-	return 4;
+	return 3;
 }
 
 /* sys.granted(): {name = handle} for every capability the kernel
@@ -1660,24 +1657,7 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 static void
 preempt_hook(lua_State *L, lua_Debug *ar)
 {
-	struct kproc *p = *(struct kproc **)lua_getextraspace(L);
-
 	(void)ar;
-	/* the hook fires every lua_gethookcount() vm instructions, so
-	 * counting fires IS an instruction count -- a reduction count in
-	 * the BEAM sense. asking for the count rather than assuming
-	 * p->reductions matters because thread coroutines get their own
-	 * period via sys.preempt.
-	 *
-	 * the blind spot: a proc that yields before reaching its period
-	 * registers nothing, so short IPC-bound work looks free. that is
-	 * why cpu is derived from measured cycles instead, and reds is
-	 * kept alongside as the deterministic, machine-independent
-	 * counterpart -- it is immune to the qemu and firmware overhead
-	 * that dominates wall time here.
-	 */
-	if (p)
-		p->reds += (unsigned)lua_gethookcount(L);
 	if (lua_isyieldable(L))
 		lua_yield(L, 0);
 }
@@ -1828,7 +1808,6 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	p->mem_limit = mem_limit;
 	p->weight = 1;
 	p->cputime = 0;
-	p->reds = 0;
 	p->cpu = 0;
 	p->lastupdate = uptime_ms();
 	p->lastcpu = 0;
@@ -2211,7 +2190,17 @@ kernel_spawn_buffer(const char *code, size_t len)
  * proc out of slot order without duplicating any of this.
  */
 /* exponentially-weighted average of the fraction of wall time this proc
- * spent running, in per-mille.
+ * spent running, in per-mille, from the TSC.
+ *
+ * an instruction count was tried instead and dropped: the preempt hook
+ * fires every lua_gethookcount() instructions, so counting fires is an
+ * exact reduction count -- but only for procs that REACH their period. a
+ * proc that yields sooner registers zero, which is most IPC-bound work,
+ * and lua exposes no way to read the partial countdown (L->hookcount is
+ * internal; lua_gethookcount returns the configured period). exact
+ * reductions would mean patching the VM, and vanilla lua is a pillar.
+ * cycles have no floor, catch time spent in C too, and are what real
+ * schedulers use.
  *
  * plan 9's updatecpu samples "was this proc running at the tick" and
  * decays from there, which suits a tick-driven kernel. ours resumes

@@ -2,7 +2,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(15)
+tap.plan(13)
 
 tap.ok(sys.granted().sched ~= nil, "sched is in the grant table")
 
@@ -55,8 +55,8 @@ local idlepid = sys.spawn([[
 -- ~250 per-mille no matter how hard it spins.
 thread.sleep(1800)
 
-local hw, hpri, hcpu, hreds = sys.priority(hogpid)
-local iw, ipri, icpu, ireds = sys.priority(idlepid)
+local hw, hpri, hcpu = sys.priority(hogpid)
+local iw, ipri, icpu = sys.priority(idlepid)
 
 tap.ok(hcpu > icpu,
     "a spinning proc accrues cpu over a blocked one (" .. hcpu ..
@@ -73,16 +73,10 @@ tap.ok(hpri < ipri,
 tap.is(ipri, iw * 10, "an idle proc clamps to weight * PRI_BASE")
 tap.ok(hpri >= 0, "and priority never goes negative (" .. hpri .. ")")
 
--- reductions: the hook fires every lua_gethookcount() instructions, so
--- counting fires is an exact instruction count for anything that runs
--- long enough to reach its period
-tap.ok(hreds > 0,
-    "a spinning proc accumulates reductions (" .. hreds .. ")")
-tap.is(ireds, 0, "a proc that never ran accumulates none")
-
--- and the documented blind spot: work too short to reach the hook period
--- registers no reductions at all, which is precisely why cpu is measured
--- in cycles rather than derived from reds.
+-- cycles have no floor, so even a proc too short-lived to be sampled by
+-- any tick-based scheme is still accounted for. an instruction count via
+-- the preempt hook was tried and dropped for exactly that reason -- see
+-- AGENTS.md.
 local shortpid = sys.spawn([[
 	local sys = require("los.sys")
 	local n = 0

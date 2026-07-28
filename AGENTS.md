@@ -231,10 +231,10 @@ honest external measurement over an assertion that cannot fail.
 
 ## Scheduling feedback
 
-Every proc carries `cputime` (TSC cycles actually spent in `lua_resume`),
-`reds` (Lua VM instructions), and `cpu` — a decaying average of the
-fraction of wall time it spent running, in per-mille. `sys.priority(pid)`
-returns weight, the computed priority, cpu and reds; `ps` shows all four.
+Every proc carries `cputime` (TSC cycles actually spent inside
+`lua_resume`) and `cpu` — a decaying average of the fraction of wall time
+it spent running, in per-mille. `sys.priority(pid)` returns weight, the
+computed priority and cpu; `ps` shows all three.
 
 Priority is Plan 9's `reprioritize`: inversely proportional to recent cpu
 against an equal share, clamped to the proc's weight. So
@@ -247,21 +247,20 @@ contention, and that is the formula working, not a missing case.
 Measure first, then change the loop; see the handoff trap above for what
 happens when you skip that order.
 
-Two measurement facts worth knowing:
+**Instruction counting was tried and dropped — do not re-derive it.**
+The preempt hook fires every `lua_gethookcount()` instructions, so
+counting fires is an exact reduction count in the BEAM sense, and it is
+tempting because it is deterministic and machine-independent. It has a
+floor that kills it: a proc yielding *before* it reaches its period
+registers zero, which is most IPC-bound work including cons, wire and
+tcp. Lua exposes no way to read the partial countdown — `L->hookcount` is
+internal and `lua_gethookcount` returns the configured period — so exact
+reductions would mean patching the VM, and vanilla Lua is a pillar.
 
-- **`reds` has a floor.** `LUA_MASKCOUNT` fires every N instructions and
-  Lua exposes no way to read the partial countdown, so a proc that yields
-  before reaching its period registers zero — which is most IPC-bound
-  work, including cons/wire/tcp. Exact reductions would mean patching the
-  VM, and vanilla Lua is a pillar. As a *scheduling* signal the floor is
-  arguably correct: a proc that yields early is not CPU-bound and should
-  keep priority. As an *accounting* signal it is a hole.
-- **`cpu` is therefore derived from cycles, not reds**, which has no
-  floor and also catches time spent in C. It does attribute qemu and
-  firmware overhead to whoever was running, which `reds` -- being
-  deterministic and machine-independent -- does not. Keeping both is why
-  neither weakness is load-bearing, and why a proc cannot look
-  interactive by yielding just under its hook period.
+The TSC has no floor, catches time spent in C as well as in the VM, is
+cheap, and is what real schedulers use. It does attribute qemu and
+firmware overhead to whoever happened to be running, which is a known and
+accepted cost here.
 
 ## Known debts — do not report these as discoveries
 
