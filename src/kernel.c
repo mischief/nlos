@@ -1514,11 +1514,34 @@ kernel_run(void)
 			}
 			if (rc == LUA_OK)
 				proc_kill(p, 0);
-			else
-				/* error object is on the stack; read it
-				 * before proc_kill closes the state
+			else if (rc == LUA_ERRMEM)
+				/* lua reports OOM via a static, preallocated
+				 * message specifically so it never has to
+				 * allocate to report a failure caused by
+				 * having no memory left. luaL_traceback would
+				 * break that guarantee (it allocates to build
+				 * the traceback string) and, this proc being
+				 * already at its limit, fail again -- skip it
+				 * here, same plain message as before.
 				 */
 				proc_kill(p, lua_tostring(p->co, -1));
+			else {
+				/* a coroutine that errors out of lua_resume
+				 * deliberately does NOT unwind its stack --
+				 * that's what lets luaL_traceback walk it
+				 * right here, same trick xpcall's message
+				 * handler relies on, just done from the C
+				 * side after resume already returned instead
+				 * of during unwinding.
+				 *
+				 * error object is on the stack; read it
+				 * before proc_kill closes the state.
+				 */
+				const char *errmsg = lua_tostring(p->co, -1);
+
+				luaL_traceback(p->co, p->co, errmsg, 0);
+				proc_kill(p, lua_tostring(p->co, -1));
+			}
 		}
 		if (!ran) {
 			/* everyone blocked: sleep until key, tick, or any
