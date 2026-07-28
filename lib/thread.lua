@@ -213,24 +213,51 @@ local function alt(cases)
 				end
 			end
 		end
-		local marks, plist = {}, {}
-		for _, cs in ipairs(cases) do
-			if cs.port then
-				plist[#plist + 1] = cs.port
-			elseif cs.op == "recv" then
-				local w = { co = coroutine.running() }
-				cs.c.recvq[#cs.c.recvq + 1] = w
-				marks[#marks + 1] = { cs.c.recvq, w }
-			end
-		end
-		thread._park({ ports = plist })
-		for _, m in ipairs(marks) do
-			for i, q in ipairs(m[1]) do
-				if q == m[2] then
-					table.remove(m[1], i)
-					break
+		if inthread() then
+			local marks, plist = {}, {}
+			for _, cs in ipairs(cases) do
+				if cs.port then
+					plist[#plist + 1] = cs.port
+				elseif cs.op == "recv" then
+					local w = { co = coroutine.running() }
+					cs.c.recvq[#cs.c.recvq + 1] = w
+					marks[#marks + 1] = { cs.c.recvq, w }
 				end
 			end
+			thread._park({ ports = plist })
+			for _, m in ipairs(marks) do
+				for i, q in ipairs(m[1]) do
+					if q == m[2] then
+						table.remove(m[1], i)
+						break
+					end
+				end
+			end
+		else
+			-- top-level caller (no thread.run() driving us, e.g.
+			-- an exclusive task's main chunk calling alt()
+			-- directly -- wire.lua does exactly this):
+			-- thread._park is a bare coroutine.yield(),
+			-- meaningless without thread.run()'s own loop to
+			-- notice "everyone parked" and call the real
+			-- sys.altblock on our behalf. with no such loop, that
+			-- yield returns straight back to the kernel's
+			-- lua_resume without ever setting this proc BLOCKED
+			-- -- kernel_run then just resumes it again next lap,
+			-- forever, a busy-spin disguised as blocking (this
+			-- was a real bug: ps showed wire stuck "ready"
+			-- forever, churning memory, never actually parking).
+			-- channel cases make no sense here either way (recvq
+			-- is purely in-process), so only port cases are
+			-- valid.
+			local plist = {}
+			for _, cs in ipairs(cases) do
+				if not cs.port then
+					error("alt: channel case used outside thread.run()")
+				end
+				plist[#plist + 1] = cs.port
+			end
+			sys.altblock(plist)
 		end
 	end
 end
