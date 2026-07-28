@@ -62,6 +62,16 @@ typedef struct {
 	CHAR16 UnicodeChar;
 } EFI_INPUT_KEY;
 
+/* a handful of Simple Text Input ScanCode values (UEFI spec table):
+ * non-unicode keys report UnicodeChar=0 and a ScanCode instead. most
+ * are true special keys (arrows, F-keys) with no ASCII equivalent,
+ * but SCAN_DELETE is the odd one out -- OVMF's console reports the
+ * physical Backspace key this way (UnicodeChar=0, ScanCode=8) rather
+ * than as CHAR_BACKSPACE (0x08) the way Ctrl-H arrives, so it needs
+ * explicit handling instead of being silently dropped.
+ */
+#define SCAN_DELETE	0x0008
+
 typedef struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL {
 	EFI_STATUS (EFIAPI *Reset)(EFI_SIMPLE_TEXT_INPUT_PROTOCOL *This,

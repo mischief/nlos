@@ -1326,6 +1326,16 @@ pump_keyboard(void)
 		/* serialized one-char string: tag, u32 len, byte */
 		unsigned char msg[6] = { 'S', 1, 0, 0, 0, 0 };
 
+		/* the physical Backspace key arrives as ScanCode=SCAN_DELETE,
+		 * UnicodeChar=0 under OVMF (confirmed by direct trace), not
+		 * as CHAR_BACKSPACE -- map it to DEL (0x7f), which cons.lua's
+		 * readline already treats the same as Ctrl-H/0x08.
+		 */
+		if (key.ScanCode == SCAN_DELETE && key.UnicodeChar == 0) {
+			msg[5] = 0x7f;
+			port_push(kbdport, msg, sizeof msg, 0, 0);
+			continue;
+		}
 		if (key.UnicodeChar == 0 || key.UnicodeChar >= 0x80)
 			continue;
 		msg[5] = (unsigned char)key.UnicodeChar;
