@@ -7,10 +7,18 @@
 -- what lets a local filesystem work with no wire protocol involved, and
 -- lets a remote one appear later as just another backend.
 --
--- three consumers have to agree on this shape:
+-- the consumers that have to agree on this shape:
 --   ns.lua        resolves a path to (backend, handle) and reads/writes
---   ninep.lua     serves a backend out to real 9P clients
---   the backends  espfs, a synthetic tree, eventually procfs/consfs
+--   srv.lua       serves a backend to other procs, over a port
+--   mnt.lua       IS a backend, forwarding to such a server
+--   the backends  espfs, procfs, a synthetic tree
+--
+-- srv/mnt are the reason the interface has to be exactly this and not
+-- merely something like it: they marshal these calls one for one, so a
+-- method added here is a message added there. note that they carry the
+-- calls as tables rather than as 9P bytes -- 9P's framing is for byte
+-- streams, and a port is not one. ninep.lua remains the encoding at a
+-- real boundary (com2, TCP), where the bytes are unavoidable.
 --
 -- the interface is fid-shaped rather than path-shaped (walk returns a
 -- handle; read takes an explicit offset) because that is what the 9P
@@ -99,6 +107,9 @@ M.Ebadarg    = "bad arg in system call"
 M.Eio        = "i/o error"
 M.Ebadusefd  = "inappropriate use of fd"
 M.Enotimpl   = "not implemented"
+-- not from error.h: this is the string plan 9's own 9P servers send for
+-- a fid they do not know, and lib/srv.lua raises it for the same reason.
+M.Ebadfid    = "unknown fid"
 
 -- raise without a position prefix: these cross a protocol boundary, and
 -- "espfs.lua:88: file does not exist" is not an Rerror.

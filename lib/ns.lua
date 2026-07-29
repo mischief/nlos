@@ -568,9 +568,21 @@ function M.restore(desc)
 	return ns
 end
 
--- the two kinds that exist today. a 9p kind, built over a port right,
--- is what makes `mount /host` work and is the reason describe() carries
--- args at all.
+-- "mnt" is the kind that makes the paragraph above true rather than
+-- aspirational. every other kind here is rebuilt from a recipe, which
+-- works only because each derives from something ambient -- espfs from
+-- the ESP, procfs from sys.procs, mem from plain data. a backend whose
+-- state lives in another proc has no recipe; what travels is a right to
+-- that proc, and rights are copied on transfer, so a namespace holding
+-- one can be described any number of times.
+M.register("mnt", function(args)
+	if type(args) ~= "table" or type(args.port) ~= "table" or
+	    not args.port.__right then
+		dev.error("mnt: no port right in args")
+	end
+	return require("mnt").new(args.port.__right)
+end)
+
 M.register("espfs", function(args)
 	return require("espfs").new((args and args.root) or "/")
 end)
