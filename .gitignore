@@ -13,3 +13,6 @@ __pycache__/
 
 # ovmf writes its nvram varstore next to the image when qemu runs
 OVMF_VARS.fd
+
+# agent worktrees and session state
+.claude/
