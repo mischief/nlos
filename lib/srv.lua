@@ -81,6 +81,46 @@ function ops.walk(S, m)
 	return { fid = S.put(S.B.walk(S.get(m.fid), m.name)) }
 end
 
+-- a whole path in one message. the backend may have its own walkmany --
+-- a mount of a mount does -- and otherwise this is dev.walkall, which is
+-- the same loop the client would have run, minus a round trip each.
+--
+-- the intermediates are clunked HERE, which is the point of doing this
+-- server-side: these handles are ours, we know they died the moment the
+-- next walk succeeded, and for espfs they are real EFI file handles.
+-- across a port the client could never have known.
+function ops.walkmany(S, m)
+	local h = S.get(m.fid)
+
+	if S.B.walkmany then
+		return { fid = S.put(S.B.walkmany(h, m.names)) }
+	end
+
+	local made = {}
+	local ok, res
+
+	for _, name in ipairs(m.names or {}) do
+		ok, res = pcall(S.B.walk, h, name)
+		if not ok then
+			for _, x in ipairs(made) do
+				pcall(S.B.clunk, x)
+			end
+			dev.error(tostring(res) .. ": '" .. name .. "'")
+		end
+		-- a backend may hand back the SAME handle (dev.mem does for
+		-- ".."), which is the caller's and not ours to release
+		if res ~= h then
+			made[#made + 1] = res
+		end
+		h = res
+	end
+	-- everything except the one we are about to name is dead
+	for i = 1, #made - 1 do
+		pcall(S.B.clunk, made[i])
+	end
+	return { fid = S.put(h) }
+end
+
 function ops.stat(S, m)
 	return { st = S.B.stat(S.get(m.fid)) }
 end

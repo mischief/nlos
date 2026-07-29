@@ -46,6 +46,10 @@
 -- handle out of a backend's private representation. there is no `>
 -- newfile` without this.
 --
+-- OPTIONAL, and used when present: walkmany(h, names) -> h, which walks
+-- a whole path in one call. see M.walkpath below for why it is optional
+-- rather than required.
+--
 -- NOT required, and deliberately: remove() and wstat(). a shell wants
 -- `rm`, so remove() is the next thing this interface should grow -- but
 -- espfs cannot implement it yet (EFI_FILE_PROTOCOL has Delete and
@@ -172,9 +176,7 @@ function M.check(backend, name)
 	return backend
 end
 
--- walk several elements, which every consumer needs and none should
--- write twice. empty elements and "." are skipped, so "/a//b/./c" walks
--- a, b, c.
+-- walk a list of names one at a time.
 --
 -- no error checking, which is the point of the idiom: a failing walk
 -- raises from inside the backend and this function never sees it. the
@@ -182,18 +184,64 @@ end
 -- component was missing, since "file does not exist" without the name is
 -- a poor error -- that is plan 9's own habit of adding context while
 -- unwinding, minus the frame bookkeeping.
-function M.walkpath(backend, h, path)
-	for elem in tostring(path):gmatch("[^/]+") do
-		if elem ~= "." then
-			local ok, res = pcall(backend.walk, h, elem)
+--
+-- exposed because a server implementing walkmany() over a backend that
+-- has none needs exactly this loop, and the error text has to match.
+function M.walkall(backend, h, names)
+	for _, elem in ipairs(names) do
+		local ok, res = pcall(backend.walk, h, elem)
 
-			if not ok then
-				M.error(tostring(res) .. ": '" .. elem .. "'")
-			end
-			h = res
+		if not ok then
+			M.error(tostring(res) .. ": '" .. elem .. "'")
 		end
+		h = res
 	end
 	return h
+end
+
+-- split a path into the elements a walk actually visits. empty elements
+-- and "." are skipped, so "/a//b/./c" walks a, b, c.
+function M.elements(path)
+	local names = {}
+
+	for elem in tostring(path):gmatch("[^/]+") do
+		if elem ~= "." then
+			names[#names + 1] = elem
+		end
+	end
+	return names
+end
+
+-- walk a whole path, which every consumer needs and none should write
+-- twice.
+--
+-- a backend MAY offer walkmany(h, names) and gets the entire path in one
+-- call if it does. that is 9P's Twalk, which carries up to sixteen names
+-- for exactly this reason, and it is optional for exactly the reason 9P
+-- has both: a local backend gains nothing from batching, since its
+-- walkmany could only be this same loop. it is lib/mnt.lua that gains,
+-- where each element was otherwise a round trip to another proc.
+--
+-- the contract is narrower than Twalk's on purpose. 9P answers a partial
+-- walk with a short Rwalk and leaves the client to decide; every caller
+-- here wants the whole path or an error, so walkmany raises on the first
+-- failure and names the element that failed, exactly as the loop does.
+-- nothing needs the probing form, and supporting it would put a second
+-- shape into every backend that implements this.
+--
+-- no cap on the name count. 9P's sixteen is an msize concern and a port
+-- has no equivalent -- a thousand-element path is one flat array well
+-- inside the serializer's own limits, and past those it raises cleanly.
+function M.walkpath(backend, h, path)
+	local names = M.elements(path)
+
+	if #names == 0 then
+		return h
+	end
+	if backend.walkmany then
+		return backend.walkmany(h, names)
+	end
+	return M.walkall(backend, h, names)
 end
 
 -- ---- the reference backend: an in-memory tree ----

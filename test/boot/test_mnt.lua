@@ -24,7 +24,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(21)
+tap.plan(25)
 
 -- ---- the server proc ----
 --
@@ -239,6 +239,77 @@ tap.is(crossed, 0, "two threads shared one mount for " .. (rounds * 2) ..
     " reads with no crossed replies")
 tap.ok(done[1] == rounds and done[2] == rounds,
     "and both finished: " .. done[1] .. "/" .. done[2])
+
+-- ---- a deep path costs ONE message, not one per element ----
+--
+-- 9P's Twalk, reached through dev.walkpath's optional walkmany. the
+-- server above deliberately has no walkmany, so srv runs its own loop
+-- and clunks the intermediates; this second one HAS it, which both
+-- exercises srv's delegation branch and makes the message count
+-- observable. "one message per path" is otherwise only visible in a
+-- benchmark, where a regression would be silent.
+
+local COUNTING = [[
+local dev = require("dev")
+local srv = require("srv")
+
+srv.main(function()
+	local base = dev.mem({
+		deep = { three = { ["levels.txt"] = "down here\n" } },
+		walks = "0",
+	})
+	local nwalk = 0
+	local B = {}
+
+	for k, v in pairs(base) do
+		B[k] = v
+	end
+	B.walkmany = function(h, names)
+		nwalk = nwalk + 1
+		return dev.walkall(base, h, names)
+	end
+	B.read = function(h, off, n)
+		if h.name == "walks" then
+			local s = string.format("%08d\n", nwalk)
+
+			return s:sub(off + 1, off + n)
+		end
+		return base.read(h, off, n)
+	end
+	return B
+end)
+]]
+
+local cpid2, ch2 = sys.spawn(COUNTING, { name = "counting" })
+
+N:mount("/counted", mnt.new(ch2), "mnt", { port = { __right = ch2 } })
+
+local wbefore = tonumber(N:readfile("/counted/walks")) or -1
+
+tap.is(N:readfile("/counted/deep/three/levels.txt"), "down here\n",
+    "read a file three elements deep")
+
+local wafter = tonumber(N:readfile("/counted/walks")) or -1
+
+-- the counter is read AFTER its own walk, so the span covers two paths:
+-- the three-element read, and the second read of walks itself. batched
+-- that is 2. per element it would be 3 + 1 = 4, which is what a
+-- regression here would look like.
+tap.ok(wafter - wbefore == 2,
+    "one walkmany per path, not one walk per element (" .. wbefore ..
+    " -> " .. wafter .. ", per-element would be 4)")
+
+local _, mderr = N:open("/counted/deep/nosuch/levels.txt", "r")
+
+tap.ok(tostring(mderr):find("'nosuch'", 1, true) ~= nil,
+    "a failure mid-path still names the element: " .. tostring(mderr))
+
+-- and the loop branch, on the server that has no walkmany
+tap.is(N:readfile("/host/sub/deep"), "deep file\n",
+    "a backend without walkmany still resolves a deep path over a port")
+
+N:unmount("/counted")
+sys.close(ch2)
 
 -- ---- claim 5: the server exits when its last client goes ----
 

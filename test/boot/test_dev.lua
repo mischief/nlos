@@ -12,7 +12,7 @@ local dev = require("dev")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(34)
+tap.plan(42)
 
 -- ---- the conformance suite, run against anything claiming to be a dev
 local function conforms(what, B, known, knowncontent, knowndir)
@@ -206,5 +206,72 @@ tap.ok(getmetatable(mh2).__close ~= nil, "and still added __close")
 -- remove/wstat are checkable before calling, which a stub would destroy.
 tap.ok(dev.mem({}).remove == nil, "remove is absent, not a stub")
 tap.ok(espfs.new("/").remove == nil, "espfs remove is absent too")
+
+-- ---- walkmany: used when offered, and the loop when not ----
+--
+-- optional exactly like remove(), so walkpath has to check rather than
+-- call. a backend with none must still resolve a deep path.
+
+local tree = { a = { b = { c = "leaf\n" } } }
+local plain = dev.mem(tree)
+local nwalk = 0
+
+tap.ok(plain.walkmany == nil, "dev.mem offers no walkmany")
+
+do
+	local counted = {}
+
+	for k, v in pairs(plain) do
+		counted[k] = v
+	end
+	counted.walk = function(h, name)
+		nwalk = nwalk + 1
+		return plain.walk(h, name)
+	end
+
+	local h = dev.walkpath(counted, counted.attach(), "/a/b/c")
+
+	tap.is(counted.read(h, 0, 99), "leaf\n",
+	    "a backend without walkmany resolves a deep path")
+	tap.is(nwalk, 3, "by walking each element once (" .. nwalk .. ")")
+end
+
+-- and one that DOES offer it gets the whole path in a single call
+do
+	local batched = {}
+	local calls, got = 0, nil
+
+	for k, v in pairs(plain) do
+		batched[k] = v
+	end
+	batched.walkmany = function(h, names)
+		calls = calls + 1
+		got = table.concat(names, "/")
+		return dev.walkall(plain, h, names)
+	end
+
+	local h = dev.walkpath(batched, batched.attach(), "/a/./b//c")
+
+	tap.is(calls, 1, "walkmany was preferred, and called once")
+	tap.is(got, "a/b/c", "with '.' and empty elements already dropped")
+	tap.is(batched.read(h, 0, 99), "leaf\n", "and it resolved the path")
+
+	-- a zero-element path must NOT call it: that is a clone in 9P, and
+	-- here it is simply the handle you already hold
+	calls = 0
+	local root = batched.attach()
+
+	tap.ok(dev.walkpath(batched, root, "/") == root and calls == 0,
+	    "an empty path returns the same handle without a walk")
+end
+
+-- the failing element is still named, which is the whole reason
+-- walkall exists as a shared helper
+do
+	local ok, err = pcall(dev.walkpath, plain, plain.attach(), "/a/nope/c")
+
+	tap.ok(not ok and tostring(err):find("'nope'", 1, true) ~= nil,
+	    "a deep walk names the element that failed: " .. tostring(err))
+end
 
 tap.done()

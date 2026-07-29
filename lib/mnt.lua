@@ -144,6 +144,15 @@ function M.new(right)
 		return h_of(rpc({ op = "walk", fid = h.fid, name = name }).fid)
 	end
 
+	-- the whole path in one round trip: 9P's Twalk, and the reason
+	-- dev.walkpath asks for it. it also means no intermediate fid ever
+	-- exists on THIS side -- the server makes them, and knows exactly
+	-- when they die, so the finalizer has nothing to collect.
+	function B.walkmany(h, names)
+		return h_of(rpc({ op = "walkmany", fid = h.fid,
+		    names = names }).fid)
+	end
+
 	function B.stat(h)
 		return rpc({ op = "stat", fid = h.fid }).st
 	end
