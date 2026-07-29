@@ -8,9 +8,9 @@ itself is authoritative.
 
 ## Boot path
 
-Hand-written PE32+ header (`src/x86_64/header.S`) → firmware loads the
-image at any address → `_start` applies `R_X86_64_RELATIVE`
-self-relocations (`src/x86_64/reloc.c`) → `efi_main` (`src/main.c`) →
+Hand-written PE32+ header (`src/<arch>/header.S`) → firmware loads the
+image at any address → `_start` applies `R_*_RELATIVE` self-relocations
+(`src/<arch>/reloc.c`) → `efi_main` (`src/main.c`) →
 the kernel spawns `/init.lua` from the ESP, or an fw_cfg-injected test
 payload in its place.
 
@@ -79,15 +79,17 @@ re-arming means cancelling first.
 
 ## Calibrating the TSC
 
-`platform_ticks()` is a raw `rdtsc` — a cycle count, not a time. Boot
+`platform_ticks()` is the machine's free-running counter (`rdtsc`,
+`cntvct_el0` on aarch64) — a tick count, not a time. Boot
 calibrates it once against `BS->Stall(100000)` and keeps cycles-per-
 millisecond, which is what `sys.uptime_ms()` and the timer deadlines are
 denominated in. Stability across boots is ~4 ppm, so one 100ms
 calibration is plenty; there is no need to re-calibrate or average.
 
-This assumes an invariant TSC (constant rate regardless of P-state;
-CPUID leaf 0x80000007, EDX bit 8), which holds on anything this project
-targets. Before calibration existed, every timeout in the tree was
+This assumes a counter that runs at a constant rate regardless of
+P-state: an invariant TSC (CPUID leaf 0x80000007, EDX bit 8) on x86_64,
+and the architected virtual counter on aarch64, which is constant-rate
+by definition. Both hold on anything this project targets. Before calibration existed, every timeout in the tree was
 denominated in raw cycles, which meant the same constant was a different
 duration on every machine — and the comments describing those constants
 were wrong by 2-4x even on the machine they were written on.
@@ -99,7 +101,7 @@ com2 and puts it in ConIn, so the firmware drains our bytes and leaks
 the 9P handshake into the repl. The long-standing mystery "stray
 keystrokes" at the prompt were a Tversion frame's `9P2000` string.
 
-Fix, in `serial_takeover()` (`src/main.c`): at boot, walk every SerialIo
+Fix, in `uart_takeover()` (`src/x86_64/uart.c`): at boot, walk every SerialIo
 handle, read the ACPI PNP0501 `_UID` from its device path, and
 `DisconnectController` the com2 one (`_UID 1`). com1 (`_UID 0`, the
 console) is left alone. The Uart() messaging node carries no base

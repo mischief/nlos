@@ -4,7 +4,7 @@ Read this before changing anything. It is advice and constraint, not
 neutral documentation — its audience is whoever (or whatever) is about
 to edit this repo next.
 
-Lua 5.4 on bare UEFI x86_64: Lua, Mach and Plan 9 fused. Isolated Lua
+Lua 5.4 on bare UEFI, x86_64 and aarch64: Lua, Mach and Plan 9 fused. Isolated Lua
 states as processes, Mach-style ports and rights for all IPC, 9P at
 every boundary facing outward. A playground with discipline — toy
 scope, real protocols, real isolation, real tests. The point is to find
@@ -105,9 +105,31 @@ preferred over hand-rolled code; vendored libraries are not. This
 extends to protocols — DNS, HTTP and JSON are hand-rolled in Lua for
 the same reason 9P is.
 
-**Arch code lives in `src/x86_64/` only.** The kernel, libc and all Lua
-are arch-blind. An aarch64 port should touch one directory plus the PE
-machine field.
+**Arch code lives in `src/<arch>/`.** The kernel, libc and all Lua are
+arch-blind. x86_64 and aarch64 are both ported; `meson.build` picks the
+directory from `host_machine.cpu_family()`, and nothing is ever
+cross-compiled — the qemu, firmware and devices in `scripts/arch.sh`
+and `test/qemuarch.py` all assume guest arch == host arch.
+
+This file used to predict that an aarch64 port would cost "one
+directory plus the PE machine field". It cost that plus four things,
+which is the honest list of what is genuinely per-arch and cannot be
+quarantined:
+
+- the **calling convention** (`EFIAPI` in `src/efi.h`) — ms_abi on
+  x86_64, plain aapcs64 on aarch64, so on arm the entry stub has no
+  register shuffle to do at all;
+- the **`jmp_buf` size** (`include/setjmp.h`), which is just the
+  callee-saved set;
+- the **PE section table**: `src/pe.ld` splits at `__data_start` so a
+  header can declare RX text and NX data separately, which is what
+  firmware with image protection enabled requires — it maps a writable
+  section non-executable, and a section claiming both then cannot run.
+  The aarch64 header uses it; x86_64 still ships one RWX section, which
+  no firmware we have run rejects, so this is hardening, not a fix;
+- whatever the machine uses for a second serial port (see below).
+
+Everything else really did stay inside the directory.
 
 **Only `los.efi` touches firmware.** `los.sys` and `los.thread` must
 never grow an EFI dependency. This keeps the ExitBootServices door open
@@ -140,12 +162,17 @@ parking on a timer took it to 1.6s.
 
 ## Time
 
-`platform_ticks()`/`sys.ticks()` is a raw `rdtsc` — a cycle count, not a
-duration. Boot calibrates it against `BS->Stall` and everything
-time-shaped is denominated in milliseconds via `sys.uptime_ms()`. Do not
-reintroduce cycle-denominated constants; the same number was a different
-duration on every machine, and the comments describing them were wrong
-by 2-4x even on the machine they were written on.
+`platform_ticks()`/`sys.ticks()` is the machine's free-running counter —
+`rdtsc` on x86_64, `cntvct_el0` on aarch64 — a tick count, not a
+duration, and not even the same order of magnitude between the two: a
+TSC runs at GHz, the arm virtual counter at 62.5MHz under qemu. Boot
+calibrates it against `BS->Stall` and everything time-shaped is
+denominated in milliseconds via `sys.uptime_ms()`. Do not reintroduce
+cycle-denominated constants; the same number was a different duration on
+every machine, and the comments describing them were wrong by 2-4x even
+on the machine they were written on. The coarse counter is also why
+`calibrate_reductions` treats "zero cycles per instruction" as a real
+answer rather than an impossible one.
 
 `sys.timer(ms)` returns a receive right to a port that gets one message
 at the deadline. It is a port rather than a `sleep()` call so that
@@ -178,7 +205,30 @@ at thousands of timers, and `MAXPROCS` is 32.
   next lap pushes another. Pace it to the tick. Unpaced cost 9.8s CPU
   per 10s wall with everything parked; paced, 2.1s.
 - **The com2 hang was never the scheduler.** It was firmware console
-  contention; `serial_takeover()` fixes it.
+  contention; `uart_takeover()` fixes it.
+- **`self_relocate` may not touch anything the GOT mediates**, because
+  the GOT is what it exists to fix. `-fvisibility=hidden` governs
+  definitions, not `extern` declarations, so on aarch64 gcc reached
+  `__rela_start`/`__rela_end` through GOT slots holding link-time
+  addresses: it then walked firmware memory as if it were a relocation
+  table and wrote the results over its own GOT. The image ran far
+  enough to fault later, in `console_write`, on an `ST` that was
+  garbage — the symptom is nowhere near the cause. x86_64 never showed
+  it because it addresses those symbols rip-relative. The declarations
+  are now explicitly `visibility("hidden")`; anything new that runs
+  before or inside relocation needs the same care.
+- **A device the firmware enumerated is not a device the firmware
+  turned on.** The aarch64 9p wire is a `pci-serial` card, and PCI
+  enumeration placed its io bar but left decoding disabled, so every
+  register read came back `0xff`. `PciIo->Attributes(Enable,
+  ATTRIBUTE_IO)` cannot fix it there — ArmVirtQemu's root bridge does
+  not advertise io in its supported mask — so `src/aarch64/uart.c`
+  sets the command register itself. Note the second-order damage: a
+  stuck-high `LSR` reads as "data ready" forever, so the serial pump
+  manufactured endless bytes, no proc was ever idle, the kernel never
+  reached its `WaitForEvent` sleep, and the *scheduler* and *timer*
+  tests failed. Two apparently unrelated subsystems were reporting one
+  dead io port.
 - **Bundling unrelated resources into one privileged task** ("conio" =
   console-write plus reset/stall) is the same mistake it was fixing.
 - **`Configure()` does not dial.** With `ActiveFlag=1` it only prepares

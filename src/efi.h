@@ -1,6 +1,4 @@
-/* minimal UEFI definitions, enough for console + files + memory.
- * all firmware calls use the microsoft x64 calling convention.
- */
+/* minimal UEFI definitions, enough for console + files + memory. */
 
 #ifndef EFI_H
 #define EFI_H
@@ -8,7 +6,17 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* the uefi calling convention is per-arch: microsoft x64 on x86_64,
+ * and on aarch64 plain aapcs64 -- which is already what we compile to,
+ * so EFIAPI is empty there. this is the only arch conditional outside
+ * src/<arch>/, and it is unavoidable: it is part of the abi, not of
+ * any one machine's code.
+ */
+#if defined(__x86_64__)
 #define EFIAPI __attribute__((ms_abi))
+#else
+#define EFIAPI
+#endif
 
 typedef uint8_t   UINT8;
 typedef uint16_t  UINT16;
@@ -147,6 +155,75 @@ typedef struct {
 	UINT32 HID;
 	UINT32 UID;
 } ACPI_HID_DEVICE_PATH;
+
+/* pci io: how src/aarch64/uart.c reaches the 16550 behind the 9p wire.
+ * x86_64 gets at its uart with two instructions; on a machine with no
+ * port io the same chip sits on pci, and asking the firmware where it
+ * landed beats hardcoding one qemu machine's ecam and io window.
+ */
+
+typedef enum {
+	EfiPciIoWidthUint8,
+	EfiPciIoWidthUint16,
+	EfiPciIoWidthUint32,
+	EfiPciIoWidthUint64,
+	EfiPciIoWidthFifoUint8,		/* Count accesses to ONE offset */
+	EfiPciIoWidthFifoUint16,
+	EfiPciIoWidthFifoUint32,
+	EfiPciIoWidthFifoUint64
+} EFI_PCI_IO_PROTOCOL_WIDTH;
+
+typedef enum {
+	EfiPciIoAttributeOperationGet,
+	EfiPciIoAttributeOperationSet,
+	EfiPciIoAttributeOperationEnable,
+	EfiPciIoAttributeOperationDisable,
+	EfiPciIoAttributeOperationSupported
+} EFI_PCI_IO_PROTOCOL_ATTRIBUTE_OPERATION;
+
+#define EFI_PCI_IO_ATTRIBUTE_IO	0x0001
+
+typedef struct EFI_PCI_IO_PROTOCOL EFI_PCI_IO_PROTOCOL;
+
+typedef EFI_STATUS (EFIAPI *EFI_PCI_IO_PROTOCOL_IO_MEM)(
+    EFI_PCI_IO_PROTOCOL *This, EFI_PCI_IO_PROTOCOL_WIDTH Width,
+    UINT8 BarIndex, UINT64 Offset, UINTN Count, void *Buffer);
+
+typedef struct {
+	EFI_PCI_IO_PROTOCOL_IO_MEM Read;
+	EFI_PCI_IO_PROTOCOL_IO_MEM Write;
+} EFI_PCI_IO_PROTOCOL_ACCESS;
+
+typedef EFI_STATUS (EFIAPI *EFI_PCI_IO_PROTOCOL_CONFIG)(
+    EFI_PCI_IO_PROTOCOL *This, EFI_PCI_IO_PROTOCOL_WIDTH Width,
+    UINT32 Offset, UINTN Count, void *Buffer);
+
+typedef struct {
+	EFI_PCI_IO_PROTOCOL_CONFIG Read;
+	EFI_PCI_IO_PROTOCOL_CONFIG Write;
+} EFI_PCI_IO_PROTOCOL_CONFIG_ACCESS;
+
+struct EFI_PCI_IO_PROTOCOL {
+	void *PollMem;
+	void *PollIo;
+	EFI_PCI_IO_PROTOCOL_ACCESS Mem;
+	EFI_PCI_IO_PROTOCOL_ACCESS Io;
+	EFI_PCI_IO_PROTOCOL_CONFIG_ACCESS Pci;
+	void *CopyMem;
+	void *Map;
+	void *Unmap;
+	void *AllocateBuffer;
+	void *FreeBuffer;
+	void *Flush;
+	void *GetLocation;
+	EFI_STATUS (EFIAPI *Attributes)(EFI_PCI_IO_PROTOCOL *This,
+	    EFI_PCI_IO_PROTOCOL_ATTRIBUTE_OPERATION Operation,
+	    UINT64 Attributes, UINT64 *Result);
+	void *GetBarAttributes;
+	void *SetBarAttributes;
+	UINT64 RomSize;
+	void *RomImage;
+};
 
 /* boot services (prefixes of the real table; unused slots are void*) */
 typedef struct {

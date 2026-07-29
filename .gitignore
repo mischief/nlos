@@ -8,5 +8,8 @@ luaos.img
 *.swp
 *.swo
 
+# the host-driven tests import test/qemuarch.py
+__pycache__/
+
 # ovmf writes its nvram varstore next to the image when qemu runs
 OVMF_VARS.fd

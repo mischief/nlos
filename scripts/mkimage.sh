@@ -7,6 +7,10 @@ set -eu
 
 SGDISK=${SGDISK:-/sbin/sgdisk}
 
+# the removable-media path the firmware looks for, per arch (set by
+# meson, which knows what it just built).
+BOOT_EFI=${BOOT_EFI:-bootx64.efi}
+
 out=$1
 efi=$2
 shift 2
@@ -19,7 +23,7 @@ dd if=/dev/zero of="$out" bs=512 count=93750 2>/dev/null
 "$SGDISK" -c 1:"EFI" "$out" >/dev/null
 mformat -i "$out"@@1M -v EFI -F -h 32 -t 44 -n 64 -c 1
 mmd -i "$out"@@1M efi efi/boot lib bin
-mcopy -o -i "$out"@@1M "$efi" ::efi/boot/bootx64.efi
+mcopy -o -i "$out"@@1M "$efi" ::efi/boot/"$BOOT_EFI"
 
 for f; do
 	case "$f" in

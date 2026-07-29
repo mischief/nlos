@@ -18,8 +18,8 @@ import sys
 import tempfile
 import time
 
-OVMF_CODE = os.environ.get("OVMF_CODE", "/usr/share/edk2-ovmf/OVMF_CODE.fd")
-OVMF_VARS = os.environ.get("OVMF_VARS", "/usr/share/edk2-ovmf/OVMF_VARS.fd")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import qemuarch
 
 img = sys.argv[1]
 payload = sys.argv[2]
@@ -54,21 +54,21 @@ def main():
     tmp = tempfile.mkdtemp()
     vars_path = os.path.join(tmp, "vars.fd")
     serial_log = os.path.join(tmp, "serial.log")
-    shutil.copy(OVMF_VARS, vars_path)
+    shutil.copy(qemuarch.FW_VARS, vars_path)
     port = free_port()
 
     qemu = subprocess.Popen([
-        "qemu-system-x86_64", "-enable-kvm", "-cpu", "max",
+        qemuarch.QEMU, *qemuarch.machine(),
         "-display", "none", "-monitor", "none",
         "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-:7777",
         "-device", "virtio-net-pci,netdev=n0",
         "-no-reboot", "-snapshot",
         "-serial", f"file:{serial_log}",
-        "-serial", "null",
+        *qemuarch.wire(),
         "-fw_cfg", f"name=opt/org.luaos.test,file={payload}",
-        "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={qemuarch.FW_CODE}",
         "-drive", f"if=pflash,format=raw,file={vars_path}",
-        "-drive", f"format=raw,file={img}",
+        *qemuarch.disk(img),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     print("1..5", flush=True)

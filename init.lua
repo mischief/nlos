@@ -41,7 +41,7 @@ local _, ninesrv = sys.spawn([[
 
 	local root = p9.synth({
 		["README"] = "this is lua-os, mounted over 9p. hello!\n",
-		["uname"] = "lua-os x86_64 uefi\n",
+		["uname"] = "lua-os " .. sys.stats().arch .. " uefi\n",
 		["version"] = _VERSION .. "\n",
 		["ticks"] = function(off, n)
 			if off > 0 then return "" end
@@ -95,7 +95,7 @@ local _, tcp9srv = sys.spawn([[
 
 	local root = p9.synth({
 		["README"] = "this is lua-os, mounted over 9p-over-tcp. hello!\n",
-		["uname"] = "lua-os x86_64 uefi\n",
+		["uname"] = "lua-os " .. sys.stats().arch .. " uefi\n",
 		["version"] = _VERSION .. "\n",
 	})
 

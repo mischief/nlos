@@ -16,3 +16,9 @@ machine_halt(void)
 	for (;;)
 		__asm__ volatile ("hlt");
 }
+
+const char *
+platform_arch(void)
+{
+	return "x86_64";
+}

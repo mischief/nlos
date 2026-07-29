@@ -11,10 +11,29 @@ project('lua-os', 'c',
 cc = meson.get_compiler('c')
 objcopy = find_program('objcopy')
 
+# which src/<arch> to build, and what the esp must call the loader for
+# the firmware to find it (UEFI spec's removable-media path). detected
+# from the host for now: this has never been cross-compiled, and a
+# cross build would need a matching qemu and firmware for every script
+# below as well.
+arch = host_machine.cpu_family()
+if arch == 'x86_64'
+  # no red zone (efi), sse4.1 so floor/ceil are single instructions
+  # (qemu wants -cpu max)
+  arch_args = ['-mno-red-zone', '-msse4.1']
+  boot_efi = 'bootx64.efi'
+elif arch == 'aarch64'
+  # fp/simd is baseline on aarch64 and edk2 enables it before running
+  # an application, so floor/ceil/sqrt are single instructions with no
+  # flag. outline atomics are the one thing that would pull libgcc in.
+  arch_args = ['-mno-outline-atomics']
+  boot_efi = 'bootaa64.efi'
+else
+  error('no src/' + arch + ': only x86_64 and aarch64 are ported')
+endif
+
 # freestanding: our include/ plus only the compiler's own headers.
-# machine flags: no red zone (efi), sse4.1 so floor/ceil are single
-# instructions (qemu wants -cpu max), pic + hidden for the
-# RELATIVE-relocs-only self-relocation scheme.
+# pic + hidden is for the RELATIVE-relocs-only self-relocation scheme.
 gccinc = run_command(cc.cmd_array() + ['-print-file-name=include'],
   check: true).stdout().strip()
 
@@ -24,14 +43,12 @@ freestanding_args = [
   '-fvisibility=hidden',
   '-fno-stack-protector',
   '-fno-strict-aliasing',
-  '-mno-red-zone',
-  '-msse4.1',
   '-fshort-wchar',
   '-nostdinc',
   '-I' + gccinc,
   '-DLUA_PATH_DEFAULT="/?.lua;/lib/?.lua"',
   '-DLUA_CPATH_DEFAULT=""',
-]
+] + arch_args
 
 add_project_arguments(freestanding_args, language: 'c')
 
@@ -61,13 +78,13 @@ libc_src = files(
 )
 
 arch_src = files(
-  'src/x86_64/fwcfg.c',
-  'src/x86_64/header.S',
-  'src/x86_64/machine.c',
-  'src/x86_64/math.c',
-  'src/x86_64/reloc.c',
-  'src/x86_64/setjmp.S',
-  'src/x86_64/uart.c',
+  'src' / arch / 'fwcfg.c',
+  'src' / arch / 'header.S',
+  'src' / arch / 'machine.c',
+  'src' / arch / 'math.c',
+  'src' / arch / 'reloc.c',
+  'src' / arch / 'setjmp.S',
+  'src' / arch / 'uart.c',
 )
 
 lua_src = files(
@@ -155,7 +172,7 @@ luaos_elf = shared_library('luaos',
   link_depends: files('src/pe.ld'),
 )
 
-# flat binary; the hand PE32+ header in src/x86_64/header.S makes this
+# flat binary; the hand PE32+ header in src/<arch>/header.S makes this
 # a valid uefi application.
 luaos_efi = custom_target('luaos.efi',
   input: luaos_elf,
@@ -198,6 +215,7 @@ luaos_img = custom_target('luaos.img',
   input: [luaos_efi] + lua_payload,
   output: 'luaos.img',
   command: [files('scripts/mkimage.sh'), '@OUTPUT@', '@INPUT@'],
+  env: {'BOOT_EFI': boot_efi},
   build_by_default: true,
 )
 

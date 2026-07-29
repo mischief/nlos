@@ -16,8 +16,10 @@ _Noreturn void platform_abort(const char *why);
 /* <arch>/machine.c */
 unsigned long long platform_ticks(void);
 _Noreturn void machine_halt(void);
+const char *platform_arch(void);
 
 /* <arch>/uart.c */
+void	uart_takeover(void);	/* wrest the wire port from the firmware */
 void	uart_init(void);
 void	uart_poll(void);
 int	uart_rx(void);

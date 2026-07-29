@@ -1,9 +1,9 @@
 # lua-os
 
-Lua 5.4 running on bare UEFI x86_64: a cursed fusion of Lua, Mach, and
-Plan 9. Most logic in Lua, small C glue. Isolated Lua states as
-processes, capabilities for all IPC, 9P at every boundary facing the
-outside world.
+Lua 5.4 running on bare UEFI, x86_64 or aarch64: a cursed fusion of
+Lua, Mach, and Plan 9. Most logic in Lua, small C glue. Isolated Lua
+states as processes, capabilities for all IPC, 9P at every boundary
+facing the outside world.
 
 Built from scratch — no gnu-efi, no mingw, no EDK II, no glibc. Vanilla
 Lua 5.4 as an unpatched submodule; everything else is ours.
@@ -17,8 +17,20 @@ not to ship a product.
 ```sh
 meson setup build
 meson compile -C build
-ninja -C build qemu     # com1 = console on stdio, com2 = 9p on build/9p.sock
+ninja -C build qemu     # console on stdio, 9p on build/9p.sock
 ```
+
+The build targets whichever machine it is configured on — no cross
+compilation — so it needs that machine's firmware: OVMF on x86_64
+(`/usr/share/edk2-ovmf`), AAVMF on aarch64 (`/usr/share/AAVMF`), or
+`OVMF_CODE`/`OVMF_VARS` in the environment to point elsewhere. Per-arch
+qemu, firmware and devices live in `scripts/arch.sh` and
+`test/qemuarch.py`; nothing else needs to know.
+
+The 9p wire is a second serial port, which the two machines reach very
+differently: com2 at a fixed io port on a pc, a `-device pci-serial`
+card on qemu's `virt` (whose one pl011 belongs to the firmware
+console). The scripts above add whichever is needed.
 
 Talk 9P to it from the host, with plan9port:
 
