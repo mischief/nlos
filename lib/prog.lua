@@ -162,6 +162,49 @@ function PortStream:close()
 	end
 end
 
+-- a CHANNEL stream: the in-proc pipe, for a launcher running its stages
+-- as coroutines in one proc rather than a proc each. same three methods
+-- as PipeStream, so a program cannot tell which it was handed -- which
+-- is the entire point of there being an interface here at all.
+--
+-- eof is Channel:close() rather than sys.hungup. a port's REFCOUNT is
+-- its eof, which a channel has no equivalent of, so the writer has to
+-- say so explicitly. that asymmetry does not reach programs, but it
+-- does reach whoever wires the pipeline up: a launcher that forgets to
+-- close leaves its reader waiting forever, exactly as a launcher that
+-- forgets to drop its port right does.
+--
+-- backpressure comes free and bounded: send on a full buffered channel
+-- parks the coroutine until the reader takes one, which is what
+-- MAXQUEUE plus sys.sendblock does for the port form.
+local ChanStream = {}
+
+ChanStream.__index = ChanStream
+
+function M.chanstream(c)
+	return setmetatable({ c = c }, ChanStream)
+end
+
+function ChanStream:write(data)
+	self.c:send(data)
+	return #data
+end
+
+function ChanStream:read(_)
+	local v, more = self.c:recv()
+
+	-- "" is eof throughout this ABI, so that a program's
+	-- `while data ~= ""` loop terminates rather than erroring
+	if not more then
+		return ""
+	end
+	return v or ""
+end
+
+function ChanStream:close()
+	self.c:close()
+end
+
 local FileStream = {}
 
 FileStream.__index = FileStream
@@ -261,11 +304,16 @@ local function install(ctx)
 
 	-- os is excluded from our stdlib entirely (see src/linit.c), so this
 	-- is not an override -- it is the only os a program has.
-	G.os = G.os or {}
+	G.os = {}
 	G.os.exit = function(code)
 		-- record the status, then unwind. the two are separate: see
 		-- sys.setexit's comment on why the kernel does not raise.
-		sys.setexit(tonumber(code) or 0)
+		--
+		-- ctx.setexit rather than sys.setexit: a program running as a
+		-- coroutine must not set the PROC's exit status, which
+		-- belongs to the launcher hosting it. this is the one seam
+		-- between the two modes that is not a stream.
+		ctx.setexit(tonumber(code) or 0)
 		error(M.EXIT, 0)
 	end
 
@@ -274,7 +322,7 @@ local function install(ctx)
 	-- takes either, so both idioms are first class -- ported utilities
 	-- keep calling os.exit(1) and native ones can say why.
 	G.exits = function(msg)
-		sys.setexit(msg)
+		ctx.setexit(msg)
 		error(M.EXIT, 0)
 	end
 	G.os.getenv = function(k)
@@ -287,7 +335,7 @@ local function install(ctx)
 	-- io.write/io.stderr must reach the ABI's streams, not the raw
 	-- console: a program in a pipeline whose io.write went straight to
 	-- the terminal would bypass the pipe entirely.
-	G.io = G.io or {}
+	G.io = {}
 	G.io.write = function(...)
 		for _, v in ipairs({ ... }) do
 			fds[1]:write(tostring(v))
@@ -459,6 +507,71 @@ M.EXIT = "\1prog.exit"
 -- a spawned program's whole body is `require("prog").main()`. this reads
 -- the ABI message, builds the environment, then loads and runs the real
 -- chunk. that keeps every program a plain lua file with no preamble.
+-- ---- run: everything that does not care how the program was started --
+--
+-- ctx must arrive complete:
+--   path/name/args/env/cwd  as the ABI describes them
+--   ns                      a LIVE namespace, not a description
+--   stdin/stdout/stderr     stream objects, or nil
+--   setexit(v)              how this program reports its status
+--
+-- the split is what lets one program run either as a whole proc
+-- (M.main) or as a coroutine beside its pipeline neighbours (M.corun).
+-- everything mode-specific is above this line -- where the streams come
+-- from, where the namespace comes from, where a status goes -- and a
+-- program cannot tell the difference, which is the point.
+--
+-- returns the status, so a coroutine host has something to collect.
+function M.run(ctx)
+	local who = ctx.name or "?"
+	local fds, env = install(ctx)
+	local src, serr = ctx.ns:readfile(ctx.path)
+
+	if not src then
+		fds[2]:write(who .. ": " .. tostring(serr) .. "\n")
+		ctx.setexit(127)
+		return 127
+	end
+
+	-- "t" is text-only: a program comes out of the namespace, and
+	-- loading precompiled bytecode from there would hand the lua vm
+	-- unverified input, which is a memory-safety hole rather than a
+	-- feature anything here wants.
+	local chunk, lerr = load(src, "=" .. who, "t", env)
+
+	if not chunk then
+		fds[2]:write(who .. ": " .. tostring(lerr) .. "\n")
+		ctx.setexit(126)
+		return 126
+	end
+
+	local ok, err = pcall(chunk)
+
+	if not ok and err ~= M.EXIT then
+		fds[2]:write(who .. ": " .. tostring(err) .. "\n")
+		ctx.setexit(1)
+		return 1
+	end
+	-- flush nothing: writes are messages and already sent
+	return ctx.status or 0
+end
+
+-- ctx.status is always recorded; the sink is what differs. proc mode
+-- adds sys.setexit so the kernel reports it to a monitor, and coroutine
+-- mode has no sink at all -- the status belongs to the program, not to
+-- the proc hosting it, and its host reads it from M.run's return.
+local function setexit(ctx, sink)
+	return function(v)
+		ctx.status = v
+		if sink then
+			sink(v)
+		end
+	end
+end
+
+-- a spawned program's whole body is `require("prog").main()`: read the
+-- ABI message, turn rights into streams and a description into a
+-- namespace, then run.
 function M.main()
 	local ctx = thread.recv(sys.SELF)
 
@@ -475,38 +588,41 @@ function M.main()
 
 	if not N then
 		sys.setexit(127)
-		return
+		return 127
 	end
 	ctx.ns = N
+	ctx.setexit = setexit(ctx, sys.setexit)
+	return M.run(ctx)
+end
 
-	local fds, env = install(ctx)
-	local src, serr = N:readfile(ctx.path)
+-- run a program as a COROUTINE in the caller's proc: no spawn, no
+-- lua_State, no message. spec carries stream OBJECTS rather than rights
+-- (the caller already holds both ends -- see M.chanstream) and a live
+-- namespace rather than a description.
+--
+-- the namespace is not optional-with-a-default by accident. ns.setcurrent
+-- is per-PROC state -- it swaps `require` and installs nsio into this
+-- lua_State -- so every coroutine here necessarily shares one namespace,
+-- and pretending otherwise by restoring a second would silently give the
+-- program a namespace its require() does not use.
+--
+-- call it inside thread.spawn to get concurrency; called directly it
+-- simply runs to completion, which is what a one-stage "pipeline" is.
+function M.corun(spec)
+	local ctx = {
+		path = spec.path, name = spec.name, args = spec.args,
+		env = spec.env, cwd = spec.cwd,
+		ns = spec.ns or ns.current(),
+		stdin = spec.stdin,
+		stdout = spec.stdout,
+		stderr = spec.stderr or spec.stdout,
+	}
 
-	if not src then
-		fds[2]:write((ctx.name or "?") .. ": " .. tostring(serr) .. "\n")
-		sys.setexit(127)
-		return
+	if not ctx.ns then
+		return 127
 	end
-
-	-- "t" is text-only: a program comes out of the namespace, and
-	-- loading precompiled bytecode from there would hand the lua vm
-	-- unverified input, which is a memory-safety hole rather than a
-	-- feature anything here wants.
-	local chunk, lerr = load(src, "=" .. (ctx.name or "prog"), "t", env)
-
-	if not chunk then
-		fds[2]:write((ctx.name or "?") .. ": " .. tostring(lerr) .. "\n")
-		sys.setexit(126)
-		return
-	end
-
-	local ok, err = pcall(chunk)
-
-	if not ok and err ~= M.EXIT then
-		fds[2]:write((ctx.name or "?") .. ": " .. tostring(err) .. "\n")
-		sys.setexit(1)
-	end
-	-- flush nothing: writes are messages and already sent
+	ctx.setexit = setexit(ctx, nil)
+	return M.run(ctx)
 end
 
 return M

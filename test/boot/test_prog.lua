@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(27)
+tap.plan(31)
 
 local N = ns.new()
 
@@ -257,5 +257,63 @@ tap.ok(probeout:find("string=true") ~= nil,
     "the rest of the stdlib still reads through to _G")
 tap.ok(probeout:find("myarg=hello") ~= nil,
     "and the program's own arg is intact")
+
+-- ---- a pipeline as COROUTINES, in one proc ----
+--
+-- the payoff of the two changes above. `seq 3 | cat` with no spawn, no
+-- second lua_State and no ports: both stages are coroutines in THIS
+-- proc, joined by a Channel, and neither program was modified to allow
+-- it -- prog.chanstream satisfies the same :read/:write/:close that
+-- PipeStream does, so cat cannot tell what it is reading from.
+--
+-- this is what a proc costs today: ~34-40KB of lua_State per stage,
+-- against a coroutine and a table here. it is also why MAXPROCS stops
+-- bounding pipeline depth.
+local prog = require("prog")
+
+-- a sink standing in for the far end of the pipeline
+local sink = { buf = {} }
+
+function sink:write(d)
+	self.buf[#self.buf + 1] = d
+	return #d
+end
+
+function sink:read() return "" end
+function sink:close() end
+
+local pipe = thread.chancreate(2)	-- bounded: backpressure, not a buffer
+local seqst, catst
+
+thread.spawn(function()
+	seqst = prog.corun({
+		path = "/bin/seq.lua", name = "seq", args = { "seq", "3" },
+		env = { PATH = "/bin" }, cwd = "/", ns = N,
+		stdout = prog.chanstream(pipe),
+	})
+	-- the writer says when it is done. a channel has no refcount to
+	-- infer eof from, which is exactly what Channel:close() is for.
+	pipe:close()
+end)
+
+thread.spawn(function()
+	catst = prog.corun({
+		path = "/bin/cat.lua", name = "cat", args = { "cat" },
+		env = { PATH = "/bin" }, cwd = "/", ns = N,
+		stdin = prog.chanstream(pipe), stdout = sink,
+	})
+end)
+thread.run()
+
+tap.is(table.concat(sink.buf), "1\n2\n3\n",
+    "seq 3 | cat ran as two coroutines in one proc")
+tap.is(seqst, 0, "the writing stage reported its own status")
+tap.is(catst, 0, "and so did the reading stage")
+
+-- and the argv collision that made this impossible before: both stages
+-- ran concurrently in one lua_State, so a shared _G.arg would have left
+-- whichever started second holding the other's arguments.
+tap.is(rawget(_G, "arg"), nil,
+    "neither stage leaked its arg into the hosting proc")
 
 tap.done()
