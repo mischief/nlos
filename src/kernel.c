@@ -142,6 +142,13 @@ struct kproc {
 	struct kport *waiting;	/* blocked on this port */
 	struct kport *wset[MAXWSET];	/* or on any of these (alt) */
 	int nwset;
+	/* blocked waiting for ROOM on this port, the send-side mirror of
+	 * `waiting`. separate field rather than a flag on `waiting` so
+	 * wake_receivers and wake_senders cannot wake each other's procs:
+	 * a reader waiting for data and a writer waiting for space are
+	 * woken by opposite events on the same port.
+	 */
+	struct kport *sending;
 	struct right rights[MAXRIGHTS];
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
@@ -231,6 +238,7 @@ extern void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
 static void port_unref(struct kport *port);
 static void wake_receivers(struct kport *port);
 static void proc_kill(struct kproc *p, const char *why);
+static void wake_senders(struct kport *port);
 static int reprioritize(struct kproc *p, int nrunnable);
 static int count_runnable(void);
 static void make_ready(struct kproc *p);
@@ -635,6 +643,13 @@ port_unref(struct kport *port)
 	 * exit and never see eof.
 	 */
 	wake_receivers(port);
+	/* the same for writers: a reader going away means a full port will
+	 * never drain, so anyone parked for room has to wake and learn
+	 * from its next send that the port is dead. exact twin of the eof
+	 * case above, and without it a blocked writer outlives its reader
+	 * forever.
+	 */
+	wake_senders(port);
 }
 
 static int
@@ -957,6 +972,33 @@ wake:
 	}
 }
 
+/* the mirror of wake_receivers: anyone parked for ROOM on this port.
+ *
+ * called from exactly two places, and both are required. draining a
+ * message (api_tryrecv) frees space, which is the ordinary wakeup. a
+ * port dying (port_unref) is the other one -- without it a writer
+ * blocked on a full port whose reader just vanished would sleep
+ * forever, which is the send-side twin of the eof problem the
+ * wake_receivers call in port_unref exists to solve.
+ *
+ * a spurious wake is harmless: sys.sendblock only promises the port
+ * MIGHT have room, and every caller loops on the send anyway (see
+ * lib/prog.lua's PipeStream:write), exactly as api_block's callers
+ * loop on tryrecv.
+ */
+static void
+wake_senders(struct kport *port)
+{
+	for (int i = 0; i < MAXPROCS; i++) {
+		struct kproc *p = &procs[i];
+
+		if (p->status != BLOCKED || p->sending != port)
+			continue;
+		p->sending = 0;
+		make_ready(p);
+	}
+}
+
 /* queue a message. refs/nrefs are in-flight right refs (may be null).
  * a dead port silently drops -- erlang semantics, the sender learns
  * from the monitor, not the send.
@@ -1081,18 +1123,58 @@ api_send(lua_State *L)
 	if (r->port->dead) {
 		release_inflight(w.refs, w.refrecv, w.nrefs);
 		free(w.p);
-		lua_pushboolean(L, 0);	/* dead port: dropped */
-		return 1;
+		lua_pushboolean(L, 0);
+		lua_pushliteral(L, "dead");
+		return 2;
 	}
 	int rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv,
 	    w.nrefs);
 
-	if (rc == -2)	/* w.p already freed by port_push_owned */
-		return luaL_error(L, "port queue full");
+	/* a full queue RETURNS rather than raising, so it is an ordinary
+	 * outcome the caller chooses a policy for, distinguishable from
+	 * "dead" by the second value. it used to raise, and that made the
+	 * choice for everyone: a pipe writer died at MAXQUEUE instead of
+	 * applying backpressure, which is what a pipe is supposed to do.
+	 *
+	 * blocking here in the KERNEL would be the wrong fix. a file
+	 * server replying to a client whose port is full would block, and
+	 * one slow reader would then wedge that server for every other
+	 * client. the kernel cannot tell a pipe write from a server
+	 * reply, so it must not pick: it reports, and lua decides. that is
+	 * the same split the receive side already makes -- sys.tryrecv
+	 * plus sys.block, with the blocking loop living in lua.
+	 */
+	if (rc == -2) {	/* w.p already freed by port_push_owned */
+		lua_pushboolean(L, 0);
+		lua_pushliteral(L, "full");
+		return 2;
+	}
 	if (rc)
 		return luaL_error(L, "out of memory queueing message");
 	lua_pushboolean(L, 1);
 	return 1;
+}
+
+/* block until this port might have room, the send-side api_block.
+ *
+ * needs only a SEND right: a writer waiting for its reader to catch up
+ * has no business holding the receive end.
+ */
+static int
+api_sendblock(lua_State *L)
+{
+	struct kproc *p = self(L);
+	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+
+	if (!r)
+		return luaL_error(L, "bad right");
+	if (r->port->dead)
+		return 0;	/* never going to drain; let the send report it */
+	if (r->port->qbytes < MAXQUEUE)
+		return 0;	/* room already, don't sleep */
+	p->status = BLOCKED;
+	p->sending = r->port;
+	return lua_yield(L, 0);
 }
 
 static int
@@ -1113,6 +1195,8 @@ api_tryrecv(lua_State *L)
 	if (!r->port->head)
 		r->port->tail = 0;
 	r->port->qbytes -= m->len;
+	/* room freed: this is the ordinary backpressure wakeup */
+	wake_senders(r->port);
 
 	size_t off = 0;
 
@@ -1583,6 +1667,16 @@ api_wchan(lua_State *L)
 			    (int)(p->waiting - ports));
 			return 1;
 		}
+		/* distinguished from a receive wait on purpose: "why is
+		 * this proc stuck" has a different answer for a reader
+		 * with no data and a writer with no room, and ps is where
+		 * you go to find out.
+		 */
+		if (p->sending) {
+			lua_pushfstring(L, "sendq#%d",
+			    (int)(p->sending - ports));
+			return 1;
+		}
 		if (p->nwset > 0) {
 			luaL_Buffer b;
 
@@ -1902,6 +1996,7 @@ static const luaL_Reg kapi[] = {
 	{ "send", api_send },
 	{ "tryrecv", api_tryrecv },
 	{ "block", api_block },
+	{ "sendblock", api_sendblock },
 	{ "altblock", api_altblock },
 	{ "yield", api_yield },
 	{ "newport", api_newport },
@@ -2238,6 +2333,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	p->exitmsg[0] = 0;
 	p->status = READY;
 	p->waiting = 0;
+	p->sending = 0;
 	nlive++;
 	return p->id;
 }

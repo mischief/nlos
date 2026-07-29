@@ -4,7 +4,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(8)
+tap.plan(16)
 
 -- rendezvous ping/pong
 local c = thread.chancreate(0)
@@ -79,5 +79,71 @@ thread.spawn(function()
 end)
 thread.run()
 tap.is(table.concat(order, ","), "a-in,a-out,b", "qlock holds across yield")
+
+-- ---- close ----
+
+-- buffered values survive the close: recv drains before it reports it
+local cc = thread.chancreate(2)
+
+cc:send("a")
+cc:send("b")
+cc:close()
+tap.is(cc:recv(), "a", "close does not discard buffered values")
+local v, more = cc:recv()
+
+tap.ok(v == "b" and more == true, "second buffered value still reports open")
+v, more = cc:recv()
+tap.ok(v == nil and more == false, "drained + closed recv is nil, false")
+
+-- idempotent, unlike go's panic-on-double-close
+tap.ok(pcall(function() cc:close() end), "close is idempotent")
+
+-- sending after close is a bug and says so
+tap.ok(not pcall(function() cc:send("x") end), "send on closed channel raises")
+
+-- a receiver parked BEFORE the close must wake, not hang forever. this
+-- is the case the whole feature exists for: a consumer waiting on a
+-- producer that finishes.
+local pc = thread.chancreate(0)
+local woke = nil
+
+thread.spawn(function()
+	local x, ok = pc:recv()
+
+	woke = (x == nil and ok == false)
+end)
+thread.spawn(function()
+	sys.yield()		-- let the receiver park first
+	pc:close()
+end)
+thread.run()
+tap.ok(woke, "close wakes a receiver already parked")
+
+-- and a sender parked before the close fails rather than hanging
+local sc = thread.chancreate(0)
+local sfail = nil
+
+thread.spawn(function()
+	sfail = not pcall(function() sc:send("never taken") end)
+end)
+thread.spawn(function()
+	sys.yield()
+	sc:close()
+end)
+thread.run()
+tap.ok(sfail, "close makes a parked sender raise")
+
+-- alt treats a closed channel as ready, which is what makes it usable
+-- for "work, or the producer is done"
+local ac = thread.chancreate(0)
+
+ac:close()
+local aw, av
+
+thread.spawn(function()
+	aw, av = thread.alt({ { c = ac, op = "recv" }, { port = sys.SELF } })
+end)
+thread.run()
+tap.ok(aw == 1 and av == nil, "alt reports a closed channel as ready")
 
 tap.done()

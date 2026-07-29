@@ -77,9 +77,32 @@ function M.pipestream(h)
 	return setmetatable({ h = h }, PipeStream)
 end
 
+-- a full pipe applies BACKPRESSURE: park until the reader drains, then
+-- retry. this is the mirror image of :read below -- the kernel reports
+-- "would block" and the loop lives here -- and it is the reason
+-- sys.send returns "full" rather than raising.
+--
+-- it used to be a bare send, so a program outrunning its reader died on
+-- MAXQUEUE (64KB of SERIALIZED bytes, which a line-at-a-time writer
+-- reaches in ~1600 writes) with an internal error. `seq 1 20000 | head
+-- -1` is the shape of it.
+--
+-- a dead port is NOT an error here: the reader hung up, which is EPIPE.
+-- 0 written is what the caller sees, matching read()'s "" for eof.
 function PipeStream:write(data)
-	sys.send(self.h, { op = "write", data = data })
-	return #data
+	local msg = { op = "write", data = data }
+
+	while true do
+		local ok, why = sys.send(self.h, msg)
+
+		if ok then
+			return #data
+		end
+		if why ~= "full" then
+			return 0
+		end
+		thread.parksend(self.h)
+	end
 end
 
 function PipeStream:read(_)

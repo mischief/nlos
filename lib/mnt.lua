@@ -85,15 +85,14 @@ function M.new(right)
 		msg.seq = nextseq()
 		msg.reply = { __right = reply }
 
-		-- sys.send RETURNS FALSE for a dead port -- erlang semantics,
-		-- the sender learns from a monitor rather than the send -- and
-		-- only RAISES for a bad right or an unserializable message.
-		-- checking just the pcall missed the first case entirely, so a
-		-- request to a server that had already exited was silently
-		-- dropped and then waited for forever.
+		-- BOTH results matter. the pcall catches a bad or closed right,
+		-- which raises; `sent` catches a dead or full port, which
+		-- sys.send REPORTS rather than raising. checking only the pcall
+		-- treats an undelivered request as sent and then parks forever
+		-- waiting for a reply nobody will send.
 		local ok, sent = pcall(sys.send, right, msg)
 
-		if not ok or sent == false then
+		if not ok or not sent then
 			dev.error(dev.Eio)	-- server gone, or right closed
 		end
 

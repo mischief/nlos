@@ -98,6 +98,34 @@ local function inthread()
 end
 
 -- ---- Channel (libthread flavor; cap 0 = rendezvous) ----
+--
+-- close() is 9front libthread's chanclose() and go's close(ch): the way
+-- a producer says "no more". a PORT gets this for free -- sys.hungup
+-- reports it straight out of the kernel's refcount, which is why
+-- lib/prog.lua's PipeStream needs no protocol for eof -- but a channel
+-- is a plain table with no lifetime, so it has to be told.
+--
+-- three rules, all of them go's:
+--
+--   * values already sent are received FIRST. close is not a discard:
+--     recv drains buf and any deposited sender before it reports the
+--     close. that is the same order the port side uses (drain, then
+--     test hangup -- see lib/webterm.lua's pump), and the two matching
+--     is most of the value of having both.
+--   * sending on a closed channel RAISES. whoever closed it declared
+--     there would be no more, so a later send is a bug rather than a
+--     race, and it should be loud.
+--   * recv on a closed, drained channel returns nil plus false. the
+--     second value is go's `v, ok := <-ch`, and it earns its place
+--     because nil is a legal value on a rendezvous channel (the
+--     deposit path carries it fine), so nil alone is ambiguous.
+--     callers that take one value -- every one written before this --
+--     are unaffected.
+--
+-- close() is IDEMPOTENT, where go panics on a double close. a stream's
+-- :close() runs on the normal path and again while an error unwinds,
+-- and "closed" is a state rather than an event, so making the second
+-- call fatal would punish correct cleanup and nothing else.
 
 local Channel = {}
 Channel.__index = Channel
@@ -108,6 +136,7 @@ local function chancreate(cap)
 		buf = {},
 		sendq = {},	-- {v=, co=, done=} (co=nil means deposited)
 		recvq = {},	-- {co=}
+		closed = false,
 	}, Channel)
 end
 
@@ -120,7 +149,36 @@ function Channel:_wakercv()
 	end
 end
 
+-- no more values will ever be sent. wakes everyone parked on this
+-- channel: receivers so they can drain and then see the close, senders
+-- so they can fail instead of parking forever.
+function Channel:close()
+	if self.closed then
+		return
+	end
+	self.closed = true
+
+	-- a parked SENDER's value was never taken and now never will be,
+	-- so it is dropped and the sender raises. a DEPOSITED rendezvous
+	-- value (co == nil, done already true) is left alone -- a receiver
+	-- still has the right to drain it, per the first rule above.
+	local keep = {}
+
+	for _, s in ipairs(self.sendq) do
+		if s.co then
+			thread._ready(s.co)
+		else
+			keep[#keep + 1] = s
+		end
+	end
+	self.sendq = keep
+	self:_wakercv()
+end
+
 function Channel:nbsend(v)
+	if self.closed then
+		error("send on closed channel", 2)
+	end
 	if #self.buf < self.cap then
 		self.buf[#self.buf + 1] = v
 		self:_wakercv()
@@ -144,6 +202,11 @@ function Channel:send(v)
 	self:_wakercv()
 	repeat
 		thread._park({ chan = self })
+		-- close() dropped us from sendq and woke us; the value was
+		-- never taken. no need to unlink, only to fail.
+		if not r.done and self.closed then
+			error("send on closed channel", 2)
+		end
 	until r.done
 end
 
@@ -168,14 +231,21 @@ function Channel:nbrecv()
 		end
 		return true, s.v
 	end
+	-- drained. only now does the close become visible -- the third
+	-- return is what lets recv() tell "closed" from "someone sent
+	-- nil", which a rendezvous channel can genuinely do. alt() takes
+	-- two values and is unaffected.
+	if self.closed then
+		return true, nil, true
+	end
 	return false
 end
 
 function Channel:recv()
 	while true do
-		local ok, v = self:nbrecv()
+		local ok, v, closed = self:nbrecv()
 		if ok then
-			return v
+			return v, not closed
 		end
 		local w = { co = coroutine.running() }
 		self.recvq[#self.recvq + 1] = w
@@ -193,6 +263,12 @@ end
 -- cases: {c=chan, op="recv"} | {c=chan, op="send", v=} | {port=h}
 -- returns index, value. note: alt-send on unbuffered channels only
 -- pairs with an already-parked receiver.
+--
+-- a CLOSED channel is always ready to receive, yielding nil -- which is
+-- libthread's behaviour and what makes alt usable for "wait for work or
+-- for the producer to finish". a closed channel in a SEND case raises,
+-- same as Channel:send would. nil here is ambiguous with a sent nil for
+-- the reason nbrecv's comment gives; test c.closed if it matters.
 
 local function alt(cases)
 	while true do
@@ -344,25 +420,59 @@ local function replyport()
 end
 
 -- readline: a request/reply against cons, the sole task with raw
--- keyboard access. the prompt itself is plain io.write (ambient
--- stdout, unaffected by any of this); only the line comes from cons.
--- the reply port is allocated once per proc and reused, not minted
--- fresh on every call.
+-- keyboard access. the reply port is allocated once per proc and
+-- reused, not minted fresh on every call.
 --
 -- consHandle is required: there is no well-known cons handle to fall
 -- back on. the boot payload gets its number from sys.granted().cons,
 -- everyone else from the {__right=} message that granted it.
+--
+-- the PROMPT goes to consHandle too, as an ordinary write, rather than
+-- to ambient stdout. it used to be a plain io.write, which was
+-- invisible while cons and stdout were the same serial device -- but
+-- the prompt belongs to whoever is being asked for the line, and
+-- io.write does not follow the right. a console that is not the serial
+-- port (lib/webterm.lua serves one to a browser) got every line it
+-- asked for and none of the prompts, while the prompts piled up on
+-- com1 belonging to nobody. one message per prompt is the cost.
 local cons_reply_port
 
+-- send, treating a full queue as backpressure and a dead port as a
+-- reportable fact. returns false only when the port is gone for good.
+local function sendwait(h, msg)
+	while true do
+		local ok, why = sys.send(h, msg)
+
+		if ok then
+			return true
+		end
+		if why ~= "full" then
+			return false
+		end
+		sys.sendblock(h)
+	end
+end
+
 local function readline(consHandle, prompt)
-	if prompt then
-		io.write(prompt)
+	if prompt and not sendwait(consHandle,
+	    { op = "write", data = prompt }) then
+		return nil
 	end
 	if not cons_reply_port then
 		cons_reply_port = sys.newport()
 	end
-	sys.send(consHandle, { op = "readline",
-	    reply = { __right = cons_reply_port } })
+	-- a console that has gone away is EOF, exactly as ^d is. this is
+	-- load-bearing rather than tidy: a dead port DROPS silently (it
+	-- never raised, see api_send), so without this a reader whose
+	-- console vanished parks in recv() below forever, holding its proc
+	-- until reboot. lib/webterm.lua reaping an idle session is exactly
+	-- that case -- it closes the session port and expects the shell to
+	-- end -- and dos's repl already treats a nil line as "session
+	-- over", so the whole teardown falls out of returning nil here.
+	if not sendwait(consHandle, { op = "readline",
+	    reply = { __right = cons_reply_port } }) then
+		return nil
+	end
 	return recv(cons_reply_port)
 end
 
@@ -434,6 +544,24 @@ local function park(h)
 end
 
 thread.park = park
+
+-- park until a port might have ROOM, the send-side mirror of park().
+-- for a writer that wants backpressure instead of a failed send: loop
+-- on sys.send and call this when it reports "full".
+--
+-- NOTE the asymmetry with park(): inside a thread this parks the whole
+-- PROC (sys.sendblock), not just the calling coroutine, because the
+-- scheduler's park reasons are receive-shaped -- thread.run hands its
+-- port set to sys.altblock, and a send wait is not a port set. that
+-- means one coroutine blocked on a full port stalls its siblings,
+-- which is why a SERVER must never use this (it would stop serving
+-- everyone because one client stopped reading). pipe-shaped code,
+-- which is what this is for, has nothing else to get on with anyway.
+local function parksend(h)
+	sys.sendblock(h)
+end
+
+thread.parksend = parksend
 thread.recv = recv
 thread.replyport = replyport
 thread.readline = readline

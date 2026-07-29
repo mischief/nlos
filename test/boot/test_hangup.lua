@@ -80,30 +80,43 @@ tap.is(got.got, "queued before anyone else holds it",
 --
 -- ports were unbounded, so a fast writer into a slow reader grew the
 -- kernel heap without limit -- memory charged to no proc's mem_limit.
--- over the ceiling a send now FAILS rather than blocking; real
--- backpressure needs a blocked-on-write proc state and is still to do.
+--
+-- over the ceiling a send REPORTS rather than raising: false plus
+-- "full", distinct from false plus "dead". it used to raise, which made
+-- the policy decision for every caller -- a pipe writer died at the
+-- ceiling instead of applying backpressure. the blocked-on-write proc
+-- state this comment used to list as "still to do" is sys.sendblock,
+-- and lib/prog.lua's PipeStream:write is the loop built on it.
 local big = sys.newport()
 local chunk = string.rep("x", 8000)
-local sent, err = 0, nil
+local sent, why = 0, nil
 
 for _ = 1, 200 do
-	local okk, e = pcall(sys.send, big, chunk)
+	local okk, w = sys.send(big, chunk)
 
 	if not okk then
-		err = e
+		why = w
 		break
 	end
 	sent = sent + 1
 end
 
-tap.ok(err ~= nil, "the queue has a ceiling")
-tap.ok(tostring(err):find("full") ~= nil,
-    "and says so: " .. tostring(err))
+tap.is(why, "full", "the queue has a ceiling, reported not raised")
 tap.ok(sent > 0 and sent < 200,
     "after accepting some but not all (" .. sent .. " of 200)")
 
 -- draining makes room again
 sys.tryrecv(big)
-tap.ok(pcall(sys.send, big, chunk), "draining frees space for another send")
+tap.ok(sys.send(big, chunk), "draining frees space for another send")
+
+-- and a dead port is a DIFFERENT answer, so a writer can tell "wait"
+-- from "give up" -- which is the whole reason the reason string exists
+local dead = sys.newport()
+
+sys.close(dead)
+local dok, dwhy = pcall(sys.send, dead, "x")
+
+tap.ok(not dok or dwhy == "dead",
+    "a dead port reports 'dead', not 'full'")
 
 tap.done()
