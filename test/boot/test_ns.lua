@@ -13,7 +13,7 @@ local ns = require("ns")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(49)
+tap.plan(53)
 
 -- ---- path cleaning, before any backend is involved ----
 tap.is(ns.clean("/a/b/../c"), "/a/c", "clean resolves ..")
@@ -253,5 +253,69 @@ tap.ok(N:mount("/mnt/other", dev.mem({ ["hello.txt"] = "second time\n" })),
     "remounting at the same prefix succeeds")
 tap.is(N:readfile("/mnt/other/hello.txt"), "second time\n",
     "and resolves through a freshly attached root")
+
+-- ---- require() resolves through the namespace ----
+--
+-- the point of ns.adopt: a program's CODE comes from its own namespace.
+-- proved by unioning a synthetic /lib in FRONT of the real one and
+-- requiring a module that exists nowhere on the ESP, then requiring a
+-- real one to show the union falls through.
+--
+-- note what this does NOT prove: that a module absent from the
+-- namespace is unreachable. the stock LUA_PATH searcher is still behind
+-- ours as the bootstrap fallback, so ambient /lib is still findable.
+-- closing that is a separate change -- it means removing raw ESP access
+-- from ordinary procs, which cannot happen until require no longer
+-- needs it.
+
+local R = ns.new()
+
+R:mount("/", espfs.new("/"), "espfs", { root = "/" })
+R:mount("/", dev.mem({
+	lib = {
+		["synthetic.lua"] =
+		    "return { origin = 'from the namespace' }\n",
+	},
+}), "mem", {
+	tree = {
+		lib = {
+			["synthetic.lua"] =
+			    "return { origin = 'from the namespace' }\n",
+		},
+	},
+}, "before")
+
+local reqport = sys.newport()
+
+-- the reply right has to travel too. describe() returns an ARRAY, and
+-- restore() walks it with ipairs, so a named key rides along without
+-- disturbing the mount ordering restore depends on.
+local desc = R:describe()
+
+desc.replyto = { __right = reqport }
+
+sys.spawn([[
+	-- line one, before any other require: the namespace arrives as
+	-- sys.spawn's arg, which is the whole reason that primitive exists.
+	local N = assert(require("ns").adopt(...))
+	local sys = require("los.sys")
+	local oks, syn = pcall(require, "synthetic")
+	local okt, tapmod = pcall(require, "tap")
+
+	sys.send((...).replyto.__right, {
+		syn = oks and syn.origin or ("ERR " .. tostring(syn)),
+		realmod = okt and type(tapmod) or ("ERR " .. tostring(tapmod)),
+		iscurrent = (require("ns").current() == N),
+	})
+]], { name = "reqchild2", arg = desc })
+
+local rm = thread.recvtimeout(reqport, 5000)
+
+tap.ok(rm ~= nil, "the child answered")
+tap.is(rm and rm.syn, "from the namespace",
+    "require found a module that exists ONLY in the namespace")
+tap.is(rm and rm.realmod, "table",
+    "and fell through the union to a real module on the esp")
+tap.ok(rm and rm.iscurrent, "ns.current() is the adopted namespace")
 
 tap.done()

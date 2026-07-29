@@ -550,6 +550,100 @@ function M.restore(desc)
 	return ns
 end
 
+-- ---- the proc's own namespace, and require() through it ----
+--
+-- plan 9 calls this the Pgrp: one namespace per proc, which library code
+-- consults rather than being handed. that is not ambient authority
+-- creeping back -- a proc gets here only because something granted it a
+-- description, and procs are isolated lua states, so "global" means
+-- "this proc". it has to be reachable this way because io.open and
+-- require() have nowhere to take a namespace argument.
+
+local current = nil
+
+function M.current()
+	return current
+end
+
+-- the search path, mirroring LUA_PATH_DEFAULT ("/?.lua;/lib/?.lua" --
+-- see meson.build). one list, so the two cannot drift.
+M.searchpath = { "/?.lua", "/lib/?.lua" }
+
+local installed = false
+
+-- install a package.searchers entry that finds modules in whatever
+-- namespace this proc currently has.
+--
+-- it goes at position 2: preload stays first, because los.sys and the
+-- other C openers are not files and must always win. the stock LUA_PATH
+-- searcher stays behind us as the fallback, which is what keeps
+-- bootstrap working -- this module itself was found by it.
+--
+-- the point is that a program's CODE now comes from its own namespace.
+-- mount a different /lib and require follows; mount one served by an srv
+-- proc over a port and require follows there too. before this, a proc
+-- could be handed any namespace you liked and require ignored it.
+function M.searcher()
+	if installed then
+		return
+	end
+	installed = true
+	table.insert(package.searchers, 2, function(name)
+		if not current then
+			return nil
+		end
+
+		local fname = name:gsub("%.", "/")
+		local tried = {}
+
+		for _, pat in ipairs(M.searchpath) do
+			local path = pat:gsub("%?", fname)
+			local src = current:readfile(path)
+
+			if src then
+				local chunk, err = load(src, "@" .. path)
+
+				if not chunk then
+					error("error loading module '" .. name ..
+					    "' from " .. path .. ":\n\t" ..
+					    tostring(err), 0)
+				end
+				return chunk, path
+			end
+			tried[#tried + 1] = "\n\tno file '" .. path ..
+			    "' in namespace"
+		end
+		return table.concat(tried)
+	end)
+end
+
+-- adopt(desc): rebuild a namespace description, make it this proc's, and
+-- route require() through it. one line at the top of a spawned chunk:
+--
+--	local N = assert(require("ns").adopt(...))
+--
+-- `...` being sys.spawn's arg, which arrives BEFORE the chunk runs --
+-- the whole reason that primitive exists. this cannot be a message,
+-- because require() happens first.
+function M.adopt(desc)
+	local n, err = M.restore(desc)
+
+	if not n then
+		return nil, err
+	end
+	current = n
+	M.searcher()
+	return n
+end
+
+-- for a proc that built its namespace itself rather than inheriting one
+-- (proc 0, and anything holding the raw ESP).
+function M.setcurrent(n)
+	current = n
+	M.searcher()
+	return n
+end
+
 -- "mnt" is the kind that makes the paragraph above true rather than
 -- aspirational. every other kind here is rebuilt from a recipe, which
 -- works only because each derives from something ambient -- espfs from
