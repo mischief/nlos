@@ -232,9 +232,11 @@ end
 -- no cap on the name count. 9P's sixteen is an msize concern and a port
 -- has no equivalent -- a thousand-element path is one flat array well
 -- inside the serializer's own limits, and past those it raises cleanly.
-function M.walkpath(backend, h, path)
-	local names = M.elements(path)
-
+-- walk an already-split path. split once and call this when the caller
+-- has the elements in hand -- ns.lua does, and computing them twice
+-- showed up as a measurable regression on local backends, where there
+-- is no round trip to hide an allocation behind.
+function M.walknames(backend, h, names)
 	if #names == 0 then
 		return h
 	end
@@ -242,6 +244,10 @@ function M.walkpath(backend, h, path)
 		return backend.walkmany(h, names)
 	end
 	return M.walkall(backend, h, names)
+end
+
+function M.walkpath(backend, h, path)
+	return M.walknames(backend, h, M.elements(path))
 end
 
 -- ---- the reference backend: an in-memory tree ----

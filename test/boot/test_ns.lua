@@ -8,11 +8,12 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local chan = require("chan")
 local ns = require("ns")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(39)
+tap.plan(49)
 
 -- ---- path cleaning, before any backend is involved ----
 tap.is(ns.clean("/a/b/../c"), "/a/c", "clean resolves ..")
@@ -200,5 +201,57 @@ local bad, berr = ns.restore({ { prefix = "/x", kind = "nosuchkind" } })
 
 tap.ok(bad == nil and tostring(berr):find("unknown backend kind") ~= nil,
     "restoring an unregistered kind fails: " .. tostring(berr))
+
+-- ---- Chans carry the name they were reached by ----
+--
+-- lib/chan.lua's whole argument. the name is the CALLER's cleaned path,
+-- never anything the backend reports: a backend has no idea what prefix
+-- it was mounted at, and /mnt/other/hello.txt is "hello.txt" to the
+-- dev.mem serving it.
+
+do
+	local c <close> = assert(N:open("/mnt/other/hello.txt"))
+
+	tap.is(c.path, "/mnt/other/hello.txt",
+	    "a Chan carries the name it was opened by, mount prefix and all")
+	tap.ok(chan.is(c), "and it really is a Chan")
+end
+
+do
+	local c <close> = assert(N:open("/sub/.././sub//deep.txt"))
+
+	tap.is(c.path, "/sub/deep.txt",
+	    "the Cname is the CLEANED name, folded lexically: " .. c.path)
+end
+
+-- a Chan from walk() has it too, not just an opened one
+tap.is(N:walk("/mnt/other").path, "/mnt/other",
+    "walk() returns a named Chan")
+
+-- ---- the namespace's cached mount root is not the caller's to close ----
+--
+-- ns caches one Chan per mount to walk from. dev.mem and espfs both
+-- return the SAME handle table from open() on a directory, so if a
+-- lookup of the mount point itself handed back that cached root, this
+-- close would clunk it and every later lookup through the mount would
+-- be using a released handle.
+
+do
+	local d <close> = assert(N:open("/mnt/other", "r"))
+
+	tap.ok(d ~= nil, "the mount point itself opens")
+end
+
+tap.is(N:readfile("/mnt/other/hello.txt"), "from the other mount\n",
+    "the mount still works after its own root was opened and closed")
+
+-- unmounting releases the cached root, and remounting builds a new one
+tap.ok(N:unmount("/mnt/other"), "unmount drops the mount and its root")
+tap.ok(N:readfile("/mnt/other/hello.txt") == nil,
+    "the path is gone once unmounted")
+tap.ok(N:mount("/mnt/other", dev.mem({ ["hello.txt"] = "second time\n" })),
+    "remounting at the same prefix succeeds")
+tap.is(N:readfile("/mnt/other/hello.txt"), "second time\n",
+    "and resolves through a freshly attached root")
 
 tap.done()

@@ -233,6 +233,7 @@ lua_payload = files(
   'bin/seq.lua',
   'lib/caps.lua',
   'lib/cons.lua',
+  'lib/chan.lua',
   'lib/dev.lua',
   'lib/dns.lua',
   'lib/espfs.lua',

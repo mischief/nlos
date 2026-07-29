@@ -98,6 +98,20 @@ dialect, so stock clients mount with zero shim. The same namespace is
 served over com2 and TCP with the server unchanged — transport is a
 pair of read/write closures.
 
+**A Chan carries its name.** `lib/chan.lua` is (backend, handle, Cname)
+— Plan 9's Chan, spelled the same on purpose. The name is the *caller's*
+cleaned path and never anything a backend reports, because a backend has
+no idea what prefix it was mounted at. Read
+`plan9front/sys/doc/lexnames.ms` before touching path resolution: `..` is
+folded lexically in `ns.clean` before any backend sees it, which is
+exactly Pike's definition, and we get it cheaply only because we
+re-evaluate from the mount root each time. **The moment a retained Chan
+becomes the origin of a relative path, `..` stops being free** and the
+Cname is what disambiguates which mount you came through. Note
+`ns.clean` deliberately does *not* implement `cleanname`'s rule 5 (leave
+`..` at the head of a non-rooted path): it takes rooted paths only, and
+every caller joins `cwd` first.
+
 **Ports carry the dev interface, not 9P bytes.** These are three layers
 and not a choice: a port is the transport, `lib/dev.lua` is the
 interface, and 9P is the encoding *only where the port has to become
@@ -458,14 +472,6 @@ Structural, worth fixing:
   each live proc still costs 1808. Note the scheduler's phase 2 is
   O(MAXPROCS) per lap, so this trades against the starvation guarantee
   above.
-- **A mounted path lookup is one round trip per element.** `ns:walk`
-  attaches and then walks each component separately because `dev.walk`
-  takes one name, so `readfile` through an `srv` proc costs seven
-  messages and measured 10x the local backend — all of it round trips,
-  none of it encoding. 9P solved this with a multi-name `Twalk` and
-  `dev.walkpath` is where the same fix goes. `ns:walk` also never
-  clunks its intermediates; `mnt` only survives that because its
-  handles carry `__gc`.
 - **A dead `srv` proc parks its clients forever.** `mnt`'s rpc has no
   deadline and nothing else wakes it. The fix is hangup detection on
   the reply port, not a timeout — a slow backend is not a broken one.

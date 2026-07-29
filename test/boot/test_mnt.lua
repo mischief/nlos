@@ -24,7 +24,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(25)
+tap.plan(26)
 
 -- ---- the server proc ----
 --
@@ -257,8 +257,9 @@ srv.main(function()
 	local base = dev.mem({
 		deep = { three = { ["levels.txt"] = "down here\n" } },
 		walks = "0",
+		attaches = "0",
 	})
-	local nwalk = 0
+	local nwalk, nattach = 0, 0
 	local B = {}
 
 	for k, v in pairs(base) do
@@ -268,9 +269,18 @@ srv.main(function()
 		nwalk = nwalk + 1
 		return dev.walkall(base, h, names)
 	end
+	B.attach = function()
+		nattach = nattach + 1
+		return base.attach()
+	end
 	B.read = function(h, off, n)
 		if h.name == "walks" then
 			local s = string.format("%08d\n", nwalk)
+
+			return s:sub(off + 1, off + n)
+		end
+		if h.name == "attaches" then
+			local s = string.format("%08d\n", nattach)
 
 			return s:sub(off + 1, off + n)
 		end
@@ -298,6 +308,21 @@ local wafter = tonumber(N:readfile("/counted/walks")) or -1
 tap.ok(wafter - wbefore == 2,
     "one walkmany per path, not one walk per element (" .. wbefore ..
     " -> " .. wafter .. ", per-element would be 4)")
+
+-- the namespace attaches ONCE per mount and walks from the cached root
+-- thereafter. before that it re-attached on every single operation,
+-- which through a mount is a round trip each time.
+local abefore = tonumber(N:readfile("/counted/attaches")) or -1
+
+N:readfile("/counted/deep/three/levels.txt")
+N:readfile("/counted/deep/three/levels.txt")
+N:stat("/counted/deep")
+
+local aafter = tonumber(N:readfile("/counted/attaches")) or -1
+
+tap.is(aafter - abefore, 0,
+    "four more lookups cost zero further attaches (" .. abefore .. " -> " ..
+    aafter .. ")")
 
 local _, mderr = N:open("/counted/deep/nosuch/levels.txt", "r")
 

@@ -56,6 +56,7 @@
 -- docs/shell-namespace-draft.md.
 
 local dev = require("dev")
+local chan = require("chan")
 
 local M = {}
 
@@ -85,84 +86,9 @@ end
 
 M.clean = clean
 
--- ---- the open file: our Chan ----
---
--- backends take explicit offsets and hold no position, matching 9P. a
--- position is a convenience, so it lives here once rather than in every
--- backend differently.
-
-local File = {}
-
-File.__index = File
-File.__close = function(f)
-	f:close()
-end
-
-function File:read(n)
-	local ok, res = pcall(self.B.read, self.h, self.pos, n or 4096)
-
-	if not ok then
-		return nil, res
-	end
-	self.pos = self.pos + #res
-	return res
-end
-
-function File:write(data)
-	local ok, res = pcall(self.B.write, self.h, self.pos, data)
-
-	if not ok then
-		return nil, res
-	end
-	self.pos = self.pos + res
-	return res
-end
-
-function File:seek(whence, off)
-	off = off or 0
-	if whence == "set" or whence == nil then
-		self.pos = off
-	elseif whence == "cur" then
-		self.pos = self.pos + off
-	elseif whence == "end" then
-		local st, err = self:stat()
-
-		if not st then
-			return nil, err
-		end
-		self.pos = st.size + off
-	else
-		return nil, dev.Ebadarg
-	end
-	return self.pos
-end
-
-function File:stat()
-	local ok, res = pcall(self.B.stat, self.h)
-
-	if not ok then
-		return nil, res
-	end
-	return res
-end
-
-function File:readdir()
-	local ok, res = pcall(self.B.readdir, self.h)
-
-	if not ok then
-		return nil, res
-	end
-	return res
-end
-
--- idempotent: closing twice is not an error, because __close will run
--- even on a path that already closed explicitly.
-function File:close()
-	if self.h then
-		pcall(self.B.clunk, self.h)
-		self.h = nil
-	end
-end
+-- the open file used to be a local File type here. it is lib/chan.lua
+-- now, under the name plan 9 gives it, and it carries the name it was
+-- opened by -- see that file for why the name earns its keep.
 
 -- ---- the namespace ----
 
@@ -231,6 +157,13 @@ function NS:unmount(prefix)
 	prefix = clean(prefix)
 	for i, m in ipairs(self.mounts) do
 		if m.prefix == prefix then
+			-- the cached root is the namespace's own, so the
+			-- namespace is what releases it. borrowed Chans do not
+			-- close themselves, which is the point of the flag.
+			if m.root then
+				pcall(m.B.clunk, m.root.h)
+				m.root = nil
+			end
 			table.remove(self.mounts, i)
 			return true
 		end
@@ -327,28 +260,63 @@ function NS:lookup(path)
 	end
 	local rest = prefix == "/" and path or path:sub(#prefix + 1)
 
-	return group, rest
+	-- the cleaned path comes back too: every caller wants it as the
+	-- Chan's name, and cleaning it a second time is pure waste on a
+	-- path that is already resolved.
+	return group, rest, path
 end
 
--- resolve to (backend, handle), trying each union member in order and
--- taking the first that resolves -- plan 9's semantics. raises, because
--- it is called from inside the other methods; the public wrappers pcall.
+-- the mount's root, attached once and kept.
+--
+-- every lookup used to call attach(), which is free for a local backend
+-- and a whole round trip through a mounted server -- on every single
+-- operation. lexnames.ms is about the cost of re-evaluating from the
+-- root; this is the cheapest end of that.
+--
+-- it is a BORROWED Chan and is only ever used as a walk origin.
+-- dev.walkpath neither clunks nor mutates what it starts from, so
+-- sharing it is safe. handing it to open() would not be: dev.mem and
+-- espfs both return the SAME handle table from open() on a directory,
+-- so a caller closing what it opened would clunk the namespace's root
+-- out from under every later lookup. hence walkfrom() below attaches
+-- fresh when there is nothing left to walk.
+local function rootof(m)
+	if not m.root then
+		m.root = chan.borrowed(m.B, m.prefix, m.B.attach())
+	end
+	return m.root
+end
+
+-- resolve to a Chan, trying each union member in order and taking the
+-- first that resolves -- plan 9's semantics. raises, because it is
+-- called from inside the other methods; the public wrappers pcall.
+--
+-- the Chan's name is the cleaned path the CALLER asked for, not
+-- anything the backend knows. a backend has no idea what prefix it was
+-- mounted at, and must not be asked.
 function NS:walk(path)
-	local group, rest = self:lookup(path)
+	local group, rest, cleaned = self:lookup(path)
 
 	if not group then
 		dev.error(rest)
 	end
 
+	local names = dev.elements(rest)
 	local lasterr = dev.Enonexist
 
 	for _, m in ipairs(group) do
 		local ok, res = pcall(function()
-			return dev.walkpath(m.B, m.B.attach(), rest)
+			if #names == 0 then
+				-- the mount point itself. fresh, because the
+				-- caller owns whatever it gets back and may
+				-- open or close it.
+				return m.B.attach()
+			end
+			return dev.walknames(m.B, rootof(m).h, names)
 		end)
 
 		if ok then
-			return m.B, res
+			return chan.new(m.B, cleaned, res)
 		end
 		lasterr = res
 	end
@@ -360,17 +328,16 @@ end
 function NS:open(path, mode)
 	mode = mode or "r"
 
-	local ok, res, h = pcall(function()
-		local B, hh = self:walk(path)
+	local ok, res = pcall(function()
+		local c = self:walk(path)
 
-		return B, B.open(hh, mode)
+		return chan.new(c.B, c.path, c.B.open(c.h, mode))
 	end)
 
 	if not ok then
 		return nil, res
 	end
-	return setmetatable({ B = res, h = h, pos = 0, path = clean(path) },
-	    File)
+	return res
 end
 
 -- create and open, like 9P's Tcreate and dev's create.
@@ -385,24 +352,29 @@ function NS:create(path, mode)
 		dir = "/"
 	end
 
-	local ok, res, h = pcall(function()
-		local B, dh = self:walk(dir)
+	local ok, res = pcall(function()
+		local d = self:walk(dir)
 
-		return B, B.create(dh, name, mode or "rw")
+		return chan.new(d.B, cleaned, d.B.create(d.h, name, mode or "rw"))
 	end)
 
 	if not ok then
 		return nil, res
 	end
-	return setmetatable({ B = res, h = h, pos = 0, path = cleaned }, File)
+	return res
 end
 
 function NS:stat(path)
 	local ok, res = pcall(function()
-		local B, h = self:walk(path)
-		local st = B.stat(h)
+		local c <close> = self:walk(path)
+		-- Chan methods return nil+err, so the raise has to be put
+		-- back here: this is an entry point and the fallback below
+		-- depends on knowing it failed.
+		local st, serr = c:stat()
 
-		B.clunk(h)
+		if not st then
+			dev.error(tostring(serr))
+		end
 		return st
 	end)
 
@@ -428,9 +400,19 @@ function NS:readdir(path)
 	local any = false
 	local lasterr = dev.Enonexist
 
+	local names = dev.elements(rest)
+
 	for _, m in ipairs(group or {}) do
 		local ok, ents = pcall(function()
-			local h = dev.walkpath(m.B, m.B.attach(), rest)
+			-- reading the mount point itself needs no walk at all,
+			-- and the cached root is exactly the right handle for
+			-- it -- readdir does not consume what it reads, so
+			-- unlike open() this one may borrow.
+			if #names == 0 then
+				return m.B.readdir(rootof(m).h)
+			end
+
+			local h = dev.walknames(m.B, rootof(m).h, names)
 			local e = m.B.readdir(h)
 
 			m.B.clunk(h)
