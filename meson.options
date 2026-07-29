@@ -1,0 +1,12 @@
+# The net stack is a thin binding over the firmware's own EFI_TCP4 and
+# EFI_UDP4 (src/net.c), so the net tests need firmware built with
+# edk2's NetworkPkg. OVMF and ArmVirtQemu ship with it; the RiscVVirt
+# blob qemu ships does not -- it publishes the virtio-net
+# SimpleNetworkProtocol and nothing above it, no mnp/arp/ip4/dhcp4/
+# tcp4/udp4 (measured; see docs/uefi-notes.md).
+#
+# So this describes the *firmware*, not the arch, and is an option
+# rather than a constant precisely because you can build your own with
+# NETWORK_ENABLE and point OVMF_CODE at it. Its default is per-arch.
+option('fw_network', type: 'feature', value: 'auto',
+  description: 'firmware provides EFI_TCP4/EFI_UDP4 (enables the net tests)')

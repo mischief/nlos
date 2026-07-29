@@ -64,7 +64,7 @@ the kernel core
 src/platform/efi/      current: efi glue, SimpleFS, ConIn/ConOut pumps
 src/platform/microvm/  new: pvh entry, pmm, idt, lapic, ioapic,
                        virtio-mmio, virtio-9p, triple-fault reset
-src/x86_64/            shared machine bits (uart, setjmp, math, fwcfg)
+src/<arch>/            shared machine bits (uart, setjmp, math, fwcfg)
 ```
 
 los.efi exists only on the efi platform; microvm gets los.hw (or

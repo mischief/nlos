@@ -1,9 +1,9 @@
 # lua-os
 
-Lua 5.4 running on bare UEFI x86_64: a cursed fusion of Lua, Mach, and
-Plan 9. Most logic in Lua, small C glue. Isolated Lua states as
-processes, capabilities for all IPC, 9P at every boundary facing the
-outside world.
+Lua 5.4 running on bare UEFI — x86_64, aarch64 or riscv64: a cursed
+fusion of Lua, Mach, and Plan 9. Most logic in Lua, small C glue.
+Isolated Lua states as processes, capabilities for all IPC, 9P at every
+boundary facing the outside world.
 
 Built from scratch — no gnu-efi, no mingw, no EDK II, no glibc. Vanilla
 Lua 5.4 as an unpatched submodule; everything else is ours.
@@ -17,8 +17,36 @@ not to ship a product.
 ```sh
 meson setup build
 meson compile -C build
-ninja -C build qemu     # com1 = console on stdio, com2 = 9p on build/9p.sock
+ninja -C build qemu     # console on stdio, 9p on build/9p.sock
 ```
+
+That builds for the machine you are on. To build for another, hand
+meson a cross file:
+
+```sh
+meson setup build-riscv64 --cross-file cross/riscv64.txt
+meson test -C build-riscv64          # qemu-system-riscv64, under tcg
+```
+
+Either way you need that machine's UEFI firmware: OVMF on x86_64
+(`/usr/share/edk2-ovmf`), AAVMF on aarch64 (`/usr/share/AAVMF`),
+qemu's own `edk2-riscv-code.fd` on riscv64 (`/usr/share/qemu`), or
+`OVMF_CODE`/`OVMF_VARS` in the environment to point elsewhere. Per-arch
+qemu, firmware and devices live in `scripts/arch.sh` and
+`test/qemuarch.py`, which meson tells which arch it built; nothing else
+needs to know.
+
+The 9p wire is a second serial port, which the machines reach very
+differently: com2 at a fixed io port on a pc, a `-device pci-serial`
+card on qemu's `virt` machines (whose one uart belongs to the firmware
+console). The scripts above add whichever is needed.
+
+The riscv64 firmware qemu ships is built without edk2's NetworkPkg — it
+publishes the virtio-net `SimpleNetworkProtocol` and nothing above it —
+and our net stack is a thin binding over the firmware's `EFI_TCP4`/
+`EFI_UDP4`. So networking is absent there and the net tests do not
+register. Build edk2's `RiscVVirtQemu` with `NETWORK_ENABLE` and
+configure `-Dfw_network=enabled` if you want them back.
 
 Talk 9P to it from the host, with plan9port:
 

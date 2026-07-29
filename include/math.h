@@ -5,13 +5,27 @@
 #define NAN		(__builtin_nan(""))
 #define INFINITY	(__builtin_inf())
 
-/* expanded inline by gcc (sse2/sse4.1); c99 inline definitions,
- * external symbols emitted by src/libc/math.c
+/* expanded inline by gcc; c99 inline definitions, external symbols
+ * emitted by src/libc/math.c
  */
 inline double fabs(double x)  { return __builtin_fabs(x); }
 inline double sqrt(double x)  { return __builtin_sqrt(x); }
+
+/* rounding to integral is one instruction on x86_64 (sse4.1 roundsd)
+ * and on aarch64 (frintm/frintp), but not on riscv64: its D extension
+ * has none, so gcc answers the builtin with a call and these wrappers
+ * would be calling themselves. real functions there, in
+ * src/riscv64/math.c -- along with round, which gets no wrapper because
+ * nothing names it: src/libc/softmath.c reaches it via the builtin.
+ */
+#if defined(__riscv)
+double	floor(double x);
+double	ceil(double x);
+double	round(double x);
+#else
 inline double floor(double x) { return __builtin_floor(x); }
 inline double ceil(double x)  { return __builtin_ceil(x); }
+#endif
 
 double	fmod(double x, double y);
 double	pow(double x, double y);

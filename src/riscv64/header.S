@@ -1,6 +1,7 @@
-/* hand-rolled PE32+ header for x86_64 UEFI application.
+/* hand-rolled PE32+ header for riscv64 UEFI application.
  * linked at image base 0; firmware loads us anywhere and we
- * self-relocate in _start before calling efi_main.
+ * self-relocate in _start before calling efi_main. identical to the
+ * aarch64 header apart from the COFF Machine field and the entry stub.
  */
 
 	.section .pe_header, "a"
@@ -16,7 +17,7 @@ pe_header:
 	.ascii	"PE\0\0"
 
 /* COFF file header */
-	.short	0x8664			/* Machine: x86-64 */
+	.short	0x5064			/* Machine: riscv64 */
 	.short	3			/* NumberOfSections */
 	.long	0			/* TimeDateStamp */
 	.long	0			/* PointerToSymbolTable */
@@ -77,14 +78,9 @@ opt_header:
 	.quad	0			/* reserved */
 opt_header_end:
 
-/* section table.
- * two mapped sections, not one: code and rodata are RX, and everything
- * the relocation pass or the running kernel writes -- .data, .got,
- * .bss -- is a separate NX section, split at __data_start by
- * src/pe.ld. firmware with image protection enabled maps a writable
- * section non-executable, so an image whose one section claims both
- * cannot run there; OVMF as shipped tolerated the single RWX section
- * this used to be. this is the shape a UEFI image is supposed to have.
+/* section table: RX text, NX data, discardable reloc stub. see the
+ * comment on the same table in src/aarch64/header.S and the split at
+ * __data_start in src/pe.ld for why this is three sections and not one.
  * RVA and file offset are the same number throughout, since this is a
  * flat binary with FileAlignment == SectionAlignment.
  */
@@ -125,26 +121,33 @@ opt_header_end:
 					   READ | DISCARDABLE */
 
 /* entry point.
- * firmware calls us ms_abi: RCX = EFI_HANDLE, RDX = EFI_SYSTEM_TABLE*.
- * self-relocate, then tail into efi_main(handle, systab) which is sysv.
+ * uefi on riscv64 is the standard riscv calling convention, which is
+ * what we compile to: a0 = EFI_HANDLE, a1 = EFI_SYSTEM_TABLE*. so like
+ * aarch64 and unlike x86_64 there is no abi shuffle -- just preserve
+ * the two arguments across the relocation pass and fall into efi_main.
+ * the frame is 32 bytes so sp stays 16-byte aligned, as lp64d wants.
  */
 	.text
 	.globl	_start
+	.type	_start, %function
 _start:
-	pushq	%rcx
-	pushq	%rdx
-	subq	$8, %rsp
+	addi	sp, sp, -32
+	sd	ra, 24(sp)
+	sd	a0, 0(sp)
+	sd	a1, 8(sp)
 
-	leaq	__image_base(%rip), %rdi
+	/* auipc/addi: pc-relative, so it needs no relocation itself --
+	 * which matters, because relocation is what we are about to do.
+	 */
+	lla	a0, __image_base	/* the load address */
 	call	self_relocate
 
-	addq	$8, %rsp
-	popq	%rdx
-	popq	%rcx
-
-	movq	%rcx, %rdi
-	movq	%rdx, %rsi
-	jmp	efi_main
+	ld	a0, 0(sp)
+	ld	a1, 8(sp)
+	ld	ra, 24(sp)
+	addi	sp, sp, 32
+	tail	efi_main
+	.size	_start, . - _start
 
 /* dummy base relocation block so the firmware does not reject us:
  * one empty block (page rva 0, size 10, one absolute entry).
@@ -153,4 +156,4 @@ _start:
 	.long	0			/* PageRVA */
 	.long	10			/* BlockSize */
 	.short	0			/* IMAGE_REL_BASED_ABSOLUTE */
-	.section .note.GNU-stack, "", @progbits
+	.section .note.GNU-stack, "", %progbits

@@ -6,10 +6,15 @@ local tap = require("tap")
 tap.plan(11)
 
 -- ---- the raw primitive ----
+-- take the baseline BEFORE arming, not after: the deadline is set
+-- inside sys.timer, so anything between the two -- a tap.ok and its
+-- console write, say -- comes out of the measured interval and makes an
+-- on-time timer look early. measuring from before the call can only
+-- overstate the wait, which is the safe direction for this assertion.
+local a = sys.uptime_ms()
 local t = sys.timer(50)
 tap.ok(t ~= nil, "sys.timer returns a right")
 
-local a = sys.uptime_ms()
 local v = thread.recv(t)
 local waited = sys.uptime_ms() - a
 

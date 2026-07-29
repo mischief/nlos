@@ -1,6 +1,7 @@
-/* hand-rolled PE32+ header for x86_64 UEFI application.
+/* hand-rolled PE32+ header for aarch64 UEFI application.
  * linked at image base 0; firmware loads us anywhere and we
- * self-relocate in _start before calling efi_main.
+ * self-relocate in _start before calling efi_main. identical to the
+ * x86_64 header apart from the COFF Machine field and the entry stub.
  */
 
 	.section .pe_header, "a"
@@ -16,7 +17,7 @@ pe_header:
 	.ascii	"PE\0\0"
 
 /* COFF file header */
-	.short	0x8664			/* Machine: x86-64 */
+	.short	0xaa64			/* Machine: aarch64 */
 	.short	3			/* NumberOfSections */
 	.long	0			/* TimeDateStamp */
 	.long	0			/* PointerToSymbolTable */
@@ -83,8 +84,9 @@ opt_header_end:
  * .bss -- is a separate NX section, split at __data_start by
  * src/pe.ld. firmware with image protection enabled maps a writable
  * section non-executable, so an image whose one section claims both
- * cannot run there; OVMF as shipped tolerated the single RWX section
- * this used to be. this is the shape a UEFI image is supposed to have.
+ * cannot run there; AAVMF as shipped does not enforce that, and the
+ * x86_64 header still gets away with a single RWX section. this is the
+ * shape a UEFI image is supposed to have.
  * RVA and file offset are the same number throughout, since this is a
  * flat binary with FileAlignment == SectionAlignment.
  */
@@ -125,26 +127,27 @@ opt_header_end:
 					   READ | DISCARDABLE */
 
 /* entry point.
- * firmware calls us ms_abi: RCX = EFI_HANDLE, RDX = EFI_SYSTEM_TABLE*.
- * self-relocate, then tail into efi_main(handle, systab) which is sysv.
+ * uefi on aarch64 is plain aapcs64, the same convention we compile to:
+ * x0 = EFI_HANDLE, x1 = EFI_SYSTEM_TABLE*. so unlike x86_64 there is no
+ * ms_abi shuffle -- just preserve the two arguments across the
+ * relocation pass and fall into efi_main.
  */
 	.text
 	.globl	_start
+	.type	_start, %function
 _start:
-	pushq	%rcx
-	pushq	%rdx
-	subq	$8, %rsp
+	stp	x29, x30, [sp, #-32]!
+	mov	x29, sp
+	stp	x0, x1, [sp, #16]
 
-	leaq	__image_base(%rip), %rdi
-	call	self_relocate
+	adrp	x0, __image_base	/* pc-relative: the load address */
+	add	x0, x0, :lo12:__image_base
+	bl	self_relocate
 
-	addq	$8, %rsp
-	popq	%rdx
-	popq	%rcx
-
-	movq	%rcx, %rdi
-	movq	%rdx, %rsi
-	jmp	efi_main
+	ldp	x0, x1, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	b	efi_main
+	.size	_start, . - _start
 
 /* dummy base relocation block so the firmware does not reject us:
  * one empty block (page rva 0, size 10, one absolute entry).
@@ -153,4 +156,4 @@ _start:
 	.long	0			/* PageRVA */
 	.long	10			/* BlockSize */
 	.short	0			/* IMAGE_REL_BASED_ABSOLUTE */
-	.section .note.GNU-stack, "", @progbits
+	.section .note.GNU-stack, "", %progbits

@@ -50,5 +50,7 @@ ldexp(double x, int n)
  */
 extern inline double fabs(double x);
 extern inline double sqrt(double x);
+#if !defined(__riscv)		/* real functions there -- see math.h */
 extern inline double floor(double x);
 extern inline double ceil(double x);
+#endif

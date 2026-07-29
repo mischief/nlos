@@ -5,8 +5,9 @@
 # passed through as TAP diagnostics on failure.
 set -eu
 
-OVMF_CODE=${OVMF_CODE:-/usr/share/edk2-ovmf/OVMF_CODE.fd}
-OVMF_VARS=${OVMF_VARS:-/usr/share/edk2-ovmf/OVMF_VARS.fd}
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$here/arch.sh"
+
 TIMEOUT=${TIMEOUT:-60}
 
 img=$1
@@ -18,7 +19,7 @@ payload=$2
 # and the net tasks are never spawned -- which is the right default
 # for tests that don't care, since dhcp costs real boot seconds.
 if [ "${NET:-0}" = "1" ]; then
-	netargs="-netdev user,id=n0 -device virtio-net-pci,netdev=n0"
+	netargs="-netdev user,id=n0 -device $NIC,netdev=n0"
 else
 	netargs="-net none"
 fi
@@ -26,7 +27,7 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-cp "$OVMF_VARS" "$tmp/vars.fd"
+cp "$FW_VARS" "$tmp/vars.fd"
 
 # pin the guest to ONE host cpu.
 #
@@ -52,26 +53,32 @@ cp "$OVMF_VARS" "$tmp/vars.fd"
 # the host tsc is passed through at all.
 #
 # pinning by pid spreads parallel invocations with no coordination, and
-# collisions are harmless per the above. it is a no-op for the cross-tcg
-# arches, which never needed it.
+# collisions are harmless per the above. it is applied only when arch.sh
+# actually selected kvm -- which it does only for a native guest -- since
+# under tcg there is nothing to fix.
 pin=""
-if command -v taskset >/dev/null 2>&1 && command -v nproc >/dev/null 2>&1; then
-	pin="taskset -c $(($$ % $(nproc)))"
-fi
+case $MACHINE in
+*kvm*)
+	if command -v taskset >/dev/null 2>&1 &&
+	   command -v nproc >/dev/null 2>&1; then
+		pin="taskset -c $(($$ % $(nproc)))"
+	fi
+	;;
+esac
 
 # -snapshot: the (possibly shared, parallel) image is never written.
 # the guest powers off via ResetSystem(shutdown) when the test is done;
 # -no-reboot turns any triple-fault into an exit instead of a hang.
 rc=0
-timeout "$TIMEOUT" $pin qemu-system-x86_64 \
-	-enable-kvm -cpu max -display none $netargs -monitor none \
+timeout "$TIMEOUT" $pin $QEMU \
+	$MACHINE -display none $netargs $VIDEO -monitor none \
 	-no-reboot -snapshot \
 	-serial file:"$tmp/serial.log" \
-	-serial null \
+	$(wire_args null) \
 	-fw_cfg name=opt/org.luaos.test,file="$payload" \
-	-drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+	-drive if=pflash,format=raw,readonly=on,file="$FW_CODE" \
 	-drive if=pflash,format=raw,file="$tmp/vars.fd" \
-	-drive format=raw,file="$img" \
+	-drive $BLK,file="$img" \
 	>/dev/null 2>&1 || rc=$?
 
 # strip cr + ansi, keep TAP lines

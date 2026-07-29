@@ -264,11 +264,12 @@ static int have_net;
 static int have_udp;
 
 /* cycles per millisecond, measured once at boot. platform_ticks() is a
- * raw rdtsc -- a cycle count, not a time -- and its rate is whatever
- * this cpu runs at, so every duration in the system was denominated in
- * uncalibrated cycles before this existed. one 100ms Stall is enough:
- * measured stability across boots is ~4 ppm. assumes an invariant tsc
- * (CPUID 0x80000007 EDX bit 8), which holds everywhere we care about.
+ * raw hardware counter -- a tick count, not a time -- and its rate is
+ * whatever this machine runs it at, anywhere from a GHz TSC to the
+ * 62.5MHz arm virtual counter, so every duration in the system was
+ * denominated in uncalibrated ticks before this existed. one 100ms
+ * Stall is enough: measured stability across boots is ~4 ppm. assumes
+ * a constant-rate counter, which both architectures guarantee.
  * see docs/uefi-notes.md.
  */
 static unsigned long long cyc_per_ms;
@@ -1354,6 +1355,11 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "cycles_per_ms");
 	lua_pushinteger(L, default_reductions);
 	lua_setfield(L, -2, "reductions");
+	/* which src/<arch> this image was built from, so nothing in lua
+	 * has to hardcode the answer (init.lua's /uname did).
+	 */
+	lua_pushstring(L, platform_arch());
+	lua_setfield(L, -2, "arch");
 	return 1;
 }
 
@@ -2621,7 +2627,7 @@ kernel_run(void)
 	/* periodic timer: idle becomes a real firmware sleep (hlt)
 	 * instead of a hot stall-poll. the old "timer hangs the serial
 	 * path" mystery was firmware console contention on com2, fixed
-	 * by serial_takeover().
+	 * by uart_takeover().
 	 */
 	if (BS->CreateEvent(EVT_TIMER, TPL_CALLBACK, 0, 0, &tick) !=
 	    EFI_SUCCESS ||

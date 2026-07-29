@@ -20,7 +20,7 @@ end
 
 local root = p9.synth({
 	["README"] = "this is lua-os, mounted over 9p. hello!\n",
-	["uname"] = "lua-os x86_64 uefi\n",
+	["uname"] = "lua-os " .. sys.stats().arch .. " uefi\n",
 	["echo"] = {
 		data = "",
 		write = function(off, data) end,
