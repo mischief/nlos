@@ -259,6 +259,7 @@ lua_payload = files(
   'lib/tcp.lua',
   'lib/thread.lua',
   'lib/udp.lua',
+  'lib/webterm.lua',
   'lib/wire.lua',
 )
 
@@ -288,6 +289,13 @@ run_target('qemu',
 # fetch server), mcp reachable on host tcp/8090
 run_target('fetch-mcp',
   command: [files('scripts/fetch-mcp.sh'), luaos_img],
+  env: archenv,
+)
+
+# boots test/boot/srvweb.lua instead of init.lua: the browser shell,
+# reachable at http://localhost:8080/ (WEB_PORT to change it)
+run_target('website',
+  command: [files('scripts/website.sh'), luaos_img],
   env: archenv,
 )
 
@@ -348,6 +356,16 @@ if fw_network
     args: [files('test/test_http.py'), luaos_img, files('test/boot/srvhttp.lua')],
     protocol: 'tap',
     timeout: 150,
+    env: archenv,
+  )
+
+  # host-driven web terminal test: drives the browser shell as its own
+  # javascript would. the only cover for the full chain -- http ->
+  # session port -> a spawned unprivileged dos proc -> its namespace.
+  test('web-terminal', python,
+    args: [files('test/test_web.py'), luaos_img, files('test/boot/srvweb.lua')],
+    protocol: 'tap',
+    timeout: 180,
     env: archenv,
   )
 
