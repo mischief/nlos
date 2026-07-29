@@ -38,12 +38,22 @@ cp "$OVMF_VARS" "$tmp/vars.fd"
 #
 # measured: 32 guests unpinned lose 12, 64 guests unpinned lose 19, and
 # 64 guests PINNED TWO TO A CORE lose none. so the trigger is migration,
-# not contention -- oversubscribing a pinned core is fine. (the cpu model
-# moves the rate around but never fixes it, and -invtsc/-tsc-deadline do
-# nothing, so the mechanism inside OVMF is not established.)
+# not contention -- oversubscribing a pinned core is fine.
+#
+# it is also specific to the KVM path: 96 unpinned TCG boots stalled
+# none, against 10 of 96 under kvm, which matches the arm and risc-v
+# suites never seeing this in ~150 unpinned cross-tcg boots. that is
+# consistent with host tsc skew across cores, since kvm passes the host
+# tsc through with a per-vcpu offset while tcg synthesises a clock that
+# cannot skew -- but the loop inside OVMF has not been identified, so
+# this is a correlation and not a diagnosis. note -invtsc and
+# -tsc-deadline change nothing, which is NOT evidence against the tsc
+# story: those are guest-visible cpuid bits and do not affect whether
+# the host tsc is passed through at all.
 #
 # pinning by pid spreads parallel invocations with no coordination, and
-# collisions are harmless per the above.
+# collisions are harmless per the above. it is a no-op for the cross-tcg
+# arches, which never needed it.
 pin=""
 if command -v taskset >/dev/null 2>&1 && command -v nproc >/dev/null 2>&1; then
 	pin="taskset -c $(($$ % $(nproc)))"
