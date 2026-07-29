@@ -1,11 +1,15 @@
 -- espfs: the ESP as a dev backend (see lib/dev.lua for the interface).
 --
--- reads and enumeration go through los.fs, which is ambient for the same
--- reason io.open's read path is. WRITES go through io.open in write
--- mode, which is gated on the disk capability -- so a proc without it
--- raises Eperm from create()/open() and everything else still works.
--- that is deliberate: the gate belongs where the risk is, and reading
--- the esp is not the risk.
+-- EVERYTHING goes through los.fs -- enumeration, metadata and file data
+-- alike. espfs is the ESP driver, so it reaches the platform directly
+-- rather than through io, which is itself built on that platform; and
+-- keeping all of ESP access behind one module is what lets that module
+-- later belong to a single owning task.
+--
+-- writes are gated on the disk capability inside los.fs.open, so a proc
+-- without it raises Eperm from create()/open() and everything else still
+-- works. that is deliberate: the gate belongs where the risk is, and
+-- reading the esp is not the risk.
 --
 -- failures are raised, not returned; see lib/dev.lua on why, and catch
 -- with pcall at whatever counts as an entry point.
@@ -118,7 +122,7 @@ function M.new(root)
 			return dev.closable(B, h)
 		end
 
-		local f = io.open(h.path, mode == "r" and "r" or "w")
+		local f = fs.open(h.path, mode == "r" and "r" or "w")
 
 		if not f then
 			-- write mode without the disk capability lands here,
@@ -129,7 +133,7 @@ function M.new(root)
 		return dev.closable(B, h)
 	end
 
-	-- create and open in one step, like 9P's Tcreate. io.open in write
+	-- create and open in one step, like 9P's Tcreate. fs.open in write
 	-- mode does both, so this is also where the disk capability is
 	-- checked -- a proc without it gets nil plus a message here rather
 	-- than a half-made file.
@@ -139,7 +143,7 @@ function M.new(root)
 		end
 
 		local path = join(h.path, name)
-		local f = io.open(path, "w")
+		local f = fs.open(path, "w")
 
 		if not f then
 			-- no disk capability, or an unwritable path
@@ -153,7 +157,7 @@ function M.new(root)
 			-- asked to create then read: reopen read-only so the
 			-- handle behaves the way the mode says it should
 			f:close()
-			nh.f = io.open(path, "r")
+			nh.f = fs.open(path, "r")
 			if not nh.f then
 				err(dev.Eio)
 			end
@@ -168,10 +172,10 @@ function M.new(root)
 		if not h.f then
 			err(dev.Ebadusefd)
 		end
-		if not h.f:seek("set", off) then
+		if not h.f:seek(off) then
 			err(dev.Eio)
 		end
-		return h.f:read(n) or ""	-- nil at eof; "" is the contract
+		return h.f:read(n)		-- "" at eof, which is the contract
 	end
 
 	function B.write(h, off, data)
@@ -181,7 +185,7 @@ function M.new(root)
 		if not h.f then
 			err(dev.Ebadusefd)
 		end
-		if not h.f:seek("set", off) then
+		if not h.f:seek(off) then
 			err(dev.Eio)
 		end
 		if not h.f:write(data) then
