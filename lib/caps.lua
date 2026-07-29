@@ -91,8 +91,8 @@ function M.udp(handle)
 
 	-- connectionless: no listen/accept/dial, every send names its
 	-- destination, every recv reports the sender's.
-	function u.open(port)
-		return req({ op = "open", port = port })
+	function u.open(port, raw)
+		return req({ op = "open", port = port, raw = raw })
 	end
 	function u.send(connid, a, b, c, d, port, data)
 		return req({ op = "send", connid = connid,

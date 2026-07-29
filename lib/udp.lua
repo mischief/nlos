@@ -79,7 +79,7 @@ while true do
 		local reply = m.reply and m.reply.__right
 
 		if m.op == "open" then
-			local raw = platform.open(m.port)
+			local raw = platform.open(m.port, m.raw)
 			sys.send(reply, raw and newconn(raw) or nil)
 			sys.close(reply)
 		elseif m.op == "send" then

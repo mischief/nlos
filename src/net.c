@@ -514,7 +514,7 @@ struct udpconn {
 };
 
 void *
-udp_open(unsigned short port)
+udp_open(unsigned short port, int raw)
 {
 	if (!udp4_sb)
 		return 0;
@@ -546,7 +546,24 @@ udp_open(unsigned short port)
 	EFI_UDP4_CONFIG_DATA cfg;
 
 	memset(&cfg, 0, sizeof cfg);
-	cfg.UseDefaultAddress = 1;
+	/* raw: configure with NO address at all -- 0.0.0.0/0, accepting
+	 * broadcast. that is what a DHCP client needs, because it has to
+	 * send from 0.0.0.0:68 and receive a broadcast reply before any
+	 * mapping exists, which is precisely what a mapping requires.
+	 *
+	 * these are EDK2's own values for the same job: see
+	 * NetworkPkg/Dhcp4Dxe/Dhcp4Driver.c's DhcpConfigUdpIo, which is
+	 * how the firmware's client configures its pre-lease port. matched
+	 * deliberately rather than arrived at -- AcceptPromiscuous stays
+	 * FALSE because theirs does and broadcast alone suffices, verified.
+	 */
+	if (raw) {
+		cfg.UseDefaultAddress = 0;
+		cfg.AcceptBroadcast = 1;
+		cfg.AllowDuplicatePort = 1;
+	} else {
+		cfg.UseDefaultAddress = 1;
+	}
 	cfg.StationPort = port;	/* 0: firmware picks an ephemeral port */
 	/* ReceiveTimeout only discards already-arrived-but-unclaimed
 	 * datagrams sitting in the driver's own internal queue (verified
@@ -1039,7 +1056,8 @@ luaopen_los_platform_tcp(lua_State *L)
 static int
 l_udp_open(lua_State *L)
 {
-	void *c = udp_open((unsigned short)luaL_checkinteger(L, 1));
+	void *c = udp_open((unsigned short)luaL_checkinteger(L, 1),
+	    lua_toboolean(L, 2));
 
 	if (!c)
 		return 0;

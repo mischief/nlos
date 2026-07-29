@@ -31,7 +31,7 @@ int	net_recv_poll(void *token, void **data, unsigned long *len);
  * succeeds if tcp4 alone is present -- these just return 0/fail if
  * no udp4 service binding was ever found).
  */
-void	*udp_open(unsigned short port);
+void	*udp_open(unsigned short port, int raw);
 void	udp_close(void *conn);
 void	udp_cancel(void *conn);
 
