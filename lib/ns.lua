@@ -631,16 +631,20 @@ function M.adopt(desc)
 	if not n then
 		return nil, err
 	end
-	current = n
-	M.searcher()
-	return n
+	return M.setcurrent(n)
 end
 
 -- for a proc that built its namespace itself rather than inheriting one
 -- (proc 0, and anything holding the raw ESP).
+--
+-- having a namespace is what routes require() AND io.open through it.
+-- both are installed here rather than left to the caller for the reason
+-- lib/proc.lua gives: a step you can forget is a step that silently
+-- falls back to reaching outside the namespace.
 function M.setcurrent(n)
 	current = n
 	M.searcher()
+	require("nsio").install()
 	return n
 end
 
