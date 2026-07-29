@@ -37,9 +37,16 @@
 -- proc's own port, so only something holding a right to this task can
 -- mount it at all. the check is the mount, not a permission bit.
 --
--- shape is lib/dns.lua's otherwise: an ordinary spawned proc, not a
--- kernel-level exclusive task, holding rights handed to it in its first
--- message. it needs TWO, which is unusual here:
+-- an ordinary spawned proc, not a kernel-level exclusive task, holding
+-- rights that arrived in its spawn ARG rather than in a first message.
+-- that matters here specifically: this proc's port belongs to srv.serve,
+-- and a first message landing in the same queue would have to be
+-- consumed before serving starts and never after -- a sequencing rule
+-- with nothing enforcing it. rights travel through arg exactly as they
+-- do through a message (see api_spawn's comment, and
+-- test_spawnarg.lua), so the coupling simply does not exist.
+--
+-- it needs TWO rights, which is unusual here:
 --
 --	udp   to speak the protocol, on a socket with no address
 --	      (udp.open(port, true) -- see udp_open's raw case in net.c)
@@ -54,15 +61,15 @@ local dev = require("dev")
 local srv = require("srv")
 local dhcp = require("dhcp")
 
-local m = thread.recv(sys.SELF)
+local a = ...
 
-if not (m and m.udp and m.tcp) then
+if not (type(a) == "table" and a.udp and a.tcp) then
 	return
 end
 
-local tcp = caps.tcp(m.tcp.__right)
-local udp = caps.udp(m.udp.__right)
-local udph = m.udp.__right
+local tcp = caps.tcp(a.tcp.__right)
+local udp = caps.udp(a.udp.__right)
+local udph = a.udp.__right
 local mac = tcp.hwaddr()
 
 -- ---- state ----

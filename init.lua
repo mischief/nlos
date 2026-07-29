@@ -216,13 +216,17 @@ local has_udp = caps_of.udp ~= nil
 local dhcpd = nil
 
 if has_tcp and has_udp then
-	local _, h = proc.spawn(assert(rootns:readfile("/lib/dhcpd.lua")),
-	    { name = "dhcp", ns = nsdesc })
+	-- the rights ride in the spawn ARG, not a first message: dhcpd's own
+	-- port is srv.serve's, and a message arriving there would have to be
+	-- consumed before serving began and never after. rights travel
+	-- through arg exactly as through a message (api_spawn's comment).
+	local pid, h = proc.spawn(assert(rootns:readfile("/lib/dhcpd.lua")),
+	    { name = "dhcp", ns = nsdesc, arg = {
+	        tcp = { __right = caps_of.tcp },
+	        udp = { __right = caps_of.udp },
+	    } })
 
-	if pcall(sys.send, h, {
-	    tcp = { __right = caps_of.tcp },
-	    udp = { __right = caps_of.udp },
-	}) then
+	if pid then
 		dhcpd = h
 		-- the lease as a filesystem, at /net. mounted BEFORE nsdesc
 		-- is taken below, so every child inherits it -- which is how

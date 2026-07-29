@@ -90,11 +90,12 @@ local N = nsmod.new()
 assert(N:mount("/", require("mnt").new(g.esp), "mnt",
     { port = { __right = g.esp } }))
 
+-- rights in the ARG, not a first message: dhcpd's port is srv.serve's
 local pid, h = proc.spawn(assert(N:readfile("/lib/dhcpd.lua")),
-    { name = "dhcp2", ns = N:describe() })
+    { name = "dhcp2", ns = N:describe(), arg = {
+        tcp = { __right = g.tcp }, udp = { __right = g.udp } } })
 
-tap.ok(pid ~= nil, "dhcpd spawns")
-sys.send(h, { tcp = { __right = g.tcp }, udp = { __right = g.udp } })
+tap.ok(pid ~= nil, "dhcpd spawns with its rights in the spawn arg")
 
 N:mount("/net", require("mnt").new(h), "mnt", { port = { __right = h } })
 
