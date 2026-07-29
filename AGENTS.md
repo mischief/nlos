@@ -139,6 +139,15 @@ putting anything blocking behind a stdlib hook.
 `io.write`/`print` stay everywhere — the console is a device, not a file,
 and `/dev/cons` does not exist yet.
 
+**Stripping a stdlib field is not enough on its own.** `src/linit.c`
+loads io/debug/table/math/utf8/coroutine lazily via a metatable on `_G`,
+and `luaL_requiref` re-runs the opener whenever `package.loaded[name]` is
+falsy. An unprivileged proc can clear both and be handed a fresh, whole
+`io` — which read a real ESP file out of a proc whose namespace held one
+in-memory tree. The lazy loader therefore re-strips
+(`kernel_strip_io`). **Any future removal from a lazily-loaded library
+must do the same**, and `test/boot/test_escape.lua` is where to prove it.
+
 **A Chan carries its name.** `lib/chan.lua` is (backend, handle, Cname)
 — Plan 9's Chan, spelled the same on purpose. The name is the *caller's*
 cleaned path and never anything a backend reports, because a backend has

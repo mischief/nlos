@@ -17,6 +17,20 @@ void	kernel_run(void);			/* until all procs die */
  */
 int	kernel_current_has_disk(void);
 
+/* the file half of io is removed from every proc but proc 0 (see
+ * proc_new). it has to be removable from TWO places, because linit.c
+ * loads io lazily through a metatable on _G and luaL_requiref re-runs
+ * the opener whenever package.loaded[name] is falsy -- which an
+ * unprivileged proc can arrange, handing itself a fresh working
+ * io.open. so the lazy loader re-strips, using these.
+ *
+ * kernel_strip_io expects the io table on top of the stack and leaves
+ * it there.
+ */
+struct lua_State;
+void	kernel_strip_io(struct lua_State *L);
+int	kernel_current_is_boot(void);
+
 /* dynamic wait-set for token/Event-based device completions (net.c's
  * tcp4 tokens today). register while an operation is outstanding,
  * unregister once its Event has fired and been handled.

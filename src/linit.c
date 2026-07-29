@@ -11,6 +11,8 @@
 #include "lualib.h"
 #include "lauxlib.h"
 
+#include "kernel.h"
+
 /* there's no top-level "los" module: los.sys/los.efi/los.thread and
  * (for exactly one task each) los.platform.* are registered directly
  * in package.preload per proc by kernel.c's proc_new, and chunks
@@ -48,6 +50,24 @@ lazylib_index(lua_State *L)
 		for (i = 0; i < sizeof lazylibs / sizeof lazylibs[0]; i++)
 			if (strcmp(key, lazylibs[i].name) == 0) {
 				luaL_requiref(L, key, lazylibs[i].f, 1);
+				/* RE-STRIP. luaL_requiref re-runs the opener
+				 * whenever package.loaded[name] is falsy, and
+				 * an unprivileged proc can do
+				 *
+				 *	package.loaded.io = nil
+				 *	_G.io = nil
+				 *	io.open("/init.lua")
+				 *
+				 * to land here and be handed a fresh, whole io
+				 * -- which read a real ESP file straight out
+				 * of a proc whose namespace held one in-memory
+				 * tree. the strip in proc_new is not enough on
+				 * its own because this path can rebuild what
+				 * it removed.
+				 */
+				if (strcmp(key, LUA_IOLIBNAME) == 0 &&
+				    !kernel_current_is_boot())
+					kernel_strip_io(L);
 				return 1;
 			}
 	lua_pushnil(L);

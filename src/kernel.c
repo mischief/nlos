@@ -170,6 +170,7 @@ struct kproc {
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
 	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
+	int priv;		/* PRIV_*; only PRIV_BOOT keeps raw file access */
 };
 
 static struct kproc procs[MAXPROCS];
@@ -971,6 +972,30 @@ port_push(struct kport *port, const unsigned char *data, size_t len,
 	}
 	memcpy(copy, data, len);
 	return port_push_owned(port, copy, len, refs, 0, nrefs);
+}
+
+/* remove the file half of io; the console half stays. see kernel.h on
+ * why this is callable from linit.c as well as proc_new.
+ */
+void
+kernel_strip_io(lua_State *L)
+{
+	static const char *const gone[] = {
+		"open", "lines", "input", "output", "popen", "tmpfile", NULL
+	};
+
+	if (!lua_istable(L, -1))
+		return;
+	for (int i = 0; gone[i]; i++) {
+		lua_pushnil(L);
+		lua_setfield(L, -2, gone[i]);
+	}
+}
+
+int
+kernel_current_is_boot(void)
+{
+	return current_proc && current_proc->priv == PRIV_BOOT;
 }
 
 /* ---- lua api (proc pointer lives in the state's extra space) ---- */
@@ -2107,18 +2132,12 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * confined to until it has made one.
 	 */
 	if (priv != PRIV_BOOT) {
-		static const char *const iogone[] = {
-			"open", "lines", "input", "output", "popen",
-			"tmpfile", NULL
-		};
-
+		/* referencing "io" here also FORCES the lazy load, so the
+		 * table exists and is stripped rather than being created
+		 * fresh (and whole) at first use.
+		 */
 		lua_getglobal(p->L, "io");
-		if (lua_istable(p->L, -1)) {
-			for (int i = 0; iogone[i]; i++) {
-				lua_pushnil(p->L);
-				lua_setfield(p->L, -2, iogone[i]);
-			}
-		}
+		kernel_strip_io(p->L);
 		lua_pop(p->L, 1);
 
 		/* both load a chunk straight off the disk, which is the same
@@ -2152,6 +2171,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * on demand by require("los.thread") -- no auto-run bootstrap.
 	 */
 	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, p->reductions);
+	p->priv = priv;
 	p->mem_limit = mem_limit;
 	p->weight = 1;
 	p->cputime = 0;
