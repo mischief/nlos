@@ -301,6 +301,48 @@ local function recv(h)
 	end
 end
 
+-- a reply port belonging to the CALLING THREAD, made once and reused.
+--
+-- request/reply over ports needs somewhere for the reply to land, and
+-- the natural owner is the caller, not the service. a thread makes one
+-- synchronous call at a time by construction -- it blocks for the
+-- answer -- so ONE port per thread serves every service it will ever
+-- talk to, however many mounts or tasks that is.
+--
+-- this is what makes 9P's tags unnecessary rather than merely omitted.
+-- tags exist to demultiplex several outstanding replies arriving on one
+-- channel; distinct ports need no demultiplexing at all, so threads
+-- sharing a service stop serialising behind a lock and the replies
+-- still cannot be confused. see lib/mnt.lua, which was the lock.
+--
+-- the budget is real: MAXPORTS is 128 for the whole system. so the
+-- table is weak-keyed and the port carries a finalizer, and a thread
+-- that exits gives its port back rather than holding one until the proc
+-- dies. running out is raised, not worked around -- silently falling
+-- back to a shared port would reintroduce exactly the crossed replies
+-- this exists to prevent.
+local replyports = setmetatable({}, { __mode = "k" })
+
+local function replyport()
+	local co = coroutine.running()
+	local p = replyports[co]
+
+	if not p then
+		local h = sys.newport()
+
+		if not h then
+			error("out of ports", 0)
+		end
+		p = setmetatable({ h = h }, {
+			__gc = function(t)
+				pcall(sys.close, t.h)
+			end,
+		})
+		replyports[co] = p
+	end
+	return p.h
+end
+
 -- readline: a request/reply against cons, the sole task with raw
 -- keyboard access. the prompt itself is plain io.write (ambient
 -- stdout, unaffected by any of this); only the line comes from cons.
@@ -393,6 +435,7 @@ end
 
 thread.park = park
 thread.recv = recv
+thread.replyport = replyport
 thread.readline = readline
 thread.sleep = sleep
 thread.recvtimeout = recvtimeout

@@ -12,7 +12,10 @@
 --      indistinguishable from local ones -- bare 9front strings.
 --   4. fids are finalized, so ns:walk's unclunked intermediates do not
 --      leak in the server forever.
---   5. the server exits when its last client goes away.
+--   5. threads sharing a mount pipeline instead of serialising, and
+--      their replies cannot cross -- the reply port belongs to the
+--      caller, which is why there are no tags.
+--   6. the server exits when its last client goes away.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -21,7 +24,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(19)
+tap.plan(21)
 
 -- ---- the server proc ----
 --
@@ -203,6 +206,39 @@ tap.is(m["local"], "-- local\n",
 -- the parent's own mount is unaffected: rights are copied, not moved
 tap.is(N:readfile("/host/hello"), "hello from another proc\n",
     "describe() did not consume the parent's right")
+
+-- ---- threads sharing a mount pipeline, and do not read each other's
+-- ---- replies ----
+--
+-- the reply port belongs to the thread rather than the mount, so both
+-- of these have a request in flight at once. that is the whole reason
+-- there are no tags, and it is only safe if the answers cannot cross.
+
+local crossed, rounds = 0, 60
+local done = { 0, 0 }
+
+thread.spawn(function()
+	for _ = 1, rounds do
+		if N:readfile("/host/hello") ~= "hello from another proc\n" then
+			crossed = crossed + 1
+		end
+		done[1] = done[1] + 1
+	end
+end)
+thread.spawn(function()
+	for _ = 1, rounds do
+		if N:readfile("/host/sub/deep") ~= "deep file\n" then
+			crossed = crossed + 1
+		end
+		done[2] = done[2] + 1
+	end
+end)
+thread.run()
+
+tap.is(crossed, 0, "two threads shared one mount for " .. (rounds * 2) ..
+    " reads with no crossed replies")
+tap.ok(done[1] == rounds and done[2] == rounds,
+    "and both finished: " .. done[1] .. "/" .. done[2])
 
 -- ---- claim 5: the server exits when its last client goes ----
 

@@ -58,38 +58,64 @@ local dev = require("dev")
 
 local M = {}
 
+-- ONE counter for the whole proc, not one per mount. the reply port is
+-- per thread and shared across every mount that thread uses, so two
+-- mounts numbering their own requests would collide on it -- mount A's
+-- abandoned #5 would look exactly like mount B's pending #5.
+local seq = 0
+
+local function nextseq()
+	seq = seq + 1
+	return seq
+end
+
 -- new(right) -> a dev backend speaking to the server holding `right`.
 function M.new(right)
 	local B = {}
 
-	-- one reply port for the whole mount, reused. concurrent callers
-	-- inside one proc are serialised by the lock rather than
-	-- demultiplexed by a tag, which is what plan 9's Mnt does with its
-	-- own lock and queue. outside thread.run() the lock never blocks,
-	-- because without threads there is no second caller.
-	local reply = sys.newport()
-	local lock = thread.qlockcreate()
-
+	-- the reply port belongs to the CALLING THREAD, not to this mount
+	-- (thread.replyport). so two threads using one mount do not
+	-- serialise: each sends immediately and waits on its own port, and
+	-- the server sees both requests queued instead of being told about
+	-- the second only after the first round trip has finished.
+	--
+	-- plan 9's Mnt cannot do this. it has one channel to the server, so
+	-- it needs tags plus a lock plus a queue of Mntrpc to sort the
+	-- replies back out. ports are cheap enough to give one to each
+	-- caller instead, which deletes the demultiplexer rather than
+	-- reimplementing it.
 	local function rpc(msg)
+		local reply = thread.replyport()
+
+		msg.seq = nextseq()
 		msg.reply = { __right = reply }
 
-		lock:lock()
-		local ok, res = pcall(function()
-			sys.send(right, msg)
-			return thread.recv(reply)
-		end)
-
-		lock:unlock()
-		if not ok then
+		if not pcall(sys.send, right, msg) then
 			dev.error(dev.Eio)	-- server gone, or right closed
 		end
-		if type(res) ~= "table" then
-			dev.error(dev.Eio)
+
+		-- a NON-matching reply belongs to a request this thread
+		-- abandoned -- today only possible if an error (a memory cap,
+		-- say) unwinds between the send and the recv, but guaranteed
+		-- the moment rpcs grow a deadline, which is a listed debt.
+		-- dropping it here is the difference between one lost call and
+		-- every later call reading the previous one's answer.
+		--
+		-- note this is NOT a tag: nothing routes on it, no table maps
+		-- it to a waiter. it only says "not mine".
+		while true do
+			local res = thread.recv(reply)
+
+			if type(res) ~= "table" then
+				dev.error(dev.Eio)
+			end
+			if res.seq == msg.seq then
+				if res.err then
+					dev.error(res.err)
+				end
+				return res
+			end
 		end
-		if res.err then
-			dev.error(res.err)
-		end
-		return res
 	end
 
 	-- a handle is {fid=n}, finalized. clunk clears fid so an explicit

@@ -21,15 +21,16 @@
 -- this). what does not survive is everything the wire format needs and
 -- a port supplies for free:
 --
---   tag/Tflush   the reply right carried in the request. ONE port per
---                mount, reused -- what travels per call is a right to
---                it, which the serializer writes as three bytes and
---                srv closes after replying. measured at under 5% of a
---                round trip, and cheaper than the plain table it
---                replaces. the cost is not allocation, it is that a
---                mount has one outstanding request at a time (see
---                lib/mnt.lua); tags are what buy pipelining, and a
---                reply port per THREAD would buy it back without them.
+--   tag/Tflush   a reply right carried in each request, pointing at the
+--                CALLING THREAD's own port (thread.replyport). tags
+--                exist to demultiplex several outstanding replies on
+--                one channel; one port per caller means there is
+--                nothing to demultiplex, so requests still pipeline and
+--                no table maps answers back to waiters. the right
+--                itself costs three bytes in the serializer, measured
+--                under 5% of a round trip and cheaper than the plain
+--                table it replaces. abandoning a request is closing a
+--                right.
 --   Tauth        holding the right IS the authentication. a proc that
 --                was never sent this port cannot reach this backend.
 --   msize        the serializer's own limits already bound a message.
@@ -153,7 +154,7 @@ local function dispatch(S, m)
 
 	if not fn then
 		if reply then
-			sys.send(reply, { err = dev.Enotimpl })
+			sys.send(reply, { err = dev.Enotimpl, seq = m.seq })
 			sys.close(reply)
 		end
 		return
@@ -162,14 +163,22 @@ local function dispatch(S, m)
 	local ok, res = pcall(fn, S, m)
 
 	if reply and not NOREPLY[m.op] then
+		local out
+
 		if ok then
-			sys.send(reply, res or {})
+			out = res or {}
 		else
 			-- the message crosses the port as a bare string and
 			-- mnt re-raises it, which is what makes an error from
 			-- another proc indistinguishable from a local one.
-			sys.send(reply, { err = tostring(res) })
+			out = { err = tostring(res) }
 		end
+		-- echoed, never interpreted. it is the client's own marker
+		-- for "this answer is the one I am still waiting for"; the
+		-- server keeps no state about it, which is exactly what
+		-- distinguishes it from a 9P tag.
+		out.seq = m.seq
+		sys.send(reply, out)
 	end
 	if reply then
 		sys.close(reply)
