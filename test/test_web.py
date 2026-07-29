@@ -72,7 +72,7 @@ def main():
         *qemuarch.disk(img),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    print("1..19", flush=True)
+    print("1..20", flush=True)
     try:
         deadline = time.time() + 60
         up = False
@@ -154,6 +154,17 @@ def main():
         # and the moment a lost user actually needs it
         r, out = line("nosuchthing")
         ok("help" in out, f"an unknown command points at help -> {out!r}")
+
+        # THE sandbox assertion. a visitor's program must not be able to
+        # reach the disk behind its namespace. proc_new nils io.open /
+        # loadfile / dofile for every proc but PRIV_BOOT, and prog.lua
+        # adds back only io.write -- so this is checking the property
+        # the whole public-shell idea rests on, in the one place a
+        # visitor can actually run code.
+        r, out = line("probe")
+        ok("io.open=false" in out and "loadfile=false" in out
+           and "dofile=false" in out,
+           f"a visitor's program has no ambient file access -> {out!r}")
 
         # writes land in the visitor's private copy of the tree
         r, out = line("seq 1 3 > /tmp/x")

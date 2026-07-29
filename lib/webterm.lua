@@ -35,24 +35,42 @@
 -- nsdesc -- plain data for a "mem" tree, so each visitor gets a
 -- private copy and writes are scratch that die with the session.
 --
--- deliberately NOT mounted for a public session: espfs. ns.lua's
--- espfs kind rebuilds itself from the ESP (see the register() calls at
--- the foot of ns.lua), so restoring one hands the visitor the whole
--- disk rather than the subtree you meant. a namespace is only a
--- capability for the kinds that carry their authority with them -- mem
--- (data) and mnt (a port right).
+-- deliberately NOT handed to a public session: the `esp` right. it is
+-- a mount to lib/espsrv.lua, and that task holds diskport -- so a
+-- client holding the right can CREATE AND WRITE on the real ESP, not
+-- merely read it. giving a visitor the namespace proc 0 runs with would
+-- let them rewrite /lib/dos.lua. what a public session gets is `mem`
+-- (plain data, a private copy per visitor) and, if it ever needs the
+-- disk, a right to a server that serves a READ-ONLY view -- which does
+-- not exist yet, see below.
 --
--- ---- what this does NOT confine ----
+-- ---- what confines a visitor, and what does not ----
 --
--- ESP reads are ambient by design: src/linit.c puts `io` in every
--- proc's lazy library set, and src/kernel.c gates diskport on write
--- only, on the stated grounds that the threat model is buggy lua
--- rather than hostile users. a visitor can therefore io.open and read
--- any file on the ESP whatever its namespace says. that is fine for a
--- disk holding nothing secret, which is the deployment assumption
--- here; it is NOT fine as a general sandbox, and the fix is to route
--- io through the calling proc's namespace rather than to remove it.
--- writes are gated, so a visitor cannot alter the disk either way.
+-- file access is confined: proc_new nils io.open/lines/input/output/
+-- popen/tmpfile plus loadfile/dofile for every proc except PRIV_BOOT
+-- (src/kernel.c), and lib/nsio.lua puts io.open back only over an
+-- adopted namespace. so a visitor's shell and its programs reach
+-- exactly what their namespace holds. test_web.py asserts this through
+-- /bin/probe rather than trusting it.
+--
+-- MODULE lookup is not confined, and that is a deliberate compromise
+-- rather than an oversight. this module spawns the visitor with a bare
+-- sys.spawn and does NOT use lib/proc.lua's spawn(src, {ns=}), so the
+-- visitor never adopts and its require() falls back to the ambient
+-- LUA_PATH searcher -- exactly what proc.lua's header warns against.
+--
+-- the reason: adopting routes require() through the namespace, and a
+-- visitor's namespace is a mem tree with no /lib in it, so adopting
+-- would leave require("dos") with nowhere to look. the honest fix is a
+-- read-only ESP server proc -- srv.main over a backend that delegates
+-- reads and raises Eperm on create/write -- mounted at /lib and /bin,
+-- shared by every session instead of copied into each. that is one
+-- small file and it closes this and the /bin copy in the same move.
+--
+-- what the compromise actually costs is narrow: require() names
+-- modules, it does not read arbitrary files, and a visitor has no eval
+-- to call it with anyway. programs are still loaded from the namespace
+-- by prog.lua, not by the searcher.
 
 local sys = require("los.sys")
 local thread = require("los.thread")

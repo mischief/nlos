@@ -62,6 +62,21 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 		-- the deadline is a producer PACED slow enough never to fill
 		-- the queue and steady enough to keep the drain loop fed --
 		-- which is this. not shipped to visitors; test/boot only.
+		-- for test_web.py: reports what ambient authority a visitor's
+		-- program actually holds. this is the sandbox assertion, and
+		-- it is a PROGRAM because there is no other way to run code
+		-- as a visitor -- the shell has no eval.
+		["probe.lua"] = [==[
+			local unistd = require("posix.unistd")
+			local out = {}
+
+			out[#out + 1] = "io.open=" .. tostring(io.open ~= nil)
+			out[#out + 1] = "loadfile=" ..
+			    tostring(loadfile ~= nil)
+			out[#out + 1] = "dofile=" .. tostring(dofile ~= nil)
+			unistd.write(1, table.concat(out, " ") .. "\n")
+		]==],
+
 		["drip.lua"] = [==[
 			local thread = require("los.thread")
 			local unistd = require("posix.unistd")
