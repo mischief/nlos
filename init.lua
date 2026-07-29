@@ -19,6 +19,16 @@ local caps_of = sys.granted()
 -- to already be. plan 9 gets this from fork; we get it from arg.
 local nsmod = require("ns")
 local proc = require("proc")
+
+-- route proc 0's own print/io.write through the cons task, so output has
+-- an owner rather than every proc calling console_write directly. from
+-- here on everything proc.spawn creates inherits this right, and
+-- redirecting a proc means handing it a different one.
+--
+-- proc 0 is PRIV_BOOT so it could have kept the raw path; using the port
+-- means the ONE place output is serialised is the task that owns the
+-- console, which is what "one owner per resource" asks for.
+require("stdout").set(caps_of.cons)
 local rootns = nsmod.new()
 
 -- mount FIRST, adopt second. adopting is what routes require() through

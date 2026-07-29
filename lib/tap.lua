@@ -5,19 +5,24 @@
 
 local sys = require("los.sys")
 
+-- TAP goes to the console directly, captured at load time, so it cannot
+-- be redirected by lib/stdout.lua. a test that redirects its own print
+-- must still be able to report the result.
+local emit = io.write
+
 local M = { n = 0, failed = 0 }
 
 function M.plan(n)
-	print(("1..%d"):format(n))
+	emit(("1..%d"):format(n) .. "\n")
 end
 
 function M.ok(cond, name)
 	M.n = M.n + 1
 	if cond then
-		print(("ok %d - %s"):format(M.n, name))
+		emit(("ok %d - %s"):format(M.n, name) .. "\n")
 	else
 		M.failed = M.failed + 1
-		print(("not ok %d - %s"):format(M.n, name))
+		emit(("not ok %d - %s"):format(M.n, name) .. "\n")
 	end
 	return cond
 end
@@ -32,11 +37,11 @@ function M.is(got, want, name)
 end
 
 function M.diag(s)
-	print("# " .. tostring(s))
+	emit("# " .. tostring(s) .. "\n")
 end
 
 function M.done()
-	print("# test complete, powering off")
+	emit("# test complete, powering off\n")
 	-- a tap payload is always the boot payload (injected via fw_cfg in
 	-- place of init.lua), so the power capability is in its own grant
 	-- table. there is no well-known handle number to use instead.
@@ -45,7 +50,7 @@ function M.done()
 	if power then
 		sys.send(power, { op = "reset", mode = "shutdown" })
 	else
-		print("# no power capability; cannot power off")
+		emit("# no power capability; cannot power off\n")
 	end
 end
 

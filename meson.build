@@ -247,6 +247,7 @@ lua_payload = files(
   'lib/ns.lua',
   'lib/nsio.lua',
   'lib/srv.lua',
+  'lib/stdout.lua',
   'lib/dos.lua',
   'lib/power.lua',
   'lib/proc.lua',
@@ -296,7 +297,7 @@ run_target('fetch-mcp',
 
 boottest = files('scripts/boottest.sh')
 
-boot_tests = ['spawnarg', 'nsio', 'escape', 'channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
+boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
               'math',
               'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
               'procfs', 'mnt']

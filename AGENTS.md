@@ -136,8 +136,21 @@ continuation to resume into. `pcall` is safe — `lbaselib.c` uses
 (:633) **and to run the loaded chunk** (:662). So neither a searcher nor
 a module's own top-level body may block. Check for `lua_callk` before
 putting anything blocking behind a stdlib hook.
-`io.write`/`print` stay everywhere — the console is a device, not a file,
-and `/dev/cons` does not exist yet.
+**Output is a port too** (`lib/stdout.lua`). `print`/`io.write` send
+`{op="write", data=}` to a port the proc was granted, so redirecting a
+proc means handing it a different right. `proc.spawn` inherits the
+parent's by default; `out = false` means nowhere. There is deliberately
+no fallback to `console_write` — a fallback is indistinguishable from a
+grant until you are debugging where output went. Kernel-spawned tasks and
+`platform_abort` keep the raw C path by construction, because a driver
+that cannot report its own failure is worse than an ambient write.
+
+**`proc.spawn`'s bootstrap must `require` everything it needs BEFORE
+`adopt()`.** Adopting routes `require` through the new namespace, and a
+confined namespace need not contain `/lib` at all — so a module pulled in
+afterwards is unfindable and the child dies before its first line. Same
+trap as loading `nsio` before installing the searcher in
+`ns.setcurrent`; it has now bitten twice.
 
 **Stripping a stdlib field is not enough on its own.** `src/linit.c`
 loads io/debug/table/math/utf8/coroutine lazily via a metatable on `_G`,
