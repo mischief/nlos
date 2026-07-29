@@ -28,11 +28,32 @@ trap 'rm -rf "$tmp"' EXIT
 
 cp "$OVMF_VARS" "$tmp/vars.fd"
 
+# pin the guest to ONE host cpu.
+#
+# an unpinned vcpu thread that migrates between host cores can wedge OVMF
+# in boot device selection -- spinning at ~100% until the timeout, with
+# the serial log stopping right before "BdsDxe: loading Boot0002", so
+# before our binary is ever loaded. it looks exactly like a guest hang
+# and is not one.
+#
+# measured: 32 guests unpinned lose 12, 64 guests unpinned lose 19, and
+# 64 guests PINNED TWO TO A CORE lose none. so the trigger is migration,
+# not contention -- oversubscribing a pinned core is fine. (the cpu model
+# moves the rate around but never fixes it, and -invtsc/-tsc-deadline do
+# nothing, so the mechanism inside OVMF is not established.)
+#
+# pinning by pid spreads parallel invocations with no coordination, and
+# collisions are harmless per the above.
+pin=""
+if command -v taskset >/dev/null 2>&1 && command -v nproc >/dev/null 2>&1; then
+	pin="taskset -c $(($$ % $(nproc)))"
+fi
+
 # -snapshot: the (possibly shared, parallel) image is never written.
 # the guest powers off via ResetSystem(shutdown) when the test is done;
 # -no-reboot turns any triple-fault into an exit instead of a hang.
 rc=0
-timeout "$TIMEOUT" qemu-system-x86_64 \
+timeout "$TIMEOUT" $pin qemu-system-x86_64 \
 	-enable-kvm -cpu max -display none $netargs -monitor none \
 	-no-reboot -snapshot \
 	-serial file:"$tmp/serial.log" \
