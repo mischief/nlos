@@ -110,6 +110,6 @@ webterm.serve(tcp, 7777, N:describe(), {
 	    " -- an experimental os, and this is a shell inside it.\n" ..
 	    "type 'help' for commands, 'cat README' for what this is.\n\n",
 	onready = function()
-		print("web terminal ready")
+		print("web terminal ready t=" .. sys.uptime_ms() .. "ms")
 	end,
 })

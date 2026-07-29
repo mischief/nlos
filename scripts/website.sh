@@ -17,16 +17,32 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$here/scripts/arch.sh"
 payload="$here/test/boot/srvweb.lua"
 
-test -e OVMF_VARS.fd || cp "$FW_VARS" OVMF_VARS.fd
+# EPHEMERAL, both halves, so two of these can run at once and neither
+# touches the build tree.
+#
+# -snapshot sends disk writes to a temp file and opens the image
+# read-only, which is what lets a second instance start at all: without
+# it qemu takes a write lock and the second boot dies with `Failed to get
+# "write" lock`. it also means a session cannot leave anything behind on
+# the ESP, which for a payload that hands strangers a shell is the right
+# default rather than a convenience.
+#
+# the varstore needs the same treatment for the same reason -- it is
+# opened read-write -- so it goes to a private temp copy rather than a
+# shared ./OVMF_VARS.fd in whatever directory you happened to run from.
+vars=$(mktemp -t luaos-vars.XXXXXX)
+trap 'rm -f "$vars"' EXIT HUP INT TERM
+cp "$FW_VARS" "$vars"
 
 echo "web terminal will be at http://localhost:$WEB_PORT/ once dhcp lands"
 
-exec $QEMU -nographic $MACHINE $VIDEO \
+# not exec: the trap has to survive to clean the varstore up
+$QEMU -nographic $MACHINE $VIDEO -snapshot \
 	-netdev user,id=n0,hostfwd=tcp::"$WEB_PORT"-:7777 \
 	-device $NIC,netdev=n0 \
 	-serial mon:stdio \
 	$(wire_args null) \
 	-fw_cfg name=opt/org.luaos.test,file="$payload" \
 	-drive if=pflash,format=raw,readonly=on,file="$FW_CODE" \
-	-drive if=pflash,format=raw,file=OVMF_VARS.fd \
+	-drive if=pflash,format=raw,file="$vars" \
 	-drive $BLK,file="$img"
