@@ -241,6 +241,7 @@ lua_payload = files(
   'lib/http.lua',
   'lib/idle.lua',
   'lib/json.lua',
+  'lib/log.lua',
   'lib/mcp.lua',
   'lib/mnt.lua',
   'lib/ninep.lua',

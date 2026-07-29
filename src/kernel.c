@@ -288,6 +288,20 @@ static int have_udp;
  */
 static unsigned long long cyc_per_ms;
 
+/* the tsc value calibrate_clock() saw, so uptime_ms is milliseconds
+ * since boot rather than since the cpu started counting. the tsc is
+ * 64-bit and does not wrap on any relevant timescale -- 2^64 cycles is
+ * ~195 years at 3GHz -- so this is a plain subtraction with nothing to
+ * guard against. (the 24-bit ACPI PM timer, which wraps every 4.7s, is a
+ * different counter and not this one.)
+ */
+static unsigned long long boot_tsc;
+
+/* until calibrate_clock() runs there is no rate to divide by. anything
+ * logged before then is stamped 0 rather than dividing by zero.
+ */
+static int clock_ready;
+
 /* QUANTUM_MS in cycles, set once cyc_per_ms is known */
 static unsigned long long quantum_cycles;
 
@@ -390,6 +404,8 @@ calibrate_clock(void)
 	if (cyc_per_ms == 0)
 		cyc_per_ms = 1;	/* refuse to divide by zero later */
 	quantum_cycles = cyc_per_ms * QUANTUM_MS;
+	boot_tsc = platform_ticks();
+	clock_ready = 1;
 	calibrate_reductions();
 }
 
@@ -399,7 +415,9 @@ calibrate_clock(void)
 static unsigned long long
 uptime_ms(void)
 {
-	return platform_ticks() / cyc_per_ms;
+	if (!clock_ready)
+		return 0;
+	return (platform_ticks() - boot_tsc) / cyc_per_ms;
 }
 
 /* one-shot timers. sys.timer(ms) mints a port, hands the caller its
@@ -508,6 +526,25 @@ static void
 kputs(const char *s)
 {
 	console_write(s, strlen(s));
+}
+
+/* one stamped diagnostic line, terminated here so callers cannot forget.
+ *
+ * the format is shared with lib/log.lua: two producers, one transcript.
+ * the stamp is taken when the line is EMITTED, which matters because the
+ * lua side reaches the console through a port and is therefore delivered
+ * later than this synchronous path -- so display order and real order
+ * differ, and only the stamps recover it.
+ */
+static void
+klog(const char *s)
+{
+	unsigned long long ms = uptime_ms();
+	char buf[320];
+
+	snprintf(buf, sizeof buf, "[%5llu.%03llu] %s\n", ms / 1000,
+	    ms % 1000, s);
+	kputs(buf);
 }
 
 /* ---- ports and rights ---- */
@@ -2264,9 +2301,9 @@ proc_kill(struct kproc *p, const char *why)
 
 		char buf[256];
 
-		snprintf(buf, sizeof buf, "proc %d died: %s\n", p->id,
-		    reason);
-		kputs(buf);
+		snprintf(buf, sizeof buf, "proc %d (%s) died: %s", p->id,
+		    p->name, reason);
+		klog(buf);
 	}
 	lua_close(p->L);
 	p->status = DEAD;
@@ -2431,14 +2468,13 @@ spawn_driver(const char *path, const char *chunkname, int priv,
     struct kport *devport, int devrecv, const char *what)
 {
 	int pid = proc_new(path, 0, chunkname, 1, 0, 0, priv);
+	char buf[160];
 
 	if (pid < 0) {
-		char buf[128];
-
 		snprintf(buf, sizeof buf,
-		    "warning: %s failed to start; %s is unavailable "
-		    "this boot\n", chunkname + 1, what);
-		kputs(buf);
+		    "%s: FAILED to start; %s unavailable this boot",
+		    chunkname + 1, what);
+		klog(buf);
 		return -1;
 	}
 	if (devport) {
@@ -2447,6 +2483,14 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 		if (p)
 			right_new(p, devport, devrecv);
 	}
+
+	/* announce what attached, the way a bsd announces its devices.
+	 * these tasks ARE our device layer -- one proc per raw right -- and
+	 * the pid is the part you cannot recover later without a shell,
+	 * which is exactly when you have not got one.
+	 */
+	snprintf(buf, sizeof buf, "%s: pid %d, %s", chunkname + 1, pid, what);
+	klog(buf);
 	return pid;
 }
 
@@ -2516,11 +2560,19 @@ spawn_init(const char *code, size_t len, int is_file)
 	size_t i;
 
 	for (i = 0; i < ndrivers; i++) {
-		pids[i] = drivers[i].enabled
-		    ? spawn_driver(drivers[i].path, drivers[i].chunkname,
-		          drivers[i].priv, drivers[i].devport,
-		          drivers[i].devrecv, drivers[i].what)
-		    : -1;
+		if (!drivers[i].enabled) {
+			char skip[160];
+
+			snprintf(skip, sizeof skip, "%s: not present, %s "
+			    "unavailable this boot",
+			    drivers[i].chunkname + 1, drivers[i].what);
+			klog(skip);
+			pids[i] = -1;
+			continue;
+		}
+		pids[i] = spawn_driver(drivers[i].path, drivers[i].chunkname,
+		    drivers[i].priv, drivers[i].devport, drivers[i].devrecv,
+		    drivers[i].what);
 	}
 
 	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_BOOT);

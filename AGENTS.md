@@ -161,6 +161,21 @@ in-memory tree. The lazy loader therefore re-strips
 (`kernel_strip_io`). **Any future removal from a lazily-loaded library
 must do the same**, and `test/boot/test_escape.lua` is where to prove it.
 
+**Diagnostics are a different stream from output.** `print`/`io.write`
+are a proc's output and stay verbatim — `seq 5` emits `1\n2\n…` and
+nothing else. `lib/log.lua` is the machine's transcript: stamped, tagged,
+`{op="log"}` to the same cons task. `kernel.c`'s `klog()` produces the
+same `[%5llu.%03llu] ` prefix, so **two producers share one format** —
+change one and change the other. The stamp is taken at *emit*, which is
+load-bearing rather than decorative: the kernel writes the console
+synchronously while Lua goes through a port, so display order and real
+order differ and only the stamps recover it.
+
+`uptime_ms()` is milliseconds since `calibrate_clock()`, and returns 0
+before it runs. The TSC is 64-bit — ~195 years at 3GHz — so there is
+nothing to guard against; the 4.7s wrap belongs to the 24-bit ACPI PM
+timer, a different counter.
+
 **A Chan carries its name.** `lib/chan.lua` is (backend, handle, Cname)
 — Plan 9's Chan, spelled the same on purpose. The name is the *caller's*
 cleaned path and never anything a backend reports, because a backend has

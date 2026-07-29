@@ -29,6 +29,13 @@ local proc = require("proc")
 -- means the ONE place output is serialised is the task that owns the
 -- console, which is what "one owner per resource" asks for.
 require("stdout").set(caps_of.cons)
+
+-- diagnostics are a different stream from output: stamped and tagged,
+-- sharing kernel.c klog()'s format so the boot transcript reads as one
+-- thing. see lib/log.lua.
+local log = require("log")
+
+log.set(caps_of.cons, "init")
 local rootns = nsmod.new()
 
 -- mount FIRST, adopt second. adopting is what routes require() through
@@ -47,6 +54,19 @@ rootns:mount("/proc", require("procfs").new(), "procfs")
 nsmod.setcurrent(rootns)
 
 local nsdesc = rootns:describe()
+
+do
+	-- what proc 0 was granted. these names exist nowhere else until
+	-- something calls sys.granted(), so a boot that is missing a
+	-- capability otherwise gives no sign of it.
+	local names = {}
+
+	for k in pairs(caps_of) do
+		names[#names + 1] = k
+	end
+	table.sort(names)
+	log.log("granted: %s", table.concat(names, " "))
+end
 
 print(("%s on %s (fw rev 0x%x)"):format(_VERSION, efi.firmware,
     efi.firmware_revision))

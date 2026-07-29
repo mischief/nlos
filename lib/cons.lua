@@ -3,7 +3,8 @@
 -- in this proc's own table, granted by the kernel at spawn -- not a
 -- los.sys-wide constant; no other proc needs to know it). every other
 -- proc holds, at most, a send-right to this task's mailbox and talks
--- by message: {op="write", data=s} or {op="readline", reply={__right=rp}}.
+-- by message: {op="write", data=s}, {op="log", data=s} or
+-- {op="readline", reply={__right=rp}}.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -61,7 +62,9 @@ end
 while true do
 	local m = thread.recv(sys.SELF)
 
-	if m.op == "write" then
+	if m.op == "write" or m.op == "log" then
+		-- log lines arrive already stamped and tagged (lib/log.lua);
+		-- cons is the console, not the formatter.
 		platform.write(m.data)
 	elseif m.op == "readline" then
 		sys.send(m.reply.__right, readline())
