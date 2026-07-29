@@ -123,10 +123,19 @@ The ESP itself is a server (`lib/espsrv.lua`, `PRIV_ESP`), so `los.fs` is
 registered for exactly two procs and everyone else gets the disk as a
 mount — `sys.granted().esp` *is* that mount. **`ns.setcurrent` replaces
 `require` with a Lua implementation** rather than adding a
-`package.searchers` entry: a searcher runs inside `require`, which is a C
-function, and a mounted lookup blocks, so it died with "attempt to yield
-across a C-call boundary" the moment the ESP stopped being local. Never
-put a blocking lookup behind a C-called hook.
+`package.searchers` entry, because a mounted lookup *blocks* and
+`require` cannot be yielded through.
+
+Be precise about why, because the sloppy version ("C functions can't
+yield") is wrong and will mislead: C functions yield fine via
+`lua_yieldk`, and `sys.block` does exactly that. What fails is yielding
+past a C frame entered with `lua_call`/`lua_pcall`, which has no
+continuation to resume into. `pcall` is safe — `lbaselib.c` uses
+`lua_pcallk`, so `Chan:read`'s pcall was never the issue — and so is
+`dofile`. But `loadlib.c` uses plain `lua_call` both to invoke a searcher
+(:633) **and to run the loaded chunk** (:662). So neither a searcher nor
+a module's own top-level body may block. Check for `lua_callk` before
+putting anything blocking behind a stdlib hook.
 `io.write`/`print` stay everywhere — the console is a device, not a file,
 and `/dev/cons` does not exist yet.
 

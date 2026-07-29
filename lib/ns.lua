@@ -575,12 +575,18 @@ local installed = false
 -- namespace.
 --
 -- it has to be require ITSELF, not a package.searchers entry, and the
--- reason is not taste. a searcher runs inside require, which is a C
--- function, and a mounted lookup BLOCKS -- lib/mnt.lua waits for a reply
--- on a port, which yields. yielding across a C call is an error in lua,
--- so the searcher died with "attempt to yield across a C-call boundary"
--- the moment the ESP became a server instead of a local backend. a lua
--- require can yield freely.
+-- reason is not taste: a mounted lookup BLOCKS (lib/mnt.lua waits for a
+-- reply on a port, which yields) and require cannot be yielded through.
+--
+-- the precise reason, because the loose one is wrong: C functions yield
+-- perfectly well via lua_yieldk, and sys.block does. what fails is
+-- yielding past a C frame entered with lua_call, which left no
+-- continuation to resume into. lua/loadlib.c uses plain lua_call BOTH to
+-- invoke a searcher (:633) and to run the loaded chunk (:662) -- so a
+-- searcher could not block, and neither could a module body. pcall is
+-- not implicated: lbaselib.c uses lua_pcallk.
+--
+-- a lua require has neither frame, so both are free to block.
 --
 -- this also deletes the ambient LUA_PATH path rather than removing it
 -- from package.searchers by position: we simply never consult
