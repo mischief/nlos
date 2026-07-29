@@ -19,10 +19,14 @@ local caps_of = sys.granted()
 -- to already be. plan 9 gets this from fork; we get it from arg.
 local nsmod = require("ns")
 local proc = require("proc")
-local rootns = nsmod.setcurrent(nsmod.new())
+local rootns = nsmod.new()
 
+-- mount FIRST, adopt second. adopting is what routes require() through
+-- the namespace, so doing it to an empty one would leave the next
+-- require with nowhere to look.
 rootns:mount("/", require("espfs").new("/"), "espfs", { root = "/" })
 rootns:mount("/proc", require("procfs").new(), "procfs")
+nsmod.setcurrent(rootns)
 
 local nsdesc = rootns:describe()
 

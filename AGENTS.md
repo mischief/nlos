@@ -107,6 +107,18 @@ dialect, so stock clients mount with zero shim. The same namespace is
 served over com2 and TCP with the server unchanged — transport is a
 pair of read/write closures.
 
+**The namespace is the boundary, not a preference.** Every proc except
+proc 0 loses `io.open`, `io.lines`, `io.input`, `io.output`, `loadfile`
+and `dofile` in `proc_new`, and `ns.setcurrent` drops the `LUA_PATH`
+searcher once ours is in. So a proc reaches exactly what was mounted for
+it — files *and* module code — and a proc given no namespace reaches
+nothing. `lib/nsio.lua` puts `io.open` back over `chan`. This is removal,
+not a check: the same rule as `los.platform.*`, and for the same reason.
+Proc 0 keeps the raw entry points because it is where the ESP reaches and
+where the root namespace is built; `PRIV_BOOT` marks it and nothing else.
+`io.write`/`print` stay everywhere — the console is a device, not a file,
+and `/dev/cons` does not exist yet.
+
 **A Chan carries its name.** `lib/chan.lua` is (backend, handle, Cname)
 — Plan 9's Chan, spelled the same on purpose. The name is the *caller's*
 cleaned path and never anything a backend reports, because a backend has

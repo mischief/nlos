@@ -572,17 +572,23 @@ M.searchpath = { "/?.lua", "/lib/?.lua" }
 local installed = false
 
 -- install a package.searchers entry that finds modules in whatever
--- namespace this proc currently has.
+-- namespace this proc currently has, and REMOVE the ambient one.
 --
 -- it goes at position 2: preload stays first, because los.sys and the
--- other C openers are not files and must always win. the stock LUA_PATH
--- searcher stays behind us as the fallback, which is what keeps
--- bootstrap working -- this module itself was found by it.
+-- other C openers are not files and must always win.
 --
--- the point is that a program's CODE now comes from its own namespace.
--- mount a different /lib and require follows; mount one served by an srv
--- proc over a port and require follows there too. before this, a proc
--- could be handed any namespace you liked and require ignored it.
+-- the stock LUA_PATH searcher is then dropped, which is the half that
+-- makes this a boundary rather than a preference. it reaches the ESP
+-- through fopen directly, so leaving it behind ours meant a module
+-- absent from the namespace was still found ambiently -- the namespace
+-- decided where modules came from only when it happened to have them.
+-- it is still what bootstraps this very module, which is why it is
+-- removed here, after we are loaded, rather than never registered.
+--
+-- so a program's CODE now comes from its own namespace and nowhere
+-- else. mount a different /lib and require follows; mount one served by
+-- an srv proc over a port and require follows there too; mount nothing
+-- and require finds nothing.
 function M.searcher()
 	if installed then
 		return
@@ -615,6 +621,12 @@ function M.searcher()
 		end
 		return table.concat(tried)
 	end)
+
+	-- drop the LUA_PATH searcher, now at 3. it is identified by
+	-- position rather than by identity because lua exposes no name for
+	-- it; the layout is fixed (preload, lua path, C path, all-in-one)
+	-- and we just inserted ours at 2, so 3 is it.
+	table.remove(package.searchers, 3)
 end
 
 -- adopt(desc): rebuild a namespace description, make it this proc's, and
@@ -643,8 +655,13 @@ end
 -- falls back to reaching outside the namespace.
 function M.setcurrent(n)
 	current = n
-	M.searcher()
+	-- nsio BEFORE the searcher, because the searcher is what removes
+	-- the ambient LUA_PATH entry. loading it afterwards would mean
+	-- finding it through the very namespace being installed, which
+	-- fails for the one namespace that most needs to work: an empty
+	-- one, being populated by the proc that is bootstrapping.
 	require("nsio").install()
+	M.searcher()
 	return n
 end
 

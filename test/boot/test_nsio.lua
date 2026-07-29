@@ -16,7 +16,7 @@ local ns = require("ns")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(15)
+tap.plan(18)
 
 local N = ns.new()
 
@@ -128,5 +128,34 @@ tap.ok(m and m.esp == false,
     "a file outside its namespace is not openable, though it exists")
 tap.is(m and m.mounted, "in the mount\n",
     "while what IS mounted opens normally")
+
+-- ---- and a proc given NO namespace can open nothing at all ----
+--
+-- the other half of the boundary. the file entry points are removed in
+-- the kernel for every proc but proc 0 (see proc_new), and nsio puts
+-- io.open back only for a proc that has a namespace. so this is not a
+-- gate that returns nil -- there is nothing to call.
+
+local np = sys.newport()
+
+require("proc").spawn([[
+	local sys = require("los.sys")
+
+	sys.send((...).__right, {
+		open = io.open == nil,
+		lines = io.lines == nil,
+		loadfile = loadfile == nil,
+		dofile = dofile == nil,
+		write = type(io.write) == "function",
+	})
+]], { name = "nonamespace", arg = { __right = np } })
+
+local nm = thread.recvtimeout(np, 5000)
+
+tap.ok(nm ~= nil, "the namespace-less child answered")
+tap.ok(nm and nm.open and nm.lines and nm.loadfile and nm.dofile,
+    "a proc with no namespace has no io.open, io.lines, loadfile or dofile")
+tap.ok(nm and nm.write,
+    "but keeps io.write: the console is a device, not a file")
 
 tap.done()

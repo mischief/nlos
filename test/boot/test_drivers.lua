@@ -35,19 +35,24 @@ local pid, w = sys.spawn([[
 	for h = 1, 12 do
 		assert(not pcall(function() return sys.send(h, {}) end))
 	end
-	assert(io.open("/init.lua", "r") ~= nil,
-	    "read is ambient -- a spawned child should still be able to "
-	    .. "read a real esp file")
-	assert(io.open("/childwrite.txt", "w") == nil,
-	    "write is gated -- a spawned child with no DISK right must "
-	    .. "not be able to open a file for writing")
+	-- a spawned child has NO file half of io at all. it is not gated,
+	-- it is absent: lib/nsio.lua puts io.open back only for a proc
+	-- that was given a namespace, so a child given none cannot open
+	-- anything. removing the reference beats checking inside it --
+	-- there is no check to get wrong.
+	assert(io.open == nil, "a spawned child has no io.open")
+	assert(io.lines == nil, "nor io.lines")
+	assert(loadfile == nil, "nor loadfile")
+	assert(dofile == nil, "nor dofile")
+	-- the console half stays: it is a device, not a file
+	assert(type(io.write) == "function", "io.write survives")
 ]])
 
 sys.monitor(pid)
 local m = thread.recv(sys.SELF)
 tap.is(m.normal, true,
-    "spawned child confirms read-ambient/write-gated, dies normally: "
-    .. tostring(m.reason))
+    "spawned child confirms it has no ambient file access, dies "
+    .. "normally: " .. tostring(m.reason))
 sys.close(w)
 
 -- proc 0 (us) DOES hold cons/wire/power/disk, granted at boot and
@@ -66,10 +71,12 @@ tap.ok(pcall(sys.send, g.cons, { op = "write", data = "" }),
 tap.ok(pcall(sys.send, g.wire, { op = "write", data = "" }),
     "proc 0's wire send does not error")
 
--- disk read: any proc can do this, but prove it still works for us too
+-- proc 0 keeps the raw file half: it is where the ESP reaches and where
+-- the root namespace gets built, so it has nothing to be confined to
+-- until it has made one.
 local f = io.open("/init.lua", "r")
 
-tap.ok(f ~= nil, "proc 0 can read a real esp file (read is ambient)")
+tap.ok(f ~= nil, "proc 0 can read a real esp file")
 if f then
 	f:close()
 end

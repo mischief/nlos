@@ -79,7 +79,13 @@
 #define PRI_BASE	10
 
 enum { DEAD, READY, BLOCKED };
-enum { PRIV_NONE, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP, PRIV_UDP };
+/* PRIV_BOOT is proc 0 and nothing else. it is not a device capability
+ * like the rest -- it means "this proc is where the raw ESP reaches",
+ * which is true only of the proc the kernel starts itself, and is what
+ * lets it build the root namespace every other proc inherits.
+ */
+enum { PRIV_NONE, PRIV_BOOT, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP,
+    PRIV_UDP };
 
 struct kmsg {
 	struct kmsg *next;
@@ -2072,6 +2078,52 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * that workaround is gone and require() just works.
 	 */
 
+	/* every proc EXCEPT proc 0 loses the file half of io, and loadfile
+	 * and dofile with it.
+	 *
+	 * lib/nsio.lua puts io.open back, resolving through this proc's
+	 * namespace -- so a proc that was given one reaches exactly what
+	 * was mounted for it, and a proc that was given none has no way to
+	 * open a file at all. that is the whole point: the namespace stops
+	 * being advisory and starts being the boundary.
+	 *
+	 * removing the reference is the mechanism, not a check inside it.
+	 * a check exists in every proc's C surface and is one bug away from
+	 * everything; a function that is not there cannot be called wrong.
+	 * same rule as los.platform.* (see AGENTS.md).
+	 *
+	 * io.write, io.read, print, stdout and stderr STAY. they are the
+	 * console, not files -- a device we have no namespace entry for
+	 * yet. see lib/nsio.lua on that seam.
+	 *
+	 * proc 0 keeps them because it is where the raw ESP reaches and
+	 * where the root namespace is built; it has no namespace to be
+	 * confined to until it has made one.
+	 */
+	if (priv != PRIV_BOOT) {
+		static const char *const iogone[] = {
+			"open", "lines", "input", "output", "popen",
+			"tmpfile", NULL
+		};
+
+		lua_getglobal(p->L, "io");
+		if (lua_istable(p->L, -1)) {
+			for (int i = 0; iogone[i]; i++) {
+				lua_pushnil(p->L);
+				lua_setfield(p->L, -2, iogone[i]);
+			}
+		}
+		lua_pop(p->L, 1);
+
+		/* both load a chunk straight off the disk, which is the same
+		 * hole wearing a different name
+		 */
+		lua_pushnil(p->L);
+		lua_setglobal(p->L, "loadfile");
+		lua_pushnil(p->L);
+		lua_setglobal(p->L, "dofile");
+	}
+
 	p->co = lua_newthread(p->L);
 	luaL_ref(p->L, LUA_REGISTRYINDEX);	/* anchor the thread */
 
@@ -2437,7 +2489,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		    : -1;
 	}
 
-	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_NONE);
+	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_BOOT);
 
 	if (pid < 0)
 		return pid;
