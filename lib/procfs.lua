@@ -8,9 +8,10 @@
 -- this is plan 9's devproc, and the reason to build it is the reason
 -- plan 9 built it: a debugger stops being a program and becomes
 -- `cat /proc/4/stack`. it is also the first service here that could have
--- been a port protocol and is a dev backend instead -- see AGENTS.md on
--- the duality between the two, which is the thing most likely to pull
--- this project away from the model it is aiming at.
+-- been a port protocol and is a dev backend instead, and that is the
+-- right call for the reason lib/srv.lua sets out: everything procfs
+-- reports is ambient kernel state, readable from any proc, so serving it
+-- over a port would buy nothing and cost a round trip per read.
 --
 -- READ-ONLY, and that is a decision rather than an omission. everything
 -- here is structure: what the machine is doing, not what any proc's data

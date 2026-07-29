@@ -98,6 +98,19 @@ dialect, so stock clients mount with zero shim. The same namespace is
 served over com2 and TCP with the server unchanged — transport is a
 pair of read/write closures.
 
+**Ports carry the dev interface, not 9P bytes.** These are three layers
+and not a choice: a port is the transport, `lib/dev.lua` is the
+interface, and 9P is the encoding *only where the port has to become
+bytes* — off this machine. Between two procs the dev call travels as a
+table (`lib/srv.lua`, `lib/mnt.lua`), because 9P's framing exists to
+recover message boundaries from a byte stream and a port has not lost
+them. The semantics still survive whole; what the port replaces is
+tags with a per-request reply port, Tauth with holding the right, and
+msize with the serializer's own limits. Measured: byte-framing would
+add ~24% of a round trip and buy nothing. **Do not invent a fourth
+vocabulary** — a new service is a dev backend if its state is ambient
+(procfs, espfs) and an `srv` proc otherwise.
+
 **No third-party code.** Vanilla Lua 5.4 submodule, unpatched. Our own
 freestanding libc, `-nostdinc`, only compiler-provided headers. Hand
 PE header, self-relocation, plain binutils. Compiler builtins are
@@ -348,6 +361,17 @@ Structural, worth fixing:
   each live proc still costs 1808. Note the scheduler's phase 2 is
   O(MAXPROCS) per lap, so this trades against the starvation guarantee
   above.
+- **A mounted path lookup is one round trip per element.** `ns:walk`
+  attaches and then walks each component separately because `dev.walk`
+  takes one name, so `readfile` through an `srv` proc costs seven
+  messages and measured 10x the local backend — all of it round trips,
+  none of it encoding. 9P solved this with a multi-name `Twalk` and
+  `dev.walkpath` is where the same fix goes. `ns:walk` also never
+  clunks its intermediates; `mnt` only survives that because its
+  handles carry `__gc`.
+- **A dead `srv` proc parks its clients forever.** `mnt`'s rpc has no
+  deadline and nothing else wakes it. The fix is hangup detection on
+  the reply port, not a timeout — a slow backend is not a broken one.
 - **Pending-token scans are O(n) per tick.** The exclusive tasks walk
   every outstanding token on every wakeup because EFI never says which
   one completed. Fine at a handful of connections, a ceiling at fifty.
