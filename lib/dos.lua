@@ -207,6 +207,51 @@ builtins["set"] = function(sh, argv)
 	return 0
 end
 
+-- help has to be a builtin for the same reason cd does, not as a
+-- convenience: the builtins table lives in the LAUNCHER's proc, and a
+-- program is a separate lua_State that cannot see it. so a /bin/help
+-- could list programs and would have no way to know `exit` exists.
+--
+-- and it enumerates rather than reciting. a hardcoded list here would
+-- be prose restating code, which is the one thing AGENTS.md says never
+-- to write -- it would drift the first time a builtin was added, and
+-- silently, because nothing tests a help string.
+--
+-- programs were always discoverable (they are files -- `ls /bin`), so
+-- this exists for the half that was not: the builtins had no listing
+-- anywhere, and the only way to learn `exit` was to guess it.
+builtins["help"] = function(sh)
+	local names = {}
+
+	for name in pairs(builtins) do
+		names[#names + 1] = name
+	end
+	table.sort(names)
+	sh:print("builtins: " .. table.concat(names, " ") .. "\n")
+
+	for dir in (sh.env.PATH or "/bin"):gmatch("[^:]+") do
+		local ents = sh.ns:readdir(dir)
+
+		if ents then
+			local progs = {}
+
+			for _, e in ipairs(ents) do
+				if not e.dir then
+					-- programs are found as either
+					-- name.lua or name (see Sh:find), and
+					-- the name is what you type
+					progs[#progs + 1] =
+					    (e.name:gsub("%.lua$", ""))
+				end
+			end
+			table.sort(progs)
+			sh:print(dir .. ": " ..
+			    table.concat(progs, " ") .. "\n")
+		end
+	end
+	return 0
+end
+
 M.builtins = builtins
 
 -- ---- running one command ----
@@ -295,7 +340,12 @@ function Sh:run(line)
 		local path = self:find(argv[1])
 
 		if not path then
-			self:print(argv[1] .. ": not found\n")
+			-- the hint goes HERE because this is where a lost
+			-- user actually is: they typed something that does
+			-- not exist, which is the moment they need to be
+			-- told where the list lives.
+			self:print(argv[1] ..
+			    ": not found (try 'help')\n")
 			return 127
 		end
 
