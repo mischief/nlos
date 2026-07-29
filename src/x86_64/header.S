@@ -17,7 +17,7 @@ pe_header:
 
 /* COFF file header */
 	.short	0x8664			/* Machine: x86-64 */
-	.short	2			/* NumberOfSections */
+	.short	3			/* NumberOfSections */
 	.long	0			/* TimeDateStamp */
 	.long	0			/* PointerToSymbolTable */
 	.long	0			/* NumberOfSymbols */
@@ -77,18 +77,39 @@ opt_header:
 	.quad	0			/* reserved */
 opt_header_end:
 
-/* section table */
+/* section table.
+ * two mapped sections, not one: code and rodata are RX, and everything
+ * the relocation pass or the running kernel writes -- .data, .got,
+ * .bss -- is a separate NX section, split at __data_start by
+ * src/pe.ld. firmware with image protection enabled maps a writable
+ * section non-executable, so an image whose one section claims both
+ * cannot run there; OVMF as shipped tolerated the single RWX section
+ * this used to be. this is the shape a UEFI image is supposed to have.
+ * RVA and file offset are the same number throughout, since this is a
+ * flat binary with FileAlignment == SectionAlignment.
+ */
 	.ascii	".text\0\0\0"
-	.long	__reloc_start - dos_header - 0x1000	/* VirtualSize */
+	.long	__data_start - dos_header - 0x1000	/* VirtualSize */
 	.long	0x1000			/* VirtualAddress */
-	.long	__reloc_start - dos_header - 0x1000	/* SizeOfRawData */
+	.long	__data_start - dos_header - 0x1000	/* SizeOfRawData */
 	.long	0x1000			/* PointerToRawData */
 	.long	0			/* PointerToRelocations */
 	.long	0			/* PointerToLinenumbers */
 	.short	0			/* NumberOfRelocations */
 	.short	0			/* NumberOfLinenumbers */
-	.long	0xe0000060		/* Characteristics: CODE |
-					   INITIALIZED_DATA | EXECUTE |
+	.long	0x60000020		/* Characteristics: CODE |
+					   EXECUTE | READ */
+
+	.ascii	".data\0\0\0"
+	.long	__data_size		/* VirtualSize */
+	.long	__data_start - dos_header	/* VirtualAddress */
+	.long	__data_size		/* SizeOfRawData */
+	.long	__data_start - dos_header	/* PointerToRawData */
+	.long	0			/* PointerToRelocations */
+	.long	0			/* PointerToLinenumbers */
+	.short	0			/* NumberOfRelocations */
+	.short	0			/* NumberOfLinenumbers */
+	.long	0xc0000040		/* Characteristics: INITIALIZED_DATA |
 					   READ | WRITE */
 
 	.ascii	".reloc\0\0"

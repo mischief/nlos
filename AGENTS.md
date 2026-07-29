@@ -121,12 +121,12 @@ quarantined:
   register shuffle to do at all;
 - the **`jmp_buf` size** (`include/setjmp.h`), which is just the
   callee-saved set;
-- the **PE section table**: `src/pe.ld` splits at `__data_start` so a
-  header can declare RX text and NX data separately, which is what
+- the **PE section table**: `src/pe.ld` splits at `__data_start` so both
+  headers can declare RX text and NX data separately, which is what
   firmware with image protection enabled requires — it maps a writable
   section non-executable, and a section claiming both then cannot run.
-  The aarch64 header uses it; x86_64 still ships one RWX section, which
-  no firmware we have run rejects, so this is hardening, not a fix;
+  No firmware we have run rejects the old single RWX section, so this
+  is hardening, not a fix;
 - whatever the machine uses for a second serial port (see below).
 
 Everything else really did stay inside the directory.

@@ -48,8 +48,7 @@ SECTIONS
 	 * cannot run. neither AAVMF nor OVMF as shipped enforces that
 	 * today, so this is hardening against stricter firmware rather
 	 * than a fix for an observed fault -- but it is the shape a UEFI
-	 * image is supposed to have. src/aarch64/header.S uses the split;
-	 * the x86_64 header still declares one RWX section.
+	 * image is supposed to have, and both headers now use it.
 	 */
 	. = ALIGN(0x1000);
 	__data_start = .;
