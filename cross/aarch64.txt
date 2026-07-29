@@ -1,0 +1,23 @@
+# meson setup build-aarch64 --cross-file cross/aarch64.txt
+#
+# a gnu/linux cross toolchain, used freestanding: -nostdinc and
+# -nostdlib mean nothing of its libc or crt is reachable, only the
+# compiler's own headers and code generation. that is the same bargain
+# the native build makes with the system gcc.
+
+[binaries]
+c = 'aarch64-linux-gnu-gcc'
+ar = 'aarch64-linux-gnu-ar'
+strip = 'aarch64-linux-gnu-strip'
+objcopy = 'aarch64-linux-gnu-objcopy'
+
+[host_machine]
+system = 'none'
+kernel = 'none'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[properties]
+# nothing built here runs on the build machine, and meson must not try
+needs_exe_wrapper = true

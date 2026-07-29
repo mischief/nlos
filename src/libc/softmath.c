@@ -1,12 +1,19 @@
-/* aarch64 transcendentals, in software.
+/* transcendentals in software, for every arch with no instruction for
+ * them -- which is every arch here except x86_64.
  *
- * x86_64 gets these from x87 in a few instructions each; aarch64 has no
- * instruction above fsqrt, so the same "slow, small, correct enough"
- * bargain is paid here in series expansions instead. sqrt/fabs/floor/
- * ceil still come from builtins (fsqrt/fabs/frintm/frintp) -- see
- * include/math.h. everything below is written against the same target
- * as the x87 versions: good to about a unit in the last place over the
- * ranges lua actually asks for, and honestly worse outside them.
+ * x86_64 gets these from x87 in a few instructions each (src/x86_64/
+ * math.c); aarch64 has nothing above fsqrt and riscv64 nothing above
+ * fsqrt.d, so the same "slow, small, correct enough" bargain is paid
+ * here in series expansions instead. everything below is written
+ * against the same target as the x87 versions: good to about a unit in
+ * the last place over the ranges lua actually asks for, and honestly
+ * worse outside them.
+ *
+ * this is portable C and so deliberately not under src/<arch>/: it was
+ * aarch64's math.c verbatim until riscv64 wanted the identical file.
+ * What stays per-arch is the rounding floor underneath it --
+ * fabs/sqrt/floor/ceil/round, which aarch64 gets from builtins and
+ * riscv64 has to supply itself. See include/math.h.
  */
 
 #include <math.h>

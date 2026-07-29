@@ -1,13 +1,17 @@
-/* the 9p wire on aarch64: a 16550 on pci, polled.
+/* the 9p wire on qemu's virt machines: a 16550 on pci, polled.
  *
  * x86_64 has com2 at a fixed io port and the firmware console on com1.
- * qemu's virt machine has exactly one pl011, and the firmware console
- * owns it -- so the second port has to be added (-device pci-serial,
- * see scripts/arch.sh) and then found. we ask the firmware for it via
- * PciIo rather than walking ecam ourselves, because the ecam and io
- * window addresses move between machine types and qemu versions while
- * the protocol does not. that also means every register access is a
- * firmware call, which is why tx goes out in fifo-sized batches.
+ * virt has exactly one uart -- a pl011 on aarch64, an ns16550a on
+ * riscv64 -- and the firmware console owns it, so the second port has
+ * to be added (-device pci-serial, see scripts/arch.sh) and then
+ * found. we ask the firmware for it via PciIo rather than walking ecam
+ * ourselves, because the ecam and io window addresses move between
+ * machine types and qemu versions while the protocol does not. that
+ * also means every register access is a firmware call, which is why tx
+ * goes out in fifo-sized batches.
+ *
+ * nothing below is arch-specific -- it is all EFI_PCI_IO_PROTOCOL --
+ * which is why it lives here rather than under src/<arch>/.
  *
  * with no such device the wire is simply absent: every entry point
  * here is a no-op and the 9p-over-com2 task talks to nothing.
@@ -99,8 +103,9 @@ find_wire(void)
 		 * does not advertise io in its supported mask (measured:
 		 * 0xe700) even though it assigns io bars and translates
 		 * Io.Read/Write onto the machine's pio window perfectly
-		 * well. so the attribute call cannot be the mechanism and
-		 * the register write is not a shortcut around one.
+		 * well. RiscVVirtQemu behaves the same. so the attribute
+		 * call cannot be the mechanism and the register write is
+		 * not a shortcut around one.
 		 */
 		UINT32 cmd = 0;
 
@@ -114,9 +119,10 @@ find_wire(void)
 	BS->FreePool(handles);
 }
 
-/* nothing to wrest back here: the firmware console is the pl011, and
- * ArmVirtQemu ships no driver that binds a pci serial port. kept as
- * the platform hook so main.c stays arch-blind.
+/* nothing to wrest back here: the firmware console is the machine's
+ * own uart, and neither ArmVirtQemu nor RiscVVirtQemu ships a driver
+ * that binds a pci serial port. kept as the platform hook so main.c
+ * stays arch-blind.
  */
 void
 uart_takeover(void)

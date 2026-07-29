@@ -5,7 +5,10 @@
 # sets QEMU, MACHINE, FW_CODE, FW_VARS, NIC, BLK and defines
 # wire_args(), which is how the 9p wire gets attached.
 
-ARCH=$(uname -m)
+# meson sets LUAOS_ARCH from the arch it built for, which is the only
+# correct answer under a cross build. uname is the fallback for running
+# these scripts by hand against a native build.
+ARCH=${LUAOS_ARCH:-$(uname -m)}
 
 case $ARCH in
 x86_64)
@@ -33,15 +36,30 @@ aarch64)
 	# makes the guest see what a pc sees by default.
 	VIDEO="-device ramfb"
 	;;
+riscv64)
+	QEMU=qemu-system-riscv64
+	# same shape as arm virt -- virtio disk, pci-serial wire -- and
+	# for the same reason: the machine's one ns16550a is already the
+	# firmware console. -cpu rv64 is rv64gc, which is what we build.
+	MACHINE="-machine virt -cpu rv64"
+	# from qemu's own firmware blobs (edk2's OvmfPkg/RiscVVirt).
+	# there is no separate distro package the way OVMF and AAVMF
+	# each have one.
+	FW_CODE=${OVMF_CODE:-/usr/share/qemu/edk2-riscv-code.fd}
+	FW_VARS=${OVMF_VARS:-/usr/share/qemu/edk2-riscv-vars.fd}
+	NIC=virtio-net-pci
+	BLK="if=virtio,format=raw"
+	VIDEO="-device ramfb"
+	;;
 *)
-	echo "unsupported host arch $ARCH" >&2
+	echo "unsupported arch $ARCH" >&2
 	exit 1
 	;;
 esac
 
-# kvm only ever applies here because guest arch == host arch: the
-# build detects the host too, so there is nothing else to run.
-if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+# kvm only ever applies when the guest arch is the host arch, which
+# under a cross build it is not.
+if [ "$ARCH" = "$(uname -m)" ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
 	case $ARCH in
 	x86_64)  MACHINE="-enable-kvm -cpu max" ;;
 	aarch64) MACHINE="-machine virt,gic-version=max,accel=kvm -cpu host" ;;
@@ -50,8 +68,9 @@ fi
 
 # wire_args null | wire_args socket PATH
 # the second serial port, which carries 9p. on x86_64 the machine
-# already has com2 and it is simply the second -serial; on aarch64
-# there is no second uart, so it is a pci-serial with a named chardev.
+# already has com2 and it is simply the second -serial; on the virt
+# machines there is no second uart, so it is a pci-serial with a named
+# chardev.
 wire_args() {
 	if [ "$1" = null ]; then
 		if [ "$ARCH" = x86_64 ]; then

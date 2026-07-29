@@ -1,14 +1,16 @@
 """per-arch qemu invocation for the host-driven tests.
 
 the shell half of this table is scripts/arch.sh; keep them in step.
-guest arch is always host arch -- the build detects the host -- so kvm
-applies whenever /dev/kvm is usable.
+meson sets LUAOS_ARCH from the arch it built for, which is the only
+correct answer under a cross build; uname is the fallback for driving a
+test by hand against a native build.
 """
 
 import os
 import platform
 
-ARCH = platform.machine()
+BUILD = platform.machine()
+ARCH = os.environ.get("LUAOS_ARCH", BUILD)
 
 if ARCH == "x86_64":
     QEMU = "qemu-system-x86_64"
@@ -18,15 +20,27 @@ elif ARCH == "aarch64":
     QEMU = "qemu-system-aarch64"
     FW_CODE = os.environ.get("OVMF_CODE", "/usr/share/AAVMF/AAVMF_CODE.fd")
     FW_VARS = os.environ.get("OVMF_VARS", "/usr/share/AAVMF/AAVMF_VARS.fd")
+elif ARCH == "riscv64":
+    QEMU = "qemu-system-riscv64"
+    # qemu's own firmware blobs; edk2's OvmfPkg/RiscVVirt has no
+    # separate distro package the way OVMF and AAVMF each do.
+    FW_CODE = os.environ.get("OVMF_CODE",
+                             "/usr/share/qemu/edk2-riscv-code.fd")
+    FW_VARS = os.environ.get("OVMF_VARS",
+                             "/usr/share/qemu/edk2-riscv-vars.fd")
 else:
-    raise SystemExit(f"unsupported host arch {ARCH}")
+    raise SystemExit(f"unsupported arch {ARCH}")
 
-_KVM = os.access("/dev/kvm", os.R_OK | os.W_OK)
+# kvm only ever applies when the guest arch is the host arch, which
+# under a cross build it is not.
+_KVM = ARCH == BUILD and os.access("/dev/kvm", os.R_OK | os.W_OK)
 
 
 def machine():
     if ARCH == "x86_64":
         return ["-enable-kvm", "-cpu", "max"] if _KVM else ["-cpu", "max"]
+    if ARCH == "riscv64":
+        return ["-machine", "virt", "-cpu", "rv64"]
     if _KVM:
         return ["-machine", "virt,gic-version=max,accel=kvm", "-cpu", "host"]
     return ["-machine", "virt", "-cpu", "max"]
@@ -39,7 +53,8 @@ def disk(img):
 
 
 def wire(path=None):
-    """the 9p wire: com2 on x86_64, a pci-serial card on aarch64.
+    """the 9p wire: com2 on x86_64, a pci-serial card on the virt
+    machines.
     path=None attaches it to nothing.
     """
     if ARCH == "x86_64":

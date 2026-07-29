@@ -1,9 +1,13 @@
-/* qemu fw_cfg, mmio flavor: the virt machine puts the register block at
+/* qemu fw_cfg, mmio flavor: the virt machines put the register block at
  * a fixed address (data at +0, selector at +8, big-endian 16-bit).
  * used by the test harness to inject a boot payload without touching
  * the disk image. absent hardware (or real hardware) fails the
  * signature check and we carry on -- the region is device memory the
  * firmware has already mapped, so a read there is harmless either way.
+ *
+ * only the base address differs between the arm and riscv virt
+ * machines, so it comes from meson.build rather than forking the file;
+ * the register layout above is qemu's, not any one machine's.
  */
 
 #include <stdlib.h>
@@ -11,7 +15,9 @@
 #include <stdint.h>
 #include "platform.h"
 
-#define FWCFG_BASE	0x09020000UL
+#ifndef FWCFG_BASE
+#error "meson.build must define FWCFG_BASE for this machine"
+#endif
 
 #define REG_DATA	0x00
 #define REG_SEL		0x08
@@ -19,10 +25,35 @@
 #define FW_CFG_SIGNATURE	0x0000
 #define FW_CFG_FILE_DIR		0x0019
 
+/* by hand rather than __builtin_bswap*: riscv64 without Zbb has no
+ * byte-reverse instruction, so gcc lowers the builtin to a call to
+ * __bswapsi2 -- and that symbol exists only in libgcc, which we do not
+ * link. shifts still compile to the one `rev` on aarch64.
+ *
+ * note what the rule actually is, because half this file's neighbours
+ * appear to break it: a builtin lowering to a *call* is fine, so long
+ * as we own the symbol it calls. __builtin_floor and __builtin_fmod
+ * also become calls on riscv64 -- to floor() and fmod(), which are
+ * ours (src/riscv64/math.c, src/libc/softmath.c). __bswapsi2 is the
+ * one that is nobody's but libgcc's, so it is the one to avoid.
+ */
+static uint16_t
+be16(uint16_t v)
+{
+	return (uint16_t)((v >> 8) | (v << 8));
+}
+
+static uint32_t
+be32(uint32_t v)
+{
+	return (v >> 24) | ((v >> 8) & 0xff00) |
+	    ((v << 8) & 0xff0000) | (v << 24);
+}
+
 static void
 fwcfg_select(uint16_t key)
 {
-	*(volatile uint16_t *)(FWCFG_BASE + REG_SEL) = __builtin_bswap16(key);
+	*(volatile uint16_t *)(FWCFG_BASE + REG_SEL) = be16(key);
 }
 
 /* byte-at-a-time: the data register accepts 1/2/4/8-byte reads and
@@ -36,18 +67,6 @@ fwcfg_readn(void *buf, size_t n)
 
 	while (n--)
 		*p++ = *data;
-}
-
-static uint32_t
-be32(uint32_t v)
-{
-	return __builtin_bswap32(v);
-}
-
-static uint16_t
-be16(uint16_t v)
-{
-	return __builtin_bswap16(v);
 }
 
 /* find a named file; on success allocate and read its contents.

@@ -106,10 +106,12 @@ extends to protocols — DNS, HTTP and JSON are hand-rolled in Lua for
 the same reason 9P is.
 
 **Arch code lives in `src/<arch>/`.** The kernel, libc and all Lua are
-arch-blind. x86_64 and aarch64 are both ported; `meson.build` picks the
-directory from `host_machine.cpu_family()`, and nothing is ever
-cross-compiled — the qemu, firmware and devices in `scripts/arch.sh`
-and `test/qemuarch.py` all assume guest arch == host arch.
+arch-blind. x86_64, aarch64 and riscv64 are ported; `meson.build` picks
+the directory from `host_machine.cpu_family()`, which a `--cross-file
+cross/<arch>.txt` sets. Meson then *tells* `scripts/arch.sh` and
+`test/qemuarch.py` which arch it built, via `LUAOS_ARCH`. They must
+never work it out from `uname` again: under a cross build the host arch
+is the wrong answer, and riscv64 has only ever been cross-built.
 
 This file used to predict that an aarch64 port would cost "one
 directory plus the PE machine field". It cost that plus four things,
@@ -117,17 +119,39 @@ which is the honest list of what is genuinely per-arch and cannot be
 quarantined:
 
 - the **calling convention** (`EFIAPI` in `src/efi.h`) — ms_abi on
-  x86_64, plain aapcs64 on aarch64, so on arm the entry stub has no
-  register shuffle to do at all;
+  x86_64, and the plain C convention on both aarch64 and riscv64, so
+  their entry stubs have no register shuffle to do at all;
 - the **`jmp_buf` size** (`include/setjmp.h`), which is just the
   callee-saved set;
-- the **PE section table**: `src/pe.ld` splits at `__data_start` so both
+- the **PE section table**: `src/pe.ld` splits at `__data_start` so the
   headers can declare RX text and NX data separately, which is what
   firmware with image protection enabled requires — it maps a writable
   section non-executable, and a section claiming both then cannot run.
-  No firmware we have run rejects the old single RWX section, so this
-  is hardening, not a fix;
+  RiscVVirtQemu does apply it (watch `SetUefiImageMemoryAttributes` in
+  its boot log); OVMF and AAVMF as shipped do not, so on those two it
+  is hardening rather than a fix;
 - whatever the machine uses for a second serial port (see below).
+
+The riscv64 port cost none of that again, and the reason is worth
+keeping: **the second and third ports are cheap only if you refuse to
+copy.** aarch64's `uart.c` is pure `EFI_PCI_IO_PROTOCOL` and its
+`fwcfg.c` differs from riscv64's by one address, so both moved to
+`src/virt/` (the qemu virt machines, whichever cpu is under them) with
+the address coming from `meson.build`. Its `math.c` was portable C
+throughout and became `src/libc/softmath.c`. What is left in
+`src/riscv64/` is only what is genuinely riscv: the header, the entry
+stub, `rdtime`, `R_RISCV_RELATIVE`, the lp64d `jmp_buf`, and floor/
+ceil/round — which the D extension, alone among our three, has no
+instruction for.
+
+**A builtin that lowers to a call is fine; a builtin that lowers to a
+call *into libgcc* is not.** We link `-nostdlib` with no `-lgcc`, and
+all three images have zero undefined symbols — check with `nm -u` if
+you doubt it. `__builtin_floor` and `__builtin_fmod` become calls to
+`floor()` and `fmod()` on riscv64, and that is harmless because those
+are ours. `__builtin_bswap32` becomes a call to `__bswapsi2`, which is
+nobody's but libgcc's, so `src/virt/fwcfg.c` swaps bytes by hand. The
+test is *whose symbol it is*, not whether a call appears.
 
 Everything else really did stay inside the directory.
 
@@ -163,10 +187,11 @@ parking on a timer took it to 1.6s.
 ## Time
 
 `platform_ticks()`/`sys.ticks()` is the machine's free-running counter —
-`rdtsc` on x86_64, `cntvct_el0` on aarch64 — a tick count, not a
-duration, and not even the same order of magnitude between the two: a
-TSC runs at GHz, the arm virtual counter at 62.5MHz under qemu. Boot
-calibrates it against `BS->Stall` and everything time-shaped is
+`rdtsc` on x86_64, `cntvct_el0` on aarch64, the `time` CSR via `rdtime`
+on riscv64 — a tick count, not a duration, and not even the same order
+of magnitude between them: a TSC runs at GHz, the arm virtual counter at
+62.5MHz under qemu, and riscv's at 10MHz. Boot calibrates it against
+`BS->Stall` and everything time-shaped is
 denominated in milliseconds via `sys.uptime_ms()`. Do not reintroduce
 cycle-denominated constants; the same number was a different duration on
 every machine, and the comments describing them were wrong by 2-4x even
@@ -229,6 +254,16 @@ at thousands of timers, and `MAXPROCS` is 32.
   reached its `WaitForEvent` sleep, and the *scheduler* and *timer*
   tests failed. Two apparently unrelated subsystems were reporting one
   dead io port.
+- **The firmware having a NIC driver does not mean it has a network
+  stack.** qemu's `edk2-riscv-code.fd` publishes the virtio-net
+  `SimpleNetworkProtocol` — one handle, the card is right there — and
+  nothing above it: no MNP, ARP, IP4, DHCP4, TCP4 or UDP4. `src/net.c`
+  binds the firmware's `EFI_TCP4`/`EFI_UDP4` and nothing else, so
+  networking is simply absent on that firmware and every net test fails
+  for a reason that is not in this tree. It is a NetworkPkg build
+  option, not an arch limitation; `-Dfw_network=` is the switch, and
+  `test_efiprobe` is what told us. Probe the layer you need, not the
+  device under it.
 - **Bundling unrelated resources into one privileged task** ("conio" =
   console-write plus reset/stall) is the same mistake it was fixing.
 - **`Configure()` does not dial.** With `ActiveFlag=1` it only prepares

@@ -1,0 +1,20 @@
+# meson setup build-riscv64 --cross-file cross/riscv64.txt
+#
+# see cross/aarch64.txt for why a linux toolchain is the right one to
+# build a freestanding uefi image with.
+
+[binaries]
+c = 'riscv64-linux-gnu-gcc'
+ar = 'riscv64-linux-gnu-ar'
+strip = 'riscv64-linux-gnu-strip'
+objcopy = 'riscv64-linux-gnu-objcopy'
+
+[host_machine]
+system = 'none'
+kernel = 'none'
+cpu_family = 'riscv64'
+cpu = 'riscv64'
+endian = 'little'
+
+[properties]
+needs_exe_wrapper = true
