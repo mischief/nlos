@@ -16,7 +16,13 @@ tap.plan(22)
 
 local N = ns.new()
 
-N:mount("/", espfs.new("/"), "espfs", { root = "/" })
+local espcaps = sys.granted()
+
+-- the ESP as a MOUNT, not a local espfs. a child cannot rebuild espfs
+-- any more -- los.fs belongs to the esp server task alone -- so what
+-- describe() must hand it is a right to that server. see lib/espsrv.lua.
+N:mount("/", require("mnt").new(espcaps.esp), "mnt",
+    { port = { __right = espcaps.esp } })
 
 -- ---- a collector: stands in for a terminal, so we can read what a
 -- ---- program actually wrote
@@ -66,6 +72,12 @@ local function run(path, argv, stdinport)
 
 	local status, exitmsg, normal
 	local deadline = sys.uptime_ms() + 5000
+	-- ACCUMULATE what each drain returns. drain() clears its buffer, so
+	-- discarding the return here threw away anything the program wrote
+	-- before it exited -- which was invisible while every program
+	-- finished in one scheduler lap, and stopped being invisible the
+	-- moment reads went through a mount and took several.
+	local acc = {}
 
 	while sys.uptime_ms() < deadline do
 		local ok, m = sys.tryrecv(sys.SELF)
@@ -75,10 +87,11 @@ local function run(path, argv, stdinport)
 			break
 		end
 		-- keep draining so a chatty program cannot fill the port
-		drain()
+		acc[#acc + 1] = drain()
 		sys.yield()
 	end
-	return drain(), status, exitmsg, normal
+	acc[#acc + 1] = drain()
+	return table.concat(acc), status, exitmsg, normal
 end
 
 -- ---- seq: needs only arg, unistd.write, os.exit ----

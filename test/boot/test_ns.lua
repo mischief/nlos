@@ -150,9 +150,15 @@ tap.ok(U:readfile("/a") == nil, "and the evicted members are gone")
 -- describe() produces plain data, so it crosses a port; the child
 -- rebuilds it from its own registry. a proc never told how to build a
 -- kind cannot be handed one.
+local espcaps = sys.granted()
+
+-- the ESP as a MOUNT, not a local espfs. a child cannot rebuild espfs
+-- any more -- los.fs belongs to the esp server task alone -- so what
+-- describe() must hand it is a right to that server. see lib/espsrv.lua.
 local parent = ns.new()
 
-parent:mount("/", espfs.new("/"), "espfs", { root = "/" })
+parent:mount("/", require("mnt").new(espcaps.esp), "mnt",
+    { port = { __right = espcaps.esp } })
 parent:mount("/tmp", dev.mem({ note = "in memory" }), "mem",
     { tree = { note = "in memory" } })
 
@@ -192,7 +198,7 @@ local got = thread.recv(rp)
 tap.ok(got.err == nil, "child rebuilt the namespace (" ..
     tostring(got.err) .. ")")
 tap.ok((got.initlen or 0) > 0,
-    "child read a real ESP file through its inherited espfs mount")
+    "child read a real ESP file through its inherited esp mount")
 tap.is(got.note, "in memory",
     "child read the mem mount, whose tree travelled as plain data")
 
@@ -270,7 +276,8 @@ tap.is(N:readfile("/mnt/other/hello.txt"), "second time\n",
 
 local R = ns.new()
 
-R:mount("/", espfs.new("/"), "espfs", { root = "/" })
+R:mount("/", require("mnt").new(espcaps.esp), "mnt",
+    { port = { __right = espcaps.esp } })
 R:mount("/", dev.mem({
 	lib = {
 		["synthetic.lua"] =

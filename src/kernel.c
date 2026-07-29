@@ -84,8 +84,8 @@ enum { DEAD, READY, BLOCKED };
  * which is true only of the proc the kernel starts itself, and is what
  * lets it build the root namespace every other proc inherits.
  */
-enum { PRIV_NONE, PRIV_BOOT, PRIV_CONS, PRIV_WIRE, PRIV_POWER, PRIV_TCP,
-    PRIV_UDP };
+enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
+    PRIV_TCP, PRIV_UDP };
 
 struct kmsg {
 	struct kmsg *next;
@@ -2026,11 +2026,17 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 
 	lua_pushcfunction(p->L, luaopen_los_efi);
 	lua_setfield(p->L, -2, "los.efi");
-	/* ambient, like io.open's read path -- see dirs.c on why, and on
-	 * why it moves once espfs owns the esp.
+	/* los.fs is the whole of raw ESP access -- enumeration, metadata
+	 * and file data. it is registered for exactly two procs: the esp
+	 * server task, which serves the disk to everyone else over a port
+	 * (lib/espsrv.lua), and proc 0, which has to read the esp to
+	 * bootstrap before that mount exists. every other proc reaches
+	 * files through a mount, which is a right rather than a reference.
 	 */
-	lua_pushcfunction(p->L, luaopen_los_fs);
-	lua_setfield(p->L, -2, "los.fs");
+	if (priv == PRIV_ESP || priv == PRIV_BOOT) {
+		lua_pushcfunction(p->L, luaopen_los_fs);
+		lua_setfield(p->L, -2, "los.fs");
+	}
 
 	/* los.platform.{cons,wire,power} are each registered ONLY for
 	 * their one owning task -- not gated by a runtime check, simply
@@ -2459,6 +2465,14 @@ spawn_init(const char *code, size_t len, int is_file)
 		{ .path = "/lib/wire.lua", .chunkname = "=wire",
 		  .priv = PRIV_WIRE, .devport = serport, .devrecv = 1,
 		  .what = "the 9p wire", .enabled = 1, .capname = "wire" },
+		/* the esp server: the only proc that reaches the disk
+		 * directly. it gets diskport at handle 1, so writes are
+		 * possible here and nowhere else.
+		 */
+		{ .path = "/lib/espsrv.lua", .chunkname = "=esp",
+		  .priv = PRIV_ESP, .devport = diskport, .devrecv = 0,
+		  .what = "the esp filesystem", .enabled = 1,
+		  .capname = "esp" },
 		{ .path = "/lib/power.lua", .chunkname = "=power",
 		  .priv = PRIV_POWER, .devport = 0, .devrecv = 0,
 		  .what = "reset/stall", .enabled = 1, .capname = "power" },

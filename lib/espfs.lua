@@ -107,6 +107,19 @@ function M.new(root)
 		return st
 	end
 
+	-- open returns a NEW handle and never mutates the one it was given.
+	--
+	-- that is not tidiness, it is required. this used to set h.f and
+	-- hand h straight back, so the walked handle and the opened handle
+	-- were one object. locally that is survivable; through lib/srv.lua
+	-- it is not, because the server gives the result a second fid and
+	-- the two then alias. clunking either -- and mnt's handles clunk
+	-- themselves from __gc, so the walked one always eventually does --
+	-- ran h.f:close() and left the OTHER fid holding a handle whose
+	-- file was gone, which surfaced as Ebadusefd on a perfectly good
+	-- read, at whatever moment the collector happened to run.
+	--
+	-- so: a handle returned by open owns its own lifetime.
 	function B.open(h, mode)
 		if h.dir then
 			if mode ~= "r" then
@@ -119,7 +132,7 @@ function M.new(root)
 			-- which is a difference no caller should have to know
 			-- about. mem's open makes everything closable, so
 			-- this is also the two backends agreeing.
-			return dev.closable(B, h)
+			return dev.closable(B, h_of(h.path, true))
 		end
 
 		local f = fs.open(h.path, mode == "r" and "r" or "w")
@@ -129,8 +142,11 @@ function M.new(root)
 			-- and so does a genuinely missing file
 			err(mode == "r" and dev.Enonexist or dev.Eperm)
 		end
-		h.f = f
-		return dev.closable(B, h)
+
+		local nh = h_of(h.path, false)
+
+		nh.f = f
+		return dev.closable(B, nh)
 	end
 
 	-- create and open in one step, like 9P's Tcreate. fs.open in write

@@ -571,62 +571,90 @@ M.searchpath = { "/?.lua", "/lib/?.lua" }
 
 local installed = false
 
--- install a package.searchers entry that finds modules in whatever
--- namespace this proc currently has, and REMOVE the ambient one.
+-- replace require() with a lua implementation that resolves through the
+-- namespace.
 --
--- it goes at position 2: preload stays first, because los.sys and the
--- other C openers are not files and must always win.
+-- it has to be require ITSELF, not a package.searchers entry, and the
+-- reason is not taste. a searcher runs inside require, which is a C
+-- function, and a mounted lookup BLOCKS -- lib/mnt.lua waits for a reply
+-- on a port, which yields. yielding across a C call is an error in lua,
+-- so the searcher died with "attempt to yield across a C-call boundary"
+-- the moment the ESP became a server instead of a local backend. a lua
+-- require can yield freely.
 --
--- the stock LUA_PATH searcher is then dropped, which is the half that
--- makes this a boundary rather than a preference. it reaches the ESP
--- through fopen directly, so leaving it behind ours meant a module
--- absent from the namespace was still found ambiently -- the namespace
--- decided where modules came from only when it happened to have them.
--- it is still what bootstraps this very module, which is why it is
--- removed here, after we are loaded, rather than never registered.
+-- this also deletes the ambient LUA_PATH path rather than removing it
+-- from package.searchers by position: we simply never consult
+-- package.searchers at all, so there is no ordering to get wrong and no
+-- fallback to leak through.
 --
--- so a program's CODE now comes from its own namespace and nowhere
--- else. mount a different /lib and require follows; mount one served by
--- an srv proc over a port and require follows there too; mount nothing
--- and require finds nothing.
+-- package.preload is still honoured first, because los.sys and the other
+-- C openers are not files and must always win.
 function M.searcher()
 	if installed then
 		return
 	end
 	installed = true
-	table.insert(package.searchers, 2, function(name)
-		if not current then
-			return nil
+
+	local inprogress = {}
+
+	_G.require = function(name)
+		local mod = package.loaded[name]
+
+		if mod ~= nil then
+			return mod
+		end
+		if inprogress[name] then
+			error("circular require of '" .. name .. "'", 2)
 		end
 
-		local fname = name:gsub("%.", "/")
-		local tried = {}
+		local pre = package.preload[name]
 
-		for _, pat in ipairs(M.searchpath) do
-			local path = pat:gsub("%?", fname)
-			local src = current:readfile(path)
+		inprogress[name] = true
 
-			if src then
-				local chunk, err = load(src, "@" .. path)
-
-				if not chunk then
-					error("error loading module '" .. name ..
-					    "' from " .. path .. ":\n\t" ..
-					    tostring(err), 0)
-				end
-				return chunk, path
+		local ok, res = pcall(function()
+			if pre then
+				return pre(name, ":preload:")
 			end
-			tried[#tried + 1] = "\n\tno file '" .. path ..
-			    "' in namespace"
-		end
-		return table.concat(tried)
-	end)
 
-	-- drop the LUA_PATH searcher, now at 3. it is identified by
-	-- position rather than by identity because lua exposes no name for
-	-- it; the layout is fixed (preload, lua path, C path, all-in-one)
-	-- and we just inserted ours at 2, so 3 is it.
-	table.remove(package.searchers, 3)
+			local fname = name:gsub("%.", "/")
+			local tried = {}
+
+			for _, pat in ipairs(M.searchpath) do
+				local path = pat:gsub("%?", fname)
+				-- the reason is reported, not just "not
+				-- found": a mount that is broken rather than
+				-- merely missing the file looks identical
+				-- otherwise, which cost real time once already.
+				local src, rerr = current and
+				    current:readfile(path)
+
+				if src then
+					local chunk, lerr = load(src, "@" .. path)
+
+					if not chunk then
+						error("error loading module '" ..
+						    name .. "' from " .. path ..
+						    ":\n\t" .. tostring(lerr), 0)
+					end
+					return chunk(name, path)
+				end
+				tried[#tried + 1] = "\n\tno file '" .. path ..
+				    "' in namespace (" .. tostring(rerr) .. ")"
+			end
+			error("module '" .. name .. "' not found:" ..
+			    table.concat(tried), 0)
+		end)
+
+		inprogress[name] = nil
+		if not ok then
+			error(res, 2)
+		end
+		if res == nil then
+			res = true
+		end
+		package.loaded[name] = res
+		return res
+	end
 end
 
 -- adopt(desc): rebuild a namespace description, make it this proc's, and

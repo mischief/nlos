@@ -237,6 +237,7 @@ lua_payload = files(
   'lib/dev.lua',
   'lib/dns.lua',
   'lib/espfs.lua',
+  'lib/espsrv.lua',
   'lib/http.lua',
   'lib/idle.lua',
   'lib/json.lua',

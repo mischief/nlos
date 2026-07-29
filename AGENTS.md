@@ -90,17 +90,19 @@ One owner per *resource*, not per convenience. Power is separate from
 cons and wire. TCP and UDP are separate tasks and soft-fail
 independently.
 
-**Two resources use a weaker checked-right form, on purpose.** `fopen`
-(via vanilla liolib.c) and `sys.set_priority` are plain C functions
-present in every proc with no `lua_State` to check against, so they
-test whether `current_proc` holds a right to a reserved port. Doing it
-properly would mean replacing liolib's file machinery with yieldable
-continuation-based C functions — possible in Lua 5.4, out of scope
-here. Disk *write/append* is gated; disk *read* is deliberately not,
-because the threat model is buggy Lua rather than hostile users,
-nothing on the ESP is confidential, and a stray read cannot corrupt a
-future boot the way a runaway write can. **Know which form a new
-resource needs before building it.**
+**One resource still uses a weaker checked-right form.**
+`sys.set_priority` is a plain C function present in every proc with no
+`lua_State` to check against, so it tests whether `current_proc` holds a
+right to a reserved port. **Know which form a new resource needs before
+building it** — prefer removing the reference to checking inside it.
+
+Disk access used to be the other one, gated inside `fopen`. It is not
+any more: the ESP is a server task and ordinary procs have no file-
+opening C function at all, so the *write* gate in `los.fs.open` now
+only ever applies to the one proc that holds the disk right. Read is
+still ungated there for the original reason — the threat model is buggy
+Lua rather than hostile users, nothing on the ESP is confidential, and a
+stray read cannot corrupt a future boot the way a runaway write can.
 
 **9P is the boundary vocabulary.** Real 9P2000 wire format, not a
 dialect, so stock clients mount with zero shim. The same namespace is
@@ -109,13 +111,22 @@ pair of read/write closures.
 
 **The namespace is the boundary, not a preference.** Every proc except
 proc 0 loses `io.open`, `io.lines`, `io.input`, `io.output`, `loadfile`
-and `dofile` in `proc_new`, and `ns.setcurrent` drops the `LUA_PATH`
-searcher once ours is in. So a proc reaches exactly what was mounted for
+and `dofile` in `proc_new`, and `ns.setcurrent` replaces `require`. So a
+proc reaches exactly what was mounted for
 it — files *and* module code — and a proc given no namespace reaches
 nothing. `lib/nsio.lua` puts `io.open` back over `chan`. This is removal,
 not a check: the same rule as `los.platform.*`, and for the same reason.
 Proc 0 keeps the raw entry points because it is where the ESP reaches and
 where the root namespace is built; `PRIV_BOOT` marks it and nothing else.
+
+The ESP itself is a server (`lib/espsrv.lua`, `PRIV_ESP`), so `los.fs` is
+registered for exactly two procs and everyone else gets the disk as a
+mount — `sys.granted().esp` *is* that mount. **`ns.setcurrent` replaces
+`require` with a Lua implementation** rather than adding a
+`package.searchers` entry: a searcher runs inside `require`, which is a C
+function, and a mounted lookup blocks, so it died with "attempt to yield
+across a C-call boundary" the moment the ESP stopped being local. Never
+put a blocking lookup behind a C-called hook.
 `io.write`/`print` stay everywhere — the console is a device, not a file,
 and `/dev/cons` does not exist yet.
 

@@ -24,7 +24,15 @@ local rootns = nsmod.new()
 -- mount FIRST, adopt second. adopting is what routes require() through
 -- the namespace, so doing it to an empty one would leave the next
 -- require with nowhere to look.
-rootns:mount("/", require("espfs").new("/"), "espfs", { root = "/" })
+--
+-- / is the esp SERVER, not a local espfs: caps_of.esp is a right to the
+-- one task that reaches the disk directly (lib/espsrv.lua), so what
+-- describe() hands a child is that right rather than a recipe for
+-- rebuilding the driver. a child therefore inherits ESP access the same
+-- way it inherits anything else, and one handed a namespace without it
+-- cannot reach the disk at all.
+rootns:mount("/", require("mnt").new(caps_of.esp), "mnt",
+    { port = { __right = caps_of.esp } })
 rootns:mount("/proc", require("procfs").new(), "procfs")
 nsmod.setcurrent(rootns)
 

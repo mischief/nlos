@@ -38,6 +38,18 @@
 --   readdir(h)            -> {st, ...}, err
 --   clunk(h)                               release; never fails
 --
+-- open() and create() must return a handle that OWNS ITS OWN LIFETIME:
+-- never the handle passed in, and never one sharing mutable state with
+-- it. clunking the result must not disturb anything the caller still
+-- holds.
+--
+-- this is not style. lib/srv.lua gives the returned handle a second fid,
+-- so a backend that mutates and returns its argument leaves two fids
+-- aliasing one object, and clunking either guts the other -- which
+-- espfs did, and which surfaced as Ebadusefd on a good read at whatever
+-- moment the collector happened to clunk the walked handle. a local
+-- caller can get away with it; a mounted one cannot.
+--
 -- create both makes and opens, like 9P's Tcreate, because every backend
 -- that can do one can do the other and splitting them invites a window
 -- where the file exists but nothing holds it. it was missing from the
