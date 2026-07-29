@@ -160,10 +160,31 @@ net_listen(unsigned short port)
 	st = c->tcp->Configure(c->tcp, &cfg);
 	if (st != EFI_SUCCESS) {
 		/* EFI_NO_MAPPING is the expected, normal status until DHCP
-		 * completes -- Configure() self-triggers it but doesn't
-		 * block, so callers retry (see the spin loops in init.lua/
-		 * srvnet.lua). logging that every retry is just boot noise;
-		 * anything else here is a real, unexpected failure.
+		 * completes, so callers retry (see the spin loops in
+		 * init.lua/srvnet.lua). logging that every retry is just boot
+		 * noise; anything else here is a real, unexpected failure.
+		 *
+		 * DO NOT try to make this faster by starting earlier or
+		 * polling harder. Measured on qemu usermode net, where the
+		 * DHCP server answers a DISCOVER instantly:
+		 *
+		 *   poll every 250ms   14 attempts, mapped at t=4746ms
+		 *   poll every 1500ms   4 attempts, mapped at t=5490ms
+		 *   sleep 3s, then poll 4 attempts, mapped at t=4797ms
+		 *
+		 * the ABSOLUTE completion time is ~4.8s from boot however
+		 * often, and however early, anyone asks. Configure() does not
+		 * self-trigger DHCP -- the firmware's Ip4Config2 runs it on
+		 * its own schedule once the NIC is up, and this call only
+		 * *polls* for the result. so an early kick buys nothing (tried:
+		 * a persistent prober child Configure()d at tcp-task startup
+		 * moved the number by 128ms, i.e. noise), and neither does
+		 * keeping the child instead of recreating it.
+		 *
+		 * what WOULD remove the wait is not asking for DHCP at all:
+		 * UseDefaultAddress = 0 with an explicit StationAddress and
+		 * SubnetMask. worth it for a fixed deployment, which is the
+		 * only place the 3.3s is actually felt.
 		 */
 		if (st != EFI_NO_MAPPING)
 			debug_status("Configure", st);
