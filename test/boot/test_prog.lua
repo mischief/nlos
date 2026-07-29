@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(22)
+tap.plan(27)
 
 local N = ns.new()
 
@@ -217,5 +217,45 @@ drain2()
 dos.once(sh2, "seq 3 > /out.txt")
 tap.is(N:readfile("/out.txt"), "1\n2\n3\n",
     "seq 3 > /out.txt wrote through a file server")
+
+-- ---- the program environment is the program's own ----
+--
+-- install() used to write arg/os/io/print into _G and register the
+-- posix sliver in package.preload, which is per-PROC. correct for
+-- exactly one program per proc and silently wrong for any other
+-- arrangement: two programs in one lua_State would share `arg`, so the
+-- second to start would rewrite the first's argv mid-run. that is the
+-- pipeline case, and it is what a coroutine-per-stage launcher needs.
+--
+-- a program can still SEE _G through its env's __index, so it can look
+-- and report -- which is what makes this testable from the inside.
+local envprobe = [[
+local unistd = require("posix.unistd")
+local out = {}
+
+-- what install defines must be ours, not the proc's
+out[#out + 1] = "G.arg=" .. tostring(rawget(_G, "arg"))
+out[#out + 1] = "G.exits=" .. tostring(rawget(_G, "exits"))
+out[#out + 1] = "preload=" .. tostring(package.preload["posix.unistd"])
+-- ...while everything we did not define still reads through
+out[#out + 1] = "string=" .. tostring(string ~= nil)
+out[#out + 1] = "myarg=" .. tostring(arg[1])
+unistd.write(1, table.concat(out, " ") .. "\n")
+]]
+
+N:writefile("/bin/envprobe.lua", envprobe)
+dos.once(sh2, "envprobe hello")
+local probeout = drain2()
+
+tap.ok(probeout:find("G.arg=nil") ~= nil,
+    "a program's arg does not land in _G: " .. probeout:gsub("\n", ""))
+tap.ok(probeout:find("G.exits=nil") ~= nil,
+    "nor does exits")
+tap.ok(probeout:find("preload=nil") ~= nil,
+    "the posix sliver is per-program, not in package.preload")
+tap.ok(probeout:find("string=true") ~= nil,
+    "the rest of the stdlib still reads through to _G")
+tap.ok(probeout:find("myarg=hello") ~= nil,
+    "and the program's own arg is intact")
 
 tap.done()

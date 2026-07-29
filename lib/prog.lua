@@ -216,10 +216,31 @@ local function newfds(ctx)
 end
 
 -- ---- the environment a program sees ----
+--
+-- everything below goes into a table that becomes the program's _ENV,
+-- NOT into _G. it used to be _G, which was correct for exactly one
+-- program per proc and silently wrong for any other arrangement: two
+-- programs in one lua_State would share `arg`, so the second to start
+-- would rewrite the first's argv mid-run.
+--
+-- that is not hypothetical, it is the pipeline case -- `a | b` runs
+-- both at once -- and it is the blocker for running a pipeline as
+-- coroutines in one proc instead of a proc per stage.
+--
+-- `__index = _G` means a program still sees string, table, math and the
+-- rest unchanged. it reads through; only what install() defines is its
+-- own. no program needed a single change for this.
+--
+-- the posix sliver moves out of package.preload for the same reason,
+-- and it is the less obvious half: those closures capture fds and ctx,
+-- and package.loaded is per-PROC, so the second program to
+-- require("posix.unistd") would have got the first one's file
+-- descriptors. so the program's _ENV carries its own require, which
+-- answers for the sliver and delegates everything else.
 
 local function install(ctx)
 	local fds = newfds(ctx)
-	local G = _G
+	local G = setmetatable({}, { __index = _G })
 
 	-- lua's own convention, which is what the utilities are written
 	-- against: arg[0] is the program name and arg[1] the FIRST REAL
@@ -292,7 +313,12 @@ local function install(ctx)
 
 	local N = ctx.ns
 
-	package.preload["posix.unistd"] = function()
+	-- the per-program module table. lazy, and cached after first use,
+	-- so require() semantics are unchanged from the package.preload
+	-- version it replaces -- only the SCOPE differs.
+	local mods, cache = {}, {}
+
+	mods["posix.unistd"] = function()
 		return {
 			write = function(fd, s)
 				local st = fds[fd]
@@ -327,7 +353,7 @@ local function install(ctx)
 	-- posix.grp, getopt and isatty -- users, groups and terminals this
 	-- system does not have -- so ls is the first utility better
 	-- rewritten than ported. see bin/ls.lua.
-	package.preload["posix.dirent"] = function()
+	mods["posix.dirent"] = function()
 		return {
 			dir = function(path)
 				local ents, err =
@@ -346,7 +372,7 @@ local function install(ctx)
 		}
 	end
 
-	package.preload["posix.fcntl"] = function()
+	mods["posix.fcntl"] = function()
 		return {
 			-- the flags utilities actually pass. they are opaque
 			-- tokens as far as anything here cares.
@@ -367,7 +393,36 @@ local function install(ctx)
 		}
 	end
 
-	return fds
+	-- require("prog") inside a program gets a view scoped to THAT
+	-- program, so prog.ns()/prog.cwd() answer for the caller rather
+	-- than for whichever program last started in this proc. __index
+	-- falls through to the module proper, so abspath, filestream and
+	-- EXIT are all still there.
+	mods["prog"] = function()
+		return setmetatable({
+			ns = function() return ctx.ns end,
+			cwd = function() return ctx.cwd or "/" end,
+			ctx = ctx,
+		}, { __index = M })
+	end
+
+	-- `require` is NOT localised above this: ns.setcurrent replaces the
+	-- global with a namespace-routed implementation, and capturing an
+	-- upvalue here would pin whichever one happened to exist when the
+	-- program started.
+	G.require = function(name)
+		local build = mods[name]
+
+		if not build then
+			return require(name)
+		end
+		if cache[name] == nil then
+			cache[name] = build()
+		end
+		return cache[name]
+	end
+
+	return fds, G
 end
 
 -- resolve a program-supplied path against its cwd, so a relative path
@@ -424,7 +479,7 @@ function M.main()
 	end
 	ctx.ns = N
 
-	local fds = install(ctx)
+	local fds, env = install(ctx)
 	local src, serr = N:readfile(ctx.path)
 
 	if not src then
@@ -433,7 +488,11 @@ function M.main()
 		return
 	end
 
-	local chunk, lerr = load(src, "=" .. (ctx.name or "prog"))
+	-- "t" is text-only: a program comes out of the namespace, and
+	-- loading precompiled bytecode from there would hand the lua vm
+	-- unverified input, which is a memory-safety hole rather than a
+	-- feature anything here wants.
+	local chunk, lerr = load(src, "=" .. (ctx.name or "prog"), "t", env)
 
 	if not chunk then
 		fds[2]:write((ctx.name or "?") .. ": " .. tostring(lerr) .. "\n")
