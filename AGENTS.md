@@ -105,9 +105,11 @@ bytes* — off this machine. Between two procs the dev call travels as a
 table (`lib/srv.lua`, `lib/mnt.lua`), because 9P's framing exists to
 recover message boundaries from a byte stream and a port has not lost
 them. The semantics still survive whole; what the port replaces is
-tags with a per-request reply port, Tauth with holding the right, and
-msize with the serializer's own limits. Measured: byte-framing would
-add ~24% of a round trip and buy nothing. **Do not invent a fourth
+tags with a reply right carried in each request, Tauth with holding the
+right, and msize with the serializer's own limits. Measured:
+byte-framing would add ~24% of a round trip and buy nothing, while the
+per-request right costs under 5% and is cheaper than sending the same
+shape as plain data. **Do not invent a fourth
 vocabulary** — a new service is a dev backend if its state is ambient
 (procfs, espfs) and an `srv` proc otherwise.
 
@@ -369,6 +371,11 @@ Structural, worth fixing:
   `dev.walkpath` is where the same fix goes. `ns:walk` also never
   clunks its intermediates; `mnt` only survives that because its
   handles carry `__gc`.
+- **A mount has one outstanding request at a time.** `mnt` holds one
+  reply port and a `QLock`, so threads sharing a mount serialise —
+  which is exactly what 9P's tags exist to avoid. Free for a shell, a
+  real limit for a proc doing concurrent IO. The fix is a reply port
+  per *thread*, not tags: distinct ports need no demultiplexing.
 - **A dead `srv` proc parks its clients forever.** `mnt`'s rpc has no
   deadline and nothing else wakes it. The fix is hangup detection on
   the reply port, not a timeout — a slow backend is not a broken one.

@@ -21,8 +21,15 @@
 -- this). what does not survive is everything the wire format needs and
 -- a port supplies for free:
 --
---   tag/Tflush   a per-request reply port. no demultiplexing, and
---                abandoning a request is closing a right.
+--   tag/Tflush   the reply right carried in the request. ONE port per
+--                mount, reused -- what travels per call is a right to
+--                it, which the serializer writes as three bytes and
+--                srv closes after replying. measured at under 5% of a
+--                round trip, and cheaper than the plain table it
+--                replaces. the cost is not allocation, it is that a
+--                mount has one outstanding request at a time (see
+--                lib/mnt.lua); tags are what buy pipelining, and a
+--                reply port per THREAD would buy it back without them.
 --   Tauth        holding the right IS the authentication. a proc that
 --                was never sent this port cannot reach this backend.
 --   msize        the serializer's own limits already bound a message.
