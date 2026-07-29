@@ -247,6 +247,7 @@ lua_payload = files(
   'lib/srv.lua',
   'lib/dos.lua',
   'lib/power.lua',
+  'lib/proc.lua',
   'lib/procfs.lua',
   'lib/prog.lua',
   'lib/ps.lua',

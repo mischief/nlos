@@ -18,6 +18,7 @@ local caps_of = sys.granted()
 -- which is where require() happens, and therefore where a namespace has
 -- to already be. plan 9 gets this from fork; we get it from arg.
 local nsmod = require("ns")
+local proc = require("proc")
 local rootns = nsmod.setcurrent(nsmod.new())
 
 rootns:mount("/", require("espfs").new("/"), "espfs", { root = "/" })
@@ -162,8 +163,8 @@ end
 -- dns server proc: resolves hostnames via lib/dns.lua, riding on the
 -- udp task's capability -- not a kernel-level exclusive task itself
 -- (no raw efi access of its own), same shape as ninesrv/tcp9srv.
-local _, dnssrv = sys.spawn(assert(rootns:readfile("/lib/dns.lua")),
-    { name = "dns", arg = nsdesc })
+local _, dnssrv = proc.spawn(assert(rootns:readfile("/lib/dns.lua")),
+    { name = "dns", ns = nsdesc })
 local has_dns = has_udp and
     pcall(sys.send, dnssrv, { udp = { __right = caps_of.udp } })
 
@@ -189,10 +190,6 @@ print("")
 -- can't carry live upvalue values across to a different lua_State
 -- anyway, only _ENV survives that trip).
 local repl_worker_src = [[
-	-- line one: the namespace, from sys.spawn's arg. everything after
-	-- this -- including every require below -- resolves through it.
-	local N = assert(require("ns").adopt(...))
-
 	local sys = require("los.sys")
 	local thread = require("los.thread")
 	local efi = require("los.efi")
@@ -312,8 +309,8 @@ local repl_worker_src = [[
 ]]
 
 while true do
-	local pid, worker = sys.spawn(repl_worker_src,
-	    { name = "repl", arg = nsdesc })
+	local pid, worker = proc.spawn(repl_worker_src,
+	    { name = "repl", ns = nsdesc })
 
 	sys.monitor(pid)
 

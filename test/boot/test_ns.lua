@@ -287,27 +287,23 @@ R:mount("/", dev.mem({
 
 local reqport = sys.newport()
 
--- the reply right has to travel too. describe() returns an ARRAY, and
--- restore() walks it with ipairs, so a named key rides along without
--- disturbing the mount ordering restore depends on.
 local desc = R:describe()
 
-desc.replyto = { __right = reqport }
-
-sys.spawn([[
-	-- line one, before any other require: the namespace arrives as
-	-- sys.spawn's arg, which is the whole reason that primitive exists.
-	local N = assert(require("ns").adopt(...))
+-- proc.spawn adopts for us: the chunk below never mentions the
+-- namespace and still resolves every require through it. that is the
+-- point -- adopting by hand was optional boilerplate, and a chunk that
+-- forgot it silently fell back to the ambient searcher.
+require("proc").spawn([[
 	local sys = require("los.sys")
 	local oks, syn = pcall(require, "synthetic")
 	local okt, tapmod = pcall(require, "tap")
 
-	sys.send((...).replyto.__right, {
+	sys.send((...).__right, {
 		syn = oks and syn.origin or ("ERR " .. tostring(syn)),
 		realmod = okt and type(tapmod) or ("ERR " .. tostring(tapmod)),
-		iscurrent = (require("ns").current() == N),
+		iscurrent = (require("ns").current() ~= nil),
 	})
-]], { name = "reqchild2", arg = desc })
+]], { name = "reqchild2", ns = desc, arg = { __right = reqport } })
 
 local rm = thread.recvtimeout(reqport, 5000)
 
@@ -316,6 +312,7 @@ tap.is(rm and rm.syn, "from the namespace",
     "require found a module that exists ONLY in the namespace")
 tap.is(rm and rm.realmod, "table",
     "and fell through the union to a real module on the esp")
-tap.ok(rm and rm.iscurrent, "ns.current() is the adopted namespace")
+tap.ok(rm and rm.iscurrent,
+    "proc.spawn adopted the namespace without the chunk asking")
 
 tap.done()
