@@ -195,6 +195,37 @@ local _, tcp9srv = sys.spawn([[
 local has_tcp = caps_of.tcp ~= nil
 local has_udp = caps_of.udp ~= nil
 
+-- ---- get an address, before anything wants one ----
+--
+-- run DHCP ourselves rather than waiting for the firmware to finish its
+-- own. the firmware sits on an offer it already has for four seconds --
+-- Ip4Config2 gives Dhcp4 no callback, so an offer is only selected when
+-- mDhcp4DefaultTimeout[0] expires -- and that timeout is unreachable
+-- from outside, since one Dhcp4 child may be active at a time and
+-- Ip4Config2 owns it. lib/dhcp.lua carries the whole argument.
+--
+-- measured: the four-way completes in 12ms on the wire and listen
+-- succeeds 2ms later, against ~3300ms of spinning on EFI_NO_MAPPING.
+--
+-- a PROC rather than a call here, because a lease has to be renewed --
+-- see lib/dhcpd.lua. nothing waits for it: every listen below already
+-- retries, so the address simply appears underneath them. and if it
+-- never does, the firmware's own DHCP was left running and they retry
+-- exactly as they always did.
+local dhcpd = nil
+
+if has_tcp and has_udp then
+	local _, h = proc.spawn(assert(rootns:readfile("/lib/dhcpd.lua")),
+	    { name = "dhcp", ns = nsdesc })
+
+	if pcall(sys.send, h, {
+	    tcp = { __right = caps_of.tcp },
+	    udp = { __right = caps_of.udp },
+	}) then
+		dhcpd = h
+	end
+end
+
 if has_tcp then
 	sys.send(tcp9srv, { net = { __right = caps_of.tcp } })
 	print("9p server listening on tcp/7777 (mount me!)")

@@ -94,7 +94,18 @@ while true do
 	if which == 1 then
 		local reply = m.reply and m.reply.__right
 
-		if m.op == "listen" then
+		if m.op == "hwaddr" then
+			sys.send(reply, platform.hwaddr())
+			sys.close(reply)
+		elseif m.op == "setaddr" then
+			-- installing an address is privileged, so it lives
+			-- here with the rest of los.platform.tcp: the
+			-- authority to ask is holding a right to this task,
+			-- exactly as it is for listen and dial.
+			sys.send(reply, platform.setaddr(m.a, m.b, m.c, m.d,
+			    m.ma, m.mb, m.mc, m.md, m.ga, m.gb, m.gc, m.gd))
+			sys.close(reply)
+		elseif m.op == "listen" then
 			local raw = platform.listen(m.port)
 			sys.send(reply, raw and newconn(raw) or nil)
 			sys.close(reply)

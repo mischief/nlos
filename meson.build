@@ -235,6 +235,8 @@ lua_payload = files(
   'lib/cons.lua',
   'lib/chan.lua',
   'lib/dev.lua',
+  'lib/dhcp.lua',
+  'lib/dhcpd.lua',
   'lib/dns.lua',
   'lib/espfs.lua',
   'lib/espsrv.lua',
@@ -338,7 +340,7 @@ if fw_network
   # net boot tests: same harness, but NET=1 gives the guest a real NIC
   # on qemu's usermode network. separated because dhcp costs real boot
   # seconds that the tests above have no reason to pay.
-  foreach t : ['netboot', 'dns', 'efiprobe']
+  foreach t : ['netboot', 'dns', 'dhcp', 'efiprobe']
     test('boot-' + t, boottest,
       args: [luaos_img, files('test/boot/test_' + t + '.lua')],
       protocol: 'tap',

@@ -142,6 +142,115 @@ netconn_new(void)
 	return c;
 }
 
+/* ---- installing an address ourselves ----
+ *
+ * the counterpart to udp_open(port, raw): raw lets a DHCP client run in
+ * lua, and this is where the lease it negotiated gets installed.
+ *
+ * ORDER MATTERS. setting the policy to Static is what stops the
+ * firmware's own DHCP: Ip4Config2SetPolicy tears its client down via
+ * Ip4Config2DestroyDhcp4, which calls Dhcp4->Stop() -- and Stop has no
+ * state guard, so it aborts a DHCP already mid-Selecting. that is the
+ * only way to cut short the four second wait described in net_listen
+ * below, and it has to happen before the address is set rather than
+ * after, or the firmware overwrites what we just installed.
+ */
+static EFI_GUID ip4cfg2_guid = { 0x5b446ed1, 0xe30b, 0x4faa,
+	{ 0x87, 0x1a, 0x36, 0x54, 0xec, 0xa3, 0x60, 0x80 } };
+
+static EFI_IP4_CONFIG2_PROTOCOL *
+ip4cfg2(void)
+{
+	static EFI_IP4_CONFIG2_PROTOCOL *cfg;
+	EFI_HANDLE *handles;
+	UINTN count, i;
+
+	if (cfg)
+		return cfg;
+	if (BS->LocateHandleBuffer(2 /* ByProtocol */, &ip4cfg2_guid, 0,
+	    &count, &handles) != EFI_SUCCESS || count == 0)
+		return 0;
+	for (i = 0; i < count; i++)
+		if (BS->HandleProtocol(handles[i], &ip4cfg2_guid,
+		    (void **)&cfg) == EFI_SUCCESS)
+			break;
+	BS->FreePool(handles);
+	return cfg;
+}
+
+/* ip/mask/gw are big-endian words as the rest of this file passes them.
+ * gw == 0 means "no default route", which is legal.
+ */
+int
+net_setaddr(unsigned int ip_be, unsigned int mask_be, unsigned int gw_be)
+{
+	EFI_IP4_CONFIG2_PROTOCOL *cfg = ip4cfg2();
+	EFI_IP4_CONFIG2_POLICY policy = Ip4Config2PolicyStatic;
+	EFI_IP4_CONFIG2_MANUAL_ADDRESS addr;
+	EFI_STATUS st;
+
+	if (!cfg)
+		return -1;
+
+	st = cfg->SetData(cfg, Ip4Config2DataTypePolicy, sizeof policy,
+	    &policy);
+	if (st != EFI_SUCCESS) {
+		debug_status("ip4cfg2 policy", st);
+		return -1;
+	}
+
+	memcpy(addr.Address, &ip_be, 4);
+	memcpy(addr.SubnetMask, &mask_be, 4);
+	st = cfg->SetData(cfg, Ip4Config2DataTypeManualAddress,
+	    sizeof addr, &addr);
+	/* NOT_READY means the driver accepted it and is applying it
+	 * asynchronously, which the spec allows and is a success for us.
+	 */
+	if (st != EFI_SUCCESS && st != EFI_NOT_READY) {
+		debug_status("ip4cfg2 address", st);
+		return -1;
+	}
+
+	if (gw_be) {
+		st = cfg->SetData(cfg, Ip4Config2DataTypeGateway, 4, &gw_be);
+		if (st != EFI_SUCCESS && st != EFI_NOT_READY)
+			debug_status("ip4cfg2 gateway", st);
+	}
+	return 0;
+}
+
+/* the NIC's MAC, or 0 length on failure. see the struct comment. */
+int
+net_hwaddr(unsigned char *out, unsigned long *len)
+{
+	EFI_IP4_CONFIG2_PROTOCOL *cfg = ip4cfg2();
+	EFI_IP4_CONFIG2_INTERFACE_INFO *info;
+	UINTN size = 0;
+	EFI_STATUS st;
+
+	if (!cfg)
+		return -1;
+	/* two-call idiom: the first tells us the size (it fails with
+	 * BUFFER_TOO_SMALL by design, because RouteTable is variable).
+	 */
+	st = cfg->GetData(cfg, Ip4Config2DataTypeInterfaceInfo, &size, 0);
+	if (st != EFI_BUFFER_TOO_SMALL || size < sizeof *info)
+		return -1;
+	info = malloc(size);
+	if (!info)
+		return -1;
+	st = cfg->GetData(cfg, Ip4Config2DataTypeInterfaceInfo, &size, info);
+	if (st != EFI_SUCCESS || info->HwAddressSize == 0 ||
+	    info->HwAddressSize > 32) {
+		free(info);
+		return -1;
+	}
+	*len = info->HwAddressSize;
+	memcpy(out, info->HwAddress, *len);
+	free(info);
+	return 0;
+}
+
 void *
 net_listen(unsigned short port)
 {
@@ -1023,7 +1132,55 @@ l_net_recv_poll(lua_State *L)
 	return 1;	/* done, but connection closed/errored: (true, nil) */
 }
 
+/* setaddr(a,b,c,d, ma,mb,mc,md [, ga,gb,gc,gd]) -> true or nil */
+static int
+l_net_setaddr(lua_State *L)
+{
+	unsigned char o[12];
+	unsigned int ip, mask, gw = 0;
+	int n = lua_gettop(L);
+
+	for (int i = 0; i < 8; i++)
+		o[i] = (unsigned char)luaL_checkinteger(L, i + 1);
+	memcpy(&ip, o, 4);
+	memcpy(&mask, o + 4, 4);
+	if (n >= 12) {
+		for (int i = 8; i < 12; i++)
+			o[i] = (unsigned char)luaL_checkinteger(L, i + 1);
+		memcpy(&gw, o + 8, 4);
+	}
+	if (net_setaddr(ip, mask, gw) != 0)
+		return 0;
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* hwaddr() -> "xx:xx:xx:xx:xx:xx" or nil */
+static int
+l_net_hwaddr(lua_State *L)
+{
+	unsigned char mac[32];
+	unsigned long len = 0;
+	char buf[3 * 32];
+	int n = 0;
+
+	if (net_hwaddr(mac, &len) != 0)
+		return 0;
+	for (unsigned long i = 0; i < len; i++) {
+		static const char hex[] = "0123456789abcdef";
+
+		if (i)
+			buf[n++] = ':';
+		buf[n++] = hex[mac[i] >> 4];
+		buf[n++] = hex[mac[i] & 0xf];
+	}
+	lua_pushlstring(L, buf, n);
+	return 1;
+}
+
 static const luaL_Reg tcplib[] = {
+	{ "setaddr", l_net_setaddr },
+	{ "hwaddr", l_net_hwaddr },
 	{ "listen", l_net_listen },
 	{ "dial_start", l_net_dial_start },
 	{ "dial_poll", l_net_dial_poll },

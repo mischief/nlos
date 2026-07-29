@@ -552,6 +552,62 @@ struct EFI_UDP4_PROTOCOL {
 	EFI_STATUS (EFIAPI *Poll)(EFI_UDP4_PROTOCOL *This);
 };
 
+/* ip4 config2: the interface's address policy. this is how a static
+ * address gets set, and therefore how a DHCP client written in lua
+ * installs the lease it negotiated. field order/sizes per spec,
+ * verified against MdePkg/Include/Protocol/Ip4Config2.h.
+ */
+
+typedef enum {
+	Ip4Config2DataTypeInterfaceInfo,
+	Ip4Config2DataTypePolicy,
+	Ip4Config2DataTypeManualAddress,
+	Ip4Config2DataTypeGateway,
+	Ip4Config2DataTypeDnsServer,
+	Ip4Config2DataTypeMaximum
+} EFI_IP4_CONFIG2_DATA_TYPE;
+
+typedef enum {
+	Ip4Config2PolicyStatic,
+	Ip4Config2PolicyDhcp,
+	Ip4Config2PolicyMax
+} EFI_IP4_CONFIG2_POLICY;
+
+typedef struct {
+	UINT8 Address[4];
+	UINT8 SubnetMask[4];
+} EFI_IP4_CONFIG2_MANUAL_ADDRESS;
+
+/* the interface's own facts. wanted for HwAddress: a DHCP client must
+ * put the real MAC in chaddr, because the server keys the lease on it
+ * and the IP4 stack will ARP for the address with that same MAC. a made
+ * up one yields a lease nothing can actually use.
+ */
+typedef struct {
+	UINT16 Name[32];		/* CHAR16 */
+	UINT8 IfType;
+	UINT32 HwAddressSize;
+	UINT8 HwAddress[32];		/* EFI_MAC_ADDRESS */
+	UINT8 StationAddress[4];
+	UINT8 SubnetMask[4];
+	UINT32 RouteTableSize;
+	void *RouteTable;
+} EFI_IP4_CONFIG2_INTERFACE_INFO;
+
+typedef struct EFI_IP4_CONFIG2_PROTOCOL EFI_IP4_CONFIG2_PROTOCOL;
+struct EFI_IP4_CONFIG2_PROTOCOL {
+	EFI_STATUS (EFIAPI *SetData)(EFI_IP4_CONFIG2_PROTOCOL *This,
+	    EFI_IP4_CONFIG2_DATA_TYPE DataType, UINTN DataSize, void *Data);
+	EFI_STATUS (EFIAPI *GetData)(EFI_IP4_CONFIG2_PROTOCOL *This,
+	    EFI_IP4_CONFIG2_DATA_TYPE DataType, UINTN *DataSize, void *Data);
+	EFI_STATUS (EFIAPI *RegisterDataNotify)(
+	    EFI_IP4_CONFIG2_PROTOCOL *This,
+	    EFI_IP4_CONFIG2_DATA_TYPE DataType, EFI_EVENT Event);
+	EFI_STATUS (EFIAPI *UnregisterDataNotify)(
+	    EFI_IP4_CONFIG2_PROTOCOL *This,
+	    EFI_IP4_CONFIG2_DATA_TYPE DataType, EFI_EVENT Event);
+};
+
 /* runtime services (through ResetSystem) */
 
 typedef enum {

@@ -7,6 +7,8 @@
 
 int	net_init(void);
 int	net_have_tcp(void);
+int	net_hwaddr(unsigned char *out, unsigned long *len);
+int	net_setaddr(unsigned int ip_be, unsigned int mask_be, unsigned int gw_be);
 int	net_have_udp(void);
 
 void	*net_listen(unsigned short port);
