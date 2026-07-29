@@ -103,9 +103,9 @@ opt_header_end:
 					   EXECUTE | READ */
 
 	.ascii	".data\0\0\0"
-	.long	__data_size		/* VirtualSize */
+	.long	__data_size - dos_header	/* VirtualSize -- see pe.ld */
 	.long	__data_start - dos_header	/* VirtualAddress */
-	.long	__data_size		/* SizeOfRawData */
+	.long	__data_size - dos_header	/* SizeOfRawData */
 	.long	__data_start - dos_header	/* PointerToRawData */
 	.long	0			/* PointerToRelocations */
 	.long	0			/* PointerToLinenumbers */
