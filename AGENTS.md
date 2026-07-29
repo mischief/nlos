@@ -48,9 +48,18 @@ ELF loader, no syscall ABI, and the MMU stays optional. If that
 changes, it is a different project.
 
 **No ambient authority.** A proc touches exactly what its rights table
-says: handle 0 (its own receive port) plus whatever was explicitly sent
-to it. New authority arrives only inside a message, as `{__right=h}`.
-Device access — keyboard, serial, network — is a right like any other.
+says: handle 0 (its own receive port) plus whatever was explicitly
+granted. New authority arrives as `{__right=h}`, either inside a message
+or in `sys.spawn`'s `arg`. Device access — keyboard, serial, network —
+is a right like any other.
+
+`arg` exists because a message is always too late for some things. It is
+delivered before the child's chunk runs and arrives as the chunk's
+`...`, so a proc can hold a capability on its first line — which is
+where `require` happens, and therefore where a namespace has to already
+be. That is what `fork` gives Plan 9 for free. The kernel does not
+interpret it: it is the ordinary serializer, so rights travel exactly as
+they do in a message, and what the value *means* is entirely Lua's.
 
 **Handle numbers are not an ABI.** Handle 0 is the only well-known
 handle there can be, because it is how a proc receives at all. Every

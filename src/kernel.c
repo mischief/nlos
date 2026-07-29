@@ -140,6 +140,12 @@ struct kproc {
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	int reductions;		/* instruction budget per slice */
+	/* args waiting on co's stack for the FIRST resume only: sys.spawn's
+	 * `arg`, already deserialized into this proc, which the chunk
+	 * receives as `...`. zeroed after that resume so the weight loop's
+	 * later resumes pass nothing.
+	 */
+	int nargs;
 	size_t mem_used;	/* live bytes in this proc's lua heap */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
@@ -217,6 +223,7 @@ extern void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
 static void port_unref(struct kport *port);
 static void wake_receivers(struct kport *port);
+static void proc_kill(struct kproc *p, const char *why);
 static int reprioritize(struct kproc *p, int nrunnable);
 static int count_runnable(void);
 static void make_ready(struct kproc *p);
@@ -1203,6 +1210,38 @@ api_spawn(lua_State *L)
 		lua_pop(L, 1);
 	}
 
+	/* opts.arg: one value handed to the child BEFORE its chunk runs,
+	 * arriving as the chunk's `...`.
+	 *
+	 * a message cannot do this job. the child's first line is typically
+	 * require(...), which runs before any recv, so anything the child
+	 * needs in order to load code at all -- its namespace -- has to be
+	 * there already. that is what fork gives plan 9 for free and what
+	 * spawn otherwise cannot express.
+	 *
+	 * the kernel does not interpret it. it is the ordinary serializer,
+	 * so rights travel exactly as they do in a message and the value
+	 * is mechanism: "deliver this before the chunk starts". what it
+	 * means is entirely lua's business.
+	 */
+	struct wbuf argw = { 0 };
+	int have_arg = 0;
+
+	if (!lua_isnoneornil(L, 2)) {
+		lua_getfield(L, 2, "arg");
+		if (!lua_isnil(L, -1)) {
+			if (serialize(L, -1, &argw, p, 0)) {
+				release_inflight(argw.refs, argw.refrecv,
+				    argw.nrefs);
+				free(argw.p);
+				lua_pop(L, 1);
+				return luaL_error(L, "spawn: unserializable arg");
+			}
+			have_arg = 1;
+		}
+		lua_pop(L, 1);
+	}
+
 	/* sys.spawn can never mint a privileged (cons/wire/power-class)
 	 * proc: PRIV_NONE is hardwired here. only the kernel's own boot
 	 * sequence (spawn_cons/spawn_wire/spawn_power) sets a real priv
@@ -1214,13 +1253,45 @@ api_spawn(lua_State *L)
 	if (is_dumped)
 		free(buf.data);	/* proc_new/luaL_loadbuffer copies, doesn't keep it */
 
-	if (pid < 0)
+	if (pid < 0) {
+		release_inflight(argw.refs, argw.refrecv, argw.nrefs);
+		free(argw.p);
 		return luaL_error(L, "spawn failed");
+	}
 
 	struct kproc *child = find_proc(pid);
 
-	if (!child)
+	if (!child) {
+		release_inflight(argw.refs, argw.refrecv, argw.nrefs);
+		free(argw.p);
 		return luaL_error(L, "spawn: child vanished");
+	}
+
+	/* push the arg onto the child's stack, above the loaded chunk, so
+	 * the first resume passes it as `...`.
+	 */
+	if (have_arg) {
+		size_t off = 0;
+
+		if (deserialize(child->co, argw.p, argw.len, &off, child, 0)) {
+			/* a partial deserialize may have left values on co's
+			 * stack under the chunk's feet, and rights already
+			 * minted into the child. the proc is unusable; kill
+			 * it rather than start it half-built.
+			 */
+			release_inflight(argw.refs, argw.refrecv, argw.nrefs);
+			free(argw.p);
+			proc_kill(child, "spawn: could not deliver arg");
+			return luaL_error(L, "spawn: could not deliver arg");
+		}
+		child->nargs = 1;
+		/* the in-flight ref taken by serialize; the child now holds
+		 * its own from right_new, exactly as a delivered message
+		 * releases its refs once received.
+		 */
+		release_inflight(argw.refs, argw.refrecv, argw.nrefs);
+		free(argw.p);
+	}
 	/* hand parent a send right on the child's self port */
 	int h = right_new(p, child->rights[0].port, 0);
 
@@ -2540,7 +2611,9 @@ run_proc(struct kproc *p)
 
 		p->resumed = t0;
 
-		int rc = lua_resume(p->co, 0, 0, &nres);
+		int rc = lua_resume(p->co, 0, p->nargs, &nres);
+
+		p->nargs = 0;	/* first resume only; see struct kproc */
 
 		p->cputime += platform_ticks() - t0;
 		p->resumed = 0;

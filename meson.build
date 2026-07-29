@@ -293,7 +293,7 @@ run_target('fetch-mcp',
 
 boottest = files('scripts/boottest.sh')
 
-boot_tests = ['channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
+boot_tests = ['spawnarg', 'channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
               'math',
               'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
               'procfs', 'mnt']
