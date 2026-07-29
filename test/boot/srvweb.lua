@@ -68,8 +68,12 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 		-- as a visitor -- the shell has no eval.
 		["probe.lua"] = [==[
 			local unistd = require("posix.unistd")
+			local sys = require("los.sys")
 			local out = {}
 
+			-- run twice, this is the same pid iff programs are
+			-- coroutines in the shell's proc rather than procs
+			out[#out + 1] = "pid=" .. tostring(sys.self())
 			out[#out + 1] = "io.open=" .. tostring(io.open ~= nil)
 			out[#out + 1] = "loadfile=" ..
 			    tostring(loadfile ~= nil)

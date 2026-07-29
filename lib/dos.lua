@@ -114,10 +114,16 @@ local Sh = {}
 Sh.__index = Sh
 
 -- caps: { cons = <handle>, ns = <namespace>, path = "/bin" }
+--
+-- coro=true runs programs as coroutines in this proc rather than as
+-- procs of their own -- see Sh:pipecoro for what that trades away. off
+-- by default, because the default caller is the boot console, where
+-- isolation between the shell and whatever it runs is worth a proc.
 function M.new(caps)
 	return setmetatable({
 		ns = caps.ns,
 		cons = caps.cons,
+		coro = caps.coro or false,
 		env = caps.env or { PATH = caps.path or "/bin", HOME = "/" },
 		cwd = "/",
 		status = 0,
@@ -289,6 +295,162 @@ function Sh:spawn1(path, argv, streams)
 	return pid
 end
 
+-- parse one pipeline stage: argv, its redirections, and the program it
+-- names. shared by both launch paths below, which agree on every part of
+-- this and on none of what follows it.
+--
+-- returns nil plus a message (and optionally a status) on failure.
+function Sh:stage(part)
+	local words = split(part)
+	local argv, r = redirs(words)
+
+	if not argv then
+		return nil, "dos: " .. r
+	end
+	if #argv == 0 then
+		return nil, "dos: empty command in pipeline"
+	end
+	if builtins[argv[1]] then
+		return nil, "dos: " .. argv[1] ..
+		    " is a builtin and cannot be piped"
+	end
+	local path = self:find(argv[1])
+
+	if not path then
+		-- the hint goes HERE because this is where a lost user
+		-- actually is: they typed something that does not exist,
+		-- which is the moment they need to be told where the list
+		-- lives.
+		return nil, argv[1] .. ": not found (try 'help')", 127
+	end
+	return { argv = argv, r = r, path = path }
+end
+
+-- ---- the coroutine launcher ----
+--
+-- the same pipeline, with every stage a coroutine in THIS proc instead
+-- of a proc of its own: prog.corun rather than sys.spawn, Channels
+-- rather than ports, and the programs themselves unchanged, because
+-- prog.chanstream satisfies the same :read/:write/:close that a port
+-- stream does.
+--
+-- what it costs and buys, against Sh:pipeports below:
+--
+--   - a stage is a coroutine and a table, not a ~34-40KB lua_State, so
+--     MAXPROCS stops bounding pipeline depth. that is the whole reason
+--     lib/webterm.lua wants this: a visitor's session becomes one proc
+--     rather than one plus one per command.
+--   - no isolation between stages, or between a stage and this shell.
+--     they share a heap, an instruction budget and a memory cap, so a
+--     runaway program takes the session down instead of just itself.
+--     acceptable where the session is already one user's, and NOT
+--     acceptable for the boot console, which is why this is a flag and
+--     not a replacement.
+--   - file redirects need no server coroutine: prog.filestream talks to
+--     an ns File directly, where the port path has to put M.filereader
+--     or M.filewriter behind a port to make a pull-style stream.
+--
+-- a namespace is deliberately NOT passed per stage. ns.setcurrent is
+-- per-proc state, so every coroutine here shares this shell's namespace
+-- -- see prog.corun.
+function Sh:pipecoro(stages)
+	local prog = require("prog")
+	-- the console is another proc either way, so it stays a port
+	-- stream. never closed: it is not ours, and every stage shares it.
+	local cons = prog.pipestream(self.cons)
+	local done = thread.chancreate(#stages)
+	local status = {}
+	local closers = {}
+	local prev = nil
+
+	for i, part in ipairs(stages) do
+		local st, msg, code = self:stage(part)
+
+		if not st then
+			self:print(msg .. "\n")
+			return code or 1
+		end
+
+		local stdin, stdout = nil, cons
+
+		if prev then
+			stdin = prog.chanstream(prev)
+			prev = nil
+		elseif st.r.stdin then
+			local f = self.ns:open(
+			    ns.clean(self.cwd .. "/" .. st.r.stdin), "r")
+
+			if not f then
+				self:print("dos: cannot open " ..
+				    st.r.stdin .. "\n")
+				return 1
+			end
+			stdin = prog.filestream(f)
+			closers[#closers + 1] = stdin
+		end
+
+		-- the channel this stage WRITES, if any. it has to be closed
+		-- the moment this stage returns rather than after the join:
+		-- close() is the only eof a channel has, and the next stage
+		-- is blocked reading until it arrives.
+		local mine = nil
+
+		if i < #stages then
+			mine = thread.chancreate(2)	-- bounded: backpressure
+			stdout = prog.chanstream(mine)
+			prev = mine
+		elseif st.r.stdout then
+			local f = self.ns:create(
+			    ns.clean(self.cwd .. "/" .. st.r.stdout), "w")
+
+			if not f then
+				self:print("dos: cannot create " ..
+				    st.r.stdout .. "\n")
+				return 1
+			end
+			stdout = prog.filestream(f)
+			closers[#closers + 1] = stdout
+		end
+
+		local idx = i
+		local spec = {
+			path = st.path, name = st.argv[1], args = st.argv,
+			env = self.env, cwd = self.cwd, ns = self.ns,
+			stdin = stdin, stdout = stdout, stderr = cons,
+		}
+
+		thread.spawn(function()
+			-- a stage that raises must not take the shell with
+			-- it, nor leave the join waiting forever. prog.run
+			-- pcalls the program itself, so this catches only a
+			-- failure of the runtime around it.
+			local ok, res = pcall(prog.corun, spec)
+
+			status[idx] = ok and res or 1
+			if not ok then
+				cons:write("dos: " .. st.argv[1] .. ": " ..
+				    tostring(res) .. "\n")
+			end
+			if mine then
+				mine:close()
+			end
+			done:send(idx)
+		end)
+	end
+
+	-- join. a Channel rather than thread.run(), because Sh:run is
+	-- ALREADY inside a thread.run() loop -- see the note on Sh:run --
+	-- so what is needed here is to park until the stages report, not
+	-- to start a second scheduler.
+	for _ = 1, #stages do
+		done:recv()
+	end
+	for _, c in ipairs(closers) do
+		c:close()
+	end
+	return status[#stages] or 0
+end
+
 -- run a pipeline of one or more commands. returns the last command's
 -- status, plus its exit message if it left one.
 --
@@ -312,6 +474,13 @@ function Sh:run(line)
 		if builtins[words[1]] then
 			return builtins[words[1]](self, words)
 		end
+	end
+
+	-- builtins are decided above, because they are this shell's own
+	-- state either way. everything below is how a PROGRAM is launched,
+	-- which is the one thing the two modes disagree about.
+	if self.coro then
+		return self:pipecoro(stages)
 	end
 
 	local pids = {}

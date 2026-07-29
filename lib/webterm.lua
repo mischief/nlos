@@ -78,12 +78,18 @@ local json = require("json")
 
 local M = {}
 
--- MAXPROCS is 32 (src/kernel.c) and a session costs one proc for the
--- shell plus one per program it is running, so the ceiling here is a
--- good deal lower than it looks. small on purpose: the failure mode of
--- being generous is that the machine runs out of procs and the SERVER
--- cannot spawn either.
-M.MAXSESSIONS = 4
+-- MAXPROCS is 32 (src/kernel.c). a session used to cost one proc for the
+-- shell plus one more per program it was running, which put the real
+-- ceiling far below this number -- a visitor typing a three-stage
+-- pipeline cost four procs on their own.
+--
+-- with coro=true (see the VISITOR chunk) a session is exactly ONE proc
+-- whatever it runs, because programs are coroutines beside the shell.
+-- so the arithmetic is now the honest one: this many, plus proc 0, cons,
+-- tcp and the rest of the boot tasks. still short of 32 on purpose --
+-- the failure mode of being generous is that the machine runs out of
+-- procs and the SERVER cannot spawn a session either.
+M.MAXSESSIONS = 16
 
 -- how long a command may run before its output is returned unfinished.
 -- the next request picks up whatever else arrived in the meantime, so
@@ -135,7 +141,13 @@ local VISITOR = [[
 		    data = "namespace: " .. tostring(err) .. "\n" })
 		return
 	end
-	dos.start({ ns = N, cons = cons }, m.banner)
+	-- coro: a session is ONE proc. programs run as coroutines beside
+	-- the shell rather than as procs of their own, so MAXPROCS stops
+	-- bounding how many visitors there can be -- see Sh:pipecoro. the
+	-- isolation given up is between a visitor and their own programs,
+	-- which is not a boundary anyone here needs; the boundary that
+	-- matters, between one visitor and another, is still a proc.
+	dos.start({ ns = N, cons = cons, coro = true }, m.banner)
 ]]
 
 -- ---- sessions ----

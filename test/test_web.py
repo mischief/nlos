@@ -72,7 +72,7 @@ def main():
         *qemuarch.disk(img),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    print("1..20", flush=True)
+    print("1..22", flush=True)
     try:
         deadline = time.time() + 60
         up = False
@@ -165,6 +165,23 @@ def main():
         ok("io.open=false" in out and "loadfile=false" in out
            and "dofile=false" in out,
            f"a visitor's program has no ambient file access -> {out!r}")
+
+        # a session is ONE proc: programs run as coroutines beside the
+        # shell (dos coro=true), so two runs report the same pid. under
+        # the spawn path each would be a proc of its own and they would
+        # differ. this is what takes MAXPROCS off the visitor ceiling.
+        import re
+        first = re.search(r"pid=(\d+)", out)
+        r, out2 = line("probe")
+        second = re.search(r"pid=(\d+)", out2)
+        ok(first and second and first.group(1) == second.group(1),
+           f"programs share the session's proc "
+           f"({first and first.group(1)} == {second and second.group(1)})")
+
+        # and a pipeline still works when both stages are coroutines in
+        # that one proc, joined by a Channel rather than a port
+        r, out = line("seq 3 | cat")
+        ok("1\n2\n3\n" in out, f"seq 3 | cat as coroutines -> {out!r}")
 
         # writes land in the visitor's private copy of the tree
         r, out = line("seq 1 3 > /tmp/x")
