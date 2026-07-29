@@ -71,7 +71,7 @@ def main():
         *qemuarch.disk(img),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    print("1..5", flush=True)
+    print("1..9", flush=True)
     try:
         # the guest prints this once listen() finally succeeds, which
         # is only after dhcp has handed it a lease.
@@ -112,6 +112,40 @@ def main():
         r2, body2 = get("/after")
         ok(boom_ok and r2.status == 200 and body2 == b"you asked for /after",
            "handler error is a 500 and the server survives it")
+
+        # a body over MAXMSG (64KB) cannot go out as one message to the
+        # tcp task -- the serializer refuses it, which killed the
+        # connection and returned NOTHING rather than truncating.
+        r, body = get("/big")
+        ok(r.status == 200 and len(body) == 200000,
+           f"a 200KB body survives the 64KB message ceiling ({len(body)} B)")
+
+        def post(path, body, headers=None):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+            c.request("POST", path, body=body, headers=headers or {})
+            r = c.getresponse()
+            data = r.read()
+            c.close()
+            return r, data
+
+        # a body the server WILL accept, to prove the cap is a ceiling
+        # and not a blanket refusal
+        r, data = post("/echolen", b"z" * 1000)
+        ok(r.status == 200 and data == b"1000", f"a normal POST body -> {data!r}")
+
+        # ...and the attack: an enormous declared length must be refused
+        # on the Content-Length alone, without reading it. this loop runs
+        # in the server proc, and a boot payload has no mem_limit, so an
+        # unbounded read here exhausts the kernel heap for EVERY session
+        # rather than just the rude one.
+        r, _ = post("/echolen", b"z" * 100,
+                    {"Content-Length": str(1024 * 1024 * 1024)})
+        ok(r.status == 413, f"a 1GB Content-Length is refused unread -> {r.status}")
+
+        # and the server is still alive afterwards, which is the point
+        r, body = get("/alive")
+        ok(r.status == 200 and body == b"you asked for /alive",
+           "server survives the oversized request")
 
     finally:
         qemu.kill()

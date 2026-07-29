@@ -155,15 +155,40 @@ local STATUS_TEXT = {
 	[200] = "OK", [201] = "Created", [204] = "No Content",
 	[301] = "Moved Permanently", [302] = "Found",
 	[400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found",
-	[405] = "Method Not Allowed", [500] = "Internal Server Error",
+	[405] = "Method Not Allowed",
+	[413] = "Content Too Large", [431] = "Request Header Fields Too Large",
+	[500] = "Internal Server Error", [503] = "Service Unavailable",
 }
+
+-- ---- inbound limits ----
+--
+-- both of these are the difference between one rude client and a dead
+-- machine. this loop runs in the SERVER proc, so anything it
+-- accumulates is charged to the server -- and a boot payload has
+-- mem_limit 0 (unlimited), which means an unbounded read here does not
+-- kill the offending session, it exhausts the kernel heap for
+-- everything.
+--
+-- there was no ceiling on either. `Content-Length: 1073741824` made
+-- this read until the machine died, and headers with no blank line ever
+-- did the same a chunk at a time. the body cap is enforced on the
+-- DECLARED length, before a single byte is read, because reading a
+-- gigabyte to discover it was a gigabyte concedes the attack.
+M.MAXHEADERS = 16 * 1024
+M.MAXBODYIN = 256 * 1024
+
+-- outbound write size. well under MAXMSG (64KB), which is the hard
+-- ceiling on a single message to the tcp task -- see write_response.
+M.WRITECHUNK = 16 * 1024
 
 -- parses the request line + headers, then reads exactly
 -- Content-Length bytes of body if present (0 otherwise -- fine for
 -- GET, needed for POST). no chunked transfer-encoding on requests,
 -- matching the same limitation M.get accepts on responses.
+--
+-- returns the request, or nil plus the status to answer with.
 local function read_request(tcp, conn)
-	local buf = ""
+	local parts, buflen, buf = {}, 0, ""
 
 	while true do
 		local headerend = buf:find("\r\n\r\n", 1, true)
@@ -173,32 +198,50 @@ local function read_request(tcp, conn)
 			local method, path, version =
 			    requestline:match("^(%u+) (%S+) (HTTP/%d%.%d)$")
 			if not method then
-				return nil
+				return nil, 400
 			end
 			local headers = {}
 			for k, v in
 			    headerblock:gmatch("([^:\r\n]+):[ \t]*([^\r\n]*)") do
 				headers[k:lower()] = v
 			end
-			local body = buf:sub(headerend + 4)
 			local clen = tonumber(headers["content-length"]) or 0
 
-			while #body < clen do
+			if clen < 0 or clen > M.MAXBODYIN then
+				return nil, 413
+			end
+			-- accumulate in a table rather than by concatenation:
+			-- `body = body .. data` is a fresh copy of everything
+			-- per 4KB chunk, so a large body cost quadratic time
+			-- and garbage on top of the memory it was already
+			-- costing.
+			local body = buf:sub(headerend + 4)
+			local bparts, blen = { body }, #body
+
+			while blen < clen do
 				local data = tcp.recv(conn, 4096)
 				if not data then
 					break
 				end
-				body = body .. data
+				bparts[#bparts + 1] = data
+				blen = blen + #data
 			end
 			return { method = method, path = path,
 			    version = version, headers = headers,
-			    body = body:sub(1, clen) }
+			    body = table.concat(bparts):sub(1, clen) }
+		end
+		if buflen > M.MAXHEADERS then
+			-- headers that never end. 431 is the honest code and
+			-- the connection is closed either way.
+			return nil, 431
 		end
 		local data = tcp.recv(conn, 4096)
 		if not data then
-			return nil
+			return nil, 400
 		end
-		buf = buf .. data
+		parts[#parts + 1] = data
+		buflen = buflen + #data
+		buf = table.concat(parts)
 	end
 end
 
@@ -224,7 +267,32 @@ local function write_response(tcp, conn, resp)
 	end
 	lines[#lines + 1] = ""
 	lines[#lines + 1] = ""
-	tcp.send(conn, table.concat(lines, "\r\n") .. body)
+
+	-- the body goes out in pieces because a tcp.send is ONE message to
+	-- the tcp task, and the serializer refuses anything over MAXMSG
+	-- (64KB). sending a larger body whole did not truncate it -- it
+	-- raised "unserializable message", killed the connection
+	-- coroutine, and handed the client nothing at all, which is a
+	-- baffling way for a big page to fail.
+	--
+	-- this is NOT chunked transfer-encoding: Content-Length is still
+	-- exact and the framing is unchanged. only the number of writes
+	-- differs, which is invisible to the client.
+	local head = table.concat(lines, "\r\n")
+
+	if not tcp.send(conn, head) then
+		return
+	end
+	local off = 1
+
+	while off <= #body do
+		local part = body:sub(off, off + M.WRITECHUNK - 1)
+
+		if not tcp.send(conn, part) then
+			return
+		end
+		off = off + #part
+	end
 end
 
 -- the whole body runs under pcall, not just the handler: an error in
@@ -233,11 +301,12 @@ end
 -- task's table and the efi child behind it, once per bad connection.
 -- the close has to happen on every path out.
 local function serve_conn(tcp, conn, handler)
-	local req = read_request(tcp, conn)
+	local req, status = read_request(tcp, conn)
 	local resp
 
 	if not req then
-		resp = { status = 400, body = "bad request" }
+		resp = { status = status or 400,
+		    body = (STATUS_TEXT[status] or "bad request") .. "\n" }
 	else
 		local ok, r = pcall(handler, req)
 

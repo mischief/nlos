@@ -12,6 +12,14 @@ http.serve(tcp, 7777, function(req)
 	if req.path == "/boom" then
 		error("deliberate handler explosion")
 	end
+	-- a body well over MAXMSG (64KB), which one tcp.send cannot carry:
+	-- write_response has to break it up or the client gets nothing.
+	if req.path == "/big" then
+		return { status = 200, body = string.rep("x", 200000) }
+	end
+	if req.path == "/echolen" then
+		return { status = 200, body = tostring(#req.body) }
+	end
 	return { status = 200, body = "you asked for " .. req.path }
 end, function()
 	print("http test server ready")
