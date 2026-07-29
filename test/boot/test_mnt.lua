@@ -24,7 +24,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(26)
+tap.plan(32)
 
 -- ---- the server proc ----
 --
@@ -335,6 +335,68 @@ tap.is(N:readfile("/host/sub/deep"), "deep file\n",
 
 N:unmount("/counted")
 sys.close(ch2)
+
+-- ---- a dead server fails its clients instead of parking them ----
+--
+-- the failure mode this replaces was an unbounded hang, so the test has
+-- to prove termination, not just an error value: every assertion below
+-- would simply never be reached by the old code.
+--
+-- while a request is in flight the reply port holds two rights, ours and
+-- the one that travelled with the message. if it drops to one with
+-- nothing queued, nobody can answer -- and dropping a right wakes
+-- blocked receivers, so the wakeup and the signal are the same event.
+
+-- 1. a server that receives and then exits without replying
+local MUTE = [[
+local sys = require("los.sys")
+local thread = require("los.thread")
+
+thread.recv(sys.SELF)	-- take one request, answer nothing, exit
+]]
+
+local mpid, mh = sys.spawn(MUTE, { name = "mute" })
+local MB = mnt.new(mh)
+local t0 = sys.uptime_ms()
+local mok, merr = pcall(MB.attach)
+
+tap.ok(not mok, "an rpc to a server that exits mid-request fails")
+tap.ok(tostring(merr):find(dev.Eio, 1, true) ~= nil,
+    "with Eio: " .. tostring(merr))
+tap.ok(sys.uptime_ms() - t0 < 2000,
+    "and returns promptly (" .. (sys.uptime_ms() - t0) .. "ms), not never")
+sys.close(mh)
+
+-- 2. a server that is ALREADY gone when we send. sys.send returns false
+-- for a dead port rather than raising, which is the case checking only
+-- the pcall used to miss.
+local dpid, dh = sys.spawn("return", { name = "gone" })
+
+sys.monitor(dpid)
+local ddl = sys.uptime_ms() + 3000
+
+while sys.uptime_ms() < ddl do
+	local rok, rm = sys.tryrecv(sys.SELF)
+
+	if rok and rm and rm.exit == dpid then
+		break
+	end
+	sys.yield()
+end
+
+local DB = mnt.new(dh)
+local t1 = sys.uptime_ms()
+local dok, derr2 = pcall(DB.attach)
+
+tap.ok(not dok and tostring(derr2):find(dev.Eio, 1, true) ~= nil,
+    "an rpc to an already-dead server fails with Eio: " .. tostring(derr2))
+tap.ok(sys.uptime_ms() - t1 < 2000, "also promptly (" ..
+    (sys.uptime_ms() - t1) .. "ms)")
+sys.close(dh)
+
+-- 3. and the LIVE mount is unaffected by all of that
+tap.is(N:readfile("/host/hello"), "hello from another proc\n",
+    "the healthy mount still works afterwards")
 
 -- ---- claim 5: the server exits when its last client goes ----
 

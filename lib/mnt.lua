@@ -43,11 +43,6 @@
 --
 -- ---- what is missing ----
 --
--- a dead server parks the caller forever: thread.recv has no deadline
--- and there is nothing else to wake it. the right fix is hangup
--- detection on the reply port, not a timeout -- a slow backend is not a
--- broken one -- and it is not written yet.
---
 -- walk is one element per round trip because dev.walk is. 9P's Twalk
 -- carries up to sixteen names for this exact reason, and dev.walkpath
 -- is where that optimisation would go.
@@ -90,7 +85,15 @@ function M.new(right)
 		msg.seq = nextseq()
 		msg.reply = { __right = reply }
 
-		if not pcall(sys.send, right, msg) then
+		-- sys.send RETURNS FALSE for a dead port -- erlang semantics,
+		-- the sender learns from a monitor rather than the send -- and
+		-- only RAISES for a bad right or an unserializable message.
+		-- checking just the pcall missed the first case entirely, so a
+		-- request to a server that had already exited was silently
+		-- dropped and then waited for forever.
+		local ok, sent = pcall(sys.send, right, msg)
+
+		if not ok or sent == false then
 			dev.error(dev.Eio)	-- server gone, or right closed
 		end
 
@@ -103,17 +106,56 @@ function M.new(right)
 		--
 		-- note this is NOT a tag: nothing routes on it, no table maps
 		-- it to a waiter. it only says "not mine".
+		-- ---- and this is where a dead server is noticed ----
+		--
+		-- while a request is in flight the reply port has TWO rights:
+		-- ours, and the one that travelled with the message. the
+		-- serializer counts the in-flight one immediately, so the
+		-- second right exists from the moment we send.
+		--
+		-- so if it drops back to one and there is nothing queued,
+		-- nobody can ever reply: either the server answered and closed
+		-- (drained above), or it died and proc_kill released its
+		-- rights. sys.hungup is exactly that question, and it is the
+		-- same test lib/srv.lua uses to know its last client left.
+		--
+		-- it is not a timeout, deliberately. a slow backend is not a
+		-- broken one, and no deadline can tell them apart -- but the
+		-- port's reference count can. dropping a right also WAKES
+		-- blocked receivers (port_unref), so this costs no polling: we
+		-- are woken by the very event we are looking for.
+		--
+		-- this matters more than it looks. the ESP is a server proc
+		-- now, so it is every proc's filesystem; without this its
+		-- death parked the entire machine with no diagnostic.
 		while true do
-			local res = thread.recv(reply)
+			local got, res = sys.tryrecv(reply)
 
-			if type(res) ~= "table" then
-				dev.error(dev.Eio)
-			end
-			if res.seq == msg.seq then
-				if res.err then
-					dev.error(res.err)
+			if got then
+				if type(res) ~= "table" then
+					dev.error(dev.Eio)
 				end
-				return res
+				if res.seq == msg.seq then
+					if res.err then
+						dev.error(res.err)
+					end
+					return res
+				end
+				-- a NON-matching reply belongs to a request
+				-- this thread abandoned -- today only possible
+				-- if an error (a memory cap, say) unwinds
+				-- between the send and the recv. dropping it is
+				-- the difference between one lost call and
+				-- every later call reading the previous one's
+				-- answer.
+				--
+				-- note this is NOT a tag: nothing routes on it,
+				-- no table maps it to a waiter. it only says
+				-- "not mine".
+			elseif sys.hungup(reply) then
+				dev.error(dev.Eio)	-- nobody left to answer
+			else
+				thread.park(reply)
 			end
 		end
 	end
