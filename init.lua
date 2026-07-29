@@ -53,6 +53,7 @@ rootns:mount("/", require("mnt").new(caps_of.esp), "mnt",
 rootns:mount("/proc", require("procfs").new(), "procfs")
 nsmod.setcurrent(rootns)
 
+
 local nsdesc = rootns:describe()
 
 do
@@ -223,8 +224,19 @@ if has_tcp and has_udp then
 	    udp = { __right = caps_of.udp },
 	}) then
 		dhcpd = h
+		-- the lease as a filesystem, at /net. mounted BEFORE nsdesc
+		-- is taken below, so every child inherits it -- which is how
+		-- lib/dns.lua finds its resolver without holding a right to
+		-- dhcpd or being told an address at spawn time.
+		rootns:mount("/net", require("mnt").new(h), "mnt",
+		    { port = { __right = h } })
 	end
 end
+
+-- RE-taken, because /net did not exist when the first description was
+-- made. dhcpd deliberately keeps the earlier one: it SERVES /net, and a
+-- namespace containing a mount to itself is a loop waiting to be walked.
+nsdesc = rootns:describe()
 
 if has_tcp then
 	sys.send(tcp9srv, { net = { __right = caps_of.tcp } })

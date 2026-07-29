@@ -18,14 +18,42 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local caps = require("caps")
+local ns = require("ns")
 
 local spack, sunpack = string.pack, string.unpack
 
--- qemu's slirp usermode networking answers dns at this fixed address
--- (the gateway's .3, a slirp convention); a real deployment would
--- learn this from dhcp option 6, which nothing here parses yet.
-local RESOLVER = { 10, 0, 2, 3 }
+-- the resolver comes from the LEASE, by reading a file: lib/dhcpd.lua
+-- serves /net/dns, one address per line, and this proc has /net in the
+-- namespace it was spawned with. so option 6 arrives with no right to
+-- dhcpd, no message protocol and nothing told to us at spawn time --
+-- which is the whole argument for the lease being a filesystem.
+--
+-- the fallback is qemu slirp's fixed .3 (a slirp convention), for the
+-- case where there is no /net at all: no NIC, or dhcpd never started.
+-- it is a fallback rather than the default, which is the difference from
+-- how this used to work.
+local FALLBACK = { 10, 0, 2, 3 }
 local RESOLVER_PORT = 53
+
+-- re-read rather than cached, because a renewal can change it and
+-- because /net may not have a lease yet when the first query arrives.
+-- one namespace read per resolve is nothing next to a udp round trip.
+local function resolver()
+	local N = ns.current()
+	local txt = N and N:readfile("/net/dns")
+	local first = txt and txt:match("^%s*([%d%.]+)")
+
+	if first then
+		local a, b, c, d =
+		    first:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+
+		if a then
+			return { tonumber(a), tonumber(b), tonumber(c),
+			    tonumber(d) }
+		end
+	end
+	return FALLBACK
+end
 
 -- real milliseconds, via thread.sleep/recvtimeout. these used to be raw
 -- tsc cycle counts, which meant the same constant was a different
@@ -149,8 +177,9 @@ local function try_once(query, id, ms)
 
 	sys.send(udph, { op = "recv", connid = conn, maxlen = 512,
 	    reply = { __right = replyport } })
-	if not udp.send(conn, RESOLVER[1], RESOLVER[2], RESOLVER[3],
-	    RESOLVER[4], RESOLVER_PORT, query) then
+	local r = resolver()
+
+	if not udp.send(conn, r[1], r[2], r[3], r[4], RESOLVER_PORT, query) then
 		sys.send(udph, { op = "cancel", connid = conn })
 		thread.recv(replyport)	-- drain the now-aborted recv's reply
 		sys.close(replyport)

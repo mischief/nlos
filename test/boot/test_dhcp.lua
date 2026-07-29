@@ -15,7 +15,7 @@ local caps = require("caps")
 local dhcp = require("dhcp")
 local tap = require("tap")
 
-tap.plan(13)
+tap.plan(21)
 
 local g = sys.granted()
 
@@ -69,20 +69,94 @@ tap.ok(dhcp.quad(lease.ip) ~= nil,
 -- benchmark -- it has measured 12-24ms.
 tap.ok(took < 1000, "and got it in " .. took .. "ms, not four seconds")
 
--- installing it is what proves Ip4Config2 accepted the policy change,
--- and listen succeeding immediately afterwards is what proves the
--- address is really live rather than merely stored.
-tap.ok(dhcp.install(tcp, lease) ~= nil, "the lease installs")
+-- NOT installed here. lib/dhcpd.lua below is the thing that installs a
+-- lease, and it is what the rest of this file exercises -- two clients
+-- racing to configure one interface would be testing the race.
 
-local ok = false
+-- ---- the lease as a filesystem ----
+--
+-- what init.lua mounts at /net. built here by hand because this payload
+-- replaces init, so there is no /net unless we make one -- which also
+-- means this tests the mount rather than assuming it.
+local nsmod = require("ns")
+local proc = require("proc")
+local srv = require("srv")
 
-for _ = 1, 40 do
-	if tcp.listen(7777) then
-		ok = true
+-- a payload replaces init.lua, which is what adopts a namespace, so
+-- there is none to inherit -- build one, same as test_prog.lua does. the
+-- ESP as a MOUNT, since los.fs belongs to the esp server task alone.
+local N = nsmod.new()
+
+assert(N:mount("/", require("mnt").new(g.esp), "mnt",
+    { port = { __right = g.esp } }))
+
+local pid, h = proc.spawn(assert(N:readfile("/lib/dhcpd.lua")),
+    { name = "dhcp2", ns = N:describe() })
+
+tap.ok(pid ~= nil, "dhcpd spawns")
+sys.send(h, { tcp = { __right = g.tcp }, udp = { __right = g.udp } })
+
+N:mount("/net", require("mnt").new(h), "mnt", { port = { __right = h } })
+
+-- it has to acquire before /net/addr says anything, and it is racing
+-- this test rather than being waited on, so give it a moment.
+local addr
+for _ = 1, 60 do
+	addr = N:readfile("/net/addr")
+	if addr and addr:match("%d") then
 		break
 	end
-	thread.sleep(50)
+	thread.sleep(100)
 end
-tap.ok(ok, "and tcp can listen on the installed address")
+
+tap.ok(addr ~= nil and dhcp.quad((addr or ""):gsub("%s+$", "")) ~= nil,
+    "/net/addr reports the address: " .. tostring((addr or ""):gsub("\n", "")))
+
+local dnstxt = N:readfile("/net/dns")
+
+tap.ok(dnstxt ~= nil and dnstxt:match("^%d+%.%d+%.%d+%.%d+") ~= nil,
+    "/net/dns reports a resolver, one per line: " ..
+    tostring((dnstxt or ""):gsub("\n", " ")))
+
+local leasetxt = N:readfile("/net/lease")
+
+tap.ok(leasetxt ~= nil and leasetxt:find("state bound", 1, true) ~= nil,
+    "/net/lease says bound")
+tap.ok(leasetxt:find("gw ", 1, true) ~= nil and
+    leasetxt:find("remaining ", 1, true) ~= nil,
+    "...with a gateway and a countdown")
+
+-- readdir, so `ls /net` works rather than only paths you already know
+local ents = N:readdir("/net")
+local names = {}
+
+for _, e in ipairs(ents or {}) do
+	names[e.name] = true
+end
+tap.ok(names.addr and names.dns and names.ctl and names.lease,
+    "ls /net lists the tree")
+
+-- ctl is the only writable file, and the only authority here
+tap.ok(N:writefile("/net/ctl", "renew") ~= nil,
+    "writing renew to /net/ctl is accepted")
+tap.ok(select(1, N:writefile("/net/addr", "1.2.3.4")) == nil,
+    "but the reporting files are read-only")
+tap.ok(select(1, N:writefile("/net/ctl", "nonsense")) == nil,
+    "and ctl rejects a command it does not know")
+
+-- the renewal it was asked for must actually happen, and leave the
+-- address usable rather than merely unchanged
+local renewed = false
+
+for _ = 1, 60 do
+	local t = N:readfile("/net/lease")
+
+	if t and t:find("state bound", 1, true) then
+		renewed = true
+		break
+	end
+	thread.sleep(100)
+end
+tap.ok(renewed, "and the lease is still bound after a forced renewal")
 
 tap.done()
