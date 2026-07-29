@@ -58,7 +58,7 @@ def main():
     port = free_port()
 
     qemu = subprocess.Popen([
-        qemuarch.QEMU, *qemuarch.machine(),
+        *qemuarch.qemu(), *qemuarch.machine(),
         "-display", "none", "-monitor", "none",
         "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-:7777",
         "-device", "virtio-net-pci,netdev=n0",

@@ -10,6 +10,19 @@
 # these scripts by hand against a native build.
 ARCH=${LUAOS_ARCH:-$(uname -m)}
 
+# first readable path wins, so one table serves distros that spell the
+# firmware differently. falls back to naming the first candidate when
+# none exist, so the error says something real rather than "".
+pick() {
+	for p in "$@"; do
+		if [ -r "$p" ]; then
+			echo "$p"
+			return
+		fi
+	done
+	echo "$1"
+}
+
 case $ARCH in
 x86_64)
 	QEMU=qemu-system-x86_64
@@ -26,8 +39,14 @@ aarch64)
 	# the wire has to be a pci card because the one pl011 on the
 	# machine is already the firmware console.
 	MACHINE="-machine virt -cpu max"
-	FW_CODE=${OVMF_CODE:-/usr/share/AAVMF/AAVMF_CODE.fd}
-	FW_VARS=${OVMF_VARS:-/usr/share/AAVMF/AAVMF_VARS.fd}
+	# AAVMF is debian and ubuntu's name for it. gentoo and arch ship
+	# qemu's own blobs instead, where the aarch64 varstore is spelled
+	# edk2-arm-vars.fd -- arm and aarch64 differ in the code image, not
+	# in a blank 64MiB varstore.
+	FW_CODE=${OVMF_CODE:-$(pick /usr/share/AAVMF/AAVMF_CODE.fd \
+	    /usr/share/qemu/edk2-aarch64-code.fd)}
+	FW_VARS=${OVMF_VARS:-$(pick /usr/share/AAVMF/AAVMF_VARS.fd \
+	    /usr/share/qemu/edk2-arm-vars.fd)}
 	NIC=virtio-net-pci
 	BLK="if=virtio,format=raw"
 	# virt has no display at all unless one is asked for, and with

@@ -79,7 +79,7 @@ def main():
     shutil.copy(qemuarch.FW_VARS, vars_path)
 
     qemu = subprocess.Popen([
-        qemuarch.QEMU, *qemuarch.machine(),
+        *qemuarch.qemu(), *qemuarch.machine(),
         "-display", "none", "-net", "none", "-monitor", "none",
         "-no-reboot", "-snapshot",
         "-serial", f"file:{serial_log}",
