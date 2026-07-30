@@ -164,6 +164,12 @@ function NS:unmount(prefix)
 				pcall(m.B.clunk, m.root.h)
 				m.root = nil
 			end
+			-- optional, like walkmany: a backend holding a
+			-- connection releases it here, which is what lets the
+			-- far side notice its last client left.
+			if m.B.close then
+				pcall(m.B.close)
+			end
 			table.remove(self.mounts, i)
 			return true
 		end

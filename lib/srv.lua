@@ -157,7 +157,36 @@ function ops.clunk(S, m)
 	end
 end
 
--- readonly: hand back a right to the SAME backend, served read-only.
+-- session: hand back a right to the same backend with its own fid space.
+--
+-- one fid table per client, which is what 9P gets from having one per
+-- connection. a shared table lets a client name another client's fid by
+-- guessing a small integer, and ports carry no sender identity, so the
+-- server cannot tell whose fid it is being handed -- a separate port per
+-- client is the only place that distinction can live.
+--
+-- the establishment port answers this and readonly; fid operations
+-- belong to a session, so a client cannot keep using the shared space by
+-- accident.
+function ops.session(S)
+	local ro = S.ro
+	local recv = sys.newport()
+	local port = sys.sendright(recv)
+
+	thread.spawn(function()
+		M.serve(ro and dev.readonly(S.B) or S.B, recv,
+		    { establish = false })
+	end)
+
+	-- the second return is closed once the reply has been sent. the
+	-- transfer gives the client its own right, so ours is surplus --
+	-- and keeping it would hold the port's reference count at two, so
+	-- sys.hungup would never fire and the serve thread above would
+	-- outlive the client that asked for it.
+	return { port = { __right = port } }, port
+end
+
+-- readonly: hand back a right to the same backend, served read-only.
 --
 -- attenuation, and it needs no capability check because it cannot
 -- escalate: what comes back is strictly weaker than the right used to
@@ -171,20 +200,21 @@ end
 -- guessing a number in the read-write server's space.
 function ops.readonly(S)
 	if not S.roport then
-		local ro = dev.readonly(S.B)
 		local recv = sys.newport()
 
-		-- SEND ONLY for the client. {__right=} copies the recv flag,
-		-- so handing out the port we created would let a holder
-		-- receive on it -- and this port is shared by every read-only
-		-- client, so one could take another's requests.
+		-- send only for the client. {__right=} copies the recv flag,
+		-- so handing out the port as created would let a holder
+		-- receive on it and take another client's requests.
 		S.roport = sys.sendright(recv)
 		thread.spawn(function()
+			-- an establishment port for the read-only view, so
+			-- readonly then session composes and the read-only
+			-- clients get private fid spaces too.
+			--
 			-- this loop never sees a hangup: we hold two rights to
 			-- the port ourselves, so nrights never falls to one.
-			-- it lives as long as the server proc, which for the
-			-- esp task is forever anyway.
-			M.serve(ro, recv)
+			-- it lives as long as the server proc.
+			M.serve(S.B, recv, { ro = true })
 		end)
 	end
 	return { port = { __right = S.roport } }
@@ -192,10 +222,21 @@ end
 
 local NOREPLY = { clunk = true }
 
+-- what an establishment port answers. everything else there is
+-- Enotimpl: fid operations need a session, whose fid space is its own.
+local ESTABLISH = { session = true, readonly = true }
+
 -- ---- the server ----
 
-local function newstate(backend)
-	local S = { B = backend, fids = {}, next = 1 }
+local function newstate(backend, opts)
+	local S = {
+		B = backend, fids = {}, next = 1,
+		ro = opts and opts.ro or false,
+		-- establishment unless told otherwise, so a plain
+		-- serve(backend, port) is what a server wants and only srv
+		-- itself makes the other kind
+		establish = not opts or opts.establish ~= false,
+	}
 
 	function S.put(h)
 		local fid = S.next
@@ -225,6 +266,12 @@ local function dispatch(S, m)
 	    m.reply.__right or nil
 	local fn = type(m) == "table" and ops[m.op] or nil
 
+	if fn and S.establish and not ESTABLISH[m.op] then
+		fn = nil
+	end
+	if fn and not S.establish and ESTABLISH[m.op] then
+		fn = nil
+	end
 	if not fn then
 		if reply then
 			sys.send(reply, { err = dev.Enotimpl, seq = m.seq })
@@ -233,7 +280,7 @@ local function dispatch(S, m)
 		return
 	end
 
-	local ok, res = pcall(fn, S, m)
+	local ok, res, tmp = pcall(fn, S, m)
 
 	if reply and not NOREPLY[m.op] then
 		local out
@@ -256,6 +303,11 @@ local function dispatch(S, m)
 	if reply then
 		sys.close(reply)
 	end
+	-- after the reply, so the right is still ours while it is being
+	-- transferred out
+	if ok and tmp then
+		sys.close(tmp)
+	end
 end
 
 M.dispatch = dispatch
@@ -265,10 +317,16 @@ M.dispatch = dispatch
 -- this parks rather than spinning: tryrecv, and if there is nothing,
 -- either notice the hangup or block. sys.close wakes blocked receivers
 -- precisely so the hangup case is reachable without a poll.
-function M.serve(backend, port)
+-- serve(backend, port, opts)
+--
+-- an establishment port by default: it answers session and readonly and
+-- nothing else, and the sessions it hands out carry the fid spaces.
+-- opts.establish = false is srv's own use, for a session port.
+-- opts.ro makes the sessions it hands out read-only views.
+function M.serve(backend, port, opts)
 	dev.check(backend, "srv backend")
 
-	local S = newstate(backend)
+	local S = newstate(backend, opts)
 
 	while true do
 		local ok, m = sys.tryrecv(port)

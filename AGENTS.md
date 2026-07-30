@@ -61,6 +61,17 @@ be. That is what `fork` gives Plan 9 for free. The kernel does not
 interpret it: it is the ordinary serializer, so rights travel exactly as
 they do in a message, and what the value *means* is entirely Lua's.
 
+**A server's fids are per client.** `srv`'s well-known port is
+establishment only: it answers `session` and `readonly` and nothing else.
+A session is a port of its own with its own fid table, which is what 9P
+gets from one fid space per connection. It has to work this way because a
+port carries no sender identity, so a shared fid table cannot tell whose
+fid it is being handed and a client could name another's by guessing a
+small integer. `mnt` opens a session on first use, not at mount time,
+because `ns:mount` runs `dev.check` before any traffic. A mount releases
+its session in `close`, which `ns:unmount` calls — hold it and the far
+side never sees a hangup, so its serve thread outlives the client.
+
 **Attenuate rather than check.** `sys.sendright(h)` derives a send-only
 right; `dev.readonly(B)` derives a read-only backend; `srv`'s `readonly`
 op combines them to serve one filesystem at two authority levels. Asking

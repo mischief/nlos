@@ -80,7 +80,56 @@ function M.new(right)
 	-- replies back out. ports are cheap enough to give one to each
 	-- caller instead, which deletes the demultiplexer rather than
 	-- reimplementing it.
+	-- the right this mount actually talks to. `right` is an
+	-- establishment port; the session it hands back has a fid space of
+	-- its own, so no other client of the same server can name our fids.
+	--
+	-- opened on first use rather than in M.new, because ns:mount runs
+	-- dev.check before any traffic and the server need not be answering
+	-- yet at mount time.
+	local session
+
+	local function establish(msg)
+		local reply = thread.replyport()
+
+		msg.seq = nextseq()
+		msg.reply = { __right = reply }
+
+		local ok, sent = pcall(sys.send, right, msg)
+
+		if not ok or not sent then
+			dev.error(dev.Eio)
+		end
+		while true do
+			local got, res = sys.tryrecv(reply)
+
+			if got then
+				if type(res) ~= "table" then
+					dev.error(dev.Eio)
+				end
+				if res.seq == msg.seq then
+					if res.err then
+						dev.error(res.err)
+					end
+					if type(res.port) ~= "table" or
+					    not res.port.__right then
+						dev.error(dev.Enotimpl)
+					end
+					return res.port.__right
+				end
+			elseif sys.hungup(reply) then
+				dev.error(dev.Eio)
+			else
+				thread.park(reply)
+			end
+		end
+	end
+
 	local function rpc(msg)
+		if not session then
+			session = establish({ op = "session" })
+		end
+
 		local reply = thread.replyport()
 
 		msg.seq = nextseq()
@@ -91,7 +140,7 @@ function M.new(right)
 		-- sys.send REPORTS rather than raising. checking only the pcall
 		-- treats an undelivered request as sent and then parks forever
 		-- waiting for a reply nobody will send.
-		local ok, sent = pcall(sys.send, right, msg)
+		local ok, sent = pcall(sys.send, session, msg)
 
 		if not ok or not sent then
 			dev.error(dev.Eio)	-- server gone, or right closed
@@ -157,8 +206,8 @@ function M.new(right)
 	-- forever.
 	local fidmt = {
 		__gc = function(h)
-			if h.fid then
-				pcall(sys.send, right,
+			if h.fid and session then
+				pcall(sys.send, session,
 				    { op = "clunk", fid = h.fid })
 				h.fid = nil
 			end
@@ -219,20 +268,33 @@ function M.new(right)
 	-- ask the server for a read-only right to the same tree. not a dev
 	-- method -- it is attenuation, not filesystem access -- so it rides
 	-- alongside rather than being part of the interface dev.check tests.
+	-- goes to the establishment port, not the session: it is
+	-- attenuation of the mount, not an operation on a fid.
 	function B.readonly()
-		local r = rpc({ op = "readonly" })
-
-		if type(r.port) ~= "table" or not r.port.__right then
-			dev.error(dev.Enotimpl)
-		end
-		return r.port.__right
+		return establish({ op = "readonly" })
 	end
+
+	-- release the session. ns:unmount calls this, which is what lets a
+	-- server notice its last client has gone: while we hold the session
+	-- right the port's reference count stays above one and the serve
+	-- thread on the far side never sees a hangup.
+	--
+	-- the metatable is a backstop for a mount dropped without being
+	-- unmounted, since the collector is then the only thing that knows.
+	function B.close()
+		if session then
+			pcall(sys.close, session)
+			session = nil
+		end
+	end
+
+	setmetatable(B, { __gc = function() B.close() end })
 
 	-- fire and forget, matching dev.clunk's "never fails". no reply
 	-- means no round trip, which is what makes it safe from __gc.
 	function B.clunk(h)
-		if h.fid then
-			pcall(sys.send, right, { op = "clunk", fid = h.fid })
+		if h.fid and session then
+			pcall(sys.send, session, { op = "clunk", fid = h.fid })
 			h.fid = nil
 		end
 	end
