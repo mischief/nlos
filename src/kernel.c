@@ -27,23 +27,26 @@
 #include "platform.h"
 
 /* bodies are heap-allocated, so what these cost statically is one pointer
- * each: 1024 procs and 4096 ports is 40KB of .bss, and a machine running
- * a dozen procs allocates a dozen bodies.
+ * each: 4096 procs and 32768 ports is 288KB of .bss, and a machine
+ * running a dozen procs allocates a dozen bodies.
  *
- * measured across the range (test/bench_ipc.lua, best of 5, size(1)):
+ * these are headroom rather than reachable counts. spawning until it
+ * fails stops at about 960 procs, because each is a lua_State and the
+ * heap runs out long before the tables do. dispatch and wakeups do not
+ * scan, so the round trip is flat across the whole range (about 26k
+ * cycles at 64 procs and at 8192).
  *
- *	procs/ports    .bss     xproc empty
- *	64/256          77664   25826 cyc
- *	1024/4096      116064   26229
- *	8192/32768     402784   26383
+ * going further wants a two-level index rather than a flat one, which
+ * would add an indirection to every serialize.
  *
- * dispatch and wakeups no longer scan, so the cost is flat; only the
- * index tables grow. going much past this wants a two-level table rather
- * than a flat one, which would add an indirection to every serialize.
+ * MAXRIGHTS is what bounds a supervisor: sys.spawn hands the parent a
+ * right per child, so holding them caps the tree at MAXRIGHTS unless the
+ * parent closes each handle and tracks children by pid through
+ * sys.monitor. only the first NRIGHTS_INLINE cost anything per proc.
  */
-#define MAXPROCS	1024
-#define MAXPORTS	4096
-#define MAXRIGHTS	64
+#define MAXPROCS	4096
+#define MAXPORTS	32768
+#define MAXRIGHTS	512
 #define NRIGHTS_INLINE	8
 
 /* the serializer puts a port's index in a 16-bit field (the 'R' case), so
@@ -189,7 +192,6 @@ struct waiter {
 	int send;			/* waiting for room, not for a message */
 	TAILQ_ENTRY(waiter) pq;		/* on port->waiters */
 	SLIST_ENTRY(waiter) pw;		/* on proc->waiters; walked whole */
-	SLIST_ENTRY(waiter) fq;		/* on the free list */
 };
 
 struct kproc {
@@ -198,6 +200,12 @@ struct kproc {
 	lua_State *L;		/* owning state */
 	lua_State *co;		/* thread the chunk runs on */
 	SLIST_HEAD(, waiter) waiters;	/* ports this proc is blocked on */
+	/* almost every block waits on exactly one port, so the first record
+	 * is inline and costs no allocation on what is the hot path for
+	 * IPC. an alt over several ports takes the rest from the heap.
+	 */
+	struct waiter w0;
+	int w0used;
 	TAILQ_ENTRY(kproc) rqe;		/* on one of the dispatch sets */
 	struct rqset *onq;		/* which, or null */
 	/* blocked waiting for ROOM on this port, the send-side mirror of
@@ -216,6 +224,7 @@ struct kproc {
 	 */
 	struct right rights[NRIGHTS_INLINE];
 	struct right *xrights;		/* MAXRIGHTS - NRIGHTS_INLINE, or null */
+	int rhint;			/* lowest slot that might be free */
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	int reductions;		/* instruction budget per slice */
@@ -785,7 +794,12 @@ right_slot_grow(struct kproc *p, int h)
 static int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
-	for (int i = 0; i < MAXRIGHTS; i++) {
+	/* start where a free slot was last seen. without it a proc holding
+	 * five hundred rights rescans all of them for each new one, which is
+	 * quadratic for exactly the case a large MAXRIGHTS is meant to allow
+	 * -- a supervisor holding a right per child.
+	 */
+	for (int i = p->rhint; i < MAXRIGHTS; i++) {
 		struct right *r = right_slot_grow(p, i);
 
 		if (!r)
@@ -799,6 +813,7 @@ right_new(struct kproc *p, struct kport *port, int recv)
 			port->nrights++;
 			if (recv)
 				port->nrecv++;
+			p->rhint = i + 1;
 			return i;
 		}
 	}
@@ -1097,35 +1112,23 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 
 /* ---- message delivery ---- */
 
-/* the waiter pool. sized by how many waits can be outstanding at once
- * rather than by MAXPROCS, since a blocked proc holds one record per port
- * it is waiting on and most wait on exactly one.
- */
-#define MAXWAITERS 1024
-
-static struct waiter waiterpool[MAXWAITERS];
-static SLIST_HEAD(, waiter) waiterfree;
-
-static void
-waiters_init(void)
-{
-	SLIST_INIT(&waiterfree);
-	for (int i = MAXWAITERS - 1; i >= 0; i--)
-		SLIST_INSERT_HEAD(&waiterfree, &waiterpool[i], fq);
-}
-
-/* attach p to port's wait list. returns 0 if the pool is empty, which the
- * caller must report rather than silently not waiting -- a proc that
- * thinks it is blocked but is on no list never wakes.
+/* attach p to port's wait list. returns 0 only if an allocation failed,
+ * which the caller must report rather than silently not waiting -- a proc
+ * that believes it is blocked but is on no list never wakes.
  */
 static int
 wait_add(struct kproc *p, struct kport *port, int send)
 {
-	struct waiter *w = SLIST_FIRST(&waiterfree);
+	struct waiter *w;
 
-	if (!w)
-		return 0;
-	SLIST_REMOVE_HEAD(&waiterfree, fq);
+	if (!p->w0used) {
+		p->w0used = 1;
+		w = &p->w0;
+	} else {
+		w = malloc(sizeof *w);
+		if (!w)
+			return 0;
+	}
 	w->p = p;
 	w->port = port;
 	w->send = send;
@@ -1145,7 +1148,10 @@ wait_clear(struct kproc *p)
 
 		SLIST_REMOVE_HEAD(&p->waiters, pw);
 		TAILQ_REMOVE(&w->port->waiters, w, pq);
-		SLIST_INSERT_HEAD(&waiterfree, w, fq);
+		if (w == &p->w0)
+			p->w0used = 0;
+		else
+			free(w);
 	}
 }
 
@@ -1750,6 +1756,8 @@ api_close(lua_State *L)
 	if (h == 0)
 		return luaL_error(L, "cannot close self port");
 	right_drop(r);
+	if ((int)h < p->rhint)
+		p->rhint = (int)h;	/* reuse the slot we just freed */
 	return 0;
 }
 
@@ -2810,7 +2818,6 @@ int
 kernel_init(void)
 {
 	calibrate_reductions();	/* kernel_clock_init already ran in efi_main */
-	waiters_init();		/* before any port exists to be waited on */
 	rq_init();		/* before any proc exists to be dispatched */
 	uart_init();
 	kbdport = port_new();
