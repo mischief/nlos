@@ -227,6 +227,10 @@ luaos_efi = custom_target('luaos.efi',
 
 lua_payload = files(
   'init.lua',
+  # what the machine runs, and what each may touch -- see lib/svc.lua
+  'etc/services.lua',
+  # services, at /svc/<name> -- started by init, not by replacing it
+  'svc/webterm.lua',
   # programs, at /bin/<name> -- see lib/prog.lua for the ABI they run under
   'bin/cat.lua',
   'bin/ls.lua',
@@ -251,6 +255,7 @@ lua_payload = files(
   'lib/nsio.lua',
   'lib/srv.lua',
   'lib/stdout.lua',
+  'lib/svc.lua',
   'lib/dos.lua',
   'lib/power.lua',
   'lib/proc.lua',

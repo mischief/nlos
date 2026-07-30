@@ -262,6 +262,55 @@ if has_dns then
 end
 print("")
 
+-- ---- services ----
+--
+-- what this machine runs, from /etc/services.lua, each granted exactly
+-- the capabilities it named there. see lib/svc.lua for why this exists
+-- rather than everyone replacing init with a fw_cfg payload.
+--
+-- started BEFORE the repl, so a machine whose job is to serve something
+-- is serving it whether or not anyone is at the console.
+do
+	local svc = require("svc")
+	-- fw_cfg WINS over the disk. a host can therefore configure what
+	-- this machine runs -- and hand it the service source too, under
+	-- opt/org.luaos.svc/<name>.lua, resolved by svc.start before the
+	-- namespace -- without modifying the image at all. that is what
+	-- scripts/website.sh does to enable webterm, which is deliberately
+	-- commented out in the baked-in config.
+	local injected = efi.fwcfg and efi.fwcfg("opt/org.luaos.services")
+	local list, why
+
+	if injected then
+		list, why = svc.parse(injected, "fw_cfg:services")
+	else
+		list, why = svc.load(rootns, "/etc/services.lua")
+	end
+
+	if list then
+		svc.start(list, {
+			ns = nsdesc,
+			granted = caps_of,
+			-- fw_cfg first, then the disk. so a host can inject a
+			-- service's SOURCE as well as the config that names
+			-- it -- `-fw_cfg name=opt/org.luaos.svc/foo.lua` --
+			-- and run something this image has never seen.
+			readfile = function(p)
+				local base = tostring(p):match("([^/]+)$")
+				local inj = base and efi.fwcfg and
+				    efi.fwcfg("opt/org.luaos.svc/" .. base)
+
+				return inj or rootns:readfile(p)
+			end,
+			log = print,
+		})
+	elseif why and not why:match("^no ") then
+		-- a missing config is a machine with no services, which is
+		-- fine. a config that failed to LOAD is a mistake worth saying.
+		print("svc: " .. tostring(why))
+	end
+end
+
 -- repl worker: everything below runs as its own spawned proc, NOT
 -- proc 0 itself, respawned fresh by the supervisor loop at the bottom
 -- of this file every time a session ends (^d, or a crash) -- so any

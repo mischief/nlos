@@ -8,7 +8,10 @@
 
 #include <string.h>
 
+#include <stdlib.h>
+
 #include "efi.h"
+#include "platform.h"
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -113,8 +116,31 @@ l_efi_locate(lua_State *L)
 	return 1;
 }
 
+/* fwcfg(name) -> the bytes the host put under that name, or nil.
+ *
+ * belongs here rather than in los.platform because it grants nothing:
+ * fw_cfg is read-only data the host handed us at boot, in the same
+ * category as the firmware vendor string above. what a proc DOES with
+ * it -- init.lua reads /etc/services.lua out of it, so a machine can be
+ * configured without touching its disk image -- is policy.
+ */
+static int
+l_efi_fwcfg(lua_State *L)
+{
+	const char *name = luaL_checkstring(L, 1);
+	char *buf = 0;
+	size_t len = 0;
+
+	if (fwcfg_load(name, &buf, &len) != 0)
+		return 0;
+	lua_pushlstring(L, buf, len);
+	free(buf);
+	return 1;
+}
+
 static const luaL_Reg efilib[] = {
 	{ "locate", l_efi_locate },
+	{ "fwcfg", l_efi_fwcfg },
 	{ NULL, NULL }
 };
 
