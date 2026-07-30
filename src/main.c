@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
 
@@ -13,15 +14,6 @@ EFI_HANDLE self_image;
 
 extern void console_write(const char *s, UINTN n);
 
-static void
-puts8(const char *s)
-{
-	UINTN n = 0;
-
-	while (s[n])
-		n++;
-	console_write(s, n);
-}
 
 EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st);
 
@@ -36,15 +28,24 @@ efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	self_image = image;
 
 	ST->ConOut->ClearScreen(ST->ConOut);
-	puts8("lua-os booting\n");
+
+	/* first, so every line after it can be stamped */
+	kernel_clock_init();
+
+	char cbuf[96];
+
+	kernel_log("boot: lua-os starting");
+	snprintf(cbuf, sizeof cbuf, "clock: %llu cycles/ms (100ms calibration)",
+	    kernel_cyc_per_ms());
+	kernel_log(cbuf);
 
 	if (fs_init() != 0)
-		puts8("warning: no filesystem on boot volume\n");
+		kernel_log("boot: no filesystem on boot volume");
 
 	uart_takeover();	/* wrest the wire port from the firmware before we poll it */
 
 	if (kernel_init() != 0) {
-		puts8("kernel_init failed\n");
+		kernel_log("boot: kernel_init FAILED");
 		goto out;
 	}
 	/* test harness: a payload injected via qemu fw_cfg replaces
@@ -54,20 +55,20 @@ efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	size_t testlen;
 
 	if (fwcfg_load("opt/org.luaos.test", &testbuf, &testlen) == 0) {
-		puts8("running fw_cfg test payload\n");
+		kernel_log("boot: running fw_cfg test payload");
 		if (kernel_spawn_buffer(testbuf, testlen) < 0) {
-			puts8("failed to spawn test payload\n");
+			kernel_log("boot: FAILED to spawn test payload");
 			goto out;
 		}
 		free(testbuf);
 	} else if (kernel_spawn_file("/init.lua") < 0) {
-		puts8("failed to spawn /init.lua\n");
+		kernel_log("boot: FAILED to spawn /init.lua");
 		goto out;
 	}
 	kernel_run();
 
 out:
-	puts8("press any key to exit\n");
+	kernel_log("boot: halted; press any key to exit");
 	while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_NOT_READY)
 		BS->WaitForEvent(1, &ST->ConIn->WaitForKey, &index);
 	return EFI_SUCCESS;

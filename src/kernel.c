@@ -391,10 +391,23 @@ calibrate_reductions(void)
 	default_reductions = (int)target;
 }
 
-static void
-calibrate_clock(void)
+/* the TSC half, split out of the rest of calibration so it can run as
+ * the very first thing the kernel does. it needs only BS->Stall and
+ * rdtsc, both available at efi_main entry, and until it has run there is
+ * no clock to stamp a log line with -- which is why the earliest boot
+ * messages used to have none.
+ *
+ * the epoch is taken BEFORE the stall, so the 100ms calibration shows up
+ * as real boot time rather than being hidden. anyone measuring boot
+ * latency would otherwise be short by 100ms with nothing to explain it,
+ * hence the rate line below.
+ */
+void
+kernel_clock_init(void)
 {
-	unsigned long long t0 = platform_ticks();
+	boot_tsc = platform_ticks();
+
+	unsigned long long t0 = boot_tsc;
 
 	BS->Stall(100000);	/* 100ms */
 
@@ -404,9 +417,13 @@ calibrate_clock(void)
 	if (cyc_per_ms == 0)
 		cyc_per_ms = 1;	/* refuse to divide by zero later */
 	quantum_cycles = cyc_per_ms * QUANTUM_MS;
-	boot_tsc = platform_ticks();
 	clock_ready = 1;
-	calibrate_reductions();
+}
+
+unsigned long long
+kernel_cyc_per_ms(void)
+{
+	return cyc_per_ms;
 }
 
 /* milliseconds since calibrate_clock(). the one time base timers and
@@ -536,8 +553,8 @@ kputs(const char *s)
  * later than this synchronous path -- so display order and real order
  * differ, and only the stamps recover it.
  */
-static void
-klog(const char *s)
+void
+kernel_log(const char *s)
 {
 	unsigned long long ms = uptime_ms();
 	char buf[320];
@@ -2303,7 +2320,7 @@ proc_kill(struct kproc *p, const char *why)
 
 		snprintf(buf, sizeof buf, "proc %d (%s) died: %s", p->id,
 		    p->name, reason);
-		klog(buf);
+		kernel_log(buf);
 	}
 	lua_close(p->L);
 	p->status = DEAD;
@@ -2427,7 +2444,7 @@ pump_keyboard(void)
 int
 kernel_init(void)
 {
-	calibrate_clock();	/* before anything measures a duration */
+	calibrate_reductions();	/* kernel_clock_init already ran in efi_main */
 	uart_init();
 	kbdport = port_new();
 	serport = port_new();
@@ -2474,7 +2491,7 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 		snprintf(buf, sizeof buf,
 		    "%s: FAILED to start; %s unavailable this boot",
 		    chunkname + 1, what);
-		klog(buf);
+		kernel_log(buf);
 		return -1;
 	}
 	if (devport) {
@@ -2490,7 +2507,7 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 	 * which is exactly when you have not got one.
 	 */
 	snprintf(buf, sizeof buf, "%s: pid %d, %s", chunkname + 1, pid, what);
-	klog(buf);
+	kernel_log(buf);
 	return pid;
 }
 
@@ -2566,7 +2583,7 @@ spawn_init(const char *code, size_t len, int is_file)
 			snprintf(skip, sizeof skip, "%s: not present, %s "
 			    "unavailable this boot",
 			    drivers[i].chunkname + 1, drivers[i].what);
-			klog(skip);
+			kernel_log(skip);
 			pids[i] = -1;
 			continue;
 		}

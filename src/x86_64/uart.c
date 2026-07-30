@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "efi.h"
+#include "kernel.h"
 #include "platform.h"
 
 #define COM2 0x2f8
@@ -52,11 +53,6 @@ static EFI_GUID dev_path_guid = { 0x09576e91, 0x6d3f, 0x11d2,
 
 #define COM2_UID 1
 
-static void
-note(const char *s)
-{
-	console_write(s, strlen(s));
-}
 
 void
 uart_takeover(void)
@@ -103,12 +99,13 @@ uart_takeover(void)
 			char msg[64];
 
 			snprintf(msg, sizeof msg,
-			    "serial: handle %lu is 16550 _UID %u\n",
+			    "serial: handle %lu is 16550 _UID %u",
 			    (unsigned long)i, (unsigned)uid);
-			note(msg);
+			kernel_log(msg);
 			if (uid == COM2_UID) {
 				BS->DisconnectController(handles[i], 0, 0);
-				note("serial: detached firmware from com2\n");
+				kernel_log("serial: detached firmware "
+				    "from com2");
 			}
 		}
 	}

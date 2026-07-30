@@ -5,6 +5,17 @@
  * queues, rights are per-proc handles onto ports.
  */
 
+/* the TSC epoch and rate. must run before anything measures a duration
+ * or logs a line; efi_main calls it first. costs 100ms of BS->Stall.
+ */
+void	kernel_clock_init(void);
+unsigned long long kernel_cyc_per_ms(void);
+
+/* one stamped, newline-terminated diagnostic line. shares its format
+ * with lib/log.lua -- change one and change the other.
+ */
+void	kernel_log(const char *s);
+
 int	kernel_init(void);
 int	kernel_spawn_file(const char *path);	/* returns pid or -1 */
 int	kernel_spawn_buffer(const char *code, unsigned long len);

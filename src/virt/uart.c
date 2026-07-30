@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "efi.h"
+#include "kernel.h"
 #include "platform.h"
 
 #define RBR 0	/* receive buffer */
@@ -92,9 +93,9 @@ find_wire(void)
 		char msg[80];
 
 		snprintf(msg, sizeof msg,
-		    "serial: pci %04x:%04x is the 9p wire\n",
+		    "serial: pci %04x:%04x is the 9p wire",
 		    (unsigned)(id & 0xffff), (unsigned)(id >> 16));
-		console_write(msg, strlen(msg));
+		kernel_log(msg);
 
 		/* enumeration placed the io bar but left decoding off, so
 		 * switch it on in the command register directly. the
