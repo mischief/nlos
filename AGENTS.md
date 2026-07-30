@@ -229,7 +229,20 @@ port. **Do not invent a fourth
 vocabulary** — a new service is a dev backend if its state is ambient
 (procfs, espfs) and an `srv` proc otherwise.
 
-**No third-party code.** Vanilla Lua 5.4 submodule, unpatched. Our own
+**One vendored header, and the reasoning for it.**
+`include/sys/queue.h` is OpenBSD's rev 1.47, verbatim but for three
+lines: `<sys/_null.h>` becomes `<stddef.h>` (all `-nostdinc` allows) and
+`QUEUE_MACRO_DEBUG` is on. It is macros — no runtime, no symbols, no
+ABI — which is why it sits closer to a compiler builtin than to a
+library, and hand-rolling four intrusive list types with correct removal
+from several lists at once is more risk than a header everyone has read.
+The system copy will not do: `-nostdinc` excludes it, glibc's is the old
+BSD one missing `*_FOREACH_SAFE` and `_Q_INVALIDATE` — the two things
+this is for — and depending on the host's copy means three toolchains
+can disagree about the scheduler's data structures. **This is the
+exception, argued; it is not licence to vendor the next thing.**
+
+**No other third-party code.** Vanilla Lua 5.4 submodule, unpatched. Our own
 freestanding libc, `-nostdinc`, only compiler-provided headers. Hand
 PE header, self-relocation, plain binutils. Compiler builtins are
 preferred over hand-rolled code; vendored libraries are not. This
