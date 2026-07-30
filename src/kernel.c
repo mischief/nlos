@@ -44,6 +44,7 @@
 #define MAXPROCS	1024
 #define MAXPORTS	4096
 #define MAXRIGHTS	64
+#define NRIGHTS_INLINE	8
 
 /* the serializer puts a port's index in a 16-bit field (the 'R' case), so
  * a port beyond that would alias onto a live one and the receive side's
@@ -154,19 +155,14 @@ struct grant {
 	int handle;
 };
 
-/* a proc holds at most MAXRIGHTS distinct rights, so it can never park
- * on more than that many distinct ports; size the wait set to match so
- * a legitimate gather can't be rejected.
- */
-#define MAXWSET MAXRIGHTS
-
 /* a proc waiting on a port. one record per (proc, port) pair, because a
  * proc in an alt waits on several at once -- so the port's list and the
  * proc's list both need their own linkage.
  *
  * the pool is fixed and shared: the cost is proportional to how many
  * waits are outstanding, not to MAXPROCS, which is the difference that
- * matters. an inline array per proc would cost MAXPROCS * MAXWSET
+ * matters. an inline array per proc would cost one slot per port a
+ * proc could possibly wait on, times MAXPROCS,
  * whether anything is blocked or not.
  */
 struct kproc;
@@ -210,7 +206,16 @@ struct kproc {
 	 * a reader waiting for data and a writer waiting for space are
 	 * woken by opposite events on the same port.
 	 */
-	struct right rights[MAXRIGHTS];
+	/* handles index this: the first NRIGHTS_INLINE live in the proc, the
+	 * rest in an array allocated only if a proc ever needs one. most
+	 * hold a handful -- a driver task two, an ordinary proc one to three
+	 * -- while a shell running a pipeline reaches thirty, so the inline
+	 * part covers the numerous case and the busy case pays for itself.
+	 * sys.stats().rightshigh reports the high water if this needs
+	 * revisiting.
+	 */
+	struct right rights[NRIGHTS_INLINE];
+	struct right *xrights;		/* MAXRIGHTS - NRIGHTS_INLINE, or null */
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	int reductions;		/* instruction budget per slice */
@@ -740,19 +745,63 @@ port_unref(struct kport *port)
 	wake_senders(port);
 }
 
+static int rights_high;
+
+/* the slot a handle names, or null if it is out of range or lives in an
+ * overflow array this proc has never needed. never allocates: it is on
+ * every send and receive, with a handle the caller may have made up.
+ */
+static struct right *
+right_slot(struct kproc *p, int h)
+{
+	if (h < 0 || h >= MAXRIGHTS)
+		return 0;
+	if (h < NRIGHTS_INLINE)
+		return &p->rights[h];
+	if (!p->xrights)
+		return 0;
+	return &p->xrights[h - NRIGHTS_INLINE];
+}
+
+/* the same, allocating the overflow array on first need */
+static struct right *
+right_slot_grow(struct kproc *p, int h)
+{
+	if (h < 0 || h >= MAXRIGHTS)
+		return 0;
+	if (h < NRIGHTS_INLINE)
+		return &p->rights[h];
+	if (!p->xrights) {
+		size_t n = MAXRIGHTS - NRIGHTS_INLINE;
+
+		p->xrights = malloc(n * sizeof *p->xrights);
+		if (!p->xrights)
+			return 0;
+		memset(p->xrights, 0, n * sizeof *p->xrights);
+	}
+	return &p->xrights[h - NRIGHTS_INLINE];
+}
+
 static int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
-	for (int i = 0; i < MAXRIGHTS; i++)
-		if (!p->rights[i].used) {
-			p->rights[i].used = 1;
-			p->rights[i].port = port;
-			p->rights[i].recv = recv;
+	for (int i = 0; i < MAXRIGHTS; i++) {
+		struct right *r = right_slot_grow(p, i);
+
+		if (!r)
+			return -1;
+		if (!r->used) {
+			if (i + 1 > rights_high)
+				rights_high = i + 1;
+			r->used = 1;
+			r->port = port;
+			r->recv = recv;
 			port->nrights++;
 			if (recv)
 				port->nrecv++;
 			return i;
 		}
+	}
 	return -1;
 }
 
@@ -790,9 +839,11 @@ grant_named(struct kproc *p, const char *name, struct kport *port, int recv)
 static struct right *
 right_get(struct kproc *p, lua_Integer h)
 {
-	if (h < 0 || h >= MAXRIGHTS || !p->rights[h].used)
+	struct right *r = right_slot(p, (int)h);
+
+	if (!r || !r->used)
 		return 0;
-	return &p->rights[h];
+	return r;
 }
 
 /* ---- serializer ----
@@ -1756,6 +1807,8 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "procs");
 	lua_pushinteger(L, (lua_Integer)nidle);
 	lua_setfield(L, -2, "idles");
+	lua_pushinteger(L, rights_high);
+	lua_setfield(L, -2, "rightshigh");
 
 	/* the c heap, i.e. everything not on a per-proc lua heap: port
 	 * messages, net tokens and payload copies, loadfile buffers.
@@ -2638,9 +2691,14 @@ proc_kill(struct kproc *p, const char *why)
 	/* release every right this proc held; ports lose refs, orphaned
 	 * queues flush, unreferenced ports free
 	 */
-	for (int i = 0; i < MAXRIGHTS; i++)
-		if (p->rights[i].used)
-			right_drop(&p->rights[i]);
+	for (int i = 0; i < MAXRIGHTS; i++) {
+		struct right *r = right_slot(p, i);
+
+		if (r && r->used)
+			right_drop(r);
+	}
+	free(p->xrights);
+	p->xrights = 0;
 
 	/* erlang-style DOWN: tell the watchers */
 	for (int i = 0; i < p->nwatch; i++) {
@@ -3422,9 +3480,12 @@ proc_has_port(struct kproc *p, struct kport *port)
 {
 	if (!p || !port)
 		return 0;
-	for (int i = 0; i < MAXRIGHTS; i++)
-		if (p->rights[i].used && p->rights[i].port == port)
+	for (int i = 0; i < MAXRIGHTS; i++) {
+		struct right *r = right_slot(p, i);
+
+		if (r && r->used && r->port == port)
 			return 1;
+	}
 	return 0;
 }
 

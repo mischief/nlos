@@ -586,6 +586,13 @@ Structural, worth fixing:
   scheduler weight. Each sensible alone, collectively unrelated. The
   grant table has one spare slot; two more boot capabilities truncate
   silently.
+- **A proc's rights are split inline and overflow.** The first
+  `NRIGHTS_INLINE` live in `struct kproc`, the rest in an array allocated
+  only when a proc needs one, reached through `right_slot`. A driver task
+  holds two rights and an ordinary proc one to three, while a shell
+  running a pipeline reaches thirty, so the inline part covers the
+  numerous case. `sys.stats().rightshigh` reports the high water if the
+  split needs revisiting. `struct kproc` is 544 bytes.
 - **The index tables are flat, so they are sized for the maximum.**
   Proc and port bodies are on the heap, so a machine running a dozen
   procs allocates a dozen; what scales with the limits is one pointer
