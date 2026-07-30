@@ -117,3 +117,77 @@ realloc(void *p, size_t n)
 	free(p);
 	return q;
 }
+
+/* what the firmware says the machine has.
+ *
+ * there is no "free memory" call, so sum the map. EfiConventionalMemory
+ * is what remains available; adding the types holding code and data
+ * already handed out approximates the RAM present. reserved, unusable and
+ * memory-mapped ranges are left out, since counting those as RAM would
+ * report a machine larger than it is.
+ *
+ * worth having because malloc reaches AllocatePool directly instead of
+ * carving an arena: free conventional memory is the real remaining budget,
+ * and a proc is a lua_State drawn from it.
+ */
+void platform_meminfo(unsigned long long *total, unsigned long long *avail);
+
+void
+platform_meminfo(unsigned long long *total, unsigned long long *avail)
+{
+	UINTN size = 0, mapkey = 0, dsize = 0;
+	UINT32 dver = 0;
+	EFI_MEMORY_DESCRIPTOR *map = 0;
+	unsigned long long t = 0, a = 0;
+
+	if (total)
+		*total = 0;
+	if (avail)
+		*avail = 0;
+
+	/* the first call reports the size needed. allocating a buffer to
+	 * hold the map changes the map, so ask for slack rather than the
+	 * exact figure and risk a second EFI_BUFFER_TOO_SMALL.
+	 */
+	if (BS->GetMemoryMap(&size, 0, &mapkey, &dsize, &dver) !=
+	    EFI_BUFFER_TOO_SMALL || size == 0 || dsize == 0)
+		return;
+	size += 8 * dsize;
+	if (BS->AllocatePool(EfiLoaderData, size, (void **)&map) !=
+	    EFI_SUCCESS)
+		return;
+	if (BS->GetMemoryMap(&size, map, &mapkey, &dsize, &dver) !=
+	    EFI_SUCCESS) {
+		BS->FreePool(map);
+		return;
+	}
+
+	for (UINTN off = 0; off + dsize <= size; off += dsize) {
+		EFI_MEMORY_DESCRIPTOR *d =
+		    (EFI_MEMORY_DESCRIPTOR *)((char *)map + off);
+		unsigned long long bytes = d->NumberOfPages * 4096ULL;
+
+		switch (d->Type) {
+		case EfiConventionalMemory:
+			a += bytes;
+			t += bytes;
+			break;
+		case EfiLoaderCode:
+		case EfiLoaderData:
+		case EfiBootServicesCode:
+		case EfiBootServicesData:
+		case EfiRuntimeServicesCode:
+		case EfiRuntimeServicesData:
+		case EfiACPIReclaimMemory:
+			t += bytes;
+			break;
+		default:
+			break;
+		}
+	}
+	BS->FreePool(map);
+	if (total)
+		*total = t;
+	if (avail)
+		*avail = a;
+}

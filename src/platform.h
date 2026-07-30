@@ -18,6 +18,13 @@ unsigned long long platform_ticks(void);
 _Noreturn void machine_halt(void);
 const char *platform_arch(void);
 
+/* what the firmware says about RAM: bytes present, and bytes still
+ * available. malloc reaches AllocatePool directly rather than carving an
+ * arena, so `avail` is the remaining budget for everything -- lua heaps
+ * included -- and not a curiosity.
+ */
+void platform_meminfo(unsigned long long *total, unsigned long long *avail);
+
 /* <arch>/uart.c */
 void	uart_takeover(void);	/* wrest the wire port from the firmware */
 void	uart_init(void);

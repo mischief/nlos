@@ -135,6 +135,20 @@ typedef enum {
 	EfiMaxMemoryType
 } EFI_MEMORY_TYPE;
 
+/* one entry of the memory map. the map is an array of these, but the
+ * FIRMWARE decides their size and GetMemoryMap reports it -- so walk by
+ * that stride and never by sizeof, or firmware carrying an extra field
+ * misreads every entry after the first.
+ */
+typedef struct {
+	UINT32 Type;
+	UINT32 Pad;
+	EFI_PHYSICAL_ADDRESS PhysicalStart;
+	EFI_PHYSICAL_ADDRESS VirtualStart;
+	UINT64 NumberOfPages;
+	UINT64 Attribute;
+} EFI_MEMORY_DESCRIPTOR;
+
 /* device paths (enough to identify the com2 serial controller) */
 
 #define END_DEVICE_PATH_TYPE	0x7f
@@ -236,7 +250,9 @@ typedef struct {
 	    EFI_MEMORY_TYPE MemoryType, UINTN Pages,
 	    EFI_PHYSICAL_ADDRESS *Memory);
 	EFI_STATUS (EFIAPI *FreePages)(EFI_PHYSICAL_ADDRESS Memory, UINTN Pages);
-	void *GetMemoryMap;
+	EFI_STATUS (EFIAPI *GetMemoryMap)(UINTN *MemoryMapSize,
+	    EFI_MEMORY_DESCRIPTOR *MemoryMap, UINTN *MapKey,
+	    UINTN *DescriptorSize, UINT32 *DescriptorVersion);
 	EFI_STATUS (EFIAPI *AllocatePool)(EFI_MEMORY_TYPE PoolType, UINTN Size,
 	    void **Buffer);
 	EFI_STATUS (EFIAPI *FreePool)(void *Buffer);

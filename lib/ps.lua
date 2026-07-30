@@ -27,7 +27,15 @@ M.ps = setmetatable({}, ps_mt)
 local stats_mt = {}
 stats_mt.__tostring = function()
 	local s = sys.stats()
-	return string.format("procs=%d ports=%d", s.procs, s.ports)
+
+	-- machine memory as well as our own: a proc is a lua_State drawn
+	-- from the firmware's pool, so what is left there is what bounds how
+	-- many can exist. heap= is the C side only; sys.meminfo(pid) has the
+	-- lua heap for one proc.
+	return string.format(
+	    "procs=%d ports=%d heap=%dK mem=%dK/%dK free",
+	    s.procs, s.ports, (s.heap_used or 0) // 1024,
+	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024)
 end
 M.stats = setmetatable({}, stats_mt)
 

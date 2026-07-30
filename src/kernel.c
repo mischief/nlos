@@ -1818,6 +1818,18 @@ api_stats(lua_State *L)
 	lua_pushinteger(L, rights_high);
 	lua_setfield(L, -2, "rightshigh");
 
+	/* the firmware's view: what the machine has, and what is left. this
+	 * is the ceiling the other figures sit under, since a proc is a
+	 * lua_State drawn from the same pool.
+	 */
+	unsigned long long mtotal = 0, mavail = 0;
+
+	platform_meminfo(&mtotal, &mavail);
+	lua_pushinteger(L, (lua_Integer)mtotal);
+	lua_setfield(L, -2, "memtotal");
+	lua_pushinteger(L, (lua_Integer)mavail);
+	lua_setfield(L, -2, "memavail");
+
 	/* the c heap, i.e. everything not on a per-proc lua heap: port
 	 * messages, net tokens and payload copies, loadfile buffers.
 	 * sys.meminfo(pid) covers the lua side.
