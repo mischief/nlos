@@ -483,32 +483,38 @@ kernel computes the dynamic part. A proc **under** its fair share clamps
 to the top however hard it spins — differentiation only happens under
 contention, and that is the formula working, not a missing case.
 
-Dispatch is **two phases per lap**, and the split is the design:
+Dispatch is two phases per lap, and the split is the design:
 
-- *phase 1* runs READY procs highest priority first, so an interactive
-  proc answers before a hog takes another turn.
-- *phase 2* is a plain slot scan that ignores priority entirely and picks
-  up anything phase 1 did not run, including procs woken **during** phase
-  1.
+- *phase one* takes the highest priority first, so an interactive proc
+  answers before a hog gets another turn. It is bounded by how many were
+  waiting when the lap started, so it cannot spin on procs it keeps
+  waking.
+- *phase two* drains whatever is left with no reference to priority,
+  including anything woken during phase one.
 
-Phase 2 is the starvation guarantee, and it is deliberately independent
-of the priority function. Every READY proc runs at least once and at most
-once per lap whatever `reprioritize` computes, so a policy that is buggy,
-hostile or merely untuned costs latency and cannot wedge the machine.
-**Never make the progress guarantee depend on the policy being correct** —
-policy is the part we expect to get wrong.
+Phase two is the starvation guarantee, and it is deliberately independent
+of the priority function. Every runnable proc runs at least once and at
+most once per lap, whatever `reprioritize` computes, so a policy that is
+buggy, hostile or merely untuned costs latency and cannot wedge the
+machine. **Never make the progress guarantee depend on the policy being
+correct** — policy is the part we expect to get wrong.
 
-Plan 9 cannot do this: `runproc()` takes the first proc off the highest
-non-empty `runq` with no aging, so a high-`basepri` proc starves a low one
-indefinitely — `PriEdf > PriKproc > PriNormal` makes that deliberate. It
-has unbounded procs, so an exhaustive sweep would be O(nproc) per
-decision. `MAXPROCS` being small is what buys us the guarantee for free,
-and is a reason to think before raising it a lot.
+"Already had its turn" is membership in a second set that the two phases
+drain, swapped at the end of a lap, so nothing is sized against
+`MAXPROCS` and nothing scans. Waiting is a list per port (`wait_add`,
+`wake_receivers`), so delivering a message touches only the procs
+actually blocked on that port. Both together took an empty cross-proc
+round trip from 47k cycles to 26k, and `MAXPROCS` no longer affects it at
+all — flat from 64 to 512, where each doubling used to cost about 4%.
+
+Plan 9 cannot make this guarantee: `runproc()` takes the first proc off
+the highest non-empty `runq` with no aging, so a high-`basepri` proc
+starves a low one indefinitely, which `PriEdf > PriKproc > PriNormal`
+makes deliberate.
 
 Measured: the two phases cost about 1% of throughput and change no proc's
-share (21.45M vs 21.71M loop iterations for a spinner). Priority orders;
-it does not ration. Share is still `weight`, via the WRR loop in
-`run_proc`.
+share. Priority orders; it does not ration. Share is still `weight`, via
+the WRR loop in `run_proc`.
 
 **Slices are wall-clock, not instruction counts.** The preempt hook fires
 every `p->reductions` VM instructions but only *yields* once `QUANTUM_MS`

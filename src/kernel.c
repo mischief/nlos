@@ -16,6 +16,8 @@
 #include <stdio.h>
 
 #include "efi.h"
+#include <sys/queue.h>
+
 #include "kernel.h"
 #include "net.h"
 
@@ -123,6 +125,7 @@ struct kmsg {
 
 struct kport {
 	int used;
+	TAILQ_HEAD(, waiter) waiters;
 	int nrights;	/* rights + in-flight message refs + kernel refs */
 	int nrecv;	/* receive rights among those */
 	int dead;	/* no receive right left; sends are dropped */
@@ -155,21 +158,56 @@ struct grant {
  */
 #define MAXWSET MAXRIGHTS
 
+/* a proc waiting on a port. one record per (proc, port) pair, because a
+ * proc in an alt waits on several at once -- so the port's list and the
+ * proc's list both need their own linkage.
+ *
+ * the pool is fixed and shared: the cost is proportional to how many
+ * waits are outstanding, not to MAXPROCS, which is the difference that
+ * matters. an inline array per proc would cost MAXPROCS * MAXWSET
+ * whether anything is blocked or not.
+ */
+struct kproc;
+
+/* dispatch keeps two of these and swaps them each lap: one holds procs
+ * still to run, the other those that have run. membership is what says
+ * "already had its turn", so there is no per-lap array to size against
+ * MAXPROCS and nothing to scan.
+ *
+ * buckets by priority with a mask of the non-empty ones, so taking the
+ * highest is a bit scan rather than a search -- plan 9's runq[].
+ */
+#define NRQ 16
+
+struct rqset {
+	TAILQ_HEAD(rqbucket, kproc) q[NRQ];
+	unsigned mask;
+	int n;
+};
+
+struct waiter {
+	struct kproc *p;
+	struct kport *port;
+	int send;			/* waiting for room, not for a message */
+	TAILQ_ENTRY(waiter) pq;		/* on port->waiters */
+	SLIST_ENTRY(waiter) pw;		/* on proc->waiters; walked whole */
+	SLIST_ENTRY(waiter) fq;		/* on the free list */
+};
+
 struct kproc {
 	int status;
 	int id;			/* unique forever; slots are reused, ids not */
 	lua_State *L;		/* owning state */
 	lua_State *co;		/* thread the chunk runs on */
-	struct kport *waiting;	/* blocked on this port */
-	struct kport *wset[MAXWSET];	/* or on any of these (alt) */
-	int nwset;
+	SLIST_HEAD(, waiter) waiters;	/* ports this proc is blocked on */
+	TAILQ_ENTRY(kproc) rqe;		/* on one of the dispatch sets */
+	struct rqset *onq;		/* which, or null */
 	/* blocked waiting for ROOM on this port, the send-side mirror of
 	 * `waiting`. separate field rather than a flag on `waiting` so
 	 * wake_receivers and wake_senders cannot wake each other's procs:
 	 * a reader waiting for data and a writer waiting for space are
 	 * woken by opposite events on the same port.
 	 */
-	struct kport *sending;
 	struct right rights[MAXRIGHTS];
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
@@ -262,6 +300,11 @@ static void proc_kill(struct kproc *p, const char *why);
 static void wake_senders(struct kport *port);
 static int reprioritize(struct kproc *p, int nrunnable);
 static int count_runnable(void);
+static void rq_init(void);
+static void rq_del(struct kproc *p);
+static void rq_add(struct rqset *set, struct kproc *p);
+static struct kproc *rq_take_high(struct rqset *set);
+static struct kproc *rq_take_any(struct rqset *set);
 static void make_ready(struct kproc *p);
 
 /* release a right that was serialized into a message but never
@@ -601,6 +644,7 @@ port_new(void)
 	for (int i = 0; i < MAXPORTS; i++)
 		if (!ports[i].used) {
 			ports[i].used = 1;
+			TAILQ_INIT(&ports[i].waiters);
 			ports[i].head = ports[i].tail = 0;
 			ports[i].nrights = 0;
 			ports[i].nrecv = 0;
@@ -979,23 +1023,72 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 
 /* ---- message delivery ---- */
 
+/* the waiter pool. sized by how many waits can be outstanding at once
+ * rather than by MAXPROCS, since a blocked proc holds one record per port
+ * it is waiting on and most wait on exactly one.
+ */
+#define MAXWAITERS 1024
+
+static struct waiter waiterpool[MAXWAITERS];
+static SLIST_HEAD(, waiter) waiterfree;
+
+static void
+waiters_init(void)
+{
+	SLIST_INIT(&waiterfree);
+	for (int i = MAXWAITERS - 1; i >= 0; i--)
+		SLIST_INSERT_HEAD(&waiterfree, &waiterpool[i], fq);
+}
+
+/* attach p to port's wait list. returns 0 if the pool is empty, which the
+ * caller must report rather than silently not waiting -- a proc that
+ * thinks it is blocked but is on no list never wakes.
+ */
+static int
+wait_add(struct kproc *p, struct kport *port, int send)
+{
+	struct waiter *w = SLIST_FIRST(&waiterfree);
+
+	if (!w)
+		return 0;
+	SLIST_REMOVE_HEAD(&waiterfree, fq);
+	w->p = p;
+	w->port = port;
+	w->send = send;
+	TAILQ_INSERT_TAIL(&port->waiters, w, pq);
+	SLIST_INSERT_HEAD(&p->waiters, w, pw);
+	return 1;
+}
+
+/* drop every wait this proc holds. called on wake and on death, so it has
+ * to be safe to call when the list is already empty.
+ */
+static void
+wait_clear(struct kproc *p)
+{
+	while (!SLIST_EMPTY(&p->waiters)) {
+		struct waiter *w = SLIST_FIRST(&p->waiters);
+
+		SLIST_REMOVE_HEAD(&p->waiters, pw);
+		TAILQ_REMOVE(&w->port->waiters, w, pq);
+		SLIST_INSERT_HEAD(&waiterfree, w, fq);
+	}
+}
+
 static void
 wake_receivers(struct kport *port)
 {
-	for (int i = 0; i < MAXPROCS; i++) {
-		struct kproc *p = &procs[i];
+	struct waiter *w, *n;
 
-		if (p->status != BLOCKED)
+	TAILQ_FOREACH_SAFE(w, &port->waiters, pq, n) {
+		struct kproc *p = w->p;
+
+		if (w->send || p->status != BLOCKED)
 			continue;
-		if (p->waiting == port)
-			goto wake;
-		for (int j = 0; j < p->nwset; j++)
-			if (p->wset[j] == port)
-				goto wake;
-		continue;
-wake:
-		p->waiting = 0;
-		p->nwset = 0;
+		/* clears every wait p holds, including the one we are
+		 * standing on, which is why the SAFE form is required
+		 */
+		wait_clear(p);
 		make_ready(p);
 	}
 }
@@ -1017,12 +1110,14 @@ wake:
 static void
 wake_senders(struct kport *port)
 {
-	for (int i = 0; i < MAXPROCS; i++) {
-		struct kproc *p = &procs[i];
+	struct waiter *w, *n;
 
-		if (p->status != BLOCKED || p->sending != port)
+	TAILQ_FOREACH_SAFE(w, &port->waiters, pq, n) {
+		struct kproc *p = w->p;
+
+		if (!w->send || p->status != BLOCKED)
 			continue;
-		p->sending = 0;
+		wait_clear(p);
 		make_ready(p);
 	}
 }
@@ -1200,8 +1295,10 @@ api_sendblock(lua_State *L)
 		return 0;	/* never going to drain; let the send report it */
 	if (r->port->qbytes < MAXQUEUE)
 		return 0;	/* room already, don't sleep */
+	if (!wait_add(p, r->port, 1))
+		return luaL_error(L, "out of waiters");
 	p->status = BLOCKED;
-	p->sending = r->port;
+	rq_del(p);
 	return lua_yield(L, 0);
 }
 
@@ -1248,8 +1345,10 @@ api_block(lua_State *L)
 		return luaL_error(L, "bad receive right");
 	if (r->port->head)
 		return 0;	/* message already there, don't sleep */
+	if (!wait_add(p, r->port, 0))
+		return luaL_error(L, "out of waiters");
 	p->status = BLOCKED;
-	p->waiting = r->port;
+	rq_del(p);
 	return lua_yield(L, 0);
 }
 
@@ -1265,33 +1364,41 @@ api_altblock(lua_State *L)
 	if (n < 1)
 		return luaL_error(L, "altblock: need at least one port");
 
-	p->nwset = 0;
+	wait_clear(p);
 	for (int i = 1; i <= n; i++) {
 		lua_rawgeti(L, 1, i);
 
 		struct right *r = right_get(p, luaL_checkinteger(L, -1));
 
 		lua_pop(L, 1);
-		if (!r || !r->recv)
+		if (!r || !r->recv) {
+			wait_clear(p);
 			return luaL_error(L, "altblock: bad receive right");
+		}
 		if (r->port->head) {
-			p->nwset = 0;
+			wait_clear(p);
 			return 0;	/* already ready, don't sleep */
 		}
-		/* dedup: the caller may list the same handle more than once
-		 * (alt cases share ports). distinct ports are bounded by
-		 * MAXRIGHTS == MAXWSET, so the set can never overflow.
+		/* dedup: the caller may list the same handle more than once,
+		 * since alt cases share ports. two waits on one port would
+		 * both fire and both be released by wait_clear, so this is
+		 * about not consuming the pool rather than correctness.
 		 */
 		int seen = 0;
-		for (int j = 0; j < p->nwset; j++)
-			if (p->wset[j] == r->port) {
+		struct waiter *w;
+
+		SLIST_FOREACH(w, &p->waiters, pw)
+			if (w->port == r->port) {
 				seen = 1;
 				break;
 			}
-		if (!seen)
-			p->wset[p->nwset++] = r->port;
+		if (!seen && !wait_add(p, r->port, 0)) {
+			wait_clear(p);
+			return luaL_error(L, "altblock: out of waiters");
+		}
 	}
 	p->status = BLOCKED;
+	rq_del(p);
 	return lua_yield(L, 0);
 }
 
@@ -1717,33 +1824,40 @@ api_wchan(lua_State *L)
 	case READY:
 		lua_pushliteral(L, "ready");
 		return 1;
-	case BLOCKED:
-		if (p->waiting) {
+	case BLOCKED: {
+		struct waiter *only = SLIST_FIRST(&p->waiters);
+
+		if (only && !only->send && !SLIST_NEXT(only, pw)) {
 			lua_pushfstring(L, "port#%d",
-			    (int)(p->waiting - ports));
+			    (int)(only->port - ports));
 			return 1;
 		}
+	}
 		/* distinguished from a receive wait on purpose: "why is
 		 * this proc stuck" has a different answer for a reader
 		 * with no data and a writer with no room, and ps is where
 		 * you go to find out.
 		 */
-		if (p->sending) {
+		struct waiter *w = SLIST_FIRST(&p->waiters);
+
+		if (w && w->send) {
 			lua_pushfstring(L, "sendq#%d",
-			    (int)(p->sending - ports));
+			    (int)(w->port - ports));
 			return 1;
 		}
-		if (p->nwset > 0) {
+		if (w) {
 			luaL_Buffer b;
+			int first = 1;
 
 			luaL_buffinit(L, &b);
 			luaL_addstring(&b, "alt[");
-			for (int i = 0; i < p->nwset; i++) {
+			SLIST_FOREACH(w, &p->waiters, pw) {
 				char tmp[16];
 
 				snprintf(tmp, sizeof tmp, "%s%d",
-				    i ? "," : "",
-				    (int)(p->wset[i] - ports));
+				    first ? "" : ",",
+				    (int)(w->port - ports));
+				first = 0;
 				luaL_addstring(&b, tmp);
 			}
 			luaL_addstring(&b, "]");
@@ -2388,9 +2502,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	p->lastcpu = 0;
 	p->exitcode = 0;
 	p->exitmsg[0] = 0;
-	p->status = READY;
-	p->waiting = 0;
-	p->sending = 0;
+	SLIST_INIT(&p->waiters);
+	p->onq = 0;
+	p->pri = 0;
+	make_ready(p);
 	nlive++;
 	return p->id;
 }
@@ -2475,6 +2590,8 @@ proc_kill(struct kproc *p, const char *why)
 		    p->name, reason);
 		kernel_log(buf);
 	}
+	wait_clear(p);
+	rq_del(p);
 	lua_close(p->L);
 	p->status = DEAD;
 	p->L = 0;
@@ -2598,6 +2715,8 @@ int
 kernel_init(void)
 {
 	calibrate_reductions();	/* kernel_clock_init already ran in efi_main */
+	waiters_init();		/* before any port exists to be waited on */
+	rq_init();		/* before any proc exists to be dispatched */
 	uart_init();
 	kbdport = port_new();
 	serport = port_new();
@@ -2879,22 +2998,126 @@ reprioritize(struct kproc *p, int nrunnable)
  * are irregular where laps were not. that is why the chunked decay above
  * had to come first.
  */
+/* the two dispatch sets. runq holds procs still to run this lap, donq
+ * those that have already had their turn; they swap at the end of a lap.
+ */
+static struct rqset rqsets[2];
+static struct rqset *runq = &rqsets[0];
+static struct rqset *donq = &rqsets[1];
+
+static void
+rq_init(void)
+{
+	for (int s = 0; s < 2; s++) {
+		for (int i = 0; i < NRQ; i++)
+			TAILQ_INIT(&rqsets[s].q[i]);
+		rqsets[s].mask = 0;
+		rqsets[s].n = 0;
+	}
+}
+
+static int
+rq_bucket(int pri)
+{
+	int top = MAXWEIGHT * PRI_BASE;
+
+	if (pri < 0)
+		pri = 0;
+	if (pri > top)
+		pri = top;
+	return pri * (NRQ - 1) / top;
+}
+
+static void
+rq_add(struct rqset *set, struct kproc *p)
+{
+	int b = rq_bucket(p->pri);
+
+	TAILQ_INSERT_TAIL(&set->q[b], p, rqe);
+	set->mask |= 1u << b;
+	set->n++;
+	p->onq = set;
+}
+
+static void
+rq_del(struct kproc *p)
+{
+	struct rqset *set = p->onq;
+	int b;
+
+	if (!set)
+		return;
+	b = rq_bucket(p->pri);
+	TAILQ_REMOVE(&set->q[b], p, rqe);
+	if (TAILQ_EMPTY(&set->q[b]))
+		set->mask &= ~(1u << b);
+	set->n--;
+	p->onq = 0;
+}
+
+/* highest bucket first: this is where priority is consulted, and the only
+ * place it is.
+ */
+static struct kproc *
+rq_take_high(struct rqset *set)
+{
+	for (int b = NRQ - 1; b >= 0; b--)
+		if (set->mask & (1u << b)) {
+			struct kproc *p = TAILQ_FIRST(&set->q[b]);
+
+			rq_del(p);
+			return p;
+		}
+	return 0;
+}
+
+/* any of them, priority not consulted. phase two's guarantee must not
+ * depend on the priority function being right, so it does not ask.
+ */
+static struct kproc *
+rq_take_any(struct rqset *set)
+{
+	for (int b = 0; b < NRQ; b++)
+		if (set->mask & (1u << b)) {
+			struct kproc *p = TAILQ_FIRST(&set->q[b]);
+
+			rq_del(p);
+			return p;
+		}
+	return 0;
+}
+
 static void
 make_ready(struct kproc *p)
 {
+	struct rqset *keep = p->onq;
+
+	if (keep)
+		rq_del(p);		/* pri is about to change; rebucket */
 	p->status = READY;
-	p->pri = reprioritize(p, count_runnable());
+	/* +1 because p has just been taken off its bucket and so is not in
+	 * the count, but it is runnable and the fair share has to include it
+	 */
+	p->pri = reprioritize(p, count_runnable() + 1);
+	/* a proc already waiting its turn keeps the lap it was in. one
+	 * arriving fresh joins the current lap, which is how a mid-lap
+	 * wakeup still gets a turn this lap.
+	 */
+	rq_add(keep ? keep : runq, p);
 }
 
 static int
 count_runnable(void)
 {
-	int n = 0;
+	/* the proc being resumed is on neither set -- dispatch takes it off
+	 * before running it and puts it back after -- so it has to be
+	 * counted here, or a proc asking about its own fair share leaves
+	 * itself out of the divisor.
+	 */
+	int running = current_proc && current_proc->status == READY &&
+	    !current_proc->onq;
 
-	for (int i = 0; i < MAXPROCS; i++)
-		if (procs[i].status == READY)
-			n++;
-	return n;
+	return runq->n + donq->n + running;
 }
 
 static int
@@ -3073,62 +3296,58 @@ kernel_run(void)
 		 * per decision. MAXPROCS being small is what buys us the
 		 * guarantee for free.
 		 */
-		/* two distinct negatives, and conflating them was a real bug:
-		 * PRI_SKIP means "not READY when the lap started", PRI_RAN
-		 * means "already had its turn". with one marker for both, a
-		 * proc woken DURING phase 1 still carried the snapshot's
-		 * marker and phase 2 skipped it -- so the guarantee did not
-		 * guarantee, and every IPC round trip waited an extra lap.
-		 * cost 45% on cross-proc latency, invisible to a
-		 * single-proc throughput test.
+		/* phase one takes the highest priority first, so an
+		 * interactive proc answers before a hog gets another turn.
+		 * it is bounded by how many were waiting when the lap
+		 * started, so it cannot spin on procs it keeps waking.
+		 *
+		 * phase two then drains whatever is left, priority not
+		 * consulted -- including anything woken during phase one.
+		 * that is the guarantee: every runnable proc runs at least
+		 * once and at most once per lap, whatever reprioritize
+		 * computes. a policy that is buggy, hostile or merely untuned
+		 * costs latency and cannot wedge the machine, which matters
+		 * because policy is the part we expect to get wrong.
+		 *
+		 * "already had its turn" is membership in donq rather than a
+		 * per-lap marker, so nothing here is sized against MAXPROCS
+		 * and nothing scans.
 		 */
-		enum { PRI_SKIP = -1, PRI_RAN = -2 };
+		int budget = runq->n;
 
-		int pri[MAXPROCS];
-		int nready = 0;
+		for (int i = 0; i < budget; i++) {
+			struct kproc *p = rq_take_high(runq);
 
-		/* priority was computed when each proc became ready (see
-		 * make_ready), so this only reads it -- plan 9's ready()
-		 * files a proc at its priority and runproc() just picks.
-		 */
-		for (int i = 0; i < MAXPROCS; i++) {
-			if (procs[i].status == READY) {
-				pri[i] = procs[i].pri;
-				if (pri[i] < 0)
-					pri[i] = 0;
-				nready++;
-			} else {
-				pri[i] = PRI_SKIP;
-			}
-		}
-		(void)nready;
-
-		/* phase 1: by priority, highest first */
-		for (int picked = 0; picked < nready; picked++) {
-			int best = -1;
-
-			for (int i = 0; i < MAXPROCS; i++)
-				if (pri[i] >= 0 &&
-				    procs[i].status == READY &&
-				    (best < 0 || pri[i] > pri[best]))
-					best = i;
-			if (best < 0)
+			if (!p)
 				break;
-			pri[best] = PRI_RAN;
-			if (run_proc(&procs[best]))
-				ran = 1;
-		}
-
-		/* phase 2: the guarantee. no priority consulted. */
-		for (int i = 0; i < MAXPROCS; i++) {
-			struct kproc *p = &procs[i];
-
-			if (p->status != READY || pri[i] == PRI_RAN)
-				continue;
-			pri[i] = PRI_RAN;
 			if (run_proc(p))
 				ran = 1;
+			if (p->status == READY)
+				rq_add(donq, p);
 		}
+
+		for (;;) {
+			struct kproc *p = rq_take_any(runq);
+
+			if (!p)
+				break;
+			if (run_proc(p))
+				ran = 1;
+			if (p->status == READY)
+				rq_add(donq, p);
+		}
+
+		/* the lap is over: what ran becomes what runs next. procs
+		 * woken from here on join the new runq and so get a turn in
+		 * the next lap rather than being lost.
+		 */
+		{
+			struct rqset *t = runq;
+
+			runq = donq;
+			donq = t;
+		}
+
 		if (!ran) {
 			/* everyone blocked: sleep until a key or the tick.
 			 * tcp4 completion events are deliberately NOT in
