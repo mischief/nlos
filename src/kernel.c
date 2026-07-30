@@ -26,30 +26,31 @@
 #include "lauxlib.h"
 #include "platform.h"
 
-/* measured before choosing these (best of 5, test/bench_ipc.lua, and
- * .bss from size(1)):
+/* bodies are heap-allocated, so what these cost statically is one pointer
+ * each: 1024 procs and 4096 ports is 40KB of .bss, and a machine running
+ * a dozen procs allocates a dozen bodies.
  *
- *	MAXPROCS   .bss     xproc empty   xproc 4096
- *	32          89408   46641 cyc     113223 cyc
- *	64         151360   46379         113845
- *	128        275264   48438         115789
+ * measured across the range (test/bench_ipc.lua, best of 5, size(1)):
  *
- * 64 is free in time -- the difference is inside the noise -- and costs
- * 62KB of .bss against ~500KB of live heap. 128 starts to show on both:
- * ~4% on a round trip, because the scheduler's phase 2 scans every slot
- * every lap, and 186KB more of a statically sized image.
+ *	procs/ports    .bss     xproc empty
+ *	64/256          77664   25826 cyc
+ *	1024/4096      116064   26229
+ *	8192/32768     402784   26383
+ *
+ * dispatch and wakeups no longer scan, so the cost is flat; only the
+ * index tables grow. going much past this wants a two-level table rather
+ * than a flat one, which would add an indirection to every serialize.
  */
-#define MAXPROCS	64
-#define MAXPORTS	256
+#define MAXPROCS	1024
+#define MAXPORTS	4096
 #define MAXRIGHTS	64
 
-/* the serializer puts a port's INDEX in one byte (see the 'R' case), so
- * a 257th port would alias onto a live one -- and the receive side's
- * `pi >= MAXPORTS` check cannot catch it, because the aliased value is
- * in range. raising this past 256 means widening that field on both
- * sides of the wire, so fail the build rather than corrupt delivery.
+/* the serializer puts a port's index in a 16-bit field (the 'R' case), so
+ * a port beyond that would alias onto a live one and the receive side's
+ * range check could not catch it -- the aliased value is in range. fail
+ * the build rather than corrupt delivery.
  */
-_Static_assert(MAXPORTS <= 256, "port index is one byte in the serializer");
+_Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 /* fallback if calibration fails; normally replaced at boot by a measured
  * value -- see calibrate_reductions().
  */
@@ -117,13 +118,14 @@ struct kmsg {
 	 * a ref each so a port can't be freed (and its index reused) while
 	 * the only right to it sits in a queue.
 	 */
-	unsigned char refs[MAXMSGRIGHTS];
+	unsigned short refs[MAXMSGRIGHTS];
 	unsigned char refrecv[MAXMSGRIGHTS];	/* was each one a recv right? */
 	int nrefs;
 	unsigned char *data;	/* owned; freed by msg_free */
 };
 
 struct kport {
+	unsigned short idx;	/* its slot in portv; what the wire carries */
 	int used;
 	TAILQ_HEAD(, waiter) waiters;
 	int nrights;	/* rights + in-flight message refs + kernel refs */
@@ -239,8 +241,20 @@ struct kproc {
 	int priv;		/* PRIV_*; only PRIV_BOOT keeps raw file access */
 };
 
-static struct kproc procs[MAXPROCS];
-static struct kport ports[MAXPORTS];
+/* procs live on the heap too. a dead one keeps its slot until the reaper
+ * runs at the top of a lap, because dispatch reads its status right after
+ * a resume that may have killed it -- freeing inside proc_kill would hand
+ * dispatch a dangling pointer.
+ */
+static struct kproc *procv[MAXPROCS];
+static int prochigh;
+/* ports live on the heap; this is the index that names them. the wire
+ * carries the index, not a pointer, so a message stays the same size and
+ * a port's identity survives being moved -- and .bss no longer holds a
+ * body for every port that could ever exist.
+ */
+static struct kport *portv[MAXPORTS];
+static int porthigh;		/* one past the highest slot ever used */
 static struct kport *kbdport;
 static int nlive;
 static int nextpid;
@@ -286,9 +300,9 @@ static struct kport *schedport;
 static int proc_has_port(struct kproc *p, struct kport *port);
 
 static int port_push(struct kport *port, const unsigned char *data,
-    size_t len, const unsigned char *refs, int nrefs);
+    size_t len, const unsigned short *refs, int nrefs);
 static int port_push_owned(struct kport *port, unsigned char *data,
-    size_t len, const unsigned char *refs, const unsigned char *refrecv,
+    size_t len, const unsigned short *refs, const unsigned char *refrecv,
     int nrefs);
 
 extern unsigned long long platform_ticks(void);
@@ -314,11 +328,14 @@ static void make_ready(struct kproc *p);
  * looking at nrecv.
  */
 static void
-release_inflight(const unsigned char *refs, const unsigned char *refrecv,
+release_inflight(const unsigned short *refs, const unsigned char *refrecv,
     int n)
 {
 	for (int i = 0; i < n; i++) {
-		struct kport *port = &ports[refs[i]];
+		struct kport *port = portv[refs[i]];
+
+		if (!port)
+			continue;
 
 		if (refrecv && refrecv[i])
 			port->nrecv--;
@@ -603,8 +620,9 @@ static struct kproc *
 find_proc(int pid)
 {
 	for (int i = 0; i < MAXPROCS; i++)
-		if (procs[i].status != DEAD && procs[i].id == pid)
-			return &procs[i];
+		if (procv[i] && procv[i]->status != DEAD &&
+		    procv[i]->id == pid)
+			return procv[i];
 	return 0;
 }
 
@@ -642,15 +660,19 @@ static struct kport *
 port_new(void)
 {
 	for (int i = 0; i < MAXPORTS; i++)
-		if (!ports[i].used) {
-			ports[i].used = 1;
-			TAILQ_INIT(&ports[i].waiters);
-			ports[i].head = ports[i].tail = 0;
-			ports[i].nrights = 0;
-			ports[i].nrecv = 0;
-			ports[i].dead = 0;
-			ports[i].qbytes = 0;
-			return &ports[i];
+		if (!portv[i]) {
+			struct kport *port = malloc(sizeof *port);
+
+			if (!port)
+				return 0;
+			memset(port, 0, sizeof *port);
+			port->idx = (unsigned short)i;
+			port->used = 1;
+			TAILQ_INIT(&port->waiters);
+			portv[i] = port;
+			if (i >= porthigh)
+				porthigh = i + 1;
+			return port;
 		}
 	return 0;
 }
@@ -691,11 +713,12 @@ static void
 port_unref(struct kport *port)
 {
 	if (--port->nrights <= 0) {
+		/* flush first: it can unref other ports, and one of those
+		 * could be this one's last reference from a queued message
+		 */
 		port_flush(port);
-		port->used = 0;
-		port->dead = 0;
-		port->nrights = 0;
-		port->nrecv = 0;
+		portv[port->idx] = 0;
+		free(port);
 		return;
 	}
 	if (port->nrecv == 0 && !port->dead) {
@@ -784,7 +807,7 @@ struct wbuf {
 	 * holds a ref taken at serialize time (released on send failure,
 	 * or by msg_free once delivered/flushed)
 	 */
-	unsigned char refs[MAXMSGRIGHTS];
+	unsigned short refs[MAXMSGRIGHTS];
 	unsigned char refrecv[MAXMSGRIGHTS];
 	int nrefs;
 };
@@ -871,9 +894,9 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 			lua_pop(L, 1);
 			if (!r || w->nrefs >= MAXMSGRIGHTS)
 				return -1;
-			unsigned char pi = (unsigned char)(r->port - ports);
+			unsigned short pi = r->port->idx;
 
-			if (wbyte(w, 'R') || wbyte(w, pi))
+			if (wbyte(w, 'R') || wput(w, &pi, sizeof pi))
 				return -1;
 			if (wbyte(w, (unsigned char)r->recv))
 				return -1;
@@ -993,21 +1016,21 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 		return 0;
 	}
 	case 'R': {
-		if (*off + 2 > len)
+		if (*off + 3 > len)
 			return -1;
-		unsigned char pi = p[(*off)++];
+		unsigned short pi;
+
+		if (*off + sizeof pi > len)
+			return -1;
+		memcpy(&pi, p + *off, sizeof pi);
+		*off += sizeof pi;
+
 		unsigned char recv = p[(*off)++];
 
-#if MAXPORTS < 256
-		if (pi >= MAXPORTS)
+		if (pi >= MAXPORTS || !portv[pi])
 			return -1;
-#endif		/* at 256 every byte is a valid index, so `used` is the
-		 * whole check -- and the compiler rejects a comparison it
-		 * can prove is always false.
-		 */
-		if (!ports[pi].used)
-			return -1;
-		int h = right_new(receiver, &ports[pi], recv);
+
+		int h = right_new(receiver, portv[pi], recv);
 
 		if (h < 0)
 			return -1;
@@ -1137,7 +1160,7 @@ wake_senders(struct kport *port)
  */
 static int
 port_push_owned(struct kport *port, unsigned char *data, size_t len,
-    const unsigned char *refs, const unsigned char *refrecv, int nrefs)
+    const unsigned short *refs, const unsigned char *refrecv, int nrefs)
 {
 	if (port->dead) {
 		release_inflight(refs, refrecv, nrefs);
@@ -1181,7 +1204,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
  */
 static int
 port_push(struct kport *port, const unsigned char *data, size_t len,
-    const unsigned char *refs, int nrefs)
+    const unsigned short *refs, int nrefs)
 {
 	unsigned char *copy = malloc(len);
 
@@ -1720,11 +1743,11 @@ api_stats(lua_State *L)
 {
 	int nports = 0, nprocs = 0;
 
-	for (int i = 0; i < MAXPORTS; i++)
-		if (ports[i].used)
+	for (int i = 0; i < porthigh; i++)
+		if (portv[i])
 			nports++;
-	for (int i = 0; i < MAXPROCS; i++)
-		if (procs[i].status != DEAD)
+	for (int i = 0; i < prochigh; i++)
+		if (procv[i] && procv[i]->status != DEAD)
 			nprocs++;
 	lua_createtable(L, 0, 3);
 	lua_pushinteger(L, nports);
@@ -1778,8 +1801,8 @@ api_procs(lua_State *L)
 {
 	lua_newtable(L);
 	for (int i = 0, n = 1; i < MAXPROCS; i++)
-		if (procs[i].status != DEAD) {
-			lua_pushinteger(L, procs[i].id);
+		if (procv[i] && procv[i]->status != DEAD) {
+			lua_pushinteger(L, procv[i]->id);
 			lua_rawseti(L, -2, n++);
 		}
 	return 1;
@@ -1829,7 +1852,7 @@ api_wchan(lua_State *L)
 
 		if (only && !only->send && !SLIST_NEXT(only, pw)) {
 			lua_pushfstring(L, "port#%d",
-			    (int)(only->port - ports));
+			    (int)only->port->idx);
 			return 1;
 		}
 	}
@@ -1842,7 +1865,7 @@ api_wchan(lua_State *L)
 
 		if (w && w->send) {
 			lua_pushfstring(L, "sendq#%d",
-			    (int)(w->port - ports));
+			    (int)w->port->idx);
 			return 1;
 		}
 		if (w) {
@@ -1856,7 +1879,7 @@ api_wchan(lua_State *L)
 
 				snprintf(tmp, sizeof tmp, "%s%d",
 				    first ? "" : ",",
-				    (int)(w->port - ports));
+				    (int)w->port->idx);
 				first = 0;
 				luaL_addstring(&b, tmp);
 			}
@@ -2309,8 +2332,22 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	struct kproc *p = 0;
 
 	for (int i = 0; i < MAXPROCS; i++)
-		if (procs[i].status == DEAD) {
-			p = &procs[i];
+		if (!procv[i] || procv[i]->status == DEAD) {
+			if (!procv[i]) {
+				procv[i] = malloc(sizeof *procv[i]);
+				if (!procv[i])
+					return -1;
+				memset(procv[i], 0, sizeof *procv[i]);
+			}
+			p = procv[i];
+			/* a reused slot still holds the last occupant's
+			 * fields; only the id must survive nothing, so wipe
+			 * it rather than trusting every assignment below to
+			 * cover every field
+			 */
+			memset(p, 0, sizeof *p);
+			if (i >= prochigh)
+				prochigh = i + 1;
 			break;
 		}
 	if (!p)

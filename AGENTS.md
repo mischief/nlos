@@ -586,15 +586,14 @@ Structural, worth fixing:
   scheduler weight. Each sensible alone, collectively unrelated. The
   grant table has one spare slot; two more boot capabilities truncate
   silently.
-- **The static tables are sized for the maximum, not the live count.**
-  `procs[64]` is 124KB of `.bss` at 1936 bytes each, `ports[256]` is
-  10KB, and `.bss` is 151KB total against ~500KB of live heap. 1024 of
-  those 1936 bytes are `rights[MAXRIGHTS]` inline, so raising *that*
-  multiplies by `MAXPROCS`. **`MAXPORTS` cannot exceed 256** — the
-  serializer puts a port index in one byte, and a static assert enforces
-  it. Measured figures for `MAXPROCS` are in `kernel.c` beside the
-  define; 128 costs ~4% on a round trip because phase 2 scans every slot
-  every lap.
+- **The index tables are flat, so they are sized for the maximum.**
+  Proc and port bodies are on the heap, so a machine running a dozen
+  procs allocates a dozen; what scales with the limits is one pointer
+  each. 1024 procs and 4096 ports is 40KB of `.bss`. Going much further
+  wants a two-level table, which would add an indirection to every
+  serialize. `MAXPORTS` cannot exceed 65536 — the serializer carries a
+  port index in a 16-bit field and a static assert enforces it. Figures
+  across the range are in `kernel.c` beside the defines.
 - **A dead `srv` proc parks its clients forever.** `mnt`'s rpc has no
   deadline and nothing else wakes it. The fix is hangup detection on
   the reply port, not a timeout — a slow backend is not a broken one.
