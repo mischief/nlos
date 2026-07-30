@@ -8,6 +8,26 @@ local caps_of = sys.granted()
 
 local tcp = caps.tcp(caps_of.tcp)
 
+-- this payload REPLACES init.lua, so it does not inherit init's dhcp
+-- client -- and without one, the listen below waits for the FIRMWARE's,
+-- which sits on an offer it already holds for four seconds. see
+-- lib/dhcp.lua for why, and why it cannot be hurried from outside.
+--
+-- one-shot rather than lib/dhcpd.lua as a proc: this payload does not
+-- live long enough to need the lease renewed. anything long-lived should
+-- spawn dhcpd instead -- test/boot/srvweb.lua is the example.
+local dhcp = require("dhcp")
+
+if caps_of.udp then
+	local mac = tcp.hwaddr()
+	local lease = mac and
+	    dhcp.acquire(caps.udp(caps_of.udp), caps_of.udp, { mac = mac })
+
+	if lease then
+		dhcp.install(tcp, lease)
+	end
+end
+
 http.serve(tcp, 7777, function(req)
 	if req.path == "/boom" then
 		error("deliberate handler explosion")

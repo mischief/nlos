@@ -156,19 +156,19 @@ local _, tcp9srv = sys.spawn([[
 		["version"] = _VERSION .. "\n",
 	})
 
-	-- Configure() self-triggers DHCP but doesn't block for it (see
-	-- kernel.c/net.c's EFI_NO_MAPPING handling); retry listen for a
-	-- few real seconds rather than giving up on the first attempt.
-	-- thread.sleep parks, so this costs no cpu while dhcp completes --
-	-- it used to spin on sys.ticks(), which pegged the machine for the
-	-- whole of boot.
+	-- a listen before an address exists fails with EFI_NO_MAPPING, so
+	-- retry. this used to allow fifteen seconds because it was waiting
+	-- out the firmware's own dhcp; init now runs lib/dhcpd.lua, which
+	-- has an address in ~15ms, so the only thing left to cover is being
+	-- scheduled before it finishes. thread.sleep parks, so this costs
+	-- no cpu either way.
 	local listener
-	for _ = 1, 60 do
+	for _ = 1, 20 do
 		listener = req("listen", { port = 7777 })
 		if listener then
 			break
 		end
-		thread.sleep(250)
+		thread.sleep(50)
 	end
 	if not listener then
 		return

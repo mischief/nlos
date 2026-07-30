@@ -143,13 +143,21 @@ end
 -- real 500 instead of taking the connection (or the whole server)
 -- down with it.
 
--- Configure() self-triggers dhcp but doesn't block for it, so a listen
--- right after boot fails with EFI_NO_MAPPING until a lease lands. real
--- milliseconds: these were raw tsc cycle counts, which made the retry
--- window machine-dependent (and 222ms rather than the "few seconds" the
--- comment claimed).
-local LISTEN_ATTEMPTS = 60
-local LISTEN_RETRY_MS = 250
+-- a listen before an address exists fails with EFI_NO_MAPPING, so this
+-- retries. what it is waiting for changed, and so did the budget.
+--
+-- it used to be waiting out the FIRMWARE's dhcp, which takes about four
+-- seconds whatever anyone does (see net_listen and lib/dhcp.lua) -- hence
+-- 60 attempts at 250ms, fifteen seconds of headroom for a four second
+-- wait nobody could shorten.
+--
+-- now every payload runs lib/dhcp.lua itself and has an address in
+-- ~15ms, so all that is left to cover is the few milliseconds while a
+-- dhcpd spawned moments ago finishes its four-way. a second of headroom
+-- is generous for that, and failing in one second beats failing in
+-- fifteen when the real problem is that nobody configured the network.
+local LISTEN_ATTEMPTS = 20
+local LISTEN_RETRY_MS = 50
 
 local STATUS_TEXT = {
 	[200] = "OK", [201] = "Created", [204] = "No Content",

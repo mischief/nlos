@@ -35,6 +35,30 @@ local function slurp(path)
 	return src
 end
 
+-- this payload REPLACES init.lua, so it does not inherit init's dhcp
+-- client either -- and without one, the listen below waits for the
+-- firmware's, which sits on an offer it already holds for four seconds
+-- (the whole argument is in lib/dhcp.lua). that was the entire gap
+-- between "web terminal ready t=5294ms" and t~1200ms.
+--
+-- a PROC rather than a one-shot acquire, because this one is meant to
+-- stay up and a lease has to be renewed. no ns= is passed: dhcpd is a
+-- child of proc 0 and resolves its own requires through the ambient
+-- searcher, same as everything else this payload spawns.
+local dhcpd = nil
+
+if caps_of.udp then
+	local _, h = require("proc").spawn(slurp("/lib/dhcpd.lua"), {
+		name = "dhcp",
+		arg = {
+			tcp = { __right = caps_of.tcp },
+			udp = { __right = caps_of.udp },
+		},
+	})
+
+	dhcpd = h
+end
+
 local site = {
 	["README"] = [[
 lua-os -- lua 5.4 on bare uefi, and you are inside it.
