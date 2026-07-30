@@ -3,7 +3,7 @@
 -- plan 9's devmount. lib/srv.lua is the other half; the protocol and
 -- the argument for it are documented there. this side is deliberately
 -- boring: every method is the same round trip, so the interesting
--- content is the three things that are NOT a round trip.
+-- content is the four things that are NOT just a round trip.
 --
 -- ---- one: a mount is a right, so a namespace is finally a capability ----
 --
@@ -41,11 +41,12 @@
 -- finalizer. dev.closable copies existing metatable fields, so an
 -- opened handle keeps its finalizer alongside __close.
 --
--- ---- what is missing ----
+-- ---- four: a whole path in one round trip ----
 --
--- walk is one element per round trip because dev.walk is. 9P's Twalk
--- carries up to sixteen names for this exact reason, and dev.walkpath
--- is where that optimisation would go.
+-- walkmany is 9P's Twalk, and dev.walkpath prefers it when a backend
+-- offers one. it also means no intermediate fid exists on this side at
+-- all: the server makes them and knows when they die, so the finalizer
+-- above has nothing to collect for a multi-element walk.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -96,15 +97,6 @@ function M.new(right)
 			dev.error(dev.Eio)	-- server gone, or right closed
 		end
 
-		-- a NON-matching reply belongs to a request this thread
-		-- abandoned -- today only possible if an error (a memory cap,
-		-- say) unwinds between the send and the recv, but guaranteed
-		-- the moment rpcs grow a deadline, which is a listed debt.
-		-- dropping it here is the difference between one lost call and
-		-- every later call reading the previous one's answer.
-		--
-		-- note this is NOT a tag: nothing routes on it, no table maps
-		-- it to a waiter. it only says "not mine".
 		-- ---- and this is where a dead server is noticed ----
 		--
 		-- while a request is in flight the reply port has TWO rights:
