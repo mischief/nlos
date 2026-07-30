@@ -20,6 +20,7 @@
 -- (POST bodies work, for lib/mcp.lua's JSON-RPC traffic).
 
 local thread = require("los.thread")
+local ns = require("ns")
 
 local M = {}
 
@@ -189,6 +190,17 @@ M.MAXBODYIN = 256 * 1024
 -- ceiling on a single message to the tcp task -- see write_response.
 M.WRITECHUNK = 16 * 1024
 
+local MIME_TYPES = {
+	html = "text/html", htm = "text/html", css = "text/css",
+	js = "text/javascript", json = "application/json",
+	txt = "text/plain", md = "text/plain",
+	png = "image/png", jpg = "image/jpeg", jpeg = "image/jpeg",
+	gif = "image/gif", svg = "image/svg+xml", ico = "image/x-icon",
+	wasm = "application/wasm", xml = "application/xml",
+	pdf = "application/pdf",
+}
+local DEFAULT_MIME = "application/octet-stream"
+
 -- parses the request line + headers, then reads exactly
 -- Content-Length bytes of body if present (0 otherwise -- fine for
 -- GET, needed for POST). no chunked transfer-encoding on requests,
@@ -253,13 +265,28 @@ local function read_request(tcp, conn)
 	end
 end
 
+-- resp.body is a string, OR a table with :read(n) matching ns.lua's
+-- Chan -- "" at eof, nil on error -- so an ns:open() result is a body
+-- with no adapter. a streaming body must carry resp.length, because
+-- there is no #body once the whole thing is never in memory at once;
+-- ns:stat(path).size is the usual source.
 local function write_response(tcp, conn, resp)
 	local status = resp.status or 200
 	local body = resp.body or ""
+	local streaming = type(body) == "table"
+	local length = resp.length
+
+	if not length then
+		if streaming then
+			error("http: streaming body requires resp.length")
+		end
+		length = #body
+	end
+
 	local lines = {
 		"HTTP/1.1 " .. status .. " " ..
 		    (STATUS_TEXT[status] or "OK"),
-		"Content-Length: " .. #body,
+		"Content-Length: " .. length,
 		"Connection: close",
 	}
 	-- Content-Length and Connection are ours to set: this server
@@ -291,15 +318,45 @@ local function write_response(tcp, conn, resp)
 	if not tcp.send(conn, head) then
 		return
 	end
-	local off = 1
 
-	while off <= #body do
-		local part = body:sub(off, off + M.WRITECHUNK - 1)
+	if not streaming then
+		local off = 1
 
-		if not tcp.send(conn, part) then
+		while off <= #body do
+			local part = body:sub(off, off + M.WRITECHUNK - 1)
+
+			if not tcp.send(conn, part) then
+				return
+			end
+			off = off + #part
+		end
+		return
+	end
+
+	-- a short read or a read error leaves the promised Content-Length
+	-- longer than what went out, which the peer cannot recover from --
+	-- so raise rather than truncate silently. a failed SEND is
+	-- different: the peer went away, which is not our error, so it
+	-- returns quietly like the string path above.
+	local sent = 0
+
+	while sent < length do
+		local chunk, rerr =
+		    body:read(math.min(M.WRITECHUNK, length - sent))
+
+		if not chunk then
+			error("http: streaming body read failed: " ..
+			    tostring(rerr))
+		end
+		if chunk == "" then
+			error(string.format(
+			    "http: streaming body ended early (%d/%d)",
+			    sent, length))
+		end
+		if not tcp.send(conn, chunk) then
 			return
 		end
-		off = off + #part
+		sent = sent + #chunk
 	end
 end
 
@@ -325,7 +382,18 @@ local function serve_conn(tcp, conn, handler)
 			    body = "internal error: " .. tostring(r) }
 		end
 	end
-	write_response(tcp, conn, resp)
+	-- a streaming body holds a Chan, and behind it an EFI file handle.
+	-- write_response has no idea that is what it is holding, so this is
+	-- the one place that both knows the contract and runs on every exit
+	-- path, error or not.
+	local wok, werr = pcall(write_response, tcp, conn, resp)
+
+	if type(resp.body) == "table" and resp.body.close then
+		pcall(resp.body.close, resp.body)
+	end
+	if not wok then
+		error(werr)
+	end
 end
 
 local function handle_conn(tcp, conn, handler)
@@ -371,6 +439,60 @@ function M.serve(tcp, port, handler, onready)
 		end
 	end)
 	thread.run()
+end
+
+-- ---- static files ----
+--
+-- static(pns, root) -> a handler for M.serve, mapping req.path onto
+-- files under `root` in the namespace `pns`. bodies STREAM: the response
+-- body is the open Chan itself, closed by serve_conn once sent, so
+-- serving a file never holds it in memory.
+--
+-- traversal safety: req.path is cleaned ALONE, as its own rooted path,
+-- before it is joined to `root`. cleaning the two already joined is the
+-- classic bug -- "/root/../.." cleans to "/" and escapes -- because
+-- clean() only refuses to climb past the first slash it sees. cleaned in
+-- isolation, the leading "/" it starts from is root's, so ".." can never
+-- climb above root itself.
+function M.static(pns, root)
+	root = root or "/"
+	if root ~= "/" then
+		root = root:gsub("/+$", "")
+	end
+
+	return function(req)
+		if req.method ~= "GET" and req.method ~= "HEAD" then
+			return { status = 405, body = "method not allowed" }
+		end
+
+		local reqpath = req.path:match("^[^?]*")
+		local cleaned = ns.clean(reqpath)
+		local path = root == "/" and cleaned or (root .. cleaned)
+		local st = pns:stat(path)
+
+		if not st or st.dir then
+			return { status = 404, body = "not found" }
+		end
+
+		local headers = {
+			["Content-Type"] = MIME_TYPES[path:match("%.([%w]+)$")]
+			    or DEFAULT_MIME,
+		}
+
+		if req.method == "HEAD" then
+			return { status = 200, length = st.size,
+			    headers = headers }
+		end
+
+		local f, ferr = pns:open(path, "r")
+
+		if not f then
+			return { status = 404,
+			    body = "not found: " .. tostring(ferr) }
+		end
+		return { status = 200, body = f, length = st.size,
+		    headers = headers }
+	end
 end
 
 return M

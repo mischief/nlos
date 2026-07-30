@@ -4,6 +4,8 @@
 local sys = require("los.sys")
 local caps = require("caps")
 local http = require("http")
+local ns = require("ns")
+local dev = require("dev")
 local caps_of = sys.granted()
 
 local tcp = caps.tcp(caps_of.tcp)
@@ -28,6 +30,22 @@ if caps_of.udp then
 	end
 end
 
+-- an in-memory tree exercises M.static without needing a real ESP path.
+-- static's root is "/files", and "secret" sits OUTSIDE it, so a request
+-- for /files/../secret checks that traversal is contained. big.bin is
+-- larger than one WRITECHUNK, so streaming has to cross a boundary.
+local N = ns.new()
+
+N:mount("/", dev.mem({
+	files = {
+		["hello.txt"] = "static file contents\n",
+		["big.bin"] = string.rep("x", 200000),
+	},
+	secret = "should not be reachable\n",
+}))
+
+local static = http.static(N, "/files")
+
 http.serve(tcp, 7777, function(req)
 	if req.path == "/boom" then
 		error("deliberate handler explosion")
@@ -39,6 +57,12 @@ http.serve(tcp, 7777, function(req)
 	end
 	if req.path == "/echolen" then
 		return { status = 200, body = tostring(#req.body) }
+	end
+	local sub = req.path:match("^/files(/.*)$")
+
+	if sub then
+		return static({ method = req.method, path = sub,
+		    headers = req.headers, body = req.body })
 	end
 	return { status = 200, body = "you asked for " .. req.path }
 end, function()

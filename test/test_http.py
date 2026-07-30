@@ -71,7 +71,7 @@ def main():
         *qemuarch.disk(img),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    print("1..9", flush=True)
+    print("1..13", flush=True)
     try:
         # the guest prints this once listen() finally succeeds, which
         # is only after dhcp has handed it a lease.
@@ -146,6 +146,20 @@ def main():
         r, body = get("/alive")
         ok(r.status == 200 and body == b"you asked for /alive",
            "server survives the oversized request")
+
+        r, body = get("/files/hello.txt")
+        ok(r.status == 200 and body == b"static file contents\n",
+           f"static GET /files/hello.txt -> {r.status} {body!r}")
+        ok(r.getheader("Content-Type") == "text/plain",
+           "static Content-Type guessed from extension")
+
+        r, body = get("/files/big.bin")
+        ok(r.status == 200 and body == b"x" * 200000,
+           "static streaming body crosses more than one chunk intact")
+
+        r, body = get("/files/../secret")
+        ok(r.status == 404,
+           f"static traversal contained, not leaked -> {r.status} {body!r}")
 
     finally:
         qemu.kill()
