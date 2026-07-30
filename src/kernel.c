@@ -24,9 +24,30 @@
 #include "lauxlib.h"
 #include "platform.h"
 
-#define MAXPROCS	32
-#define MAXPORTS	128
+/* measured before choosing these (best of 5, test/bench_ipc.lua, and
+ * .bss from size(1)):
+ *
+ *	MAXPROCS   .bss     xproc empty   xproc 4096
+ *	32          89408   46641 cyc     113223 cyc
+ *	64         151360   46379         113845
+ *	128        275264   48438         115789
+ *
+ * 64 is free in time -- the difference is inside the noise -- and costs
+ * 62KB of .bss against ~500KB of live heap. 128 starts to show on both:
+ * ~4% on a round trip, because the scheduler's phase 2 scans every slot
+ * every lap, and 186KB more of a statically sized image.
+ */
+#define MAXPROCS	64
+#define MAXPORTS	256
 #define MAXRIGHTS	64
+
+/* the serializer puts a port's INDEX in one byte (see the 'R' case), so
+ * a 257th port would alias onto a live one -- and the receive side's
+ * `pi >= MAXPORTS` check cannot catch it, because the aliased value is
+ * in range. raising this past 256 means widening that field on both
+ * sides of the wire, so fail the build rather than corrupt delivery.
+ */
+_Static_assert(MAXPORTS <= 256, "port index is one byte in the serializer");
 /* fallback if calibration fails; normally replaced at boot by a measured
  * value -- see calibrate_reductions().
  */
@@ -933,7 +954,14 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 		unsigned char pi = p[(*off)++];
 		unsigned char recv = p[(*off)++];
 
-		if (pi >= MAXPORTS || !ports[pi].used)
+#if MAXPORTS < 256
+		if (pi >= MAXPORTS)
+			return -1;
+#endif		/* at 256 every byte is a valid index, so `used` is the
+		 * whole check -- and the compiler rejects a comparison it
+		 * can prove is always false.
+		 */
+		if (!ports[pi].used)
 			return -1;
 		int h = right_new(receiver, &ports[pi], recv);
 
