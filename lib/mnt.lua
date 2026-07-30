@@ -216,6 +216,18 @@ function M.new(right)
 		return rpc({ op = "readdir", fid = h.fid }).ents
 	end
 
+	-- ask the server for a read-only right to the same tree. not a dev
+	-- method -- it is attenuation, not filesystem access -- so it rides
+	-- alongside rather than being part of the interface dev.check tests.
+	function B.readonly()
+		local r = rpc({ op = "readonly" })
+
+		if type(r.port) ~= "table" or not r.port.__right then
+			dev.error(dev.Enotimpl)
+		end
+		return r.port.__right
+	end
+
 	-- fire and forget, matching dev.clunk's "never fails". no reply
 	-- means no round trip, which is what makes it safe from __gc.
 	function B.clunk(h)
@@ -226,6 +238,14 @@ function M.new(right)
 	end
 
 	return B
+end
+
+-- readonly(right) -> a right to the same server, read-only.
+--
+-- for a caller that wants to hand the weaker right on without mounting
+-- anything itself.
+function M.readonly(right)
+	return M.new(right).readonly()
 end
 
 return M

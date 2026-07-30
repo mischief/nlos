@@ -157,6 +157,39 @@ function ops.clunk(S, m)
 	end
 end
 
+-- readonly: hand back a right to the SAME backend, served read-only.
+--
+-- attenuation, and it needs no capability check because it cannot
+-- escalate: what comes back is strictly weaker than the right used to
+-- ask. so anyone holding a mount may mint a read-only one and pass that
+-- on instead, which is how a filesystem gets served at two authority
+-- levels with no permission bit anywhere -- the difference is which
+-- right you hold.
+--
+-- one port per server, made on first request and shared. the read-only
+-- view has its own fid space, so a holder cannot reach a writable fid by
+-- guessing a number in the read-write server's space.
+function ops.readonly(S)
+	if not S.roport then
+		local ro = dev.readonly(S.B)
+		local recv = sys.newport()
+
+		-- SEND ONLY for the client. {__right=} copies the recv flag,
+		-- so handing out the port we created would let a holder
+		-- receive on it -- and this port is shared by every read-only
+		-- client, so one could take another's requests.
+		S.roport = sys.sendright(recv)
+		thread.spawn(function()
+			-- this loop never sees a hangup: we hold two rights to
+			-- the port ourselves, so nrights never falls to one.
+			-- it lives as long as the server proc, which for the
+			-- esp task is forever anyway.
+			M.serve(ro, recv)
+		end)
+	end
+	return { port = { __right = S.roport } }
+end
+
 local NOREPLY = { clunk = true }
 
 -- ---- the server ----

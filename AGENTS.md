@@ -61,6 +61,20 @@ be. That is what `fork` gives Plan 9 for free. The kernel does not
 interpret it: it is the ordinary serializer, so rights travel exactly as
 they do in a message, and what the value *means* is entirely Lua's.
 
+**Attenuate rather than check.** `sys.sendright(h)` derives a send-only
+right; `dev.readonly(B)` derives a read-only backend; `srv`'s `readonly`
+op combines them to serve one filesystem at two authority levels. Asking
+for a weaker right needs no capability of its own because it cannot
+escalate. So "may this client write the ESP" is answered by *which right
+it holds*, with no permission bit and no per-call check — which is why
+Unix users and mode bits are a non-goal here rather than a missing
+feature.
+
+Note `{__right=h}` **copies the recv flag**. Handing out a port you
+created with `sys.newport()` therefore hands out the ability to *receive*
+on it, and for a port several clients share that lets one take another's
+requests. Use `sys.sendright` for anything you publish.
+
 **Handle numbers are not an ABI.** Handle 0 is the only well-known
 handle there can be, because it is how a proc receives at all. Every
 other capability is granted at whatever slot the first-free allocator

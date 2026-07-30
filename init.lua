@@ -272,6 +272,29 @@ print("")
 -- is serving it whether or not anyone is at the console.
 do
 	local svc = require("svc")
+
+	-- a read-only right to the same ESP server, offered to services under
+	-- the name "espro". a service that only needs to READ the disk names
+	-- that instead of "esp" and cannot write it -- and the distinction is
+	-- which right it holds, not a check anywhere. see lib/dev.lua's
+	-- readonly and lib/srv.lua's op.
+	--
+	-- NEVER give a public session "esp": espsrv holds diskport, so a
+	-- holder can write the real boot volume.
+	local grants = {}
+
+	for k, v in pairs(caps_of) do
+		grants[k] = v
+	end
+
+	local roesp = caps_of.esp and
+	    select(2, pcall(require("mnt").readonly, caps_of.esp))
+
+	if type(roesp) == "number" then
+		grants.espro = roesp
+	else
+		log.log("svc: no read-only esp right (%s)", tostring(roesp))
+	end
 	-- fw_cfg WINS over the disk. a host can therefore configure what
 	-- this machine runs -- and hand it the service source too, under
 	-- opt/org.luaos.svc/<name>.lua, resolved by svc.start before the
@@ -290,7 +313,7 @@ do
 	if list then
 		svc.start(list, {
 			ns = nsdesc,
-			granted = caps_of,
+			granted = grants,
 			-- fw_cfg first, then the disk. so a host can inject a
 			-- service's SOURCE as well as the config that names
 			-- it -- `-fw_cfg name=opt/org.luaos.svc/foo.lua` --

@@ -262,6 +262,49 @@ function M.walkpath(backend, h, path)
 	return M.walknames(backend, h, M.elements(path))
 end
 
+-- ---- attenuation: the same tree, read-only ----
+--
+-- a wrapper that forwards every read-shaped call and raises Eperm on
+-- everything that could change the tree. it is a thin filter rather than
+-- a reimplementation on purpose: there is nothing to keep in step with
+-- the backend it wraps, and no second traversal to get subtly different.
+--
+-- open() is the interesting one. a mode other than "r" is refused, so a
+-- caller cannot get a writable handle and then use it -- which matters
+-- because create() and open("w") are the only ways a handle capable of
+-- writing comes into existence. with those closed, write() is
+-- unreachable anyway and refusing it too is belt and braces.
+--
+-- this is what makes one filesystem serveable at two authority levels
+-- (see lib/srv.lua's readonly op): the difference between a client that
+-- may write the ESP and one that may not becomes WHICH RIGHT IT HOLDS,
+-- with no permission bit anywhere and nothing to check per call.
+function M.readonly(B)
+	local RO = {}
+
+	local function refuse()
+		M.error(M.Eperm)
+	end
+
+	for k, v in pairs(B) do
+		RO[k] = v
+	end
+
+	RO.write = refuse
+	RO.create = refuse
+	RO.remove = nil		-- absent, not a stub: see the note above
+
+	function RO.open(h, mode)
+		if mode ~= "r" then
+			M.error(M.Eperm)
+		end
+		return B.open(h, "r")
+	end
+
+	-- a backend offering walkmany keeps it: walking is a read.
+	return RO
+end
+
 -- ---- the reference backend: an in-memory tree ----
 --
 -- doubles as the executable definition of the interface. a tree is

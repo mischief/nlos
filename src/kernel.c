@@ -1332,6 +1332,34 @@ dump_writer(lua_State *L, const void *src, size_t sz, void *ud)
  * limit as passing source text, just easier to trip since a closure
  * makes it easy to accidentally capture an outer local.
  */
+/* sys.sendright(h) -> a new handle to the same port, SEND ONLY.
+ *
+ * mach's shape: a receive right is the authority to hand out send rights.
+ * we had the recv flag but no way to derive one from lua, and
+ * {__right=h} COPIES the flag -- so handing out a port you created also
+ * handed out the ability to receive on it. for a port many clients share
+ * that lets any of them take another's requests, or take their own and
+ * never answer.
+ *
+ * api_send ignores recv, so a send right is all a client ever needs.
+ */
+static int
+api_sendright(lua_State *L)
+{
+	struct kproc *p = self(L);
+	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+
+	if (!r)
+		return luaL_error(L, "bad right");
+
+	int h = right_new(p, r->port, 0);
+
+	if (h < 0)
+		return luaL_error(L, "out of rights");
+	lua_pushinteger(L, h);
+	return 1;
+}
+
 static int
 api_spawn(lua_State *L)
 {
@@ -2000,6 +2028,7 @@ static const luaL_Reg kapi[] = {
 	{ "altblock", api_altblock },
 	{ "yield", api_yield },
 	{ "newport", api_newport },
+	{ "sendright", api_sendright },
 	{ "spawn", api_spawn },
 	{ "monitor", api_monitor },
 	{ "close", api_close },
