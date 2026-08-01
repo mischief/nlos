@@ -1,21 +1,17 @@
--- boot payload for `ninja qemu-microvm`. real filesystem still doesn't
--- exist (see fs.c), but the embed half of it does: lib/thread.lua,
--- lib/cons.lua and lib/stdout.lua are all embedded, so this boot
--- payload (proc 0, PRIV_BOOT) talks to the console the same way any
--- ordinary lua-os code does -- sys.granted().cons + print() -- rather
--- than the raw los.platform.cons only the cons task itself may reach.
+-- the microvm platform runs ordinary lua-os code: the embedded libs
+-- (lib/thread.lua, lib/cons.lua, lib/stdout.lua -- see fs.c) mean this
+-- boot payload, proc 0 at PRIV_BOOT, reaches the console through
+-- sys.granted().cons and print() like anything else, rather than the
+-- raw los.platform.cons only the cons task itself may touch.
 --
--- proves the two things this milestone is actually about: the LAPIC
--- timer really preempts between procs (two children interleave their
--- output rather than one running to completion first), and the
--- existing kernel.c scheduler needed no changes to do it.
+-- what it is actually for: the LAPIC timer really does preempt between
+-- procs, and kernel.c's scheduler needed no change to get that. two
+-- children interleave rather than one running to completion.
 
 local sys = require("los.sys")
-local stdout = require("stdout")
+local tap = require("tap")
 
-stdout.set(sys.granted().cons)
-
-print("microvm: hello from the boot payload")
+tap.plan(5)
 
 local myright = sys.sendright(0)
 
@@ -28,24 +24,50 @@ local childcode = [[
 	end
 ]]
 
-sys.spawn(childcode, { arg = { __right = myright } })
-sys.spawn(childcode, { arg = { __right = myright } })
+local a = sys.spawn(childcode, { arg = { __right = myright } })
+local b = sys.spawn(childcode, { arg = { __right = myright } })
 
-local got = 0
+tap.ok(a and b, "two children spawned")
+
+-- order of arrival is the evidence. one child running to completion
+-- before the other starts would still deliver all 12 messages, so
+-- counting them proves nothing on its own -- the interleaving does.
+local got, order = 0, {}
+
 while got < 12 do
 	local ok, msg = sys.tryrecv(0)
+
 	if ok then
-		print(msg)
+		order[#order + 1] = tonumber(msg:match("^child (%d+)"))
 		got = got + 1
 	else
 		sys.yield()
 	end
 end
 
-print("microvm: both children finished")
+tap.ok(got == 12, "all 12 messages arrived")
 
--- cons/wire/power are real daemons now (embedded lib/cons.lua etc,
--- see fs.c) that block forever waiting for messages, so kernel_run()
--- has no reason to return on its own; ask power to end the guest
--- explicitly instead of relying on every proc dying.
-sys.send(sys.granted().power, { op = "reset" })
+local seen, switches = {}, 0
+
+for i, pid in ipairs(order) do
+	seen[pid] = (seen[pid] or 0) + 1
+	if i > 1 and pid ~= order[i - 1] then
+		switches = switches + 1
+	end
+end
+
+local pids = {}
+for pid in pairs(seen) do
+	pids[#pids + 1] = pid
+end
+
+tap.ok(#pids == 2, "both children were heard from, not just one")
+tap.ok(seen[pids[1]] == 6 and seen[pids[2]] == 6,
+    "each child sent exactly its six")
+
+-- a run-to-completion scheduler gives exactly one switch. anything
+-- preempting gives many.
+tap.diag("child switches in the message order: " .. switches)
+tap.ok(switches > 1, "the two children interleaved rather than ran in turn")
+
+tap.done()

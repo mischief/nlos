@@ -194,6 +194,7 @@ else
     'lib/chan.lua',
     'lib/p9fs.lua',
     'lib/p9srv.lua',
+    'lib/tap.lua',
   ]
   embed_args = []
   foreach f : embed_files
@@ -561,3 +562,35 @@ if have_hostutil
 endif
 
 endif # platform == 'efi'
+
+if platform == 'microvm'
+
+# the microvm tests, which are the efi boot tests' counterpart: payload
+# injected via fw_cfg, TAP on com1, guest ends itself. They register
+# only for this platform because a build is configured for one or the
+# other, so `meson test` runs whichever suite the build can actually
+# produce a guest for.
+#
+# see the note on `boottest` above for why this is passed as a program
+# rather than an argv list.
+microvm_boottest = files('scripts/boottest-microvm.lua')
+
+# --9p serves a seeded temporary directory over virtio-9p; only the
+# mount test needs one, and it wants a private directory since it
+# creates a file.
+microvm_tests = [
+  ['hello', []],
+  ['rng', ['--rng']],
+  ['p9mount', ['--9p']],
+]
+
+foreach t : microvm_tests
+  test('microvm-' + t[0], microvm_boottest,
+    args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] + t[1],
+    protocol: 'tap',
+    timeout: 90,
+    is_parallel: true,
+  )
+endforeach
+
+endif # platform == 'microvm'
