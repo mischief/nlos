@@ -933,6 +933,70 @@ wbyte(struct wbuf *w, unsigned char c)
 	return wput(w, &c, 1);
 }
 
+/* pre-size a wbuf, so the common message does not grow.
+ *
+ * Strictly a hint: wput still grows whenever this comes up short, so
+ * being wrong costs one realloc and never correctness. That is what
+ * lets it skip serialize's type dispatch entirely -- it does not have
+ * to agree with serialize about anything, and cannot drift out of sync
+ * with it -- and look only for the thing that actually makes a message
+ * big, which is a string.
+ *
+ * One level deep on purpose. The shape this is for is a table wrapping
+ * one payload, which is every mnt reply; a nested table contributes a
+ * guess and grows from there if it was wrong.
+ *
+ * lua_tolstring only where the type is already string: on a key it
+ * would convert a number in place, and lua_next does not survive that.
+ */
+static size_t
+sizehint(lua_State *L, int idx)
+{
+	size_t total = 16, n;
+
+	idx = lua_absindex(L, idx);
+	if (lua_type(L, idx) == LUA_TSTRING) {
+		lua_tolstring(L, idx, &n);
+		return n + 16;
+	}
+	if (lua_type(L, idx) != LUA_TTABLE)
+		return 0;
+
+	lua_pushnil(L);
+	while (lua_next(L, idx)) {
+		if (lua_type(L, -1) == LUA_TSTRING) {
+			lua_tolstring(L, -1, &n);
+			total += n + 8;
+		} else
+			total += 16;
+		if (lua_type(L, -2) == LUA_TSTRING) {
+			lua_tolstring(L, -2, &n);
+			total += n + 8;
+		} else
+			total += 16;
+		lua_pop(L, 1);
+	}
+	return total;
+}
+
+/* take the hint. Failure is not reported because there is nothing to
+ * report: the buffer is simply not pre-sized and wput does what it
+ * always did.
+ */
+static void
+wreserve(struct wbuf *w, size_t n)
+{
+	if (n < 256 || n > MAXMSG || w->cap >= n)
+		return;
+
+	unsigned char *p = realloc(w->p, n);
+
+	if (p) {
+		w->p = p;
+		w->cap = n;
+	}
+}
+
 static int
 serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
     int depth)
@@ -1342,6 +1406,7 @@ api_send(lua_State *L)
 	if (!r)
 		return luaL_error(L, "bad right");
 	luaL_checkany(L, 2);
+	wreserve(&w, sizehint(L, 2));
 	if (serialize(L, 2, &w, p, 0)) {
 		/* release refs taken for rights serialized before the
 		 * failure point

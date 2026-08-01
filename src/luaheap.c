@@ -61,13 +61,37 @@ struct chunk {
 
 /* A large block is the one thing here that carries a header, because
  * destroy has to find it and the chunk source has to be told the size
- * it was given. Large blocks are the geometric tail of array growth:
- * rare, and already paying this cost today.
+ * it was given.
  */
 struct large {
 	struct large *next;
 	size_t size;		/* as passed to chunk_alloc */
 };
+
+/* Large blocks were assumed to be the geometric tail of array growth --
+ * rare, and so worth no more than a straight pass to the chunk source.
+ * That is true of lua's own objects, which is why the classes above
+ * stop at 512. It is not true of a payload arriving over a port: that
+ * is a lua string of whatever the message carried, 4K and 8K for 9p,
+ * whose msize is 8192. Measured at 4 allocations per 4K message round
+ * trip, and this was one of them.
+ *
+ * So a freed large block is cached by size rather than handed back. The
+ * granularity is uniform rather than doubling, because doubling is far
+ * too coarse here: a 4K string plus its lua header and this one asks
+ * for a little over 4096, which a power-of-two class would round to
+ * 8192 and waste nearly half of. At 512 the rounding waste is bounded
+ * by 511 bytes, and repeated requests for one size still land in one
+ * bucket, which is the whole point.
+ *
+ * Capped per class, because a cache that never evicts is a leak with
+ * better manners: freeing a thousand 4K blocks at once should not hold
+ * 4M forever against the chance that a thousand more are coming.
+ */
+#define LARGE_GRAIN   512
+#define LARGE_MAXSIZE (64 * 1024)	/* kernel.c's MAXMSG; above, don't cache */
+#define NLARGECLASS   (LARGE_MAXSIZE / LARGE_GRAIN)
+#define LARGE_CACHED  4
 
 struct luaheap {
 	const struct luaheap_ops *ops;
@@ -85,6 +109,14 @@ struct luaheap {
 	 * list for the class it was allocated from.
 	 */
 	void *freelist[NCLASS];
+
+	/* freed large blocks, kept rather than returned, threaded through
+	 * the blocks' own payload the way freelist[] is. A cached block
+	 * stays on h->larges too, so destroy still finds it and mapped
+	 * still counts it -- it is held, not gone.
+	 */
+	void *largefree[NLARGECLASS];
+	unsigned char nlargefree[NLARGECLASS];
 
 	size_t live, peak, mapped;
 	unsigned long nchunks, nlarges;
@@ -115,6 +147,30 @@ static size_t
 roundup(size_t n, size_t a)
 {
 	return (n + a - 1) & ~(a - 1);
+}
+
+/* the bucket a block of exactly `want` bytes belongs to, or NLARGECLASS
+ * for one too big to cache. `want` is always a multiple of LARGE_GRAIN
+ * when it came from large_want() below, so this is exact rather than a
+ * nearest-fit search.
+ */
+static size_t
+largeclassof(size_t want)
+{
+	if (want == 0 || want > LARGE_MAXSIZE || want % LARGE_GRAIN)
+		return NLARGECLASS;
+	return want / LARGE_GRAIN - 1;
+}
+
+/* what to actually ask the chunk source for, so that a block returned
+ * to a bucket can serve any later request that maps to the same one.
+ */
+static size_t
+large_want(size_t need)
+{
+	if (need > LARGE_MAXSIZE)
+		return roundup(need, ALIGN);
+	return roundup(need, LARGE_GRAIN);
 }
 
 struct luaheap *
@@ -257,9 +313,25 @@ small_free(struct luaheap *h, void *ptr, size_t ci)
 static void *
 large_alloc(struct luaheap *h, size_t n)
 {
-	size_t want = roundup(n + sizeof(struct large), ALIGN);
-	struct large *l = h->ops->chunk_alloc(h->ud, want);
+	size_t want = large_want(n + sizeof(struct large));
+	size_t ci = largeclassof(want);
+	struct large *l;
 
+	/* a cached block of this bucket is already the right size and
+	 * already on h->larges, so taking one back is a pop and nothing
+	 * else -- no chunk_alloc, and no change to mapped
+	 */
+	if (ci < NLARGECLASS && h->largefree[ci]) {
+		void *p = h->largefree[ci];
+
+		h->largefree[ci] = *(void **)p;
+		h->nlargefree[ci]--;
+		h->nlarges++;
+		h->large_asked += n;
+		return p;
+	}
+
+	l = h->ops->chunk_alloc(h->ud, want);
 	if (!l)
 		return 0;
 	l->size = want;
@@ -275,8 +347,26 @@ static void
 large_free(struct luaheap *h, void *ptr, size_t asked)
 {
 	struct large *l = (struct large *)((char *)ptr - sizeof(struct large));
-	struct large **pp = &h->larges;
+	size_t ci = largeclassof(l->size);
+	struct large **pp;
 
+	h->large_asked -= asked < h->large_asked ? asked : h->large_asked;
+
+	/* the common case: hold it for the next request of its size. The
+	 * block keeps its place on h->larges, so this walks nothing.
+	 */
+	if (ci < NLARGECLASS && h->nlargefree[ci] < LARGE_CACHED) {
+		*(void **)ptr = h->largefree[ci];
+		h->largefree[ci] = ptr;
+		h->nlargefree[ci]++;
+		h->nlarges--;
+		return;
+	}
+
+	/* over the cap, or too big to bucket: give it back, which is the
+	 * only path that has to find the block on h->larges
+	 */
+	pp = &h->larges;
 	while (*pp && *pp != l)
 		pp = &(*pp)->next;
 	if (!*pp)
@@ -284,7 +374,6 @@ large_free(struct luaheap *h, void *ptr, size_t asked)
 	*pp = l->next;
 	h->mapped -= l->size;
 	h->nlarges--;
-	h->large_asked -= asked < h->large_asked ? asked : h->large_asked;
 	h->ops->chunk_free(h->ud, l, l->size);
 }
 
@@ -334,6 +423,25 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 		if (h->live > h->peak)
 			h->peak = h->live;
 		return ptr;
+	}
+
+	/* the same, one size up: a large block that still lands in its own
+	 * bucket does not need to move either. classof cannot see this --
+	 * it answers NCLASS for every large, so oc == nc above would be
+	 * true of two sizes megabytes apart -- which is why the test is on
+	 * the block's actual size rather than on the class index.
+	 */
+	if (oc >= NCLASS && nc >= NCLASS) {
+		struct large *l =
+		    (struct large *)((char *)ptr - sizeof(struct large));
+
+		if (large_want(nsize + sizeof *l) == l->size) {
+			h->large_asked += nsize - osize;
+			h->live += nsize - osize;
+			if (h->live > h->peak)
+				h->peak = h->live;
+			return ptr;
+		}
 	}
 
 	void *q = nc < NCLASS ? small_alloc(h, nc) : large_alloc(h, nsize);
