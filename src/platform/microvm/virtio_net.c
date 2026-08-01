@@ -133,6 +133,11 @@ virtio_net_init(void)
 	for (int i = 0; i < NRX; i++)
 		rx_post(i);
 
+	/* frames arrive unasked, so this is the device that most wants a
+	 * line: without one an idle machine has to keep asking.
+	 */
+	virtio_irq_enable(&netdev);
+
 	net_ready = 1;
 	return 0;
 }

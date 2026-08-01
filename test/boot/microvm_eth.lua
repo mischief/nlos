@@ -12,7 +12,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(8)
+tap.plan(9)
 
 local caps = sys.granted()
 
@@ -108,5 +108,18 @@ tap.ok(sender_mac ~= BCAST and sender_mac ~= string.rep("\0", 6),
     "and carries a real mac for it")
 tap.diag(string.format("10.0.2.2 is at %02x:%02x:%02x:%02x:%02x:%02x",
     sender_mac:byte(1, 6)))
+
+-- ---- the line is routed, not just the queue polled ----
+--
+-- Everything above works whether or not an interrupt ever fires, which
+-- is exactly why this needs asserting separately. Until the IOAPIC had
+-- a redirection entry -- and until anything did sti at all, which
+-- nothing on this platform used to -- the device raised its line into
+-- a machine that had masked it, and no driver could tell.
+local irqs = rpc({ op = "irqs" })
+
+tap.diag("virtio interrupts taken: " .. tostring(irqs and irqs.n))
+tap.ok(irqs and irqs.n and irqs.n > 0,
+    "the device's interrupt reached the cpu")
 
 tap.done()

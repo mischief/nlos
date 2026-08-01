@@ -5,6 +5,7 @@
 --   {op="mac", reply={__right=}}              -> {mac=<6 bytes>}
 --   {op="send", data=<frame>, reply=}         -> {ok=<bool>}
 --   {op="recv", reply=}                       -> {data=<frame>} | {data=nil}
+--   {op="irqs", reply=}                       -> {n=<count>}
 --
 -- Same shape as lib/tcp.lua and lib/udp.lua, and for the same reason:
 -- one owner of the device, everyone else reaching it by right.
@@ -44,6 +45,8 @@ while true do
 		    eth.send(m.data) or false })
 	elseif m.op == "recv" then
 		reply(m, { data = eth.recv() })
+	elseif m.op == "irqs" then
+		reply(m, { n = eth.irqs() })
 	else
 		reply(m, { err = "unknown op" })
 	end

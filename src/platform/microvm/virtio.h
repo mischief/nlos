@@ -63,6 +63,8 @@ struct virtq {
 struct virtio_dev {
 	volatile uint32_t *regs;
 	struct virtq q[VIRTIO_MAX_QUEUES];
+	int slot;		/* which mmio slot, which fixes its gsi */
+	int irq_routed;		/* set by virtio_irq_enable; see the ack rule */
 };
 
 /* scans the 8 fixed microvm virtio-mmio slots (0xfeb00000 + i*512, see
@@ -126,6 +128,27 @@ void	virtio_submit(struct virtio_dev *d, unsigned qi, uint16_t head);
  */
 int	virtio_poll_used(struct virtio_dev *d, unsigned qi, uint16_t *id,
 	    uint32_t *len);
+
+/* ---- interrupts ----
+ *
+ * Route this device's line to the shared virtio vector and unmask it.
+ * All virtio devices share one vector: the lines are level-triggered,
+ * so the handler has to clear the source at the device anyway, and
+ * walking the few registered devices is cheaper than eight vectors and
+ * eight stubs.
+ *
+ * Enabling this does not change how a driver reads completions --
+ * virtio_poll_used is still the way. What it buys is that the machine
+ * can stop spinning: an idle cpu can halt and be woken, instead of
+ * looping over queues that have nothing in them.
+ */
+void	virtio_irq_enable(struct virtio_dev *d);
+
+/* how many virtio interrupts have been taken. A counter rather than a
+ * callback because the handler runs with a proc interrupted and must
+ * not touch the scheduler.
+ */
+unsigned long virtio_irq_count(void);
 
 /* ---- synchronous helpers ----
  *

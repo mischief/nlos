@@ -11,6 +11,7 @@
 #include "lauxlib.h"
 
 #include "platform.h"
+#include "virtio.h"
 #include "virtio_9p.h"
 #include "virtio_net.h"
 #include "virtio_rng.h"
@@ -333,10 +334,22 @@ eth_recv(lua_State *L)
 	return 1;
 }
 
+/* how many virtio interrupts the machine has taken. Exposed so a test
+ * can tell a routed line from a dead one -- polling works either way,
+ * which is exactly what makes the difference invisible otherwise.
+ */
+static int
+eth_irqs(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)virtio_irq_count());
+	return 1;
+}
+
 static const luaL_Reg ethlib[] = {
 	{ "mac", eth_mac },
 	{ "send", eth_send },
 	{ "recv", eth_recv },
+	{ "irqs", eth_irqs },
 	{ NULL, NULL }
 };
 

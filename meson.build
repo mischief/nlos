@@ -71,6 +71,7 @@ if arch == 'x86_64'
       'src/platform/microvm/idt_stubs.S',
       'src/platform/microvm/idt.c',
       'src/platform/microvm/lapic.c',
+      'src/platform/microvm/ioapic.c',
       'src/platform/microvm/tsc.c',
       'src/platform/microvm/pmm.c',
       'src/platform/microvm/uart.c',

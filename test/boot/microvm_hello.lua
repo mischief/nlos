@@ -4,9 +4,15 @@
 -- sys.granted().cons and print() like anything else, rather than the
 -- raw los.platform.cons only the cons task itself may touch.
 --
--- what it is actually for: the LAPIC timer really does preempt between
--- procs, and kernel.c's scheduler needed no change to get that. two
--- children interleave rather than one running to completion.
+-- what it is actually for: two procs interleave rather than one running
+-- to completion, so kernel.c's scheduler works here unchanged.
+--
+-- Not preemption, despite what this comment used to claim. The children
+-- below call sys.yield(), so the interleaving is cooperative and would
+-- happen with no timer at all -- which is what it was doing, since
+-- interrupts were globally masked on this platform until an sti was
+-- added with the ioapic work. Proving preemption needs a child that
+-- never yields, and that test does not exist.
 
 local sys = require("los.sys")
 local tap = require("tap")

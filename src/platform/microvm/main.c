@@ -112,7 +112,20 @@ microvm_main(unsigned long start_info)
 	if (claim_memory(start_info) == 0)
 		pmm_add(FALLBACK_BASE, FALLBACK_LEN);
 	idt_init();
+	ioapic_init();	/* mask every line before enabling anything */
 	lapic_init();
+
+	/* boot.S entered with interrupts off and nothing turned them back
+	 * on, so until now every vector was dead: the LAPIC timer could be
+	 * armed and would never deliver, and efi_shim's WaitForEvent would
+	 * have halted forever waiting for a tick that could not arrive.
+	 *
+	 * Safe to enable here because the IDT is loaded, every IOAPIC line
+	 * is masked, and the LAPIC timer's LVT entry is masked until
+	 * something arms it. The only line that can fire is one a driver
+	 * has explicitly routed.
+	 */
+	__asm__ volatile ("sti");
 
 	kernel_clock_init();
 

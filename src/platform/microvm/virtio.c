@@ -85,6 +85,7 @@ virtio_find(uint32_t device_id, struct virtio_dev *out)
 			continue;
 		memset(out, 0, sizeof *out);
 		out->regs = regs;
+		out->slot = i;		/* fixes its gsi; see virtio_irq_enable */
 		return 0;
 	}
 	return -1;
@@ -281,15 +282,88 @@ virtio_poll_used(struct virtio_dev *d, unsigned qi, uint16_t *id, uint32_t *len)
 		*len = e->len;
 	q->last_used_idx++;
 
-	/* the device raises its interrupt line for every completion. We
-	 * poll, but the line still has to be acknowledged or it stays
-	 * asserted -- which would matter the moment anything routes it.
+	/* Acknowledging is the interrupt handler's job once a line is
+	 * routed, and must not be done here as well.
+	 *
+	 * The device raises a level for every completion, and the ack is
+	 * what lowers it. A poll that acks first lowers the level before
+	 * the cpu ever takes the interrupt, so the handler simply never
+	 * runs -- which showed up as the interrupt count being 1 or 0
+	 * depending on whether the poll or the cpu won the race.
+	 *
+	 * With no line routed there is nothing to race, and the ack has to
+	 * happen here or the level stays asserted forever.
 	 */
-	uint32_t is = rd(d, REG_INT_STATUS);
+	if (!d->irq_routed) {
+		uint32_t is = rd(d, REG_INT_STATUS);
 
-	if (is)
-		wr(d, REG_INT_ACK, is);
+		if (is)
+			wr(d, REG_INT_ACK, is);
+	}
 	return 1;
+}
+
+/* ---- interrupts ----
+ *
+ * One vector for every virtio device. The lines are level-triggered, so
+ * the handler has to clear the source at the device that raised it, and
+ * with a shared vector it does that by asking each registered device
+ * whether it has anything pending. There are at most eight.
+ */
+
+#define VIRTIO_VECTOR 0x40	/* above the 32 architectural exceptions */
+
+static struct virtio_dev *irq_devs[VIRTIO_NUM_SLOTS];
+static volatile unsigned long irq_taken;
+
+void virtio_isr(void);
+
+void
+virtio_isr(void)
+{
+	for (int i = 0; i < VIRTIO_NUM_SLOTS; i++) {
+		struct virtio_dev *d = irq_devs[i];
+
+		if (!d)
+			continue;
+
+		uint32_t is = rd(d, REG_INT_STATUS);
+
+		if (is) {
+			/* clears the level at the source. Without this the
+			 * IOAPIC would re-raise the moment we return.
+			 */
+			wr(d, REG_INT_ACK, is);
+			irq_taken++;
+		}
+	}
+	lapic_eoi();
+}
+
+unsigned long
+virtio_irq_count(void)
+{
+	return irq_taken;
+}
+
+void
+virtio_irq_enable(struct virtio_dev *d)
+{
+	static int wired;
+
+	if (d->slot < 0 || d->slot >= VIRTIO_NUM_SLOTS)
+		return;
+	if (irq_devs[d->slot] == d)
+		return;			/* already routed */
+
+	irq_devs[d->slot] = d;
+	d->irq_routed = 1;	/* the handler owns the ack from here */
+
+	if (!wired) {
+		idt_set_vector(VIRTIO_VECTOR, isr_virtio);
+		wired = 1;
+	}
+	ioapic_route(VIRTIO_MMIO_GSI_BASE + d->slot, VIRTIO_VECTOR);
 }
 
 /* submit a chain and busy-wait for it. Returns the byte count the

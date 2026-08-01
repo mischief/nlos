@@ -96,5 +96,11 @@ lapic_timer_isr(void)
 	ticks++;
 	if (periodic)
 		wrmsr(IA32_TSC_DEADLINE, rdtsc() + period_cycles);
+	lapic_eoi();
+}
+
+void
+lapic_eoi(void)
+{
 	lapic_write(REG_EOI, 0);
 }

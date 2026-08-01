@@ -108,3 +108,39 @@ isr_timer:
 	iretq
 
 	.section .note.GNU-stack, "", @progbits
+
+/* virtio devices share one vector, for the same reason the timer has
+ * its own entry: it must return to the interrupted proc rather than
+ * halt. virtio_isr() (virtio.c) takes no argument and acknowledges
+ * whichever device raised the line.
+ *
+ * .text explicitly: this follows the .note.GNU-stack directive above,
+ * and code assembled into that section is discarded by the linker
+ * script -- which shows up as an undefined reference to a symbol that
+ * plainly exists.
+ */
+	.text
+	.globl	isr_virtio
+isr_virtio:
+	pushq	%rax
+	pushq	%rcx
+	pushq	%rdx
+	pushq	%rsi
+	pushq	%rdi
+	pushq	%r8
+	pushq	%r9
+	pushq	%r10
+	pushq	%r11
+
+	call	virtio_isr
+
+	popq	%r11
+	popq	%r10
+	popq	%r9
+	popq	%r8
+	popq	%rdi
+	popq	%rsi
+	popq	%rdx
+	popq	%rcx
+	popq	%rax
+	iretq
