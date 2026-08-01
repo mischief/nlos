@@ -263,8 +263,8 @@ the same reason 9P is.
 **Arch code lives in `src/<arch>/`.** The kernel, libc and all Lua are
 arch-blind. x86_64, aarch64 and riscv64 are ported; `meson.build` picks
 the directory from `host_machine.cpu_family()`, which a `--cross-file
-cross/<arch>.txt` sets. Meson then *tells* `scripts/arch.sh` and
-`test/qemuarch.py` which arch it built, via `LUAOS_ARCH`. They must
+cross/<arch>.txt` sets. Meson then *tells* `scripts/arch.lua` and
+`test/qemuarch.lua` which arch it built, via `LUAOS_ARCH`. They must
 never work it out from `uname` again: under a cross build the host arch
 is the wrong answer, and riscv64 has only ever been cross-built.
 

@@ -32,8 +32,8 @@ Either way you need that machine's UEFI firmware: OVMF on x86_64
 (`/usr/share/edk2-ovmf`), AAVMF on aarch64 (`/usr/share/AAVMF`),
 qemu's own `edk2-riscv-code.fd` on riscv64 (`/usr/share/qemu`), or
 `OVMF_CODE`/`OVMF_VARS` in the environment to point elsewhere. Per-arch
-qemu, firmware and devices live in `scripts/arch.sh` and
-`test/qemuarch.py`, which meson tells which arch it built; nothing else
+qemu, firmware and devices live in `scripts/arch.lua` and
+`test/qemuarch.lua`, which meson tells which arch it built; nothing else
 needs to know.
 
 The 9p wire is a second serial port, which the machines reach very
@@ -91,7 +91,7 @@ Three kinds of test, all real boots:
   HTTP/JSON-RPC over a forwarded port. A guest cannot test its own TCP
   server, because qemu's usermode network does not hairpin.
 
-`scripts/boottest.sh` extracts the TAP and dumps the whole serial trace
+`scripts/boottest.lua` extracts the TAP and dumps the whole serial trace
 as diagnostics on failure. `lib/tap.lua` is the guest-side producer.
 
 Benchmarks are separate from tests and are not run by `meson test`:
