@@ -265,6 +265,8 @@ lua_payload = files(
   'lib/svc.lua',
   'lib/dos.lua',
   'lib/power.lua',
+  'lib/p9fs.lua',
+  'lib/p9srv.lua',
   'lib/proc.lua',
   'lib/procfs.lua',
   'lib/prog.lua',
@@ -327,7 +329,7 @@ boottest = files('scripts/boottest.lua')
 boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
               'math',
               'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
-              'procfs', 'mnt', 'readonly', 'session', 'runq']
+              'procfs', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
