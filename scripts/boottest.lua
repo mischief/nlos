@@ -103,7 +103,8 @@ end
 -- hang.
 local cmd = table.concat({
 	"timeout", TIMEOUT, pin, arch.QEMU,
-	arch.MACHINE, "-display none", netargs, arch.VIDEO, "-monitor none",
+	arch.MACHINE, "-display none", netargs, arch.VIDEO, arch.RNG,
+	"-monitor none",
 	"-no-reboot -snapshot",
 	"-serial file:" .. q(tmp .. "/serial.log"),
 	arch.wire_args("null"),

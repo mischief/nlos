@@ -10,11 +10,15 @@
 -- reset.c) rather than through ResetSystem. Little of that harness's
 -- body would survive the conditionals.
 --
--- --9p serves a temporary directory over virtio-9p, seeded with the
--- hello.txt that test/boot/microvm_p9mount.lua expects. --rng attaches
--- a virtio-rng. Devices are opt-in per test rather than always present
--- because a payload that asks for a device the machine does not have
--- blocks in the driver and only ever surfaces as a harness timeout.
+-- every guest gets a virtio-rng, matching scripts/arch.lua's efi
+-- machines. --9p additionally serves a temporary directory over
+-- virtio-9p, seeded with the hello.txt that
+-- test/boot/microvm_p9mount.lua expects; it is opt-in because that test
+-- creates a file and wants a private directory to do it in.
+--
+-- a payload that asks for a device the machine does not have blocks in
+-- the driver and surfaces only as a harness timeout, with nothing on
+-- the serial line to say which device it was waiting for.
 
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 package.path = scriptdir .. "/?.lua;" .. package.path
@@ -22,13 +26,11 @@ local q = require("arch").quote
 
 local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
-local want9p, wantrng = false, false
+local want9p = false
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
 		want9p = true
-	elseif arg[i] == "--rng" then
-		wantrng = true
 	end
 end
 
@@ -85,11 +87,9 @@ if want9p then
 	}, " ")
 end
 
-local rngargs = ""
-
-if wantrng then
-	rngargs = "-device virtio-rng-device,bus=virtio-mmio-bus.0"
-end
+-- bus slot 1: the 9p device above takes slot 0 when present, and
+-- virtio.c scans a fixed eight slots either way.
+local rngargs = "-device virtio-rng-device,bus=virtio-mmio-bus.1"
 
 -- ioapic2=off pins virtio-mmio to the documented 8-slot/GSI-5-base
 -- layout (qemu's hw/i386/microvm.c): with a second IOAPIC present the

@@ -128,6 +128,13 @@ function M.disk(img)
 	return { "-drive", "if=virtio,format=raw,file=" .. img }
 end
 
+-- every guest gets an entropy source, on every arch -- see the same
+-- note in scripts/arch.lua. edk2's networking wants one, so its absence
+-- changes firmware behaviour before our binary is loaded.
+function M.rng()
+	return { "-device", "virtio-rng-pci" }
+end
+
 -- the 9p wire: com2 on x86_64, a pci-serial card on the virt
 -- machines. path=nil attaches it to nothing.
 function M.wire(path)

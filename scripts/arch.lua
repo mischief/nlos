@@ -119,6 +119,13 @@ else
 	os.exit(1)
 end
 
+-- every guest gets an entropy source, on every arch. edk2's own
+-- networking wants one, so this is not only for the guest's benefit --
+-- a machine without it changes how the firmware behaves before our
+-- binary is even loaded. All three efi machines are pci; microvm has
+-- its own launchers and uses the virtio-mmio spelling instead.
+M.RNG = "-device virtio-rng-pci"
+
 -- kvm only ever applies when the guest arch is the host arch, which
 -- under a cross build it is not.
 if ARCH == uname_m() and rw("/dev/kvm") then

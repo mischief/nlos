@@ -77,7 +77,7 @@ trap 'rm -f "$vars" "$svccfg"' EXIT HUP INT TERM
 cp %s "$vars"
 
 # not exec: the trap has to survive to clean the varstore up
-%s -nographic %s %s -snapshot \
+%s -nographic %s %s %s -snapshot \
 	-netdev user,id=n0,hostfwd=tcp::%s-:80 \
 	-device %s,netdev=n0 \
 	-serial mon:stdio \
@@ -87,7 +87,7 @@ cp %s "$vars"
 	-drive if=pflash,format=raw,file="$vars" \
 	-drive %s,file=%s
 ]], services_cfg, q(arch.FW_VARS), arch.QEMU, arch.MACHINE, arch.VIDEO,
-    web_port, arch.NIC, arch.wire_args("null"), q(arch.FW_CODE), arch.BLK,
-    q(img))
+    arch.RNG, web_port, arch.NIC, arch.wire_args("null"), q(arch.FW_CODE),
+    arch.BLK, q(img))
 
 os.exit(os.execute(sh) and 0 or 1)

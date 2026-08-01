@@ -88,6 +88,7 @@ end
 
 extend(qemuarch.qemu())
 extend(qemuarch.machine())
+extend(qemuarch.rng())
 extend({ "-display", "none", "-monitor", "none" })
 extend({ "-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:" .. port .. "-:7777" })
 extend({ "-device", "virtio-net-pci,netdev=n0" })

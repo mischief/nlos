@@ -138,6 +138,7 @@ end
 
 extend(qemuarch.qemu())
 extend(qemuarch.machine())
+extend(qemuarch.rng())
 extend({ "-display", "none", "-net", "none", "-monitor", "none" })
 extend({ "-no-reboot", "-snapshot" })
 extend({ "-serial", "file:" .. serial_log })

@@ -29,6 +29,7 @@ local cmd = table.concat({
 	"-enable-kvm -cpu host -m 256",
 	"-kernel " .. q(elf),
 	"-fw_cfg name=opt/org.luaos.test,file=" .. q(payload),
+	"-device virtio-rng-device,bus=virtio-mmio-bus.1",
 	"-nodefaults -no-user-config -no-reboot -nographic",
 	"-serial stdio",
 }, " ")

@@ -574,12 +574,12 @@ if platform == 'microvm'
 # rather than an argv list.
 microvm_boottest = files('scripts/boottest-microvm.lua')
 
-# --9p serves a seeded temporary directory over virtio-9p; only the
-# mount test needs one, and it wants a private directory since it
-# creates a file.
+# every guest gets a virtio-rng. --9p additionally serves a seeded
+# temporary directory over virtio-9p; only the mount test wants one,
+# and it wants a private directory since it creates a file.
 microvm_tests = [
   ['hello', []],
-  ['rng', ['--rng']],
+  ['rng', []],
   ['p9mount', ['--9p']],
 ]
 

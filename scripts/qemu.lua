@@ -17,7 +17,7 @@ if not io.open("OVMF_VARS.fd", "rb") then
 end
 
 local cmd = table.concat({
-	arch.QEMU, "-nographic", arch.MACHINE, arch.VIDEO,
+	arch.QEMU, "-nographic", arch.MACHINE, arch.VIDEO, arch.RNG,
 	"-netdev user,id=n0,hostfwd=tcp::7777-:7777",
 	"-device " .. arch.NIC .. ",netdev=n0",
 	"-serial mon:stdio",
