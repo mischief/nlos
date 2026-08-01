@@ -113,15 +113,13 @@ local Sh = {}
 
 Sh.__index = Sh
 
--- caps: { cons = <handle>, ns = <namespace>, srv = <handle>,
---         path = "/bin" }
+-- caps: { cons = <handle>, ns = <namespace>, path = "/bin" }
 --
--- srv is a right to lib/srvd.lua, and it is what the mount builtin
--- spends. Optional: a shell without one can do everything else, and
--- `mount` tells the user it has no registry rather than failing
--- obscurely. Handing it over is granting the authority to rearrange
--- this shell's namespace, so a caller that does not want that simply
--- does not pass it.
+-- Note there is no capability here for mounting. The mount builtin
+-- spends what it finds in the NAMESPACE -- reading /srv/name yields a
+-- right, because srvfs resolves it in this proc. So what decides
+-- whether a shell can mount is whether its namespace has /srv, which
+-- is inherited like any other mount rather than granted separately.
 --
 -- coro=true runs programs as coroutines in this proc rather than as
 -- procs of their own -- see Sh:pipecoro for what that trades away. off
@@ -131,7 +129,6 @@ function M.new(caps)
 	return setmetatable({
 		ns = caps.ns,
 		cons = caps.cons,
-		srv = caps.srv,
 		coro = caps.coro or false,
 		env = caps.env or { PATH = caps.path or "/bin", HOME = "/" },
 		cwd = "/",
@@ -240,10 +237,11 @@ end
 -- mount made in one would vanish with the proc that made it. These have
 -- to run in the shell, against the shell's live namespace.
 --
--- There is deliberately no `post`. Publishing needs a right to hand
--- over, and a prompt has no way to name one -- that is the same problem
--- /srv exists to solve, one level down. A program can post itself; a
--- user cannot post on its behalf.
+-- There is deliberately no `post` builtin, and no longer any need for
+-- one: posting is `echo <handle> >/srv/name`, since srvfs's write
+-- adopts a right named by number in the writing proc. A prompt still
+-- has no way to produce a handle worth posting, but a program does, and
+-- it needs nothing but its namespace to do it.
 builtins["mount"] = function(sh, argv)
 	local name, at = argv[2], argv[3]
 	local order = "replace"
@@ -267,20 +265,25 @@ builtins["mount"] = function(sh, argv)
 		sh:print("usage: mount [-b|-a] service /mountpoint\n")
 		return 1
 	end
-	if not sh.srv then
-		sh:print("mount: no service registry\n")
+
+	-- the right comes out of the NAMESPACE, not out of a capability
+	-- this shell was handed: reading /srv/name yields a handle already
+	-- valid here, because srvfs runs in this proc. That is Plan 9's
+	-- `mount(open("/srv/x", ORDWR), ...)`, and it means a shell needs
+	-- no registry right of its own -- only a namespace with /srv in
+	-- it, which is inherited like any other mount.
+	local path = name:sub(1, 1) == "/" and name or "/srv/" .. name
+	local text, rerr = sh.ns:readfile(ns.clean(path))
+
+	if not text then
+		sh:print("mount: " .. path .. ": " .. tostring(rerr) .. "\n")
 		return 1
 	end
 
-	-- both spellings work: the bare name, and the /srv path it appears
-	-- at, since `ls /srv` is how you find it in the first place.
-	local short = name:match("^/srv/(.+)$") or name
-
-	local srvc = require("srvc")
-	local right, err = srvc.open(sh.srv, short)
+	local right = tonumber((text:gsub("%s+$", "")))
 
 	if not right then
-		sh:print("mount: " .. short .. ": " .. tostring(err) .. "\n")
+		sh:print("mount: " .. path .. ": not a service\n")
 		return 1
 	end
 

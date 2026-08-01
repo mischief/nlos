@@ -13,7 +13,7 @@ local mnt = require("mnt")
 local srvc = require("srvc")
 local srvfs = require("srvfs")
 
-tap.plan(21)
+tap.plan(28)
 
 -- a boot payload has no namespace of its own, so read the registry's
 -- source through the C loader rather than through a mount. Dumped
@@ -90,10 +90,76 @@ for _, e in ipairs(ents or {}) do
 end
 tap.ok(found, "ls /srv shows the posted name")
 
--- reading a name gives text, NOT the right. This is the honest shape,
--- not an omission: a capability does not fit in a byte stream.
-tap.is(S:readfile("/srv/mem"), "mem\n",
-    "reading a /srv entry gives a name, not a capability")
+-- reading a name yields a right, as a decimal handle valid in THIS
+-- proc. Every read acquires a fresh one, exactly as every open of a
+-- Plan 9 /srv file gets its own Chan reference -- so a caller that
+-- reads and does not mount owns a handle it should close.
+local h1 = tonumber((S:readfile("/srv/mem"):gsub("%s+$", "")))
+
+tap.ok(h1 ~= nil, "reading a /srv entry yields a handle")
+
+local h2 = tonumber((S:readfile("/srv/mem"):gsub("%s+$", "")))
+
+tap.ok(h2 ~= nil and h2 ~= h1, "and each read yields its own")
+sys.close(h1)
+sys.close(h2)
+
+-- ---- the namespace carries capabilities after all ----
+--
+-- Plan 9 posts a server by writing a decimal FILE DESCRIPTOR to
+-- /srv/name: devsrv resolves it against the calling proc's fd table and
+-- adopts the Chan. The bytes name a capability the kernel already holds
+-- for the caller rather than carrying one.
+--
+-- The same works here, for the same reason: a right handle is
+-- proc-local like an fd, and a local backend runs in the caller's proc,
+-- so it can resolve the number where the number means something.
+local W = ns.new()
+
+W:mount("/srv", srvfs.new(srvd), "srvfs", { port = { __right = srvd } })
+
+local second = select(2, sys.spawn([[
+	local dev = require("dev")
+	local srv = require("srv")
+
+	srv.main(function()
+		return dev.mem({ ["hello"] = "posted by writing a handle\n" })
+	end)
+]], { name = "memsrv2" }))
+
+local wh = sys.sendright(second)
+local wrote, werr = W:writefile("/srv/second", tostring(wh))
+
+tap.ok(wrote, "post by writing a handle to /srv: " .. tostring(werr))
+
+-- and it is a real posting: another proc's registry now has it
+local names2 = srvc.list(srvd)
+local sawsecond = false
+
+for _, n in ipairs(names2) do
+	if n == "second" then
+		sawsecond = true
+	end
+end
+tap.ok(sawsecond, "the registry really holds what was written")
+
+-- reading it back gives a handle valid HERE, which is the other half
+local text = W:readfile("/srv/second")
+local got = tonumber((tostring(text):gsub("%s+$", "")))
+
+tap.ok(got ~= nil, "reading /srv/second gives a handle: " .. tostring(text))
+
+local W2 = ns.new()
+local m2ok = W2:mount("/n", mnt.new(got), "mnt", { port = { __right = got } })
+
+tap.ok(m2ok, "and that handle is a right this proc can mount")
+tap.is(W2:readfile("/n/hello"), "posted by writing a handle\n",
+    "the tree it names answers")
+
+-- a number that is not a right here must be refused, not adopted
+local bad = W:writefile("/srv/nope", "999999")
+
+tap.ok(not bad, "writing a handle that names nothing is refused")
 
 -- ---- inheritance ----
 -- a namespace holding /srv must survive describe/adopt, or every child
@@ -109,12 +175,23 @@ local adopted, aerr = ns.adopt(S2:describe())
 
 tap.ok(adopted ~= nil, "a namespace with /srv can be adopted: " ..
     tostring(aerr))
-tap.is(adopted and adopted:readfile("/srv/mem"), "mem\n",
-    "and /srv still reads after the trip")
+
+local ah = adopted and
+    tonumber((tostring(adopted:readfile("/srv/mem")):gsub("%s+$", "")))
+
+tap.ok(ah ~= nil, "and /srv still yields a right after the trip")
+if ah then
+	sys.close(ah)
+end
 
 -- ---- remove ----
 tap.ok(srvc.remove(srvd, "mem"), "remove the name")
-tap.is(#srvc.list(srvd), 0, "and it is gone from the listing")
+
+local left = srvc.list(srvd)
+
+-- "second", posted by writing a handle above, is the one still there
+tap.is(table.concat(left, ","), "second",
+    "and it is gone from the listing")
 tap.ok(select(2, srvc.open(srvd, "mem")) ~= nil,
     "opening a removed name fails")
 

@@ -38,8 +38,10 @@ N:mount("/srv", srvfs.new(srvd), "srvfs")
 
 -- the console is a port we read back, so what the shell prints can be
 -- asserted on rather than just not crashing.
+-- NOTE the shell is given no registry capability. Everything mount
+-- needs it finds in the namespace.
 local consport = sys.newport()
-local sh = dos.new({ ns = N, cons = sys.sendright(consport), srv = srvd })
+local sh = dos.new({ ns = N, cons = sys.sendright(consport) })
 
 local function said()
 	local out = {}
@@ -97,11 +99,13 @@ local rc5 = run("unmount /n")
 tap.is(rc5, 0, "unmount /n succeeds")
 tap.ok(N:readfile("/n/hello") == nil, "and the tree is gone")
 
--- ---- a shell with no registry ----
-local bare = dos.new({ ns = N, cons = sys.sendright(consport) })
+-- ---- a shell whose namespace has no /srv ----
+-- authority to mount IS having /srv in the namespace, so removing it
+-- takes the ability away with nothing else changed.
+local bare = dos.new({ ns = ns.new(), cons = sys.sendright(consport) })
 
 dos.builtins["mount"](bare, { "mount", "mem", "/x" })
-tap.ok(said():find("no service registry") ~= nil,
-    "a shell without srv says so rather than failing obscurely")
+tap.ok(said():find("/srv/mem") ~= nil,
+    "a shell whose namespace lacks /srv cannot mount")
 
 tap.done()
