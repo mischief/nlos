@@ -1,5 +1,6 @@
-/* virtio-mmio core: register access, legacy queue setup, one
- * synchronous single-descriptor submit/poll path. see virtio.h.
+/* virtio-mmio core: register access, legacy queue setup, descriptor
+ * allocation, and both a synchronous and an asynchronous submit path.
+ * See virtio.h.
  *
  * device discovery is a fixed scan, not a bus walk: microvm has
  * exactly 8 virtio-mmio slots at a fixed base and stride (see
@@ -33,6 +34,8 @@
 #define REG_QUEUE_ALIGN       0x03c
 #define REG_QUEUE_PFN         0x040
 #define REG_QUEUE_NOTIFY      0x050
+#define REG_INT_STATUS        0x060
+#define REG_INT_ACK           0x064
 #define REG_STATUS            0x070
 
 #define STATUS_ACK        0x01
@@ -43,6 +46,13 @@
 #define DESC_F_WRITE 2
 
 #define PAGE_SIZE 4096
+
+/* the compiler must not move descriptor or ring writes across these:
+ * the device reads the same memory concurrently. On x86 the hardware
+ * ordering is already strong enough, so a compiler barrier is the whole
+ * requirement here.
+ */
+#define barrier() __asm__ volatile ("" ::: "memory")
 
 static inline uint32_t
 rd(struct virtio_dev *d, unsigned off)
@@ -81,25 +91,41 @@ virtio_find(uint32_t device_id, struct virtio_dev *out)
 }
 
 int
-virtio_dev_init(struct virtio_dev *d, uint16_t qsize)
+virtio_dev_begin(struct virtio_dev *d, uint32_t want, uint32_t *got)
 {
 	wr(d, REG_STATUS, 0);				/* reset */
 	wr(d, REG_STATUS, STATUS_ACK);
 	wr(d, REG_STATUS, STATUS_ACK | STATUS_DRIVER);
 
-	/* accept no optional features -- rng needs none */
 	wr(d, REG_DEV_FEATURES_SEL, 0);
-	(void)rd(d, REG_DEV_FEATURES);
+
+	uint32_t offered = rd(d, REG_DEV_FEATURES);
+	uint32_t accept = offered & want;
+
 	wr(d, REG_DRV_FEATURES_SEL, 0);
-	wr(d, REG_DRV_FEATURES, 0);
+	wr(d, REG_DRV_FEATURES, accept);
+
+	if (got)
+		*got = accept;
 
 	wr(d, REG_GUEST_PAGE_SIZE, PAGE_SIZE);
+	return 0;
+}
 
-	wr(d, REG_QUEUE_SEL, 0);
+int
+virtio_queue_init(struct virtio_dev *d, unsigned qi, uint16_t qsize)
+{
+	if (qi >= VIRTIO_MAX_QUEUES)
+		return -1;
+
+	struct virtq *q = &d->q[qi];
+
+	wr(d, REG_QUEUE_SEL, qi);
+
 	uint32_t max = rd(d, REG_QUEUE_NUM_MAX);
 
 	if (max == 0)
-		return -1;
+		return -1;		/* device has no such queue */
 	if (qsize > max)
 		qsize = (uint16_t)max;
 	wr(d, REG_QUEUE_NUM, qsize);
@@ -122,83 +148,205 @@ virtio_dev_init(struct virtio_dev *d, uint16_t qsize)
 
 	if (!raw)
 		return -1;
+
 	uintptr_t mem = align_up((uintptr_t)raw, PAGE_SIZE);
 
 	memset((void *)mem, 0, total);
 
-	d->desc = (struct virtq_desc *)mem;
-	d->avail = (volatile struct virtq_avail *)(mem + desc_sz);
-	d->avail_ring = (uint16_t *)((char *)d->avail + sizeof(struct virtq_avail));
-	d->used = (volatile struct virtq_used *)(mem + used_off);
-	d->used_ring = (struct virtq_used_elem *)((char *)d->used + sizeof(struct virtq_used));
-	d->qsize = qsize;
-	d->last_used_idx = 0;
+	q->desc = (struct virtq_desc *)mem;
+	q->avail = (volatile struct virtq_avail *)(mem + desc_sz);
+	q->avail_ring = (uint16_t *)((char *)q->avail + sizeof(struct virtq_avail));
+	q->used = (volatile struct virtq_used *)(mem + used_off);
+	q->used_ring = (struct virtq_used_elem *)((char *)q->used + sizeof(struct virtq_used));
+	q->qsize = qsize;
+	q->last_used_idx = 0;
+
+	/* every descriptor free, in a chain through next */
+	for (uint16_t i = 0; i < qsize; i++)
+		q->desc[i].next = (uint16_t)(i + 1);
+	q->desc[qsize - 1].next = VIRTQ_NO_DESC;
+	q->free_head = 0;
+	q->nfree = qsize;
 
 	wr(d, REG_QUEUE_PFN, (uint32_t)(mem / PAGE_SIZE));
-
-	wr(d, REG_STATUS, STATUS_ACK | STATUS_DRIVER | STATUS_DRIVER_OK);
 	return 0;
 }
 
-/* submits the descriptor chain starting at head (already filled in),
- * kicks the device, and busy-waits for the used ring. returns the
- * byte count the device reports writing, or -1.
+void
+virtio_dev_ready(struct virtio_dev *d)
+{
+	wr(d, REG_STATUS, STATUS_ACK | STATUS_DRIVER | STATUS_DRIVER_OK);
+}
+
+int
+virtio_dev_init(struct virtio_dev *d, uint16_t qsize)
+{
+	if (virtio_dev_begin(d, 0, 0) != 0)
+		return -1;
+	if (virtio_queue_init(d, 0, qsize) != 0)
+		return -1;
+	virtio_dev_ready(d);
+	return 0;
+}
+
+int
+virtio_desc_alloc(struct virtio_dev *d, unsigned qi)
+{
+	if (qi >= VIRTIO_MAX_QUEUES)
+		return -1;
+
+	struct virtq *q = &d->q[qi];
+
+	if (q->free_head == VIRTQ_NO_DESC || q->nfree == 0)
+		return -1;
+
+	uint16_t i = q->free_head;
+
+	q->free_head = q->desc[i].next;
+	q->nfree--;
+	return (int)i;
+}
+
+void
+virtio_desc_free(struct virtio_dev *d, unsigned qi, uint16_t i)
+{
+	if (qi >= VIRTIO_MAX_QUEUES)
+		return;
+
+	struct virtq *q = &d->q[qi];
+
+	if (i >= q->qsize)
+		return;
+	q->desc[i].next = q->free_head;
+	q->free_head = i;
+	q->nfree++;
+}
+
+void
+virtio_desc_set(struct virtio_dev *d, unsigned qi, uint16_t i,
+    const void *addr, uint32_t len, int writable, int next)
+{
+	if (qi >= VIRTIO_MAX_QUEUES)
+		return;
+
+	struct virtq *q = &d->q[qi];
+
+	if (i >= q->qsize)
+		return;
+	q->desc[i].addr = (uint64_t)(uintptr_t)addr;
+	q->desc[i].len = len;
+	q->desc[i].flags = (uint16_t)((writable ? DESC_F_WRITE : 0) |
+	    (next >= 0 ? DESC_F_NEXT : 0));
+	q->desc[i].next = next >= 0 ? (uint16_t)next : 0;
+}
+
+void
+virtio_submit(struct virtio_dev *d, unsigned qi, uint16_t head)
+{
+	if (qi >= VIRTIO_MAX_QUEUES)
+		return;
+
+	struct virtq *q = &d->q[qi];
+
+	barrier();			/* desc(s) visible before avail */
+
+	uint16_t idx = q->avail->idx;
+
+	q->avail_ring[idx % q->qsize] = head;
+	barrier();			/* ring entry before idx bump */
+	q->avail->idx = idx + 1;
+	barrier();			/* idx visible before notify */
+
+	wr(d, REG_QUEUE_NOTIFY, qi);
+}
+
+int
+virtio_poll_used(struct virtio_dev *d, unsigned qi, uint16_t *id, uint32_t *len)
+{
+	if (qi >= VIRTIO_MAX_QUEUES)
+		return 0;
+
+	struct virtq *q = &d->q[qi];
+
+	if (q->used->idx == q->last_used_idx)
+		return 0;
+
+	barrier();			/* idx read before the element */
+
+	struct virtq_used_elem *e = &q->used_ring[q->last_used_idx % q->qsize];
+
+	if (id)
+		*id = (uint16_t)e->id;
+	if (len)
+		*len = e->len;
+	q->last_used_idx++;
+
+	/* the device raises its interrupt line for every completion. We
+	 * poll, but the line still has to be acknowledged or it stays
+	 * asserted -- which would matter the moment anything routes it.
+	 */
+	uint32_t is = rd(d, REG_INT_STATUS);
+
+	if (is)
+		wr(d, REG_INT_ACK, is);
+	return 1;
+}
+
+/* submit a chain and busy-wait for it. Returns the byte count the
+ * device reports writing, or -1.
  */
 static int
 kick_and_wait(struct virtio_dev *d, uint16_t head)
 {
-	__asm__ volatile ("" ::: "memory");	/* desc(s) visible before avail */
+	virtio_submit(d, 0, head);
 
-	uint16_t idx = d->avail->idx;
+	uint16_t id;
+	uint32_t len;
 
-	d->avail_ring[idx % d->qsize] = head;
-	__asm__ volatile ("" ::: "memory");	/* ring entry before idx bump */
-	d->avail->idx = idx + 1;
-	__asm__ volatile ("" ::: "memory");	/* idx visible before notify */
-
-	wr(d, REG_QUEUE_NOTIFY, 0);
-
-	while (d->used->idx == d->last_used_idx)
+	while (!virtio_poll_used(d, 0, &id, &len))
 		__asm__ volatile ("pause" ::: "memory");
 
-	struct virtq_used_elem *e = &d->used_ring[d->last_used_idx % d->qsize];
-	uint32_t got = e->len;
-
-	d->last_used_idx++;
-	return (int)got;
+	return (int)len;
 }
 
 int
 virtio_submit_write_poll(struct virtio_dev *d, void *buf, uint32_t n)
 {
-	/* descriptor 0, reused every call: one request in flight at a
-	 * time, matching this function's synchronous contract.
-	 */
-	d->desc[0].addr = (uint64_t)(uintptr_t)buf;
-	d->desc[0].len = n;
-	d->desc[0].flags = DESC_F_WRITE;
-	d->desc[0].next = 0;
+	int i = virtio_desc_alloc(d, 0);
 
-	return kick_and_wait(d, 0);
+	if (i < 0)
+		return -1;
+
+	virtio_desc_set(d, 0, (uint16_t)i, buf, n, 1, -1);
+
+	int got = kick_and_wait(d, (uint16_t)i);
+
+	virtio_desc_free(d, 0, (uint16_t)i);
+	return got;
 }
 
 int
 virtio_submit_rpc_poll(struct virtio_dev *d, const void *req, uint32_t reqlen,
     void *rep, uint32_t repcap)
 {
-	/* descriptors 0 (readable, the request) -> 1 (writable, the
-	 * reply), reused every call -- same single-outstanding-request
-	 * contract as virtio_submit_write_poll.
-	 */
-	d->desc[0].addr = (uint64_t)(uintptr_t)req;
-	d->desc[0].len = reqlen;
-	d->desc[0].flags = DESC_F_NEXT;
-	d->desc[0].next = 1;
+	int a = virtio_desc_alloc(d, 0);
+	int b = virtio_desc_alloc(d, 0);
 
-	d->desc[1].addr = (uint64_t)(uintptr_t)rep;
-	d->desc[1].len = repcap;
-	d->desc[1].flags = DESC_F_WRITE;
-	d->desc[1].next = 0;
+	if (a < 0 || b < 0) {
+		if (a >= 0)
+			virtio_desc_free(d, 0, (uint16_t)a);
+		if (b >= 0)
+			virtio_desc_free(d, 0, (uint16_t)b);
+		return -1;
+	}
 
-	return kick_and_wait(d, 0);
+	/* a (readable, the request) -> b (writable, the reply) */
+	virtio_desc_set(d, 0, (uint16_t)a, req, reqlen, 0, b);
+	virtio_desc_set(d, 0, (uint16_t)b, rep, repcap, 1, -1);
+
+	int got = kick_and_wait(d, (uint16_t)a);
+
+	virtio_desc_free(d, 0, (uint16_t)b);
+	virtio_desc_free(d, 0, (uint16_t)a);
+	return got;
 }
