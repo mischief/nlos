@@ -33,6 +33,20 @@
  * of 1, so it buffers a single byte and waits for the guest to drain
  * it. That the guest never drains it is the symptom, not the cause.
  *
+ * Two further things ruled out since: it is not the port, because com2
+ * at 0x2f8 behaves identically (output fine, input absent), and it is
+ * not how the machine builds its serial, because an explicit
+ * -device isa-serial with isa-serial=off is no different.
+ *
+ * The clearest remaining clue is that src/x86_64/uart.c -- which does
+ * receive, and is what the 9p-protocol test drives over com2 -- has a
+ * byte-identical uart_init to this one. The difference between the two
+ * is the machine, not the driver: that one runs on qemu's pc machine
+ * with firmware having touched the port first, this one on microvm
+ * where nothing has. Whatever qboot leaves unset, or whatever the pc
+ * machine's ISA wiring provides that microvm's does not, is where this
+ * ends.
+ *
  * The ring and handler are therefore written but untested against real
  * input, and uart_rx still polls the port as a fallback.
  */
