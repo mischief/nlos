@@ -37,7 +37,7 @@ local tap = require("tap")
 local NBLOCK = 64
 local BLOCKSZ = 4096
 
-tap.plan(7)
+tap.plan(8)
 
 local caps = sys.granted()
 
@@ -155,6 +155,45 @@ end)
 
 tap.ok(true, NBLOCK .. " bare port round trips")
 report("port floor", pingcyc, pinglaps)
+
+-- ---- and the same round trip carrying a real payload ----
+--
+-- the floor above sends an integer, which is not what a read costs: a
+-- 4K reply is serialized into a growing buffer, copied through the
+-- kernel and rebuilt as a lua string on the far side.
+--
+-- Repeated because the interesting failure is not the absolute number
+-- but its drift. src/platform/microvm/pmm.c is first-fit over a hole
+-- list, and when that list did not coalesce, serialize()'s doubling
+-- left a hole of every size it passed through -- so the list grew
+-- without bound and the same round trip got slower forever: 116us on
+-- the first hundred, 184us four hundred later, recovered only by a
+-- reboot. Flatness across rounds is the property; the ratio is checked
+-- rather than the microseconds, which are machine-specific.
+
+local DRIFT_ROUNDS = 12
+local DRIFT_MAX = 1.5
+local payload = { data = string.rep("x", BLOCKSZ), n = BLOCKSZ }
+local first, last
+
+for r = 1, DRIFT_ROUNDS do
+	local cyc = measure(function()
+		for _ = 1, NBLOCK do
+			sys.send(toecho, payload)
+			sys.block(echoout)
+			sys.tryrecv(echoout)
+		end
+	end)
+
+	tap.diag(string.format("  %dB payload, round %d: %.2f us each",
+	    BLOCKSZ, r, (cyc / NBLOCK) * 1000 / CYCMS))
+	first = first or cyc
+	last = cyc
+end
+
+tap.ok(last < first * DRIFT_MAX, string.format(
+    "port round trips do not slow down under churn (round %d is %.2fx round 1, limit %.1fx)",
+    DRIFT_ROUNDS, last / first, DRIFT_MAX))
 
 local function blockmark(i)
 	return string.format("block %04d\n", i)
