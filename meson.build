@@ -11,11 +11,15 @@ project('lua-os', 'c',
 cc = meson.get_compiler('c')
 objcopy = find_program('objcopy')
 
+# every scripts/*.lua and test/*.lua tool is run through this rather
+# than relying on a shebang + preserved execute bit.
+lua_interp = find_program('lua5.4', 'lua')
+
 # the per-arch table, and the only place any of it is written down.
 # it decides which sources build, what the esp must call the loader for
 # the firmware to find it (the UEFI spec's removable-media path), and
 # what machine-specific flags the compiler needs. everything downstream
-# -- scripts/arch.sh, test/qemuarch.py -- is told the answer rather
+# -- scripts/arch.lua, test/qemuarch.py -- is told the answer rather
 # than working it out again; see the LUAOS_ARCH env below.
 #
 # a native build gets this from the host; a cross build gets it from
@@ -274,35 +278,35 @@ lua_payload = files(
 luaos_img = custom_target('luaos.img',
   input: [luaos_efi] + lua_payload,
   output: 'luaos.img',
-  command: [files('scripts/mkimage.sh'), '@OUTPUT@', '@INPUT@'],
+  command: [lua_interp, files('scripts/mkimage.lua'), '@OUTPUT@', '@INPUT@'],
   env: {'BOOT_EFI': boot_efi},
   build_by_default: true,
 )
 
 # every script that boots the image needs to know which machine it is
 # booting, and must not guess: with a cross build the host arch is the
-# wrong answer. scripts/arch.sh and test/qemuarch.py both fall back to
-# uname when this is unset, which is what a bare `qemu.sh img` gets.
+# wrong answer. scripts/arch.lua and test/qemuarch.py both fall back
+# to uname when this is unset, which is what a bare `qemu.lua img` gets.
 archenv = {'LUAOS_ARCH': arch}
 
 # console on stdio, 9p wire on <builddir>/9p.sock
 # mount from host: 9p -a 'unix!<builddir>/9p.sock' ls /
 run_target('qemu',
-  command: [files('scripts/qemu.sh'), luaos_img],
+  command: [lua_interp, files('scripts/qemu.lua'), luaos_img],
   env: archenv,
 )
 
 # boots test/boot/fetch_mcp.lua instead of init.lua (single-url mcp
 # fetch server), mcp reachable on host tcp/8090
 run_target('fetch-mcp',
-  command: [files('scripts/fetch-mcp.sh'), luaos_img],
+  command: [lua_interp, files('scripts/fetch-mcp.lua'), luaos_img],
   env: archenv,
 )
 
 # boots test/boot/srvweb.lua instead of init.lua: the browser shell,
 # reachable at http://localhost:8080/ (WEB_PORT to change it)
 run_target('website',
-  command: [files('scripts/website.sh'), luaos_img],
+  command: [lua_interp, files('scripts/website.lua'), luaos_img],
   env: archenv,
 )
 
@@ -311,7 +315,11 @@ run_target('website',
 # /init.lua; the guest emits TAP on com1 and powers off. the harness
 # extracts the TAP for meson.
 
-boottest = files('scripts/boottest.sh')
+# test()'s program argument must be a single executable (not an argv
+# list the way run_target/custom_target's command: can be), so this
+# one relies on the shebang line + the execute bit, unlike every other
+# scripts/*.lua invocation in this file.
+boottest = files('scripts/boottest.lua')
 
 boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
               'math',
