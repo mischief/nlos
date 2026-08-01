@@ -21,17 +21,40 @@ local payload = arg[2]
 
 local count, failed = 0, 0
 
+-- a TAP description is one line by construction, so guest text quoted
+-- into one has to be escaped rather than passed through. the python
+-- these tests came from got that free from %r; without it a terminal
+-- session's carriage returns reach the harness raw, and since meson
+-- breaks lines on \r as well as \n every segment after the first
+-- arrives unprefixed and fails the whole run on "Unknown TAP output"
+-- -- even when every assertion passed.
+local function oneline(s)
+	return (tostring(s):gsub("%c", function(c)
+		if c == "\n" then return "\\n" end
+		if c == "\r" then return "\\r" end
+		if c == "\t" then return "\\t" end
+		return string.format("\\%03d", c:byte())
+	end))
+end
+
 local function ok(cond, name)
 	count = count + 1
 	if not cond then
 		failed = failed + 1
 	end
-	print((cond and "ok" or "not ok") .. " " .. count .. " - " .. name)
+	print((cond and "ok" or "not ok") .. " " .. count .. " - " ..
+	    oneline(name))
 	return cond
 end
 
+-- the normalisation scripts/boottest.lua applies to a serial log, for
+-- the same reason: strip ansi and fold carriage returns into newlines
+-- so that every line of a guest dump carries its own "# ".
 local function diag(s)
-	for line in (tostring(s) .. "\n"):gmatch("([^\n]*)\n") do
+	local t = tostring(s):gsub("\27%[[%d;=]*%a", ""):gsub("\r\n", "\n")
+
+	t = t:gsub("\r", "\n")
+	for line in (t .. "\n"):gmatch("([^\n]*)\n") do
 		print("# " .. line)
 	end
 end
