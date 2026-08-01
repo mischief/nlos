@@ -10,3 +10,10 @@
 # NETWORK_ENABLE and point OVMF_CODE at it. Its default is per-arch.
 option('fw_network', type: 'feature', value: 'auto',
   description: 'firmware provides EFI_TCP4/EFI_UDP4 (enables the net tests)')
+
+# efi: today's only real platform, any of x86_64/aarch64/riscv64.
+# microvm: qemu's firmware-less x86_64 machine type (see
+# docs/microvm-plan.md) -- own PVH entry, own paging/idt/lapic, no
+# filesystem or net stack yet. x86_64-only.
+option('platform', type: 'combo', choices: ['efi', 'microvm'], value: 'efi',
+  description: 'efi (firmware boot, all arches) or microvm (bare PVH, x86_64 only)')

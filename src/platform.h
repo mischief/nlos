@@ -8,6 +8,32 @@
 
 #include <stddef.h>
 
+#include "lua.h"
+
+/* drivers.c (per platform): extra los.* modules for the boot payload
+ * beyond the cons/wire/power grant kernel.c already handles generically
+ * -- microvm registers los.platform.rng here if a virtio-rng device was
+ * found (src/platform/microvm/virtio_rng.c); efi's is a no-op. declared
+ * here so kernel.c's spawn_init needs no per-platform #ifdef.
+ */
+void	platform_boot_extra_modules(lua_State *L);
+
+/* drivers.c (per platform): is there a virtio-9p device THIS DRIVER can
+ * reach? checked once by kernel_init and used to enable/disable the
+ * /lib/p9srv.lua driver task the same way have_net/have_udp gate
+ * tcp.lua/udp.lua.
+ *
+ * efi's is always 0 -- not because virtio-9p can't exist under EFI
+ * (qemu can attach virtio-9p-pci to any pc/q35 machine, OVMF included),
+ * but because src/platform/microvm/virtio.c only speaks virtio-MMIO: a
+ * fixed-address register scan with no bus to walk. virtio-9p-pci needs
+ * real PCI enumeration (BAR discovery via EFI's PCI I/O protocol or
+ * raw config space) that nothing here implements yet. this flag is
+ * scoped to "can this driver find one", not "can this platform have
+ * one".
+ */
+int	platform_have_p9(void);
+
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);

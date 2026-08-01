@@ -26,16 +26,28 @@ lua_interp = find_program('lua5.4', 'lua')
 # --cross-file cross/<arch>.txt, which is the only way to build riscv64
 # unless you have riscv64 hardware to build on.
 arch = host_machine.cpu_family()
+platform = get_option('platform')
 
-# every port needs the platform layer (src/<arch>/machine.c, reloc.c,
-# setjmp.S, header.S) plus a way to reach fw_cfg, a second serial port,
-# and the libm floor. the last three are what actually differ.
+if platform == 'microvm' and arch != 'x86_64'
+  error('microvm platform is x86_64-only')
+endif
+
+# every port needs the platform layer (src/<arch>/machine.c, setjmp.S)
+# plus a way to reach fw_cfg, a second serial port, and the libm floor.
+# efi also needs header.S (the hand PE32+ header/entry) and reloc.c
+# (self-relocation to wherever firmware loaded it) -- microvm links at
+# a fixed physical address instead (see src/platform/microvm/boot.S),
+# so it needs neither.
 plat_src = files(
-  'src' / arch / 'header.S',
   'src' / arch / 'machine.c',
-  'src' / arch / 'reloc.c',
   'src' / arch / 'setjmp.S',
 )
+if platform == 'efi'
+  plat_src += files(
+    'src' / arch / 'header.S',
+    'src' / arch / 'reloc.c',
+  )
+endif
 
 if arch == 'x86_64'
   # no red zone (efi), sse4.1 so floor/ceil are single instructions
@@ -43,12 +55,32 @@ if arch == 'x86_64'
   arch_args = ['-mno-red-zone', '-msse4.1']
   boot_efi = 'bootx64.efi'
   # a pc: fw_cfg and com2 are both at fixed io ports, and x87 has the
-  # transcendentals in hardware.
+  # transcendentals in hardware. microvm supplies its own uart.c (com1,
+  # not com2 -- no firmware console to share the machine with) but
+  # reuses fwcfg.c/math.c unchanged, since both are already plain PIO/
+  # x87 with no EFI dependency.
   arch_src = plat_src + files(
     'src/x86_64/fwcfg.c',
     'src/x86_64/math.c',
-    'src/x86_64/uart.c',
   )
+  if platform == 'efi'
+    arch_src += files('src/x86_64/uart.c')
+  else
+    arch_src += files(
+      'src/platform/microvm/boot.S',
+      'src/platform/microvm/idt_stubs.S',
+      'src/platform/microvm/idt.c',
+      'src/platform/microvm/lapic.c',
+      'src/platform/microvm/tsc.c',
+      'src/platform/microvm/pmm.c',
+      'src/platform/microvm/uart.c',
+      'src/platform/microvm/reset.c',
+      'src/platform/microvm/efi_shim.c',
+      'src/platform/microvm/virtio.c',
+      'src/platform/microvm/virtio_rng.c',
+      'src/platform/microvm/virtio_9p.c',
+    )
+  endif
 elif arch == 'aarch64'
   # fp/simd is baseline on aarch64 and edk2 enables it before running
   # an application, so floor/ceil/sqrt are single instructions with no
@@ -110,23 +142,70 @@ freestanding_args = [
 
 add_project_arguments(freestanding_args, language: 'c')
 
-inc = include_directories('include', 'src', 'lua', 'src/platform/efi')
+inc = include_directories('include', 'src', 'lua', 'src/platform' / platform)
 
 # dirs.c/kernel.c/linit.c are firmware-blind (the platform seam is
-# platform.h plus fs.h/net.h/efi.h, resolved from the per-platform
+# platform.h + fs.h/net.h/efi.h, all resolved from the per-platform
 # include dir above); everything else is the platform's own.
 kernel_src = files(
   'src/dirs.c',
   'src/kernel.c',
   'src/linit.c',
-  'src/platform/efi/console.c',
-  'src/platform/efi/drivers.c',
-  'src/platform/efi/fs.c',
-  'src/platform/efi/los.c',
-  'src/platform/efi/main.c',
-  'src/platform/efi/malloc.c',
-  'src/platform/efi/net.c',
 )
+if platform == 'efi'
+  kernel_src += files(
+    'src/platform/efi/console.c',
+    'src/platform/efi/drivers.c',
+    'src/platform/efi/fs.c',
+    'src/platform/efi/los.c',
+    'src/platform/efi/main.c',
+    'src/platform/efi/malloc.c',
+    'src/platform/efi/net.c',
+  )
+else
+  kernel_src += files(
+    'src/platform/microvm/console.c',
+    'src/platform/microvm/drivers.c',
+    'src/platform/microvm/efi_shim.c',
+    'src/platform/microvm/fs.c',
+    'src/platform/microvm/main.c',
+    'src/platform/microvm/malloc.c',
+    'src/platform/microvm/net.c',
+  )
+
+  # embed -> namespace: a fixed, build-time set of libs that always
+  # exist on microvm regardless of what's mounted (nothing is, yet --
+  # see fs.c). chosen because they're core (every proc wants
+  # los.thread; the driver tasks need their own lib/*.lua) and
+  # unlikely to ever need runtime edits; anything you DO want to edit
+  # live belongs on a real mount once virtio-9p is wired to fs.c, not
+  # in this list.
+  embed_files = [
+    'lib/thread.lua',
+    'lib/cons.lua',
+    'lib/wire.lua',
+    'lib/power.lua',
+    'lib/stdout.lua',
+    'lib/ninep.lua',
+    'lib/dev.lua',
+    'lib/srv.lua',
+    'lib/mnt.lua',
+    'lib/ns.lua',
+    'lib/chan.lua',
+    'lib/p9fs.lua',
+    'lib/p9srv.lua',
+  ]
+  embed_args = []
+  foreach f : embed_files
+    embed_args += '/' + f + '=' + meson.current_source_dir() / f
+  endforeach
+  embedfs_src = custom_target('embedfs.c',
+    output: 'embedfs.c',
+    input: files(embed_files),
+    command: [lua_interp, files('scripts/gen_embedfs.lua'), '@OUTPUT@'] + embed_args,
+  )
+  kernel_src += embedfs_src
+endif
 
 libc_src = files(
   'src/libc/locale.c',
@@ -172,6 +251,7 @@ lua_src = files(
 )
 
 pe_ld = meson.current_source_dir() / 'src/platform/efi/pe.ld'
+microvm_ld = meson.current_source_dir() / 'src/platform/microvm/microvm.ld'
 
 # hardening warnings for OUR code only (the lua submodule stays
 # vanilla and compiles with plain -Wall). adapted from c-template;
@@ -206,31 +286,61 @@ lua_lib = static_library('lua54', lua_src,
   include_directories: inc,
 )
 
-# the elf intermediate: base 0, RELATIVE relocs only, self-relocated at
-# entry. gcc drives ld; -nostdlib keeps crt/libc out.
-luaos_elf = shared_library('luaos',
-  kernel_src + libc_src + arch_src,
-  name_prefix: '',
-  include_directories: inc,
-  c_args: hardening_args,
-  link_with: lua_lib,
-  link_args: [
-    '-nostdlib',
-    '-Wl,-Bsymbolic',
-    '-Wl,-znocombreloc',
-    '-Wl,-T,' + pe_ld,
-  ],
-  link_depends: files('src/platform/efi/pe.ld'),
-)
+if platform == 'efi'
+  # the elf intermediate: base 0, RELATIVE relocs only, self-relocated
+  # at entry. gcc drives ld; -nostdlib keeps crt/libc out.
+  luaos_elf = shared_library('luaos',
+    kernel_src + libc_src + arch_src,
+    name_prefix: '',
+    include_directories: inc,
+    c_args: hardening_args,
+    link_with: lua_lib,
+    link_args: [
+      '-nostdlib',
+      '-Wl,-Bsymbolic',
+      '-Wl,-znocombreloc',
+      '-Wl,-T,' + pe_ld,
+    ],
+    link_depends: files('src/platform/efi/pe.ld'),
+  )
 
-# flat binary; the hand PE32+ header in src/<arch>/header.S makes this
-# a valid uefi application.
-luaos_efi = custom_target('luaos.efi',
-  input: luaos_elf,
-  output: 'luaos.efi',
-  command: [objcopy, '-O', 'binary', '@INPUT@', '@OUTPUT@'],
-  build_by_default: true,
-)
+  # flat binary; the hand PE32+ header in src/<arch>/header.S makes this
+  # a valid uefi application.
+  luaos_efi = custom_target('luaos.efi',
+    input: luaos_elf,
+    output: 'luaos.efi',
+    command: [objcopy, '-O', 'binary', '@INPUT@', '@OUTPUT@'],
+    build_by_default: true,
+  )
+else
+  # plain ELF at a fixed physical address (src/platform/microvm/boot.S,
+  # microvm.ld) -- qemu's -kernel loader wants this directly, no
+  # objcopy step and no self-relocation.
+  luaos_microvm_elf = executable('luaos-microvm.elf',
+    kernel_src + libc_src + arch_src,
+    include_directories: inc,
+    c_args: hardening_args,
+    link_with: lua_lib,
+    link_args: [
+      '-nostdlib',
+      '-static',
+      '-Wl,--build-id=none',
+      '-Wl,-T,' + microvm_ld,
+    ],
+    link_depends: files('src/platform/microvm/microvm.ld'),
+    build_by_default: true,
+  )
+
+  # boots test/boot/microvm_hello.lua via fw_cfg, the only way to run
+  # code here (no filesystem yet) -- console on stdio, -no-reboot turns
+  # the deliberate triple-fault shutdown into a clean qemu exit.
+  run_target('qemu-microvm',
+    command: [lua_interp, files('scripts/qemu-microvm.lua'), luaos_microvm_elf,
+      files('test/boot/microvm_hello.lua')],
+  )
+endif
+
+if platform == 'efi'
 
 lua_payload = files(
   'init.lua',
@@ -343,10 +453,10 @@ endforeach
 # hostutil: the one C module backing the host-driven test clients
 # (test/test_9p.lua etc) -- sockets and argv-array process spawning,
 # neither of which stock Lua has. built native regardless of
-# cross-file, since this runs on the machine driving the tests, never
-# the guest. optional like fw_network below: a host without lua5.4's
-# headers just doesn't run these four tests, rather than failing the
-# whole configure.
+# -Dplatform/cross-file, since this runs on the machine driving the
+# tests, never the guest. optional like fw_network below: a host
+# without lua5.4's headers just doesn't run these four tests, rather
+# than failing the whole configure.
 lua54_dep = dependency('lua5.4', native: true, required: false)
 have_hostutil = lua54_dep.found()
 if have_hostutil
@@ -449,3 +559,5 @@ if have_hostutil
     env: hostenv,
   )
 endif
+
+endif # platform == 'efi'

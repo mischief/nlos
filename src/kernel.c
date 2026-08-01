@@ -113,7 +113,7 @@ enum { DEAD, READY, BLOCKED };
  * lets it build the root namespace every other proc inherits.
  */
 enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
-    PRIV_TCP, PRIV_UDP };
+    PRIV_TCP, PRIV_UDP, PRIV_P9 };
 
 struct kmsg {
 	struct kmsg *next;
@@ -379,6 +379,7 @@ static struct kport *udpport;
  */
 static int have_net;
 static int have_udp;
+static int have_p9;
 
 /* cycles per millisecond, measured once at boot. platform_ticks() is a
  * raw hardware counter -- a tick count, not a time -- and its rate is
@@ -2296,6 +2297,7 @@ extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_tcp(lua_State *L);	/* net.c */
 extern int luaopen_los_platform_udp(lua_State *L);	/* net.c */
+extern int luaopen_los_platform_p9(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
  * kernel-owned primitives that outlive efi (ticks). registered in
@@ -2518,6 +2520,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	case PRIV_UDP:
 		lua_pushcfunction(p->L, luaopen_los_platform_udp);
 		lua_setfield(p->L, -2, "los.platform.udp");
+		break;
+	case PRIV_P9:
+		lua_pushcfunction(p->L, luaopen_los_platform_p9);
+		lua_setfield(p->L, -2, "los.platform.p9");
 		break;
 	}
 
@@ -2857,6 +2863,7 @@ kernel_init(void)
 	 */
 	have_net = (net_init() == 0);
 	have_udp = net_have_udp();
+	have_p9 = platform_have_p9();
 	return 0;
 }
 
@@ -2957,6 +2964,19 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_UDP, .devport = udpport, .devrecv = 1,
 		  .what = "networking (udp)", .enabled = have_udp,
 		  .capname = "udp" },
+		/* the virtio-9p mount source: the only proc with
+		 * los.platform.p9, re-serving it over a port as an
+		 * ordinary dev backend (lib/p9fs.lua) so mnt.lua can mount
+		 * it exactly like the esp -- no second namespace mechanism,
+		 * just another srv.lua backend. disabled on efi today
+		 * because that driver only speaks virtio-MMIO, not because
+		 * virtio-9p can't exist under EFI -- see platform_have_p9's
+		 * own comment in platform.h.
+		 */
+		{ .path = "/lib/p9srv.lua", .chunkname = "=p9srv",
+		  .priv = PRIV_P9, .devport = 0, .devrecv = 0,
+		  .what = "the virtio-9p filesystem", .enabled = have_p9,
+		  .capname = "p9" },
 	};
 	size_t ndrivers = sizeof drivers / sizeof drivers[0];
 	int pids[sizeof drivers / sizeof drivers[0]];
@@ -2984,6 +3004,13 @@ spawn_init(const char *code, size_t len, int is_file)
 		return pid;
 
 	struct kproc *p = find_proc(pid);
+
+	/* platform_boot_extra_modules grants whatever raw device modules
+	 * have no driver-task equivalent yet (microvm's los.platform.rng/
+	 * p9 -- see src/platform/microvm/drivers.c); a no-op on efi.
+	 */
+	if (p)
+		platform_boot_extra_modules(p->L);
 
 	/* handles are allocated first-free, in this order, and reported
 	 * by name through sys.granted(). nothing anywhere depends on the

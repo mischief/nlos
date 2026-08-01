@@ -1,0 +1,110 @@
+/* malloc over pmm.c's bump/freelist arena. same 16-byte
+ * size+magic header as src/platform/efi/malloc.c, so kernel.c's
+ * accounting and double-free detection behave identically on both
+ * platforms.
+ */
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern _Noreturn void platform_abort(const char *why);
+void	*pmm_alloc(size_t n);
+void	pmm_free(void *p, size_t n);
+
+struct hdr {
+	size_t size;
+	size_t magic;
+};
+
+#define MAGIC 0x6c75616f73ULL	/* "luaos" */
+
+static size_t live_bytes, peak_bytes;
+static unsigned long live_blocks, total_blocks;
+
+void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+    unsigned long *total);
+
+void
+malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+    unsigned long *total)
+{
+	if (live)
+		*live = live_bytes;
+	if (peak)
+		*peak = peak_bytes;
+	if (blocks)
+		*blocks = live_blocks;
+	if (total)
+		*total = total_blocks;
+}
+
+void *
+malloc(size_t n)
+{
+	struct hdr *h = pmm_alloc(n + sizeof *h);
+
+	if (!h)
+		return 0;
+	h->size = n;
+	h->magic = MAGIC;
+	live_bytes += n + sizeof *h;
+	if (live_bytes > peak_bytes)
+		peak_bytes = live_bytes;
+	live_blocks++;
+	total_blocks++;
+	return h + 1;
+}
+
+void
+free(void *p)
+{
+	struct hdr *h;
+
+	if (!p)
+		return;
+	h = (struct hdr *)p - 1;
+	if (h->magic != MAGIC)
+		platform_abort("free: bad heap magic (double free or corruption)");
+	h->magic = 0;
+	live_bytes -= h->size + sizeof *h;
+	live_blocks--;
+	pmm_free(h, h->size + sizeof *h);
+}
+
+void *
+calloc(size_t nmemb, size_t size)
+{
+	if (size != 0 && nmemb > (size_t)-1 / size)
+		return 0;
+
+	size_t n = nmemb * size;
+	void *p = malloc(n);
+
+	if (p)
+		memset(p, 0, n);
+	return p;
+}
+
+void *
+realloc(void *p, size_t n)
+{
+	struct hdr *h;
+	void *q;
+
+	if (!p)
+		return malloc(n);
+	if (n == 0) {
+		free(p);
+		return 0;
+	}
+	h = (struct hdr *)p - 1;
+	if (h->magic != MAGIC)
+		platform_abort("realloc: bad heap magic (double free or corruption)");
+	q = malloc(n);
+	if (!q)
+		return 0;
+	memcpy(q, p, h->size < n ? h->size : n);
+	free(p);
+	return q;
+}

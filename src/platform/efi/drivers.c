@@ -11,6 +11,8 @@
 #include "lua.h"
 #include "lauxlib.h"
 
+#include "platform.h"
+
 extern void console_write(const char *s, unsigned long n);
 extern void uart_tx(const char *s, unsigned long n);
 
@@ -100,5 +102,36 @@ int
 luaopen_los_platform_power(lua_State *L)
 {
 	luaL_newlib(L, powerlib);
+	return 1;
+}
+
+/* microvm's counterpart registers los.platform.rng when a virtio-rng
+ * device is present (src/platform/microvm/virtio_rng.c); efi has no
+ * such device class yet.
+ */
+void
+platform_boot_extra_modules(lua_State *L)
+{
+	(void)L;
+}
+
+int
+platform_have_p9(void)
+{
+	return 0;
+}
+
+/* the switch in kernel.c's proc_new takes this address unconditionally
+ * for PRIV_P9, which is never actually granted here (platform_have_p9
+ * above is always 0) -- but the symbol still has to exist to link.
+ */
+static const luaL_Reg p9_emptylib[] = { { NULL, NULL } };
+
+int luaopen_los_platform_p9(lua_State *L);
+
+int
+luaopen_los_platform_p9(lua_State *L)
+{
+	luaL_newlib(L, p9_emptylib);
 	return 1;
 }
