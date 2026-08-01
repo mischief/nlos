@@ -16,13 +16,31 @@ int	virtio_9p_init(void);
  */
 int	virtio_9p_tag(char *buf, size_t bufcap);
 
-/* one 9P2000 request/reply round trip: req[0,reqlen) is a complete
- * T-message (size prefix included, see lib/ninep.lua's frame()),
- * rep[0,repcap) receives the R-message. returns the reply length, or
- * -1. this is pure transport -- message framing/decoding is Lua's job
- * (los.platform.p9.rpc wraps this 1:1; see AGENTS.md "C is mechanism,
- * Lua is policy").
+/* one 9P2000 round trip, split so the caller can do something else
+ * while the device works.
+ *
+ * It has to be split. Scheduling here is cooperative and single
+ * threaded, so busy-waiting for a reply stops the whole machine, not
+ * just the proc that asked -- and a mounted filesystem does this on
+ * every walk, read and clunk. The Lua binding yields between polls
+ * instead, which is the same shape the efi platform's net driver uses
+ * (net_dial_start / net_dial_poll).
+ *
+ * Both buffers are owned by the transport rather than the caller: the
+ * device reads the request and writes the reply on its own schedule,
+ * so neither may live on a Lua stack that moves across a yield.
+ *
+ * start: req[0,reqlen) is a complete T-message, size prefix included
+ * (see lib/ninep.lua's frame()). 0 on success, -1 if a request is
+ * already in flight or the message does not fit.
+ *
+ * poll: -1 while the device has not answered. Otherwise the R-message
+ * length, with *rep pointed at it -- valid only until the next start.
+ *
+ * This is pure transport; framing and decoding are Lua's job (see
+ * AGENTS.md, "C is mechanism, Lua is policy").
  */
-int	virtio_9p_rpc(const void *req, size_t reqlen, void *rep, size_t repcap);
+int	virtio_9p_start(const void *req, size_t reqlen);
+int	virtio_9p_poll(const void **rep);
 
 #endif

@@ -168,25 +168,53 @@ luaopen_los_platform_rng(lua_State *L)
  */
 
 static int
+p9_rpc_k(lua_State *L, int status, lua_KContext ctx)
+{
+	(void)status;
+
+	/* ctx 0: the request has not been accepted yet -- either this is
+	 * the first attempt, or another thread of this task had the device.
+	 */
+	if (ctx == 0) {
+		size_t reqlen;
+		const char *req = luaL_checklstring(L, 1, &reqlen);
+
+		if (virtio_9p_start(req, reqlen) != 0) {
+			if (reqlen > 8192)	/* P9_MSIZE, see virtio_9p.c */
+				return luaL_error(L,
+				    "p9.rpc: message too large");
+			/* busy: let whoever holds the device finish */
+			return lua_yieldk(L, 0, 0, p9_rpc_k);
+		}
+		ctx = 1;
+	}
+
+	const void *rep;
+	int got = virtio_9p_poll(&rep);
+
+	if (got < 0)
+		return lua_yieldk(L, 0, ctx, p9_rpc_k);
+
+	lua_pushlstring(L, rep, (size_t)got);
+	return 1;
+}
+
+/* yields rather than spinning, which is why it is written as a
+ * continuation. Scheduling here is cooperative and single threaded, so
+ * busy-waiting for the device would stop every other proc as well --
+ * and a mounted 9p filesystem does a round trip per walk, read and
+ * clunk. Yielding leaves this proc runnable and lets the rest of the
+ * machine make progress between polls.
+ *
+ * Safe to yield from here because this is called as an ordinary Lua
+ * function from a proc's coroutine. The same would not be true from a
+ * package.preload opener, which loadlib.c invokes with a plain
+ * lua_call.
+ */
+static int
 p9_rpc(lua_State *L)
 {
-	size_t reqlen;
-	const char *req = luaL_checklstring(L, 1, &reqlen);
-	size_t repcap = 8192;	/* P9_MSIZE, see virtio_9p.c */
-	char *rep = malloc(repcap);
-
-	if (!rep)
-		return luaL_error(L, "p9.rpc: out of memory");
-
-	int got = virtio_9p_rpc(req, reqlen, rep, repcap);
-
-	if (got < 0) {
-		free(rep);
-		return luaL_error(L, "p9.rpc: device read failed");
-	}
-	lua_pushlstring(L, rep, (size_t)got);
-	free(rep);
-	return 1;
+	return p9_rpc_k(L, LUA_OK, 0);
 }
 
 static int

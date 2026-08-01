@@ -12,7 +12,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(7)
+tap.plan(8)
 
 local caps = sys.granted()
 
@@ -79,5 +79,56 @@ else
 	tap.ok(false, "create /host/created.txt: " .. tostring(werr))
 	tap.ok(false, "the created file appears in /host readdir")
 end
+
+-- ---- 9p io does not stop the machine ----
+--
+-- The transport used to busy-wait for each reply, which on a
+-- cooperative single-threaded kernel meant every other proc stopped for
+-- the duration -- and a mount does a round trip per walk, read and
+-- clunk. los.platform.p9's binding yields between polls now, so a proc
+-- with nothing to do with the filesystem keeps running.
+--
+-- The assertion is that another proc got turns while the io below was
+-- happening, so it counts ticks rather than merely surviving.
+local counter = sys.newport()
+sys.spawn([[
+	local sys = require("los.sys")
+	local a = ...
+	local n = 0
+
+	while true do
+		n = n + 1
+		sys.send(a.__right, n)
+		sys.yield()
+	end
+]], { arg = { __right = sys.sendright(counter) } })
+
+local function ticks()
+	local last = 0
+
+	while true do
+		local ok, v = sys.tryrecv(counter)
+
+		if not ok then
+			return last
+		end
+		last = v
+	end
+end
+
+sys.yield()
+
+local before = ticks()
+
+for _ = 1, 20 do
+	N:readfile("/host/hello.txt")
+end
+
+local after = ticks()
+
+tap.diag(string.format("spinner ticks: %d before, %d after 20 reads",
+    before, after))
+tap.ok(after > before,
+    "another proc ran during 9p io rather than being stalled by it")
 
 tap.done()
