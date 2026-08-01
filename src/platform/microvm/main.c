@@ -2,14 +2,14 @@
  * src/platform/efi/main.c's efi_main, called from boot.S's
  * long_mode_entry once paging/long mode/GDT are live.
  *
- * no real mount yet (see fs.c): the boot payload itself still comes in
- * over fw_cfg, the same mechanism src/platform/efi/main.c uses for the
- * test harness -- reused here as the ONLY way to run code, not just
- * the test path, since there is no virtio-9p root yet
- * (docs/microvm-plan.md). fs_init() below does succeed, though: the
- * embed half of fs.c's embed -> namespace lookup always exists, which
- * is what lets the boot payload's own require()s (los.thread, and
- * whatever the driver tasks need) resolve.
+ * The boot payload comes in over fw_cfg, the same mechanism
+ * src/platform/efi/main.c uses for its test harness, but here it is the
+ * only way to start code rather than just the test path: there is no
+ * disk and no /init.lua to fall back on. What a payload then mounts is
+ * its own business -- virtio-9p is available to it (see fs.c) -- but
+ * something has to run first to do the mounting.
+ *
+ * fs_init() cannot fail: the embedded set it serves is built in.
  */
 
 #include <stddef.h>

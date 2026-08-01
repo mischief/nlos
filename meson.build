@@ -173,13 +173,12 @@ else
     'src/platform/microvm/net.c',
   )
 
-  # embed -> namespace: a fixed, build-time set of libs that always
-  # exist on microvm regardless of what's mounted (nothing is, yet --
-  # see fs.c). chosen because they're core (every proc wants
-  # los.thread; the driver tasks need their own lib/*.lua) and
-  # unlikely to ever need runtime edits; anything you DO want to edit
-  # live belongs on a real mount once virtio-9p is wired to fs.c, not
-  # in this list.
+  # what the microvm C loader can open before any namespace exists (see
+  # src/platform/microvm/fs.c). Deliberately only the libs needed to
+  # reach the point of mounting something: the driver tasks' own
+  # lib/*.lua, los.thread, and the 9p client that turns virtio-9p into a
+  # mount. Anything you want to edit without rebuilding belongs on that
+  # mount, not in this list -- every entry here is frozen at build time.
   embed_files = [
     'lib/thread.lua',
     'lib/cons.lua',
