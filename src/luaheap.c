@@ -40,15 +40,17 @@ static const size_t classes[] = {
  * own per-call cost -- 92 bytes per AllocatePool call, measured -- stops
  * falling on every object.
  *
- * Sized against what a proc's heap actually is rather than against that
- * per-call cost, because the tail of the last chunk is pure loss and a
- * proc is small. A booted proc holds around 39K, so at 64K chunks it
- * took exactly one and wasted two thirds of it: measured 2.05x overhead
- * against lua's own view, versus 1.03x for a 725K heap where nine
- * chunks amortised the same tail. At 8K a 39K proc takes five chunks
- * and wastes part of one, and a large heap pays 1.1% for the extra
- * chunk_alloc calls -- which is the trade in the right direction, since
- * procs outnumber large heaps here.
+ * Sized against what the heap actually holds rather than against that
+ * per-call cost, because the tail of the last chunk is pure loss. At 64K
+ * chunks a single 39K proc took one chunk and wasted two thirds of it,
+ * measured 2.05x overhead against lua's own view.
+ *
+ * Slightly UNDER 8K, not 8K: the chunk header lives inside the chunk,
+ * but the chunk source's own does not. On efi that is malloc's 16 bytes
+ * plus the firmware pool's metadata, and at exactly 8192 the total
+ * spills into a third page -- 73898 bytes per proc against 57514 for
+ * this size, back when each proc had its own heap. The 128 is slack for
+ * headers we do not control rather than a tuned figure.
  */
 #define CHUNK_BYTES (8 * 1024 - 128)
 

@@ -2378,10 +2378,21 @@ los_sys_open(lua_State *L)
 
 /* ---- proc lifecycle ---- */
 
-/* chunks for a proc's luaheap. Going through malloc rather than
- * straight to the platform keeps this the same on both platforms and
- * keeps the chunks visible to malloc_stats -- and the per-call cost
- * that used to fall on every object is now paid once per 64K.
+/* chunks for the lua heap.
+ *
+ * Through malloc, and so through the firmware's pool, which does cost
+ * something: the machine loses about 1.26 bytes of conventional memory
+ * per byte the heap believes it mapped, and malloc_stats cannot see the
+ * difference because AllocatePool's metadata is not ours.
+ *
+ * Taking whole pages instead -- AllocatePages, no pool, no malloc header,
+ * the chunk header already living inside the chunk -- looks like the
+ * obvious fix and measured three times worse: 1.77 bytes per mapped byte
+ * against 1.26, and 73216 bytes per proc against 52224. The excess was
+ * also flat across 8K and 64K chunks, so it is not per-call overhead
+ * being amortised badly; the pool is simply better at reusing pages it
+ * already holds than we are at asking for new ones. Do not retry this
+ * without re-measuring both.
  */
 static void *
 kalloc_chunk(void *ud, size_t n)
