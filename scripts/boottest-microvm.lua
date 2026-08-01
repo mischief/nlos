@@ -82,6 +82,20 @@ if want9p then
 	f:write("hello from 9p\n")
 	f:close()
 
+	-- blocks.bin exists for test/boot/microvm_p9bench.lua, which reads
+	-- it a block at a time to time round trips. Each 4096-byte block
+	-- begins with its own index so a read can prove it landed at the
+	-- offset it asked for -- the whole question a pipelined transport
+	-- has to answer is whether replies still match their requests.
+	local b = assert(io.open(share .. "/blocks.bin", "wb"))
+
+	for i = 0, 63 do
+		local mark = string.format("block %04d\n", i)
+
+		b:write(mark, string.rep(".", 4096 - #mark))
+	end
+	b:close()
+
 	p9args = table.concat({
 		"-fsdev local,id=fs0,security_model=none,path=" .. q(share),
 		"-device virtio-9p-device,fsdev=fs0,mount_tag=hostshare," ..
