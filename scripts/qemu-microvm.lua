@@ -1,10 +1,13 @@
 #!/usr/bin/env lua5.4
 -- qemu-microvm.lua ELF PAYLOAD.lua -- boot the bare PVH kernel under
--- qemu's microvm machine type. no firmware, no disk: the payload is
--- injected via fw_cfg (same mechanism the efi platform's test harness
--- uses), since there is no filesystem yet (docs/microvm-plan.md).
--- console on stdio; a deliberate triple fault (src/platform/microvm/
--- reset.c) plus -no-reboot is what ends the guest.
+-- qemu's microvm machine type. no firmware and no disk, so the payload
+-- is injected via fw_cfg (the same mechanism the efi platform's test
+-- harness uses) -- something has to run before anything can mount a
+-- filesystem. console on stdio; a deliberate triple fault
+-- (src/platform/microvm/reset.c) plus -no-reboot ends the guest.
+--
+-- this attaches no virtio devices. scripts/boottest-microvm.lua is the
+-- one that does, per test, and is what the suite runs.
 
 local here = arg[0]:match("^(.*)/[^/]+$") or "."
 package.path = here .. "/?.lua;" .. package.path

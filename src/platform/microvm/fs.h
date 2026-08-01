@@ -1,9 +1,11 @@
 #ifndef FS_H
 #define FS_H
 
-/* no filesystem on microvm in this slice -- no virtio-9p yet (see
- * docs/microvm-plan.md). every call fails; dirs.c and libc/stdio.c
- * already handle fs_open() returning 0.
+/* the C loader's file source. On microvm that is the embedded set and
+ * nothing else, so a path outside it fails here -- dirs.c and
+ * libc/stdio.c already handle fs_open() returning 0. See fs.c on why
+ * this is not the whole filesystem: what a proc opens through its
+ * namespace, virtio-9p included, never reaches this interface.
  */
 struct fs_dirent {
 	char name[256];

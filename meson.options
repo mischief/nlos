@@ -11,9 +11,13 @@
 option('fw_network', type: 'feature', value: 'auto',
   description: 'firmware provides EFI_TCP4/EFI_UDP4 (enables the net tests)')
 
-# efi: today's only real platform, any of x86_64/aarch64/riscv64.
-# microvm: qemu's firmware-less x86_64 machine type (see
-# docs/microvm-plan.md) -- own PVH entry, own paging/idt/lapic, no
-# filesystem or net stack yet. x86_64-only.
+# efi: firmware boot, any of x86_64/aarch64/riscv64.
+# microvm: qemu's firmware-less x86_64 machine type -- own PVH entry,
+# paging, idt and lapic, with virtio-mmio for 9p and rng. Its root
+# filesystem is a host directory over virtio-9p. No network stack.
+# x86_64-only.
+#
+# A build is configured for one platform or the other, and `meson test`
+# runs whichever suite that build can produce a guest for.
 option('platform', type: 'combo', choices: ['efi', 'microvm'], value: 'efi',
   description: 'efi (firmware boot, all arches) or microvm (bare PVH, x86_64 only)')

@@ -624,25 +624,33 @@ receiver; `src/los.c` hosts `los.efi` and the filename lags the rename.
 POSIX compatibility or any compatibility layer. Running existing native
 binaries. Multi-user security (the threat model is buggy Lua, not
 hostile users). Performance beyond "interactive and pleasant in qemu
-and on a stick". Non-UEFI boot.
+and on a stick".
+
+Third-party code in the tree. `include/sys/queue.h` is the one vendored
+file and it is pure macros; a network stack is the usual way this rule
+gets tested, and importing lwip for microvm is not on the table.
 
 ## Open questions — recorded arguments, not commitments
 
-**Do we ever ExitBootServices?** Staying bluepilled gets a working
-allocator and real device drivers for free, and the interesting layer
-is firmware-agnostic anyway. The cost is that boot services is not a
-runtime: firmware TPL as one big cooperative lock, watchdog disabled,
-no true preemption, and a vendor-quirk minefield — `docs/uefi-notes.md`
-is the bill so far. Redpilling buys interrupt-driven IO, preemption, MP
-and power, and costs AllocatePool, ConOut, Stall and (the killer)
-SimpleFileSystem, which is the edit-Lua-and-reboot loop. Leaning:
-someday, if we hit a wall.
+**Do we ever ExitBootServices?** Answered, and the answer was "neither
+pill exclusively". `-Dplatform=microvm` builds for qemu's firmware-less
+machine: PVH entry, our own paging, IDT, LAPIC and physical allocator,
+virtio-mmio for 9p and rng. `-Dplatform=efi` is unchanged and remains
+the default and the only one that runs on real hardware or on aarch64
+and riscv64.
 
-The cheap move that makes that answer genuinely reversible rather than
-rhetorically reversible is a backend seam in `kernel_run` — one "wait
-for the next thing" abstraction, introduced while EFI is still the only
-implementation and the seam is three lines. `docs/microvm-plan.md`
-sketches microvm as a second platform with EFI retained.
+So the question is no longer whether to leave boot services but what
+each platform is for. EFI keeps the firmware's allocator, console and
+network stack, and pays for them in TPL-as-one-big-lock, no true
+preemption and a vendor-quirk minefield — `docs/uefi-notes.md` is that
+bill. microvm has interrupts, preemption and a boot measured in
+milliseconds, and owes everything the firmware was providing: it has no
+network stack at all, and its filesystem is a host directory over
+virtio-9p rather than a disk.
+
+Neither is a staging area for the other. The kernel proper stayed
+firmware-blind throughout, which is what made a second platform ~2400
+lines rather than a rewrite; keep it that way.
 
 **Is the protocol stack infrastructure or a demo?** DNS, HTTP, JSON and
 MCP are ~700 lines of application protocol that is not an operating

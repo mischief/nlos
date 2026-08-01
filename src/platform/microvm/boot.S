@@ -3,7 +3,8 @@
  * below, loads this ELF's PT_LOAD segments at their physical addresses,
  * and jumps to that entry point in 32-bit protected mode with paging
  * off, ebx = phys addr of struct hvm_start_info. No firmware, no real
- * mode, no multiboot -- see docs/microvm-plan.md.
+ * mode, no multiboot. main.c reads the memory map out of that struct;
+ * see pvh.h for its layout.
  *
  * from there: build flat identity-mapped page tables covering the low
  * 4GB with 2MB pages (so 0xFEE00000/0xFEC00000 -- LAPIC/IOAPIC -- are

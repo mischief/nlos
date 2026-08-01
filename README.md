@@ -111,6 +111,5 @@ which is what makes them comparable between runs.
   walked, known debts, non-goals. Written for agents, useful to humans.
 - [docs/uefi-notes.md](docs/uefi-notes.md) — boot path, toolchain facts
   that cost blood, firmware quirks, EFI event semantics.
-- [docs/microvm-plan.md](docs/microvm-plan.md),
-  [docs/namespace-design.md](docs/namespace-design.md) — parked designs;
-  recorded arguments rather than commitments.
+- [docs/namespace-design.md](docs/namespace-design.md) — a parked design;
+  a recorded argument rather than a commitment.

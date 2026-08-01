@@ -100,8 +100,8 @@ until an actual boundary is crossed.
 - **io.open walk**: split the path, longest-matching-prefix mount
   lookup, remaining path becomes the Twalk component list sent to that
   mount's right. one client-side ninep walker shared by every mount
-  (local esp, procfs, and eventually the microvm virtio-9p root all
-  use the same walker — see docs/microvm-plan.md).
+  (local esp, procfs, and the microvm virtio-9p root all use the same
+  walker).
 - **revocation is first-class.** mount = right, so `sys.close` on the
   underlying right instantly and correctly removes it from every
   namespace holding it — no unmount syscall, no stale entry. the

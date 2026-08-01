@@ -3,11 +3,10 @@
 --
 -- turns a handful of host files into one C source: a byte array per
 -- file plus a {path, data, len} lookup table, for
--- src/platform/microvm/fs.c to serve as the embed half of the
--- embed -> namespace lookup order (see fs.c). there is no disk on
--- microvm yet (docs/microvm-plan.md), so this is how a small,
+-- src/platform/microvm/fs.c to serve as its whole file source (see
+-- fs.c). there is no disk on microvm, so this is how a small,
 -- deliberately-chosen set of lib/*.lua files gets to exist at all
--- before a real mount does.
+-- before anything has mounted a namespace to hold the rest.
 --
 -- not the ld -r -b binary/objcopy trick: that ties symbol names to
 -- objcopy's path-mangling scheme, which varies by binutils version. a

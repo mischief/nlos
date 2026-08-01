@@ -1,7 +1,7 @@
 /* IDT: 256 gates, all present. 0-31 (minus the timer vector) are the
  * fatal path from idt_stubs.S's generic table -- dump registers and
- * halt, so a fault is a loud, readable stop instead of a silent hang
- * (see docs/microvm-plan.md, "own IDT ... no more silent hangs"). the
+ * halt, so a fault is a loud, readable stop instead of a silent hang,
+ * which is most of the reason for owning an IDT at all. the
  * LAPIC timer vector is the one exception: it must resume the
  * interrupted proc, so it gets its own entry point (isr_timer) wired
  * in by lapic_init(), not this file.

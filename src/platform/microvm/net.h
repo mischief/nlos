@@ -1,9 +1,16 @@
 #ifndef NET_H
 #define NET_H
 
-/* no network stack on microvm in this slice -- no virtio-net driver
- * yet (see docs/microvm-plan.md). every probe reports absent; kernel.c
- * already treats that as "no net task" and moves on.
+/* no network on microvm: there is no virtio-net driver. Every probe
+ * reports absent, and kernel.c already treats that as "no net task"
+ * and moves on, which is why this is a header of stubs rather than a
+ * missing file.
+ *
+ * The efi platform gets tcp and udp from the firmware's own EFI_TCP4
+ * and EFI_UDP4. There is no such donor here, so whatever lands has to
+ * be ours: virtio-net plus arp/icmp/udp, and eventually tcp, written
+ * in Lua where policy belongs. Importing lwip is not on the table --
+ * it would be the first third-party dependency in the tree.
  */
 int	net_init(void);
 int	net_have_tcp(void);
