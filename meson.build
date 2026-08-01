@@ -593,3 +593,30 @@ foreach t : microvm_tests
 endforeach
 
 endif # platform == 'microvm'
+
+# ---- host-native tests ----
+# src/luaheap.c is the per-lua_State allocator. It has no firmware and
+# no kernel in it -- the chunk source is a pair of function pointers --
+# so it is built and tested natively, on whichever host is driving the
+# build, regardless of -Dplatform or any cross file. These register for
+# both platforms because neither one is involved.
+
+luaheap_test = executable('luaheap_test',
+  ['test/luaheap_test.c', 'src/luaheap.c'],
+  include_directories: include_directories('src'),
+  native: true,
+)
+test('luaheap', luaheap_test, protocol: 'tap', timeout: 120)
+
+# the bench needs a real lua to allocate through, which is the host's
+# rather than the freestanding one this build produces.
+luaheap_lua_dep = dependency('lua5.4', native: true, required: false)
+if luaheap_lua_dep.found()
+  luaheap_bench = executable('luaheap_bench',
+    ['test/luaheap_bench.c', 'src/luaheap.c'],
+    include_directories: include_directories('src'),
+    dependencies: luaheap_lua_dep,
+    native: true,
+  )
+  test('luaheap-bench', luaheap_bench, protocol: 'tap', timeout: 120)
+endif
