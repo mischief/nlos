@@ -4,7 +4,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(9)
+tap.plan(11)
 
 -- echo child reflects whatever it gets back through a reply right
 local _, w = sys.spawn([[
@@ -51,6 +51,33 @@ local chain = sys.newport()
 local got = roundtrip({ carried = { __right = chain } })
 tap.ok(type(got.carried) == "table" and got.carried.__right ~= nil,
     "right survived a proc hop")
+
+-- ---- blocking twice is refused ----
+--
+-- sys.block yields to whoever resumed the coroutine it is called from.
+-- At the top level of a proc that is the kernel, which is the contract.
+-- Inside a coroutine it is that coroutine's resumer -- a thread
+-- scheduler -- so the kernel has marked the proc BLOCKED and taken it
+-- off the run queue while the proc carries on running. The next block
+-- then hangs a second waiter for one proc on a port, and wake_receivers
+-- walks a waiter that wait_clear already freed. Refuse the second one
+-- instead, where the mistake is, rather than faulting later.
+--
+-- los.thread's park() and recv() pick park over block via inthread(),
+-- so ordinary threaded code never reaches this. Requiring that module
+-- under a name other than "los.thread" gets a second scheduler with its
+-- own _current, which is one way to arrive here.
+local pa, pb = sys.newport(), sys.newport()
+local blocked = coroutine.create(function() sys.block(pa) end)
+local again = coroutine.create(function() sys.block(pb) end)
+
+tap.ok(coroutine.resume(blocked),
+    "sys.block inside a coroutine yields to the coroutine, not the kernel")
+
+local bok, berr = coroutine.resume(again)
+
+tap.ok(not bok and tostring(berr):find("already blocked") ~= nil,
+    "a second block from the same proc is refused: " .. tostring(berr))
 
 sys.send(w, { stop = true })
 tap.done()

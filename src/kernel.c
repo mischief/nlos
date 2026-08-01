@@ -1385,6 +1385,38 @@ api_send(lua_State *L)
 	return 1;
 }
 
+/* a proc about to block must hold no waits, because a proc that is
+ * blocked is not running and so cannot ask to block again. Reaching
+ * here with waits already attached means the last block never actually
+ * stopped this proc, and the only way that happens is a lua_yield that
+ * did not unwind to the kernel: sys.block called from inside a
+ * coroutine yields to whoever resumed it -- lib/los/thread.lua's
+ * scheduler -- while the kernel has already marked the proc BLOCKED and
+ * taken it off the run queue. The thread scheduler then runs the next
+ * thread, which blocks again, and now one port carries two waiters for
+ * one proc. wake_receivers saves the next waiter before wait_clear
+ * frees every wait the proc holds, so it walks a freed entry: a #GP,
+ * far from the mistake.
+ *
+ * An error rather than a panic, since any lua code can reach it. The
+ * fix is always to park instead -- los.thread's park() and recv() pick
+ * the right one via inthread(). Note that a second copy of that module
+ * loaded under another name is a second scheduler with its own
+ * _current, so inthread() answers no and lands here.
+ *
+ * SLIST_EMPTY rather than a scan for this port: the invariant is that
+ * there are no waits at all, which is both stronger and O(1).
+ * api_altblock is not guarded because it clears any waits up front.
+ */
+static int
+blocking_twice(lua_State *L, struct kproc *p)
+{
+	if (SLIST_EMPTY(&p->waiters))
+		return 0;
+	return luaL_error(L, "already blocked (sys.block from a coroutine? "
+	    "use los.thread's park)");
+}
+
 /* block until this port might have room for a message of `need` bytes,
  * the send-side api_block. `need` is optional and defaults to zero,
  * which asks the old question: "is there any room at all".
@@ -1420,6 +1452,7 @@ api_sendblock(lua_State *L)
 		return luaL_error(L, "bad right");
 	if (need < 0)
 		return luaL_error(L, "negative size");
+	blocking_twice(L, p);
 	if (r->port->dead)
 		return 0;	/* never going to drain; let the send report it */
 	if ((size_t)need > MAXQUEUE)
@@ -1476,6 +1509,7 @@ api_block(lua_State *L)
 		return luaL_error(L, "bad receive right");
 	if (r->port->head)
 		return 0;	/* message already there, don't sleep */
+	blocking_twice(L, p);
 	if (!wait_add(p, r->port, 0))
 		return luaL_error(L, "out of waiters");
 	p->status = BLOCKED;
