@@ -7,32 +7,34 @@
  * byte arrives, the handler moves it into a ring, and uart_rx takes from
  * there, with a poll of the port as a fallback.
  *
- * That path is unproven, because no byte has ever been seen arriving on a
- * microvm guest, and the cause is not in this file. What was measured,
- * against qemu 10.2.3, dumping the registers while a host wrote bytes
- * into the chardev:
+ * Transmit works. Receive does not, on a microvm guest under qemu
+ * 10.2.3, and the cause is still unknown. What is known, so the next
+ * attempt starts further along:
  *
- *   LSR=60 IER=01 IIR=c1 MCR=0b
+ * The guest side is proven good. An MCR loopback self-test -- set
+ * MCR_LOOP, write a byte to THR, read it back -- returns the byte, and
+ * returns it out of the ring below rather than from the port, which
+ * means the interrupt fired and the handler ran. So port addressing,
+ * the receive path, the IOAPIC route and the ISR are all correct, with
+ * no host involvement at all.
  *
- * That is THRE and TEMT set with DR clear -- correctly programmed,
- * receive interrupt enabled, DTR/RTS/OUT2 asserted, and simply no data.
- * It reads the same with the fifo enabled and disabled, at divisor 1 and
- * divisor 12, under kvm and under tcg. Transmit through the very same
- * device and chardev is perfect; the whole boot log comes out of
- * uart_tx.
+ * The host side works too. A real Linux kernel booted on identical
+ * machine arguments takes input from the same chardev indefinitely.
  *
- * The telling part is on the host side: qemu accepted about eight bytes
- * written into the socket over three seconds and then stopped reading it
- * altogether, while continuing to send guest output down the same
- * connection. So the bytes are not being dropped between the device and
- * here -- qemu's serial front end never consumed them in the first
- * place, and eventually stopped taking any.
+ * Between those, our guest never sees a byte from the host. Identical
+ * with the fifo on and off, at divisor 1 and 12, under kvm and tcg, and
+ * across four chardev backends (stdio, mon:stdio, unix socket, pipe).
+ * Registers at the time read LSR=60 IER=01 IIR=c1 MCR=0b: correctly
+ * programmed, receive enabled, DTR/RTS/OUT2 asserted, no data.
  *
- * The ring and the handler below are therefore written but untested, and
- * uart_rx still polls the port as a fallback. The next person on this
- * should start at qemu's hw/char/serial.c and hw/i386/microvm.c rather
- * than re-testing the guest side, which is the part now known to be
- * innocent.
+ * One earlier reading was wrong and is worth not repeating: qemu
+ * "refusing" writes after a few bytes is not a fault, it is
+ * serial_can_receive advertising itl - fifo_used with our trigger level
+ * of 1, so it buffers a single byte and waits for the guest to drain
+ * it. That the guest never drains it is the symptom, not the cause.
+ *
+ * The ring and handler are therefore written but untested against real
+ * input, and uart_rx still polls the port as a fallback.
  */
 
 #include "microvm.h"
