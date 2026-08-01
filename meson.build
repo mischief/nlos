@@ -590,6 +590,7 @@ microvm_tests = [
   ['rng', []],
   ['p9mount', ['--9p']],
   ['eth', ['--net']],
+  ['idle', []],
 ]
 
 foreach t : microvm_tests

@@ -10,6 +10,10 @@ void	*pmm_alloc(size_t n);
 void	pmm_free(void *p, size_t n);
 void	pmm_meminfo(size_t *total, size_t *avail);
 
+/* uart.c */
+void	uart_isr(void);
+void	uart_irq_enable(void);
+
 /* tsc.c */
 void	tsc_calibrate(void);
 unsigned long long tsc_hz(void);
@@ -42,6 +46,7 @@ void	ioapic_mask(int gsi);
 /* idt_stubs.S */
 void	isr_timer(void);
 void	isr_virtio(void);
+void	isr_uart(void);
 
 /* lapic.c: end-of-interrupt, which every handler owes the LAPIC before
  * it returns or no further interrupt at that priority is delivered.

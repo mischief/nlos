@@ -127,6 +127,11 @@ microvm_main(unsigned long start_info)
 	 */
 	__asm__ volatile ("sti");
 
+	/* after sti and after the ioapic is masked: routing the line is
+	 * the last step, so nothing can fire into a half-built machine.
+	 */
+	uart_irq_enable();
+
 	kernel_clock_init();
 
 	if (fs_init() != 0)

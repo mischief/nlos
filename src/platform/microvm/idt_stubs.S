@@ -144,3 +144,33 @@ isr_virtio:
 	popq	%rcx
 	popq	%rax
 	iretq
+
+/* com1 receive. Same shape as isr_timer and isr_virtio: returns to the
+ * interrupted proc rather than halting, so it saves only the caller-
+ * clobbered registers and iretqs.
+ */
+	.text
+	.globl	isr_uart
+isr_uart:
+	pushq	%rax
+	pushq	%rcx
+	pushq	%rdx
+	pushq	%rsi
+	pushq	%rdi
+	pushq	%r8
+	pushq	%r9
+	pushq	%r10
+	pushq	%r11
+
+	call	uart_isr
+
+	popq	%r11
+	popq	%r10
+	popq	%r9
+	popq	%r8
+	popq	%rdi
+	popq	%rsi
+	popq	%rdx
+	popq	%rcx
+	popq	%rax
+	iretq
