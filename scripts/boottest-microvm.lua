@@ -26,11 +26,13 @@ local q = require("arch").quote
 
 local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
-local want9p = false
+local want9p, wantnet = false, false
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
 		want9p = true
+	elseif arg[i] == "--net" then
+		wantnet = true
 	end
 end
 
@@ -91,6 +93,19 @@ end
 -- virtio.c scans a fixed eight slots either way.
 local rngargs = "-device virtio-rng-device,bus=virtio-mmio-bus.1"
 
+-- --net gives the guest qemu's user networking, where slirp answers as
+-- the gateway at 10.0.2.2 and leases the guest 10.0.2.15. Enough for an
+-- arp exchange to have something on the far side; a bridge would be
+-- needed for anything wanting a real segment.
+local netargs = ""
+
+if wantnet then
+	netargs = table.concat({
+		"-netdev user,id=n0",
+		"-device virtio-net-device,netdev=n0,bus=virtio-mmio-bus.2",
+	}, " ")
+end
+
 -- ioapic2=off pins virtio-mmio to the documented 8-slot/GSI-5-base
 -- layout (qemu's hw/i386/microvm.c): with a second IOAPIC present the
 -- machine silently switches to 24 slots at a different irq base, which
@@ -105,7 +120,7 @@ local cmd = table.concat({
 	"-enable-kvm -cpu host -m 256",
 	"-kernel " .. q(elf),
 	"-fw_cfg name=opt/org.luaos.test,file=" .. q(payload),
-	p9args, rngargs,
+	p9args, rngargs, netargs,
 	"-nodefaults -no-user-config -no-reboot -nographic",
 	"-serial file:" .. q(tmp .. "/serial.log"),
 	">/dev/null 2>&1",

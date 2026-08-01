@@ -1,0 +1,112 @@
+-- virtio-net: a mac, a frame out, a frame in.
+--
+-- The proof is an ARP exchange, because it is the smallest thing that
+-- needs both directions to work and cannot be faked by loopback: we ask
+-- who has the gateway's address, and something off the machine has to
+-- answer. Under qemu's user networking that is slirp, at 10.0.2.2.
+--
+-- Everything above the frame is written here, in Lua, which is the
+-- point -- the C side hands over bytes and knows nothing about ARP.
+
+local sys = require("los.sys")
+local thread = require("los.thread")
+local tap = require("tap")
+
+tap.plan(8)
+
+local caps = sys.granted()
+
+if not tap.ok(caps.eth ~= nil, "an eth capability was granted") then
+	tap.diag("no virtio-net device found; the rest cannot run")
+	tap.done()
+	return
+end
+
+local function rpc(msg)
+	local reply = sys.newport()
+
+	msg.reply = { __right = sys.sendright(reply) }
+	sys.send(caps.eth, msg)
+	return thread.recv(reply)
+end
+
+-- ---- the mac ----
+local r = rpc({ op = "mac" })
+local mac = r and r.mac
+
+tap.ok(type(mac) == "string" and #mac == 6,
+    "the device reports a 6-byte mac")
+
+if mac then
+	tap.diag(string.format("mac %02x:%02x:%02x:%02x:%02x:%02x",
+	    mac:byte(1, 6)))
+end
+
+-- qemu hands out 52:54:00:... for its own devices; the first octet
+-- being even is what makes it a unicast address rather than a multicast
+-- one, and a device reporting otherwise is misconfigured.
+tap.ok(mac and (mac:byte(1) & 1) == 0,
+    "and it is a unicast address")
+
+-- ---- an ARP request ----
+local BCAST = string.rep("\255", 6)
+local ME = "\10\0\2\15"		-- 10.0.2.15, what slirp leases
+local GW = "\10\0\2\2"		-- 10.0.2.2, slirp itself
+
+-- ethernet header + arp payload, by hand. string.pack does the widths;
+-- everything here is network byte order, which is what ">" gives.
+local function arp_request()
+	return BCAST .. mac .. string.pack(">I2", 0x0806) ..
+	    string.pack(">I2I2I1I1I2", 1, 0x0800, 6, 4, 1) ..
+	    mac .. ME .. string.rep("\0", 6) .. GW
+end
+
+local sent = rpc({ op = "send", data = arp_request() })
+
+tap.ok(sent and sent.ok, "an arp request goes out on the wire")
+
+-- ---- and the answer ----
+-- polling, not blocking: frames arrive unasked and nothing here can
+-- park on the device until there is interrupt routing to wake it.
+local reply, tries
+local deadline = sys.uptime_ms() + 3000
+
+tries = 0
+while sys.uptime_ms() < deadline do
+	tries = tries + 1
+
+	local got = rpc({ op = "recv" })
+	local f = got and got.data
+
+	if f and #f >= 42 and string.unpack(">I2", f, 13) == 0x0806 then
+		local op = string.unpack(">I2", f, 21)
+
+		if op == 2 then		-- an ARP reply
+			reply = f
+			break
+		end
+	end
+	sys.yield()
+end
+
+tap.diag("polled " .. tries .. " times")
+
+if not tap.ok(reply ~= nil, "an arp reply came back") then
+	tap.diag("nothing answered for 10.0.2.2 within 3s")
+	tap.done()
+	return
+end
+
+-- ---- and it is addressed to us, about the address we asked for ----
+tap.is(reply:sub(1, 6), mac, "the reply is addressed to our mac")
+
+local sender_mac = reply:sub(23, 28)
+local sender_ip = reply:sub(29, 32)
+
+tap.is(sender_ip, GW, "it is from the address we asked about")
+tap.ok(sender_mac ~= BCAST and sender_mac ~= string.rep("\0", 6),
+    "and carries a real mac for it")
+tap.diag(string.format("10.0.2.2 is at %02x:%02x:%02x:%02x:%02x:%02x",
+    sender_mac:byte(1, 6)))
+
+tap.done()

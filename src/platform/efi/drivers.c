@@ -135,3 +135,25 @@ luaopen_los_platform_p9(lua_State *L)
 	luaL_newlib(L, p9_emptylib);
 	return 1;
 }
+
+/* raw ethernet is a microvm affair. This platform gets tcp and udp from
+ * the firmware's own EFI_TCP4/EFI_UDP4, so it has no use for frames and
+ * no virtio-mmio driver to produce them with. Same empty-symbol
+ * arrangement as p9 above.
+ */
+int
+platform_have_eth(void)
+{
+	return 0;
+}
+
+static const luaL_Reg eth_emptylib[] = { { NULL, NULL } };
+
+int luaopen_los_platform_eth(lua_State *L);
+
+int
+luaopen_los_platform_eth(lua_State *L)
+{
+	luaL_newlib(L, eth_emptylib);
+	return 1;
+}

@@ -114,7 +114,7 @@ enum { DEAD, READY, BLOCKED };
  * lets it build the root namespace every other proc inherits.
  */
 enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
-    PRIV_TCP, PRIV_UDP, PRIV_P9 };
+    PRIV_TCP, PRIV_UDP, PRIV_P9, PRIV_ETH };
 
 struct kmsg {
 	struct kmsg *next;
@@ -404,6 +404,7 @@ static struct kport *udpport;
 static int have_net;
 static int have_udp;
 static int have_p9;
+static int have_eth;
 
 /* cycles per millisecond, measured once at boot. platform_ticks() is a
  * raw hardware counter -- a tick count, not a time -- and its rate is
@@ -2345,6 +2346,7 @@ extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_tcp(lua_State *L);	/* net.c */
 extern int luaopen_los_platform_udp(lua_State *L);	/* net.c */
 extern int luaopen_los_platform_p9(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
+extern int luaopen_los_platform_eth(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
  * kernel-owned primitives that outlive efi (ticks). registered in
@@ -2653,6 +2655,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	case PRIV_P9:
 		lua_pushcfunction(p->L, luaopen_los_platform_p9);
 		lua_setfield(p->L, -2, "los.platform.p9");
+		break;
+	case PRIV_ETH:
+		lua_pushcfunction(p->L, luaopen_los_platform_eth);
+		lua_setfield(p->L, -2, "los.platform.eth");
 		break;
 	}
 
@@ -2988,6 +2994,7 @@ kernel_init(void)
 	have_net = (net_init() == 0);
 	have_udp = net_have_udp();
 	have_p9 = platform_have_p9();
+	have_eth = platform_have_eth();
 	return 0;
 }
 
@@ -3101,6 +3108,16 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_P9, .devport = 0, .devrecv = 0,
 		  .what = "the virtio-9p filesystem", .enabled = have_p9,
 		  .capname = "p9" },
+		/* raw ethernet frames, microvm only. Unlike tcp and udp
+		 * above, which re-serve a stack the firmware already
+		 * implements, this task owns a wire and nothing more --
+		 * everything from arp upwards is Lua on the far side of its
+		 * port (lib/eth.lua).
+		 */
+		{ .path = "/lib/eth.lua", .chunkname = "=eth",
+		  .priv = PRIV_ETH, .devport = 0, .devrecv = 0,
+		  .what = "networking (raw ethernet)", .enabled = have_eth,
+		  .capname = "eth" },
 	};
 	size_t ndrivers = sizeof drivers / sizeof drivers[0];
 	int pids[sizeof drivers / sizeof drivers[0]];

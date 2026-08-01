@@ -34,6 +34,12 @@ void	platform_boot_extra_modules(lua_State *L);
  */
 int	platform_have_p9(void);
 
+/* is there a virtio-net to hand raw frames to? microvm only: the efi
+ * platform takes tcp and udp from the firmware instead and never sees a
+ * frame.
+ */
+int	platform_have_eth(void);
+
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);

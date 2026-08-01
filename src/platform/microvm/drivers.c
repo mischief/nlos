@@ -12,6 +12,7 @@
 
 #include "platform.h"
 #include "virtio_9p.h"
+#include "virtio_net.h"
 #include "virtio_rng.h"
 
 extern void console_write(const char *s, unsigned long n);
@@ -282,6 +283,79 @@ platform_have_p9(void)
 
 	if (!tried) {
 		present = (virtio_9p_init() == 0);
+		tried = 1;
+	}
+	return present;
+}
+
+/* ---- los.platform.eth: virtio-net, raw frames ----
+ *
+ * Frames and a mac address, and nothing above them. There is no
+ * firmware stack to inherit here as there is on efi, so arp, ip, icmp
+ * and udp all have to be written -- and they go in Lua. This is the
+ * whole of the C side.
+ */
+
+static int
+eth_mac(lua_State *L)
+{
+	unsigned char mac[6];
+
+	if (virtio_net_mac(mac) != 0)
+		return 0;		/* nil: the device offered none */
+	lua_pushlstring(L, (const char *)mac, sizeof mac);
+	return 1;
+}
+
+static int
+eth_send(lua_State *L)
+{
+	size_t n;
+	const char *frame = luaL_checklstring(L, 1, &n);
+
+	/* false rather than an error when the queue is full: a caller
+	 * pacing itself against the wire is doing something ordinary, not
+	 * failing.
+	 */
+	lua_pushboolean(L, virtio_net_send(frame, n) == 0);
+	return 1;
+}
+
+static int
+eth_recv(lua_State *L)
+{
+	char buf[1514];
+	int n = virtio_net_recv(buf, sizeof buf);
+
+	if (n <= 0)
+		return 0;		/* nil: nothing waiting, or oversized */
+	lua_pushlstring(L, buf, (size_t)n);
+	return 1;
+}
+
+static const luaL_Reg ethlib[] = {
+	{ "mac", eth_mac },
+	{ "send", eth_send },
+	{ "recv", eth_recv },
+	{ NULL, NULL }
+};
+
+int luaopen_los_platform_eth(lua_State *L);
+
+int
+luaopen_los_platform_eth(lua_State *L)
+{
+	luaL_newlib(L, ethlib);
+	return 1;
+}
+
+int
+platform_have_eth(void)
+{
+	static int tried, present;
+
+	if (!tried) {
+		present = (virtio_net_init() == 0);
 		tried = 1;
 	}
 	return present;

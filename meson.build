@@ -79,6 +79,7 @@ if arch == 'x86_64'
       'src/platform/microvm/virtio.c',
       'src/platform/microvm/virtio_rng.c',
       'src/platform/microvm/virtio_9p.c',
+      'src/platform/microvm/virtio_net.c',
     )
   endif
 elif arch == 'aarch64'
@@ -194,6 +195,7 @@ else
     'lib/chan.lua',
     'lib/p9fs.lua',
     'lib/p9srv.lua',
+    'lib/eth.lua',
     'lib/tap.lua',
   ]
   embed_args = []
@@ -382,6 +384,7 @@ lua_payload = files(
   'lib/procfs.lua',
   'lib/prog.lua',
   'lib/ps.lua',
+  'lib/eth.lua',
   'lib/srvc.lua',
   'lib/srvd.lua',
   'lib/srvfs.lua',
@@ -585,6 +588,7 @@ microvm_tests = [
   ['hello', []],
   ['rng', []],
   ['p9mount', ['--9p']],
+  ['eth', ['--net']],
 ]
 
 foreach t : microvm_tests
