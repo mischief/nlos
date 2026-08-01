@@ -12,13 +12,26 @@
  */
 #define ALIGN 8
 
-/* Spacing is finer below 128 because that is where lua actually lives:
- * measured on a booted proc, the mean live object is ~68 bytes across
- * ~570 live allocations. Classes past that exist to keep the large-block
- * path rare rather than to be packed tightly.
+/* Chosen from the measured request profile, not from a size-doubling
+ * habit. test/luaheap_bench.c counts what lua actually asks for: of
+ * 14430 requests in a representative workload, seven sizes are 95% of
+ * them -- 29, 56, 48, 34, 28, 33 and 40 bytes -- and only 36 requests
+ * exceeded 1024 bytes. Those are lua's own structures and short string
+ * headers, so the shape holds across workloads even where the counts
+ * do not.
+ *
+ * Hence 8-byte spacing all the way to 64, which is where nearly
+ * everything lands. Coarse doubling above it, since requests there are
+ * rare enough that the rounding costs less than the extra free lists
+ * would. Every class must stay a multiple of ALIGN: a class is the
+ * stride between consecutive blocks in a chunk, so a class of 28 would
+ * hand out misaligned pointers.
+ *
+ * Rounding is worth this attention because it is where the waste is:
+ * 90457 bytes of 108145 in that same run, against 352 bytes of headers.
  */
 static const size_t classes[] = {
-	16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512,
+	16, 24, 32, 40, 48, 56, 64, 80, 96, 128, 192, 256, 384, 512,
 };
 
 #define NCLASS (sizeof classes / sizeof classes[0])
@@ -63,6 +76,12 @@ struct luaheap {
 
 	size_t live, peak, mapped;
 	unsigned long nchunks, nlarges;
+
+	/* sum of the class sizes of live small blocks, and of what lua
+	 * asked for in live large ones, so the rounding cost can be told
+	 * apart from chunk tails when reporting
+	 */
+	size_t rounded, large_asked;
 };
 
 /* the smallest class that fits, or NCLASS for the large path.
@@ -170,6 +189,7 @@ small_alloc(struct luaheap *h, size_t ci)
 	if (p) {
 		/* the link lives in the free block's own first word */
 		h->freelist[ci] = *(void **)p;
+		h->rounded += want;
 		return p;
 	}
 	if (h->bumpleft < want && !newchunk(h, want))
@@ -178,7 +198,16 @@ small_alloc(struct luaheap *h, size_t ci)
 	p = h->bump;
 	h->bump += want;
 	h->bumpleft -= want;
+	h->rounded += want;
 	return p;
+}
+
+static void
+small_free(struct luaheap *h, void *ptr, size_t ci)
+{
+	*(void **)ptr = h->freelist[ci];
+	h->freelist[ci] = ptr;
+	h->rounded -= classes[ci];
 }
 
 static void *
@@ -194,11 +223,12 @@ large_alloc(struct luaheap *h, size_t n)
 	h->larges = l;
 	h->mapped += want;
 	h->nlarges++;
+	h->large_asked += n;
 	return (char *)l + sizeof *l;
 }
 
 static void
-large_free(struct luaheap *h, void *ptr)
+large_free(struct luaheap *h, void *ptr, size_t asked)
 {
 	struct large *l = (struct large *)((char *)ptr - sizeof(struct large));
 	struct large **pp = &h->larges;
@@ -210,6 +240,7 @@ large_free(struct luaheap *h, void *ptr)
 	*pp = l->next;
 	h->mapped -= l->size;
 	h->nlarges--;
+	h->large_asked -= asked < h->large_asked ? asked : h->large_asked;
 	h->ops->chunk_free(h->ud, l, l->size);
 }
 
@@ -224,12 +255,10 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 	if (nsize == 0) {
 		if (ptr) {
 			oc = classof(osize);
-			if (oc < NCLASS) {
-				*(void **)ptr = h->freelist[oc];
-				h->freelist[oc] = ptr;
-			} else {
-				large_free(h, ptr);
-			}
+			if (oc < NCLASS)
+				small_free(h, ptr, oc);
+			else
+				large_free(h, ptr, osize);
 			h->live -= osize;
 		}
 		return 0;
@@ -269,12 +298,10 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 		return 0;
 	memcpy(q, ptr, osize < nsize ? osize : nsize);
 
-	if (oc < NCLASS) {
-		*(void **)ptr = h->freelist[oc];
-		h->freelist[oc] = ptr;
-	} else {
-		large_free(h, ptr);
-	}
+	if (oc < NCLASS)
+		small_free(h, ptr, oc);
+	else
+		large_free(h, ptr, osize);
 
 	h->live += nsize - osize;
 	if (h->live > h->peak)
@@ -293,4 +320,22 @@ luaheap_stats(const struct luaheap *h, struct luaheap_stats *out)
 	out->waste = h->mapped > h->live ? h->mapped - h->live : 0;
 	out->chunks = h->nchunks;
 	out->larges = h->nlarges;
+
+	/* small blocks carry nothing, so the only headers are one per
+	 * chunk and one per outstanding large block.
+	 */
+	out->headers = h->nchunks * sizeof(struct chunk) +
+	    h->nlarges * sizeof(struct large);
+
+	/* h->rounded counts live small blocks at their class size, so the
+	 * difference from what lua asked for in those same blocks is the
+	 * rounding cost. Large blocks are excluded from both sides: they
+	 * are not rounded to a class, and their header is counted above.
+	 */
+	size_t small_asked = h->live > h->large_asked ?
+	    h->live - h->large_asked : 0;
+
+	out->rounding = h->rounded > small_asked ? h->rounded - small_asked : 0;
+	out->unused = out->waste > out->rounding + out->headers ?
+	    out->waste - out->rounding - out->headers : 0;
 }

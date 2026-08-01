@@ -41,6 +41,18 @@ struct luaheap_stats {
 	size_t	waste;		/* mapped - live, the overhead this is for */
 	unsigned long chunks;
 	unsigned long larges;
+
+	/* where the waste is, since "no header" is only true of the
+	 * small path and the rest is worth being able to see:
+	 *   rounding  live blocks' class size, less what lua asked for
+	 *   headers   struct large per big block, struct chunk per chunk
+	 *   unused    mapped bytes never handed out -- the tail of the
+	 *             current chunk, plus what earlier chunks abandoned
+	 * The three sum to waste.
+	 */
+	size_t	rounding;
+	size_t	headers;
+	size_t	unused;
 };
 
 struct luaheap;

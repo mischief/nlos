@@ -86,6 +86,37 @@ heap_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	return luaheap_realloc(ud, ptr, ptr ? osize : 0, nsize);
 }
 
+/* ---- what sizes does lua actually ask for? ----
+ *
+ * Size classes are only as good as the guess behind them, so count the
+ * requests instead of guessing. Exact tallies up to HIST_EXACT, which
+ * covers everything a class would ever be chosen for.
+ */
+#define HIST_EXACT 1024
+
+static unsigned long hist[HIST_EXACT + 1];
+static unsigned long hist_big, hist_total;
+
+static void
+note_size(size_t n)
+{
+	hist_total++;
+	if (n <= HIST_EXACT)
+		hist[n]++;
+	else
+		hist_big++;
+}
+
+static int
+cmp_count(const void *a, const void *b)
+{
+	size_t x = *(const size_t *)a, y = *(const size_t *)b;
+
+	if (hist[x] != hist[y])
+		return hist[x] < hist[y] ? 1 : -1;
+	return x < y ? -1 : 1;
+}
+
 /* ---- allocator B: what the kernel does now ---- */
 
 struct plain {
@@ -108,6 +139,8 @@ plain_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 		}
 		return 0;
 	}
+
+	note_size(nsize);
 
 	void *q = realloc(ptr, nsize);
 
@@ -206,10 +239,60 @@ main(void)
 	diag("chunks %lu, large blocks outstanding %lu",
 	    st.chunks, st.larges);
 
+	diag("");
+	diag("waste %zu = rounding %zu + headers %zu + unused chunk %zu",
+	    st.waste, st.rounding, st.headers, st.unused);
+
 	if (st.mapped && now_bytes) {
+		diag("");
 		diag("ratio: luaheap is %.2fx the size of the current scheme",
 		    (double)st.mapped / (double)now_bytes);
 	}
+
+	/* ---- the request profile, for choosing classes ---- */
+	size_t order[HIST_EXACT];
+	int n = 0;
+
+	for (size_t i = 1; i <= HIST_EXACT; i++) {
+		if (hist[i])
+			order[n++] = i;
+	}
+	qsort(order, (size_t)n, sizeof order[0], cmp_count);
+
+	diag("");
+	diag("%lu requests total, %lu over %d bytes, %d distinct sizes below",
+	    hist_total, hist_big, HIST_EXACT, n);
+	diag("the twenty most-requested sizes:");
+	for (int i = 0; i < n && i < 20; i++) {
+		diag("  %4zu bytes  %8lu  %5.2f%%", order[i], hist[order[i]],
+		    100.0 * (double)hist[order[i]] / (double)hist_total);
+	}
+
+	/* how much of every request the current classes actually waste */
+	static const size_t cls[] = {
+		16, 24, 32, 40, 48, 56, 64, 80, 96, 128, 192, 256, 384, 512,
+	};
+	unsigned long long asked = 0, served = 0;
+
+	for (size_t i = 1; i <= HIST_EXACT; i++) {
+		if (!hist[i])
+			continue;
+
+		size_t got = i;
+
+		for (size_t k = 0; k < sizeof cls / sizeof cls[0]; k++) {
+			if (i <= cls[k]) {
+				got = cls[k];
+				break;
+			}
+		}
+		asked += (unsigned long long)hist[i] * i;
+		served += (unsigned long long)hist[i] * got;
+	}
+	diag("");
+	diag("current classes over all requests: asked %llu, served %llu "
+	    "(%.1f%% rounding loss)", asked, served,
+	    100.0 * (double)(served - asked) / (double)asked);
 
 	ok(st.mapped < now_bytes,
 	    "luaheap holds less memory than the current scheme");
