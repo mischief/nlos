@@ -1,16 +1,15 @@
 /* bump/freelist physical allocator, in the shape of 9front's xalloc.c
- * (sys/src/9/port/xalloc.c): one first-fit hole list, seeded from a
- * single carved-out range rather than a parsed PVH memory map.
+ * (sys/src/9/port/xalloc.c): one first-fit hole list, seeded by
+ * pmm_add with whatever usable ranges main.c found in the PVH memory
+ * map. Several regions are ordinary -- a machine with RAM either side
+ * of the MMIO hole contributes one each.
  *
- * parsing hvm_start_info's real memmap is future work (see
- * docs/microvm-plan.md); qemu's microvm always gives at least the low
- * megabytes below any MMIO hole, so hardcoding a range below 512MB is
- * safe for -m values this small slice is tested with.
- *
- * no coalescing on free: freed blocks rejoin the list as-is. fine for
- * a boot-to-serial smoke test; would fragment badly under sustained
- * churn, which is exactly the kind of cost the parked plan's virtio-9p
- * phase should revisit this allocator for.
+ * no coalescing on free: freed blocks rejoin the list as-is, and two
+ * adjacent frees stay two blocks forever. So the largest request that
+ * can still be met shrinks under churn even while the free total does
+ * not, and pmm_meminfo's avail cannot be read as "a block this big is
+ * available". Fine while allocation is dominated by a few long-lived
+ * lua heaps; wrong the moment anything allocates in a loop.
  */
 
 #include <stddef.h>
@@ -34,24 +33,32 @@ align_up(size_t n)
 	return (n + (ALIGN - 1)) & ~(size_t)(ALIGN - 1);
 }
 
+/* hand the allocator a usable range. the block header lives in the
+ * range itself, so anything too small to hold one is dropped rather
+ * than scribbled on.
+ */
 void
-pmm_init(uintptr_t base, size_t len)
+pmm_add(uintptr_t base, size_t len)
 {
-	struct pmm_block *b = (struct pmm_block *)base;
+	uintptr_t end = base + len;
+	struct pmm_block *b;
 
-	b->size = len;
-	b->next = 0;
+	base = align_up(base);
+	if (end <= base || end - base < sizeof(struct pmm_block))
+		return;
+
+	b = (struct pmm_block *)base;
+	b->size = end - base;
+	b->next = freelist;
 	freelist = b;
-	arena_bytes = len;
+	arena_bytes += b->size;
 }
 
 /* what the machine has, and what is left of it.
  *
- * total is the carved range pmm_init was handed, not the machine's RAM:
- * until hvm_start_info's memmap is parsed that range is a hardcoded
- * slice, so this under-reports a larger -m. avail walks the hole list,
- * which is exact but says nothing about the largest single request that
- * can still be met, since nothing coalesces on free.
+ * total is everything pmm_add was given, so it is the machine's usable
+ * RAM less our own image rather than its -m. avail walks the hole list;
+ * see the header on why it is not the largest allocatable block.
  */
 void
 pmm_meminfo(size_t *total, size_t *avail)
