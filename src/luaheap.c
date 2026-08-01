@@ -36,11 +36,21 @@ static const size_t classes[] = {
 
 #define NCLASS (sizeof classes / sizeof classes[0])
 
-/* One chunk backs many small blocks. 64K keeps the chunk source's own
- * per-call cost -- 92 bytes per AllocatePool call, measured -- down to
- * a fraction of a byte per object.
+/* One chunk backs many small blocks, which is how the chunk source's
+ * own per-call cost -- 92 bytes per AllocatePool call, measured -- stops
+ * falling on every object.
+ *
+ * Sized against what a proc's heap actually is rather than against that
+ * per-call cost, because the tail of the last chunk is pure loss and a
+ * proc is small. A booted proc holds around 39K, so at 64K chunks it
+ * took exactly one and wasted two thirds of it: measured 2.05x overhead
+ * against lua's own view, versus 1.03x for a 725K heap where nine
+ * chunks amortised the same tail. At 8K a 39K proc takes five chunks
+ * and wastes part of one, and a large heap pays 1.1% for the extra
+ * chunk_alloc calls -- which is the trade in the right direction, since
+ * procs outnumber large heaps here.
  */
-#define CHUNK_BYTES (64 * 1024)
+#define CHUNK_BYTES (8 * 1024 - 128)
 
 struct chunk {
 	struct chunk *next;
@@ -119,6 +129,7 @@ luaheap_new(const struct luaheap_ops *ops, void *ud)
 	memset(h, 0, sizeof *h);
 	h->ops = ops;
 	h->ud = ud;
+	h->mapped = sizeof *h;	/* the heap is part of what the heap costs */
 	return h;
 }
 
@@ -150,13 +161,39 @@ luaheap_destroy(struct luaheap *h)
 	ops->chunk_free(ud, h, sizeof *h);
 }
 
-/* take a fresh chunk and make it the bump region.
+/* carve whatever is left of the current bump region into free blocks
+ * rather than abandoning it.
  *
- * whatever is left of the old one is abandoned rather than tracked. It
- * is under one class width by construction -- we only get here when the
- * request did not fit -- so the loss is bounded by the largest class,
- * once per 64K chunk.
+ * The remainder is under one class width only in the sense that the
+ * request that triggered a new chunk did not fit -- against a 512-byte
+ * class it can be almost 512 bytes, which at an 8K chunk would be 6%
+ * given away per chunk. Cutting it into the largest classes that fit
+ * gives nearly all of it back, and the blocks are indistinguishable
+ * from any other free block of their class.
  */
+static void
+drain_bump(struct luaheap *h)
+{
+	size_t ci = NCLASS;
+
+	while (h->bumpleft >= classes[0]) {
+		/* largest class that still fits */
+		while (ci > 0 && classes[ci - 1] > h->bumpleft)
+			ci--;
+		if (ci == 0)
+			break;
+
+		void *p = h->bump;
+
+		h->bump += classes[ci - 1];
+		h->bumpleft -= classes[ci - 1];
+		*(void **)p = h->freelist[ci - 1];
+		h->freelist[ci - 1] = p;
+	}
+	h->bumpleft = 0;
+}
+
+/* take a fresh chunk and make it the bump region. */
 static int
 newchunk(struct luaheap *h, size_t need)
 {
@@ -172,6 +209,11 @@ newchunk(struct luaheap *h, size_t need)
 	c->size = want;
 	c->next = h->chunks;
 	h->chunks = c;
+
+	/* only once the replacement is secured: on failure the caller can
+	 * still be served from the region we would otherwise have cut up
+	 */
+	drain_bump(h);
 
 	h->bump = (char *)c + sizeof *c;
 	h->bumpleft = want - sizeof *c;
@@ -312,8 +354,16 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 void
 luaheap_stats(const struct luaheap *h, struct luaheap_stats *out)
 {
-	if (!h || !out)
+	if (!out)
 		return;
+
+	/* zeroed rather than left alone for a null heap: a dead proc has
+	 * no heap, and callers report these figures straight out.
+	 */
+	memset(out, 0, sizeof *out);
+	if (!h)
+		return;
+
 	out->live = h->live;
 	out->peak = h->peak;
 	out->mapped = h->mapped;

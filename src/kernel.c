@@ -24,6 +24,7 @@
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
+#include "luaheap.h"
 #include "platform.h"
 
 /* bodies are heap-allocated, so what these cost statically is one pointer
@@ -237,6 +238,10 @@ struct kproc {
 	size_t mem_used;	/* live bytes in this proc's lua heap */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
+	/* this proc's own heap. Every allocation the state makes comes out
+	 * of it, and it goes back to the firmware whole when the proc dies.
+	 */
+	struct luaheap *heap;
 	char name[32];		/* from chunkname, for ps/debugging */
 	/* scheduling feedback. cputime/reds are raw accumulators; cpu is
 	 * the decaying fair-share estimate derived from them.
@@ -1795,7 +1800,17 @@ api_meminfo(lua_State *L)
 	lua_pushinteger(L, (lua_Integer)p->mem_used);
 	lua_pushinteger(L, (lua_Integer)p->mem_peak);
 	lua_pushinteger(L, (lua_Integer)p->mem_limit);
-	return 3;
+
+	/* what the heap actually holds to serve mem_used. The first three
+	 * are lua's view; this is the machine's, and the gap between them
+	 * is what bounds how many procs fit.
+	 */
+	struct luaheap_stats hs;
+
+	luaheap_stats(p->heap, &hs);
+	lua_pushinteger(L, (lua_Integer)hs.mapped);
+	lua_pushinteger(L, (lua_Integer)hs.waste);
+	return 5;
 }
 
 static int
@@ -2331,8 +2346,35 @@ los_sys_open(lua_State *L)
 
 /* ---- proc lifecycle ---- */
 
+/* chunks for a proc's luaheap. Going through malloc rather than
+ * straight to the platform keeps this the same on both platforms and
+ * keeps the chunks visible to malloc_stats -- and the per-call cost
+ * that used to fall on every object is now paid once per 64K.
+ */
+static void *
+kalloc_chunk(void *ud, size_t n)
+{
+	(void)ud;
+	return malloc(n);
+}
+
+static void
+kalloc_free_chunk(void *ud, void *p, size_t n)
+{
+	(void)ud;
+	(void)n;
+	free(p);
+}
+
+static const struct luaheap_ops kalloc_ops = {
+	.chunk_alloc = kalloc_chunk,
+	.chunk_free = kalloc_free_chunk,
+};
+
 /* lua allocator with per-proc accounting. note lua's convention: when
- * ptr is NULL, osize carries the object type, not a size.
+ * ptr is NULL, osize carries the object type, not a size. luaheap is
+ * given a real size instead, and depends on it being one -- that is
+ * what lets a block carry no header.
  */
 static void *
 kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
@@ -2341,16 +2383,20 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	size_t real_osize = ptr ? osize : 0;
 
 	if (nsize == 0) {
-		free(ptr);
+		luaheap_realloc(p->heap, ptr, real_osize, 0);
 		p->mem_used -= real_osize;
 		return 0;
 	}
-	/* enforce the limit only on growth so gc/shrink always succeeds */
+	/* enforce the limit only on growth so gc/shrink always succeeds.
+	 * The limit is on what lua asked for, not on what the heap mapped
+	 * to serve it, so a proc's budget means the same thing it did
+	 * before this allocator existed.
+	 */
 	if (p->mem_limit && nsize > real_osize &&
 	    p->mem_used - real_osize + nsize > p->mem_limit)
 		return 0;
 
-	void *q = realloc(ptr, nsize);
+	void *q = luaheap_realloc(p->heap, ptr, real_osize, nsize);
 
 	if (!q)
 		return 0;
@@ -2358,6 +2404,26 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	if (p->mem_used > p->mem_peak)
 		p->mem_peak = p->mem_used;
 	return q;
+}
+
+/* tear down a proc's state and its heap, in that order.
+ *
+ * lua_close has to run first and cannot be skipped in favour of just
+ * dropping the heap: __gc finalizers are how handles get clunked, so
+ * discarding the memory without running them would leak the things the
+ * memory was only referring to. What the heap saves is the cost of
+ * each of those frees, not the walk itself.
+ */
+static void
+proc_freestate(struct kproc *p)
+{
+	if (p->L)
+		lua_close(p->L);
+	p->L = 0;
+	p->co = 0;
+	if (p->heap)
+		luaheap_destroy(p->heap);
+	p->heap = 0;
 }
 
 /* the closest thing we have to plan 9's hzsched.
@@ -2439,9 +2505,16 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * inside the protected resume (clean LUA_ERRMEM death).
 	 */
 	p->mem_limit = 0;
-	p->L = lua_newstate(kalloc, p);
-	if (!p->L)
+	/* before lua_newstate, since that allocates through it */
+	p->heap = luaheap_new(&kalloc_ops, p);
+	if (!p->heap)
 		return -1;
+	p->L = lua_newstate(kalloc, p);
+	if (!p->L) {
+		luaheap_destroy(p->heap);
+		p->heap = 0;
+		return -1;
+	}
 	/* stash the proc pointer where the kernel api finds it (self()).
 	 * set before the thread is created so lua_newthread copies it into
 	 * the coroutine's extra space too.
@@ -2466,7 +2539,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	if (!port || right_new(p, port, 1) != 0) {
 		if (port)
 			port->used = 0;	/* no rights were taken */
-		lua_close(p->L);
+		proc_freestate(p);
 		return -1;
 	}
 
@@ -2599,7 +2672,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		kputs(lua_tostring(p->co, -1));
 		kputs("\n");
 		right_drop(&p->rights[0]);
-		lua_close(p->L);
+		proc_freestate(p);
 		return -1;
 	}
 
@@ -2708,10 +2781,8 @@ proc_kill(struct kproc *p, const char *why)
 	}
 	wait_clear(p);
 	rq_del(p);
-	lua_close(p->L);
+	proc_freestate(p);
 	p->status = DEAD;
-	p->L = 0;
-	p->co = 0;
 	nlive--;
 
 	/* release every right this proc held; ports lose refs, orphaned

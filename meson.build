@@ -151,6 +151,7 @@ kernel_src = files(
   'src/dirs.c',
   'src/kernel.c',
   'src/linit.c',
+  'src/luaheap.c',
 )
 if platform == 'efi'
   kernel_src += files(
