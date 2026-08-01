@@ -110,19 +110,22 @@ freestanding_args = [
 
 add_project_arguments(freestanding_args, language: 'c')
 
-inc = include_directories('include', 'src', 'lua')
+inc = include_directories('include', 'src', 'lua', 'src/platform/efi')
 
+# dirs.c/kernel.c/linit.c are firmware-blind (the platform seam is
+# platform.h plus fs.h/net.h/efi.h, resolved from the per-platform
+# include dir above); everything else is the platform's own.
 kernel_src = files(
   'src/dirs.c',
-  'src/drivers.c',
-  'src/console.c',
-  'src/fs.c',
   'src/kernel.c',
   'src/linit.c',
-  'src/los.c',
-  'src/main.c',
-  'src/malloc.c',
-  'src/net.c',
+  'src/platform/efi/console.c',
+  'src/platform/efi/drivers.c',
+  'src/platform/efi/fs.c',
+  'src/platform/efi/los.c',
+  'src/platform/efi/main.c',
+  'src/platform/efi/malloc.c',
+  'src/platform/efi/net.c',
 )
 
 libc_src = files(
@@ -168,7 +171,7 @@ lua_src = files(
   'lua/lzio.c',
 )
 
-pe_ld = meson.current_source_dir() / 'src/pe.ld'
+pe_ld = meson.current_source_dir() / 'src/platform/efi/pe.ld'
 
 # hardening warnings for OUR code only (the lua submodule stays
 # vanilla and compiles with plain -Wall). adapted from c-template;
@@ -217,7 +220,7 @@ luaos_elf = shared_library('luaos',
     '-Wl,-znocombreloc',
     '-Wl,-T,' + pe_ld,
   ],
-  link_depends: files('src/pe.ld'),
+  link_depends: files('src/platform/efi/pe.ld'),
 )
 
 # flat binary; the hand PE32+ header in src/<arch>/header.S makes this
