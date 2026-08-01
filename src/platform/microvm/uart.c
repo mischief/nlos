@@ -3,24 +3,36 @@
  * for it here, so unlike src/x86_64/uart.c (com2, fighting EFI for the
  * wire) this needs no takeover dance.
  *
- * Receive is interrupt-driven: the uart raises IRQ 4 when a byte
- * arrives, the handler moves it into a ring, and uart_rx takes from
- * there. Polling the port directly only finds a byte if the kernel
- * happens to look while it is sitting in the fifo, which for an
- * interactive console means input latency bounded by how often the
- * scheduler goes round rather than by the wire.
+ * Receive is meant to be interrupt-driven: the uart raises IRQ 4 when a
+ * byte arrives, the handler moves it into a ring, and uart_rx takes from
+ * there, with a poll of the port as a fallback.
  *
- * Unverified, and worth knowing before trusting it: no byte has ever
- * been observed arriving here. A marker placed at the inb(RBR) below
- * never fired for anything typed at a microvm guest, under both
- * -serial stdio and -serial mon:stdio, which puts the problem before
- * this file -- LSR_DR is simply never set. Transmit works; the boot log
- * comes out of uart_tx.
+ * That path is unproven, because no byte has ever been seen arriving on a
+ * microvm guest, and the cause is not in this file. What was measured,
+ * against qemu 10.2.3, dumping the registers while a host wrote bytes
+ * into the chardev:
  *
- * So the ring and the handler are written but untested, and uart_rx
- * keeps polling the port as a fallback for exactly that reason. Whoever
- * gets serial input working on microvm should check this rather than
- * assume it.
+ *   LSR=60 IER=01 IIR=c1 MCR=0b
+ *
+ * That is THRE and TEMT set with DR clear -- correctly programmed,
+ * receive interrupt enabled, DTR/RTS/OUT2 asserted, and simply no data.
+ * It reads the same with the fifo enabled and disabled, at divisor 1 and
+ * divisor 12, under kvm and under tcg. Transmit through the very same
+ * device and chardev is perfect; the whole boot log comes out of
+ * uart_tx.
+ *
+ * The telling part is on the host side: qemu accepted about eight bytes
+ * written into the socket over three seconds and then stopped reading it
+ * altogether, while continuing to send guest output down the same
+ * connection. So the bytes are not being dropped between the device and
+ * here -- qemu's serial front end never consumed them in the first
+ * place, and eventually stopped taking any.
+ *
+ * The ring and the handler below are therefore written but untested, and
+ * uart_rx still polls the port as a fallback. The next person on this
+ * should start at qemu's hw/char/serial.c and hw/i386/microvm.c rather
+ * than re-testing the guest side, which is the part now known to be
+ * innocent.
  */
 
 #include "microvm.h"
@@ -74,6 +86,14 @@ uart_takeover(void)
 	/* nothing to fight: no firmware owns this port. */
 }
 
+/* kernel_init calls this too, after microvm_main already has -- and on
+ * this platform that second call lands after uart_irq_enable and used
+ * to undo it, since the first thing here is to clear IER. Remembering
+ * that receive was enabled and putting it back is less fragile than
+ * depending on who calls whom in what order.
+ */
+static int rx_irq_on;
+
 void
 uart_init(void)
 {
@@ -89,6 +109,9 @@ uart_init(void)
 	 */
 	outb(COM1 + FCR, 0x07);		/* fifo on, both cleared, trigger 1 */
 	outb(COM1 + MCR, 0x0B);		/* dtr, rts, out2 */
+
+	if (rx_irq_on)
+		outb(COM1 + IER, IER_RX_AVAIL);
 }
 
 /* routing is separate from uart_init because it cannot happen at the
@@ -100,6 +123,7 @@ uart_irq_enable(void)
 {
 	idt_set_vector(UART_VECTOR, isr_uart);
 	ioapic_route(COM1_GSI, UART_VECTOR);
+	rx_irq_on = 1;
 	outb(COM1 + IER, IER_RX_AVAIL);
 }
 
