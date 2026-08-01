@@ -19,7 +19,7 @@ lua_interp = find_program('lua5.4', 'lua')
 # it decides which sources build, what the esp must call the loader for
 # the firmware to find it (the UEFI spec's removable-media path), and
 # what machine-specific flags the compiler needs. everything downstream
-# -- scripts/arch.lua, test/qemuarch.py -- is told the answer rather
+# -- scripts/arch.lua, test/qemuarch.lua -- is told the answer rather
 # than working it out again; see the LUAOS_ARCH env below.
 #
 # a native build gets this from the host; a cross build gets it from
@@ -285,7 +285,7 @@ luaos_img = custom_target('luaos.img',
 
 # every script that boots the image needs to know which machine it is
 # booting, and must not guess: with a cross build the host arch is the
-# wrong answer. scripts/arch.lua and test/qemuarch.py both fall back
+# wrong answer. scripts/arch.lua and test/qemuarch.lua both fall back
 # to uname when this is unset, which is what a bare `qemu.lua img` gets.
 archenv = {'LUAOS_ARCH': arch}
 
@@ -335,7 +335,31 @@ foreach t : boot_tests
   )
 endforeach
 
-python = find_program('python3')
+# hostutil: the one C module backing the host-driven test clients
+# (test/test_9p.lua etc) -- sockets and argv-array process spawning,
+# neither of which stock Lua has. built native regardless of
+# cross-file, since this runs on the machine driving the tests, never
+# the guest. optional like fw_network below: a host without lua5.4's
+# headers just doesn't run these four tests, rather than failing the
+# whole configure.
+lua54_dep = dependency('lua5.4', native: true, required: false)
+have_hostutil = lua54_dep.found()
+if have_hostutil
+  hostutil = shared_module('hostutil', 'test/hostutil.c',
+    dependencies: lua54_dep,
+    native: true,
+    name_prefix: '',
+  )
+else
+  warning('lua5.4 dev headers not found: skipping the host-driven ' +
+          '9p/http/mcp/web-terminal tests (need liblua5.4-dev or ' +
+          'equivalent for test/hostutil.c).')
+endif
+
+hostenv = archenv
+if have_hostutil
+  hostenv = archenv + {'HOSTUTIL_SO': hostutil.full_path()}
+endif
 
 # does the firmware have a tcp/ip stack? our net stack is a thin
 # binding over the firmware's own EFI_TCP4/EFI_UDP4, so without one
@@ -363,35 +387,38 @@ if fw_network
     )
   endforeach
 
-  # host-driven http test: the guest serves on tcp/7777, forwarded to a
-  # host port, driven with real HTTP/1.1. the only end-to-end cover for
-  # tcp listen/accept/recv/send -- the guest can't test this itself,
-  # since qemu's usermode network doesn't hairpin.
-  test('http-server', python,
-    args: [files('test/test_http.py'), luaos_img, files('test/boot/srvhttp.lua')],
-    protocol: 'tap',
-    timeout: 150,
-    env: archenv,
-  )
+  if have_hostutil
+    # host-driven http test: the guest serves on tcp/7777, forwarded to
+    # a host port, driven with real HTTP/1.1. the only end-to-end cover
+    # for tcp listen/accept/recv/send -- the guest can't test this
+    # itself, since qemu's usermode network doesn't hairpin.
+    test('http-server', lua_interp,
+      args: [files('test/test_http.lua'), luaos_img, files('test/boot/srvhttp.lua')],
+      protocol: 'tap',
+      timeout: 150,
+      env: hostenv,
+    )
 
-  # host-driven web terminal test: drives the browser shell as its own
-  # javascript would. the only cover for the full chain -- http ->
-  # session port -> a spawned unprivileged dos proc -> its namespace.
-  test('web-terminal', python,
-    args: [files('test/test_web.py'), luaos_img, files('test/boot/srvweb.lua')],
-    protocol: 'tap',
-    timeout: 180,
-    env: archenv,
-  )
+    # host-driven web terminal test: drives the browser shell as its
+    # own javascript would. the only cover for the full chain -- http
+    # -> session port -> a spawned unprivileged dos proc -> its
+    # namespace.
+    test('web-terminal', lua_interp,
+      args: [files('test/test_web.lua'), luaos_img, files('test/boot/srvweb.lua')],
+      protocol: 'tap',
+      timeout: 180,
+      env: hostenv,
+    )
 
-  # host-driven mcp test: real JSON-RPC 2.0 over HTTP POST against the
-  # guest. covers tcp + http + json + mcp composed together.
-  test('mcp-server', python,
-    args: [files('test/test_mcp.py'), luaos_img, files('test/boot/srvmcp.lua')],
-    protocol: 'tap',
-    timeout: 150,
-    env: archenv,
-  )
+    # host-driven mcp test: real JSON-RPC 2.0 over HTTP POST against
+    # the guest. covers tcp + http + json + mcp composed together.
+    test('mcp-server', lua_interp,
+      args: [files('test/test_mcp.lua'), luaos_img, files('test/boot/srvmcp.lua')],
+      protocol: 'tap',
+      timeout: 150,
+      env: hostenv,
+    )
+  endif
 else
   warning('firmware has no EFI_TCP4/EFI_UDP4: skipping the net tests. ' +
           '-Dfw_network=enabled if yours does.')
@@ -409,9 +436,11 @@ benchmark('ipc', boottest,
 )
 
 # host-driven 9p protocol test: real 9P2000 over the com2 socket
-test('9p-protocol', python,
-  args: [files('test/test_9p.py'), luaos_img, files('test/boot/srv9p.lua')],
-  protocol: 'tap',
-  timeout: 90,
-  env: archenv,
-)
+if have_hostutil
+  test('9p-protocol', lua_interp,
+    args: [files('test/test_9p.lua'), luaos_img, files('test/boot/srv9p.lua')],
+    protocol: 'tap',
+    timeout: 90,
+    env: hostenv,
+  )
+endif
