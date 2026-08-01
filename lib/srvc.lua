@@ -31,7 +31,7 @@ local function rpc(srv, msg)
 	return r
 end
 
--- publish `right` under `name`. The right is GIVEN AWAY: srvd holds it
+-- publish `right` under `name`. The right is given away: srvd holds it
 -- from here on, which is what lets a service outlive the proc that
 -- posted it.
 function M.post(srv, name, right)

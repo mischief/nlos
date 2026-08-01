@@ -3,7 +3,7 @@
 -- This is Plan 9's devsrv, including the trick that makes it work.
 --
 -- A capability cannot be sent as bytes -- but it does not have to be.
--- Plan 9 posts a server by WRITING A DECIMAL FILE DESCRIPTOR to
+-- Plan 9 posts a server by writing a decimal file descriptor to
 -- /srv/name, and the number is meaningless as data: devsrv's write()
 -- resolves it against the calling proc's own fd table and adopts the
 -- Chan behind it. open() later hands that Chan back. The bytes name a
@@ -11,8 +11,8 @@
 -- not carry one.
 --
 -- The same two halves exist here. A right handle is proc-local exactly
--- as an fd is, and a local dev backend runs IN THE CALLER'S PROC -- see
--- the note in procfs.lua, where "self" is resolved by whoever is
+-- as an fd is, and a local dev backend runs in the caller's own proc --
+-- see the note in procfs.lua, where "self" is resolved by whoever is
 -- reading. So this backend can call sys.sendright on a number the
 -- caller wrote and get the caller's right, and can hand back a handle
 -- number that is already valid in the reader.
@@ -25,7 +25,7 @@
 -- adds is that the namespace is a legitimate way to reach it, so
 -- nothing needs a srvd right in hand to name a server.
 --
--- The one thing that does NOT work, and does not in Plan 9 either: this
+-- The one thing that does not work, and does not in Plan 9 either: this
 -- mounted from another machine. A handle number means nothing on the
 -- far side of a wire. /srv is per-machine in both systems for exactly
 -- this reason.
@@ -141,7 +141,7 @@ function M.new(srv)
 		return h.data:sub(off + 1, off + n)
 	end
 
-	-- the post. `data` is a decimal handle in the WRITER's proc, and
+	-- the post. `data` is a decimal handle in the writer's own proc, and
 	-- sys.sendright resolves it there -- this code is running in that
 	-- proc. A number naming nothing is a bad write, not a leak.
 	function B.write(h, off, data)

@@ -100,7 +100,7 @@ tap.is(rc5, 0, "unmount /n succeeds")
 tap.ok(N:readfile("/n/hello") == nil, "and the tree is gone")
 
 -- ---- a shell whose namespace has no /srv ----
--- authority to mount IS having /srv in the namespace, so removing it
+-- authority to mount is exactly having /srv in the namespace, so losing it
 -- takes the ability away with nothing else changed.
 local bare = dos.new({ ns = ns.new(), cons = sys.sendright(consport) })
 

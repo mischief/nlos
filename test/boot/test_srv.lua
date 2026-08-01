@@ -1,7 +1,7 @@
 -- /srv: naming a right, and mounting what the name refers to.
 --
 -- The thing being proved is that a capability survives the round trip
--- through a NAME. Everything else here already worked: what did not
+-- through a name. Everything else here already worked: what did not
 -- exist was any way to say which server you meant without already
 -- holding a right to it, which is what made `mount` impossible at a
 -- prompt.
@@ -90,8 +90,8 @@ for _, e in ipairs(ents or {}) do
 end
 tap.ok(found, "ls /srv shows the posted name")
 
--- reading a name yields a right, as a decimal handle valid in THIS
--- proc. Every read acquires a fresh one, exactly as every open of a
+-- reading a name yields a right, as a decimal handle valid in this
+-- proc alone. Every read acquires a fresh one, exactly as every open of a
 -- Plan 9 /srv file gets its own Chan reference -- so a caller that
 -- reads and does not mount owns a handle it should close.
 local h1 = tonumber((S:readfile("/srv/mem"):gsub("%s+$", "")))
@@ -106,7 +106,7 @@ sys.close(h2)
 
 -- ---- the namespace carries capabilities after all ----
 --
--- Plan 9 posts a server by writing a decimal FILE DESCRIPTOR to
+-- Plan 9 posts a server by writing a decimal file descriptor to
 -- /srv/name: devsrv resolves it against the calling proc's fd table and
 -- adopts the Chan. The bytes name a capability the kernel already holds
 -- for the caller rather than carrying one.
@@ -143,7 +143,7 @@ for _, n in ipairs(names2) do
 end
 tap.ok(sawsecond, "the registry really holds what was written")
 
--- reading it back gives a handle valid HERE, which is the other half
+-- reading it back gives a handle valid in this proc, the other half
 local text = W:readfile("/srv/second")
 local got = tonumber((tostring(text):gsub("%s+$", "")))
 

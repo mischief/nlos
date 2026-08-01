@@ -1,7 +1,7 @@
 -- srvd: names for rights.
 --
 -- This is Plan 9's /srv, and it exists for the reason Plan 9's does: to
--- mount something you have to be able to NAME it, and in a capability
+-- mount something you have to be able to name it, and in a capability
 -- system there is nothing to name it with. A right is not a string. So
 -- `mount 9p /n/9p` at a prompt is impossible until some rendezvous
 -- exists where a server can leave a right and a client can pick one up.
@@ -10,7 +10,7 @@
 -- both backends: a capability cannot travel through the dev interface.
 -- read() returns a string. A right moves only inside a message, as
 -- {__right = h}, so acquiring one has to be a message and cannot be a
--- read. lib/srvfs.lua mounts the LISTING at /srv so `ls /srv` works,
+-- read. lib/srvfs.lua mounts the listing at /srv so `ls /srv` works,
 -- but the right itself comes from here.
 --
 -- Plan 9 makes the same split and hides it: its /srv is devsrv.c, whose

@@ -116,7 +116,7 @@ Sh.__index = Sh
 -- caps: { cons = <handle>, ns = <namespace>, path = "/bin" }
 --
 -- Note there is no capability here for mounting. The mount builtin
--- spends what it finds in the NAMESPACE -- reading /srv/name yields a
+-- spends what it finds in the namespace -- reading /srv/name yields a
 -- right, because srvfs resolves it in this proc. So what decides
 -- whether a shell can mount is whether its namespace has /srv, which
 -- is inherited like any other mount rather than granted separately.
@@ -233,7 +233,7 @@ end
 -- this exists for the half that was not: the builtins had no listing
 -- anywhere, and the only way to learn `exit` was to guess it.
 -- mount and unmount are builtins for the reason cd is one: a program
--- gets a DESCRIPTION of the namespace and adopts its own copy, so a
+-- gets a description of the namespace and adopts its own copy, so a
 -- mount made in one would vanish with the proc that made it. These have
 -- to run in the shell, against the shell's live namespace.
 --
@@ -266,7 +266,7 @@ builtins["mount"] = function(sh, argv)
 		return 1
 	end
 
-	-- the right comes out of the NAMESPACE, not out of a capability
+	-- the right comes out of the namespace, not out of a capability
 	-- this shell was handed: reading /srv/name yields a handle already
 	-- valid here, because srvfs runs in this proc. That is Plan 9's
 	-- `mount(open("/srv/x", ORDWR), ...)`, and it means a shell needs
