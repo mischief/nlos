@@ -24,6 +24,7 @@ struct pmm_block {
 };
 
 static struct pmm_block *freelist;
+static size_t arena_bytes;
 
 #define ALIGN 16
 
@@ -41,6 +42,28 @@ pmm_init(uintptr_t base, size_t len)
 	b->size = len;
 	b->next = 0;
 	freelist = b;
+	arena_bytes = len;
+}
+
+/* what the machine has, and what is left of it.
+ *
+ * total is the carved range pmm_init was handed, not the machine's RAM:
+ * until hvm_start_info's memmap is parsed that range is a hardcoded
+ * slice, so this under-reports a larger -m. avail walks the hole list,
+ * which is exact but says nothing about the largest single request that
+ * can still be met, since nothing coalesces on free.
+ */
+void
+pmm_meminfo(size_t *total, size_t *avail)
+{
+	size_t a = 0;
+
+	for (struct pmm_block *b = freelist; b; b = b->next)
+		a += b->size;
+	if (total)
+		*total = arena_bytes;
+	if (avail)
+		*avail = a;
 }
 
 void *

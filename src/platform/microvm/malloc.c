@@ -11,6 +11,7 @@
 extern _Noreturn void platform_abort(const char *why);
 void	*pmm_alloc(size_t n);
 void	pmm_free(void *p, size_t n);
+void	pmm_meminfo(size_t *total, size_t *avail);
 
 struct hdr {
 	size_t size;
@@ -70,6 +71,23 @@ free(void *p)
 	live_bytes -= h->size + sizeof *h;
 	live_blocks--;
 	pmm_free(h, h->size + sizeof *h);
+}
+
+/* the efi platform sums the firmware's memory map for this; here the
+ * arena is our own, so pmm.c already knows both numbers.
+ */
+void platform_meminfo(unsigned long long *total, unsigned long long *avail);
+
+void
+platform_meminfo(unsigned long long *total, unsigned long long *avail)
+{
+	size_t t = 0, a = 0;
+
+	pmm_meminfo(&t, &a);
+	if (total)
+		*total = t;
+	if (avail)
+		*avail = a;
 }
 
 void *
