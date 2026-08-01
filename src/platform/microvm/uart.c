@@ -33,10 +33,14 @@
  * of 1, so it buffers a single byte and waits for the guest to drain
  * it. That the guest never drains it is the symptom, not the cause.
  *
- * Two further things ruled out since: it is not the port, because com2
- * at 0x2f8 behaves identically (output fine, input absent), and it is
- * not how the machine builds its serial, because an explicit
- * -device isa-serial with isa-serial=off is no different.
+ * Further things ruled out: it is not the port, because com2 at 0x2f8
+ * behaves identically (output fine, input absent); not how the machine
+ * builds its serial, because isa-serial=off plus an explicit
+ * -device isa-serial is no different; not the PIC, because pic=on
+ * changes nothing; and not the interrupt work in this file, because
+ * neutering uart_irq_enable back to pure polling fails exactly the
+ * same way. That last one matters: receive was already broken before
+ * any of this was written, rather than broken by it.
  *
  * The clearest remaining clue is that src/x86_64/uart.c -- which does
  * receive, and is what the 9p-protocol test drives over com2 -- has a
