@@ -237,9 +237,39 @@ if has_tcp and has_udp then
 	end
 end
 
--- RE-taken, because /net did not exist when the first description was
--- made. dhcpd deliberately keeps the earlier one: it SERVES /net, and a
--- namespace containing a mount to itself is a loop waiting to be walked.
+-- srvd: names for rights, so a shell can say what it wants to mount.
+-- Without it `mount` has nothing to take an argument -- a right is not
+-- a string, so there is no way to name a server at a prompt. See
+-- lib/srvd.lua.
+--
+-- The listing mounts at /srv so `ls /srv` shows what is there; the
+-- rights themselves come from messages to srvd, never from reading
+-- those files.
+local _, srvdh = proc.spawn(assert(rootns:readfile("/lib/srvd.lua")),
+    { name = "srv", ns = nsdesc })
+
+if srvdh then
+	rootns:mount("/srv", require("srvfs").new(srvdh), "srvfs")
+
+	-- publish what is actually mountable. These are srv.lua-style
+	-- servers, which is what mnt.new can forward to -- unlike ninesrv
+	-- and tcp9srv above, which speak 9P over a byte wire to clients
+	-- off the machine and have no port to hand out.
+	--
+	-- sendright, not the handle: init keeps its own, and posting is
+	-- giving a right away.
+	local srvc = require("srvc")
+
+	srvc.post(srvdh, "esp", sys.sendright(caps_of.esp))
+	if dhcpd then
+		srvc.post(srvdh, "net", sys.sendright(dhcpd))
+	end
+end
+
+-- RE-taken, because neither /net nor /srv existed when the first
+-- description was made. dhcpd deliberately keeps the earlier one: it
+-- SERVES /net, and a namespace containing a mount to itself is a loop
+-- waiting to be walked.
 nsdesc = rootns:describe()
 
 if has_tcp then
