@@ -22,6 +22,7 @@ M.Twstat, M.Rwstat = 126, 127
 
 M.NOTAG = 0xffff
 M.NOFID = 0xffffffff
+M.NONUNAME = 0xffffffff	-- 9P2000.u/.L Tattach's n_uname: "use uname"
 
 -- qid.type bits
 M.QTDIR = 0x80
@@ -56,6 +57,33 @@ function M.packstat(st)
 	    puts(st.name) .. puts(st.uid or "luaos") ..
 	    puts(st.gid or "luaos") .. puts(st.muid or "luaos")
 	return spack("<I2", #body) .. body
+end
+
+-- the inverse of packstat: sb is one stat record's bytes, WITHOUT the
+-- outer stat[n2] wrapper length (M.decode's Rstat branch already
+-- strips that into m.statbytes; a directory Tread's raw entries are
+-- also each one of these, back to back, each still wrapped in its own
+-- n2 that the caller strips per-entry).
+function M.unpackstat(sb)
+	local _typ, _dev, off = sunpack("<I2I4", sb)
+	local qid
+
+	qid, off = getqid(sb, off)
+
+	local mode, atime, mtime, length
+
+	mode, atime, mtime, length, off = sunpack("<I4I4I4I8", sb, off)
+
+	local name, uid, gid, muid
+
+	name, off = sunpack("<s2", sb, off)
+	uid, off = sunpack("<s2", sb, off)
+	gid, off = sunpack("<s2", sb, off)
+	muid, off = sunpack("<s2", sb, off)
+	return {
+		qid = qid, mode = mode, atime = atime, mtime = mtime,
+		length = length, name = name, uid = uid, gid = gid, muid = muid,
+	}
 end
 
 -- ---- decode a T-message into a table ----
@@ -95,13 +123,53 @@ function M.decode(msg)
 		m.fid = sunpack("<I4", msg, off)
 	elseif typ == M.Twstat then
 		m.fid = sunpack("<I4", msg, off)
+
+	-- ---- R-messages: the client side's half of decode ----
+	elseif typ == M.Rerror then
+		m.ename = sunpack("<s2", msg, off)
+	elseif typ == M.Rversion then
+		m.msize, m.version = sunpack("<I4s2", msg, off)
+	elseif typ == M.Rattach then
+		m.qid = getqid(msg, off)
+	elseif typ == M.Rwalk then
+		local n
+		n, off = sunpack("<I2", msg, off)
+		m.wqid = {}
+		for i = 1, n do
+			m.wqid[i], off = getqid(msg, off)
+		end
+	elseif typ == M.Ropen or typ == M.Rcreate then
+		m.qid, off = getqid(msg, off)
+		m.iounit = sunpack("<I4", msg, off)
+	elseif typ == M.Rread then
+		local count
+		count, off = sunpack("<I4", msg, off)
+		m.data = msg:sub(off, off + count - 1)
+	elseif typ == M.Rwrite then
+		m.count = sunpack("<I4", msg, off)
+	elseif typ == M.Rclunk or typ == M.Rremove or typ == M.Rflush then
+		-- empty body
+	elseif typ == M.Rstat then
+		-- Rstat double-wraps: an outer stat[n] count (Rstat's own
+		-- framing), around a stat record that ALSO starts with its
+		-- own leading size[2] (M.packstat's first field). strip
+		-- both, so m.statbytes ends up the bare body -- the same
+		-- shape M.unpackstat expects and a directory Tread's
+		-- back-to-back entries already are (each entry there is
+		-- only singly-wrapped, framed by Tread's own count[4]).
+		local n
+		n, off = sunpack("<I2", msg, off)
+		local blob = msg:sub(off, off + n - 1)
+		m.statbytes = blob:sub(3)
 	else
 		m.unknown = true
 	end
 	return m
 end
 
--- ---- encode R-messages ----
+-- ---- encode messages: frame() is generic (size+type+tag+body), used
+-- for both the server's R-messages below and the client's T-message
+-- builders further down.
 
 local function frame(typ, tag, body)
 	return spack("<I4BI2", 4 + 1 + 2 + #body, typ, tag) .. body
@@ -149,6 +217,85 @@ end
 
 function M.rstat(tag, statb)
 	return frame(M.Rstat, tag, spack("<I2", #statb) .. statb)
+end
+
+-- ---- encode T-messages: the client side ----
+-- a fid space and NOTAG/tag bookkeeping belong to whoever drives these
+-- (see the microvm platform's los.platform.p9-backed client, which
+-- talks to the virtio-9p transport one synchronous rpc() at a time and
+-- so never needs more than one tag in flight).
+
+function M.tversion(tag, msize, version)
+	return frame(M.Tversion, tag, spack("<I4s2", msize, version or M.VERSION))
+end
+
+-- n_uname is 9P2000.u/.L's one addition to Tattach (a numeric uid,
+-- trailing the base message) -- omit it to speak plain 9P2000 (what
+-- M.serve above does); pass M.NONUNAME or a uid to talk to a .u/.L
+-- server (e.g. qemu's virtio-9p, which never negotiates plain 9P2000
+-- at all -- see hw/9pfs/9p.c).
+function M.tattach(tag, fid, afid, uname, aname, n_uname)
+	local body = spack("<I4I4s2s2", fid, afid or M.NOFID, uname or "", aname or "")
+
+	if n_uname then
+		body = body .. spack("<I4", n_uname)
+	end
+	return frame(M.Tattach, tag, body)
+end
+
+function M.twalk(tag, fid, newfid, wname)
+	wname = wname or {}
+	local body = spack("<I4I4I2", fid, newfid, #wname)
+	for _, name in ipairs(wname) do
+		body = body .. puts(name)
+	end
+	return frame(M.Twalk, tag, body)
+end
+
+function M.topen(tag, fid, mode)
+	return frame(M.Topen, tag, spack("<I4B", fid, mode or 0))
+end
+
+-- 9P2000.u/.L's Tcreate gains a trailing "extension" string (used for
+-- symlink targets/device numbers on special files; "" for a plain
+-- file) -- same shape as Tattach's n_uname, and for the same reason:
+-- qemu's virtio-9p server never negotiates plain 9P2000 (see
+-- hw/9pfs/9p.c's v9fs_create, format string "dsdbs" -- fid, name, perm,
+-- mode, extension). pass extension=nil to speak plain 9P2000's
+-- shorter "dsdb" instead (what lib/p9fs.lua does against a server that
+-- negotiated base 9P2000, e.g. this module's own M.serve); anything
+-- else, even "", gets the field appended.
+function M.tcreate(tag, fid, name, perm, mode, extension)
+	local body = spack("<I4", fid) .. puts(name) ..
+	    spack("<I4B", perm, mode or 0)
+
+	if extension ~= nil then
+		body = body .. puts(extension)
+	end
+	return frame(M.Tcreate, tag, body)
+end
+
+function M.tread(tag, fid, offset, count)
+	return frame(M.Tread, tag, spack("<I4I8I4", fid, offset, count))
+end
+
+function M.twrite(tag, fid, offset, data)
+	return frame(M.Twrite, tag, spack("<I4I8I4", fid, offset, #data) .. data)
+end
+
+function M.tclunk(tag, fid)
+	return frame(M.Tclunk, tag, spack("<I4", fid))
+end
+
+-- Twalk with an empty wname list: 9P's clone-a-fid idiom (walk zero
+-- elements, land on newfid pointing at the same file as fid). used to
+-- give each attach()/open() its own fid without a second Tattach.
+function M.tclone(tag, fid, newfid)
+	return M.twalk(tag, fid, newfid, {})
+end
+
+function M.tstat(tag, fid)
+	return frame(M.Tstat, tag, spack("<I4", fid))
 end
 
 -- ---- synthetic filesystem tree ----
@@ -249,39 +396,42 @@ local function dirdata(n, off, count)
 	return table.concat(out)
 end
 
--- ---- server: speaks 9P2000 over rx/tx byte streams ----
--- rx() -> next chunk of bytes (blocking); tx(bytes)
+-- ---- server: per-message dispatch, over a byte stream OR standalone
+-- ----
+--
+-- M.responder(root) is the whole server, minus any transport: it
+-- returns one function, msg -> replybytes, with no stream framing or
+-- rx/tx involved. that's the shape lib/p9fs.lua's transport (send one
+-- request, get one reply) already is, so a self-mount loopback --
+-- lib/p9fs.lua's OWN client talking to THIS server, in one process,
+-- with no device at all -- is just this function wired straight into
+-- p9fs.new()'s transport parameter. M.serve below is the same
+-- responder with byte-stream framing wrapped around it, for when the
+-- other end is actually a wire.
 
-function M.serve(root, rx, tx)
+function M.responder(root)
 	local fids = {}
-	local buf = ""
 	local msize = M.MSIZE
-
-	local function reply(r)
-		tx(r)
-	end
 
 	local function handle(m)
 		if m.type == M.Tversion then
 			fids = {}
 			if m.msize < msize then msize = m.msize end
 			if m.version:sub(1, 2) ~= "9P" then
-				return reply(M.rversion(m.tag, msize,
-				    "unknown"))
+				return M.rversion(m.tag, msize, "unknown")
 			end
-			return reply(M.rversion(m.tag, msize, M.VERSION))
+			return M.rversion(m.tag, msize, M.VERSION)
 		elseif m.type == M.Tauth then
-			return reply(M.rerror(m.tag,
-			    "authentication not required"))
+			return M.rerror(m.tag, "authentication not required")
 		elseif m.type == M.Tattach then
 			fids[m.fid] = root
-			return reply(M.rattach(m.tag, root.qid))
+			return M.rattach(m.tag, root.qid)
 		elseif m.type == M.Tflush then
-			return reply(M.rflush(m.tag))
+			return M.rflush(m.tag)
 		elseif m.type == M.Twalk then
 			local n = fids[m.fid]
 			if not n then
-				return reply(M.rerror(m.tag, "unknown fid"))
+				return M.rerror(m.tag, "unknown fid")
 			end
 			local qids = {}
 			for _, name in ipairs(m.wname) do
@@ -297,23 +447,22 @@ function M.serve(root, rx, tx)
 			end
 			if #qids < #m.wname then
 				if #qids == 0 then
-					return reply(M.rerror(m.tag,
-					    "file not found"))
+					return M.rerror(m.tag, "file not found")
 				end
-				return reply(M.rwalk(m.tag, qids))
+				return M.rwalk(m.tag, qids)
 			end
 			fids[m.newfid] = n
-			return reply(M.rwalk(m.tag, qids))
+			return M.rwalk(m.tag, qids)
 		elseif m.type == M.Topen then
 			local n = fids[m.fid]
 			if not n then
-				return reply(M.rerror(m.tag, "unknown fid"))
+				return M.rerror(m.tag, "unknown fid")
 			end
-			return reply(M.ropen(m.tag, n.qid, msize - 24))
+			return M.ropen(m.tag, n.qid, msize - 24)
 		elseif m.type == M.Tread then
 			local n = fids[m.fid]
 			if not n then
-				return reply(M.rerror(m.tag, "unknown fid"))
+				return M.rerror(m.tag, "unknown fid")
 			end
 			local count = m.count
 			if count > msize - 24 then count = msize - 24 end
@@ -323,31 +472,48 @@ function M.serve(root, rx, tx)
 			else
 				data = nodedata(n, m.offset, count)
 			end
-			return reply(M.rread(m.tag, data))
+			return M.rread(m.tag, data)
 		elseif m.type == M.Twrite then
 			local n = fids[m.fid]
 			if not n then
-				return reply(M.rerror(m.tag, "unknown fid"))
+				return M.rerror(m.tag, "unknown fid")
 			end
 			if not n.write then
-				return reply(M.rerror(m.tag,
-				    "permission denied"))
+				return M.rerror(m.tag, "permission denied")
 			end
 			n.write(m.offset, m.data)
-			return reply(M.rwrite(m.tag, #m.data))
+			return M.rwrite(m.tag, #m.data)
 		elseif m.type == M.Tclunk then
 			fids[m.fid] = nil
-			return reply(M.rclunk(m.tag))
+			return M.rclunk(m.tag)
 		elseif m.type == M.Tstat then
 			local n = fids[m.fid]
 			if not n then
-				return reply(M.rerror(m.tag, "unknown fid"))
+				return M.rerror(m.tag, "unknown fid")
 			end
-			return reply(M.rstat(m.tag, nodestat(n)))
+			return M.rstat(m.tag, nodestat(n))
 		else
-			return reply(M.rerror(m.tag, "operation not supported"))
+			return M.rerror(m.tag, "operation not supported")
 		end
 	end
+
+	local function respond(msg)
+		return handle(M.decode(msg))
+	end
+
+	local function getmsize()
+		return msize
+	end
+
+	return respond, getmsize
+end
+
+-- speaks 9P2000 over rx/tx byte streams. rx() -> next chunk of bytes
+-- (blocking); tx(bytes). framing (and the resync-on-garbage below) is
+-- the only thing this adds over M.responder.
+function M.serve(root, rx, tx)
+	local respond, getmsize = M.responder(root)
+	local buf = ""
 
 	while true do
 		buf = buf .. rx()
@@ -359,7 +525,7 @@ function M.serve(root, rx, tx)
 			-- header (usually a dropped byte upstream) skip a single
 			-- byte and retry, so good frames behind the corruption
 			-- survive instead of being discarded with buf = "".
-			local ok = size >= 7 and size <= msize
+			local ok = size >= 7 and size <= getmsize()
 			if ok and #buf >= 5 then
 				local typ = sunpack("<B", buf, 5)
 				ok = typ >= M.Tversion and typ <= M.Twstat and
@@ -372,7 +538,7 @@ function M.serve(root, rx, tx)
 			else
 				local msg = buf:sub(1, size)
 				buf = buf:sub(size + 1)
-				handle(M.decode(msg))
+				tx(respond(msg))
 			end
 		end
 	end
