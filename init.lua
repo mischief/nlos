@@ -249,7 +249,10 @@ local _, srvdh = proc.spawn(assert(rootns:readfile("/lib/srvd.lua")),
     { name = "srv", ns = nsdesc })
 
 if srvdh then
-	rootns:mount("/srv", require("srvfs").new(srvdh), "srvfs")
+	-- the right goes in args so a child adopting this namespace can
+	-- rebuild the backend, exactly as /net's mnt does
+	rootns:mount("/srv", require("srvfs").new(srvdh), "srvfs",
+	    { port = { __right = srvdh } })
 
 	-- publish what is actually mountable. These are srv.lua-style
 	-- servers, which is what mnt.new can forward to -- unlike ninesrv
@@ -394,6 +397,7 @@ local repl_worker_src = [[
 	local tcph = m.tcp and m.tcp.__right
 	local udph = m.udp and m.udp.__right
 	local dnsh = m.dns and m.dns.__right
+	local srvh = m.srv and m.srv.__right
 
 	-- pre-imported as bare globals (_G.x, not local x): the repl's
 	-- evaluate() loads each typed line as its own chunk via load(),
@@ -448,8 +452,12 @@ local repl_worker_src = [[
 			-- used to build a fresh one here, which meant the
 			-- launcher could never see a mount the session had
 			-- made.
+			-- srv is what `mount` spends. Handing it over is
+			-- granting the console the authority to rearrange
+			-- its own namespace, which is exactly what a
+			-- prompt on the physical machine should have.
 			launcher.start({ ns = require("ns").current(),
-			    cons = consh },
+			    cons = consh, srv = srvh },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")
 			return "back at the lua repl"
@@ -519,6 +527,13 @@ while true do
 	end
 	if has_dns then
 		grant.dns = { __right = dnssrv }
+	end
+	-- the registry, so the console's `mount` has something to spend.
+	-- It has to come through here rather than being closed over: the
+	-- worker is a separate proc built from a plain string, so a local
+	-- of proc 0 is simply a nil global over there.
+	if srvdh then
+		grant.srv = { __right = srvdh }
 	end
 	sys.send(worker, grant)
 	sys.close(worker)

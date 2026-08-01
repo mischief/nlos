@@ -733,4 +733,16 @@ M.register("mem", function(args)
 	return dev.mem((args and args.tree) or {})
 end)
 
+-- srvfs is the second kind whose state lives elsewhere, and it rebuilds
+-- the same way "mnt" does: from the right that travelled, not a recipe.
+-- Inheriting it means a child sees the same /srv its parent did, which
+-- is what makes `ls /srv` mean anything below init.
+M.register("srvfs", function(args)
+	if type(args) ~= "table" or type(args.port) ~= "table" or
+	    not args.port.__right then
+		dev.error("srvfs: no port right in args")
+	end
+	return require("srvfs").new(args.port.__right)
+end)
+
 return M

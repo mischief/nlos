@@ -13,7 +13,7 @@ local mnt = require("mnt")
 local srvc = require("srvc")
 local srvfs = require("srvfs")
 
-tap.plan(19)
+tap.plan(21)
 
 -- a boot payload has no namespace of its own, so read the registry's
 -- source through the C loader rather than through a mount. Dumped
@@ -94,6 +94,23 @@ tap.ok(found, "ls /srv shows the posted name")
 -- not an omission: a capability does not fit in a byte stream.
 tap.is(S:readfile("/srv/mem"), "mem\n",
     "reading a /srv entry gives a name, not a capability")
+
+-- ---- inheritance ----
+-- a namespace holding /srv must survive describe/adopt, or every child
+-- of the proc that mounted it dies on "unknown backend kind". Building
+-- namespaces directly, as the tests above do, never exercises that --
+-- and the real init.lua does nothing else, so this is the path that
+-- actually runs.
+local S2 = ns.new()
+
+S2:mount("/srv", srvfs.new(srvd), "srvfs", { port = { __right = srvd } })
+
+local adopted, aerr = ns.adopt(S2:describe())
+
+tap.ok(adopted ~= nil, "a namespace with /srv can be adopted: " ..
+    tostring(aerr))
+tap.is(adopted and adopted:readfile("/srv/mem"), "mem\n",
+    "and /srv still reads after the trip")
 
 -- ---- remove ----
 tap.ok(srvc.remove(srvd, "mem"), "remove the name")

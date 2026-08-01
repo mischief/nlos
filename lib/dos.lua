@@ -113,7 +113,15 @@ local Sh = {}
 
 Sh.__index = Sh
 
--- caps: { cons = <handle>, ns = <namespace>, path = "/bin" }
+-- caps: { cons = <handle>, ns = <namespace>, srv = <handle>,
+--         path = "/bin" }
+--
+-- srv is a right to lib/srvd.lua, and it is what the mount builtin
+-- spends. Optional: a shell without one can do everything else, and
+-- `mount` tells the user it has no registry rather than failing
+-- obscurely. Handing it over is granting the authority to rearrange
+-- this shell's namespace, so a caller that does not want that simply
+-- does not pass it.
 --
 -- coro=true runs programs as coroutines in this proc rather than as
 -- procs of their own -- see Sh:pipecoro for what that trades away. off
@@ -123,6 +131,7 @@ function M.new(caps)
 	return setmetatable({
 		ns = caps.ns,
 		cons = caps.cons,
+		srv = caps.srv,
 		coro = caps.coro or false,
 		env = caps.env or { PATH = caps.path or "/bin", HOME = "/" },
 		cwd = "/",
@@ -226,6 +235,85 @@ end
 -- programs were always discoverable (they are files -- `ls /bin`), so
 -- this exists for the half that was not: the builtins had no listing
 -- anywhere, and the only way to learn `exit` was to guess it.
+-- mount and unmount are builtins for the reason cd is one: a program
+-- gets a DESCRIPTION of the namespace and adopts its own copy, so a
+-- mount made in one would vanish with the proc that made it. These have
+-- to run in the shell, against the shell's live namespace.
+--
+-- There is deliberately no `post`. Publishing needs a right to hand
+-- over, and a prompt has no way to name one -- that is the same problem
+-- /srv exists to solve, one level down. A program can post itself; a
+-- user cannot post on its behalf.
+builtins["mount"] = function(sh, argv)
+	local name, at = argv[2], argv[3]
+	local order = "replace"
+
+	-- plan 9's -b/-a: union the new tree before or after what is
+	-- already at the mountpoint, instead of hiding it.
+	local rest = {}
+
+	for i = 2, #argv do
+		if argv[i] == "-b" then
+			order = "before"
+		elseif argv[i] == "-a" then
+			order = "after"
+		else
+			rest[#rest + 1] = argv[i]
+		end
+	end
+	name, at = rest[1], rest[2]
+
+	if not name or not at then
+		sh:print("usage: mount [-b|-a] service /mountpoint\n")
+		return 1
+	end
+	if not sh.srv then
+		sh:print("mount: no service registry\n")
+		return 1
+	end
+
+	-- both spellings work: the bare name, and the /srv path it appears
+	-- at, since `ls /srv` is how you find it in the first place.
+	local short = name:match("^/srv/(.+)$") or name
+
+	local srvc = require("srvc")
+	local right, err = srvc.open(sh.srv, short)
+
+	if not right then
+		sh:print("mount: " .. short .. ": " .. tostring(err) .. "\n")
+		return 1
+	end
+
+	local p = at:sub(1, 1) == "/" and ns.clean(at) or
+	    ns.clean(sh.cwd .. "/" .. at)
+	local ok, merr = sh.ns:mount(p, require("mnt").new(right), "mnt",
+	    { port = { __right = right } }, order)
+
+	if not ok then
+		sys.close(right)
+		sh:print("mount: " .. p .. ": " .. tostring(merr) .. "\n")
+		return 1
+	end
+	return 0
+end
+
+builtins["unmount"] = function(sh, argv)
+	if not argv[2] then
+		sh:print("usage: unmount /mountpoint\n")
+		return 1
+	end
+
+	local p = argv[2]:sub(1, 1) == "/" and ns.clean(argv[2]) or
+	    ns.clean(sh.cwd .. "/" .. argv[2])
+	local ok, err = sh.ns:unmount(p)
+
+	if not ok then
+		sh:print("unmount: " .. p .. ": " .. tostring(err) .. "\n")
+		return 1
+	end
+	return 0
+end
+
 builtins["help"] = function(sh)
 	local names = {}
 
