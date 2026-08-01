@@ -28,13 +28,22 @@ local stats_mt = {}
 stats_mt.__tostring = function()
 	local s = sys.stats()
 
-	-- machine memory as well as our own: a proc is a lua_State drawn
-	-- from the firmware's pool, so what is left there is what bounds how
-	-- many can exist. heap= is the C side only; sys.meminfo(pid) has the
-	-- lua heap for one proc.
+	-- machine memory as well as our own, since what is left in the
+	-- firmware's pool is what bounds how many procs can exist.
+	--
+	-- heap= is every C allocation, the shared lua heap's chunks
+	-- included, so it is not additive with lua=. lua= is that heap:
+	-- what the states between them asked for, over what the machine
+	-- holds to serve it. sys.meminfo(pid) has one proc's share of the
+	-- first number.
+	local live = s.lua_live or 0
+	local mapped = s.lua_mapped or 0
+
 	return string.format(
-	    "procs=%d ports=%d heap=%dK mem=%dK/%dK free",
+	    "procs=%d ports=%d heap=%dK lua=%dK/%dK (%.2fx) mem=%dK/%dK free",
 	    s.procs, s.ports, (s.heap_used or 0) // 1024,
+	    live // 1024, mapped // 1024,
+	    live > 0 and mapped / live or 0,
 	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024)
 end
 M.stats = setmetatable({}, stats_mt)
