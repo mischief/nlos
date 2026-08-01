@@ -2376,6 +2376,29 @@ los_sys_open(lua_State *L)
 	return 1;
 }
 
+/* los.thread, compiled on first require rather than at every spawn.
+ *
+ * It used to be luaL_loadfile at proc_new, which read and compiled
+ * ~17K of lua source into every state whether the proc ever asked for
+ * it or not -- only the *call* was deferred, and a compiled chunk is
+ * resident either way.
+ *
+ * Safe to do from inside require even though loadlib.c calls a preload
+ * function with a plain lua_call and so cannot yield: this reads
+ * through the C fs interface, not through the proc's namespace, so
+ * there is no IPC and nothing to block on. The path is fixed, so a proc
+ * gains no reach it did not have -- it is the same read proc_new was
+ * doing on its behalf.
+ */
+static int
+los_thread_open(lua_State *L)
+{
+	if (luaL_loadfile(L, "/lib/thread.lua") != LUA_OK)
+		return lua_error(L);
+	lua_call(L, 0, 1);
+	return 1;
+}
+
 /* ---- proc lifecycle ---- */
 
 /* chunks for the lua heap.
@@ -2633,14 +2656,8 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		break;
 	}
 
-	if (luaL_loadfile(p->L, "/lib/thread.lua") == LUA_OK) {
-		lua_setfield(p->L, -2, "los.thread");
-	} else {
-		kputs("los.thread load error: ");
-		kputs(lua_tostring(p->L, -1));
-		kputs("\n");
-		lua_pop(p->L, 1);
-	}
+	lua_pushcfunction(p->L, los_thread_open);
+	lua_setfield(p->L, -2, "los.thread");
 
 	lua_pop(p->L, 2);	/* preload, package */
 
