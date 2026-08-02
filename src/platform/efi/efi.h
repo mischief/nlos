@@ -485,6 +485,103 @@ struct EFI_TCP4_PROTOCOL {
 	EFI_STATUS (EFIAPI *Poll)(EFI_TCP4_PROTOCOL *This);
 };
 
+/* ---- simple network (snp), per MdePkg/Include/Protocol/SimpleNetwork.h
+ *
+ * The firmware's ethernet driver with nothing on top: frames in, frames
+ * out, and the card's own address. Everything above it -- arp, ip, the
+ * checksum, tcp -- is ours in Lua, which is the same stack microvm runs
+ * over virtio-net, so one implementation serves both machines.
+ *
+ * There is no interrupt to wait on here. Receive returns EFI_NOT_READY
+ * when the card has nothing, so this is polled, unlike virtio-net's
+ * line into the ioapic. That is what kernel.c's pump_eth has to be told.
+ *
+ * Only the members up to Transmit are used; the rest are declared so
+ * the vtable offsets are right, because getting one wrong calls the
+ * wrong function with the right arguments.
+ */
+
+#define EFI_SIMPLE_NETWORK_RECEIVE_UNICAST		0x01
+#define EFI_SIMPLE_NETWORK_RECEIVE_MULTICAST		0x02
+#define EFI_SIMPLE_NETWORK_RECEIVE_BROADCAST		0x04
+#define EFI_SIMPLE_NETWORK_RECEIVE_PROMISCUOUS		0x08
+
+/* GetStatus's InterruptStatus. Reporting clears them, which is why
+ * snp.c calls GetStatus in one place and hands the bits around.
+ */
+#define EFI_SIMPLE_NETWORK_RECEIVE_INTERRUPT		0x01
+#define EFI_SIMPLE_NETWORK_TRANSMIT_INTERRUPT		0x02
+#define EFI_SIMPLE_NETWORK_COMMAND_INTERRUPT		0x04
+#define EFI_SIMPLE_NETWORK_SOFTWARE_INTERRUPT		0x08
+
+/* Mode->State */
+#define EFI_SIMPLE_NETWORK_STOPPED	0
+#define EFI_SIMPLE_NETWORK_STARTED	1
+#define EFI_SIMPLE_NETWORK_INITIALIZED	2
+
+#define EFI_MAX_MCAST_FILTER_CNT 16
+
+typedef struct {
+	UINT8 Addr[32];
+} EFI_MAC_ADDRESS;
+
+typedef struct {
+	UINT32 State;
+	UINT32 HwAddressSize;
+	UINT32 MediaHeaderSize;
+	UINT32 MaxPacketSize;
+	UINT32 NvRamSize;
+	UINT32 NvRamAccessSize;
+	UINT32 ReceiveFilterMask;
+	UINT32 ReceiveFilterSetting;
+	UINT32 MaxMCastFilterCount;
+	UINT32 MCastFilterCount;
+	EFI_MAC_ADDRESS MCastFilter[EFI_MAX_MCAST_FILTER_CNT];
+	EFI_MAC_ADDRESS CurrentAddress;
+	EFI_MAC_ADDRESS BroadcastAddress;
+	EFI_MAC_ADDRESS PermanentAddress;
+	UINT8 IfType;
+	BOOLEAN MacAddressChangeable;
+	BOOLEAN MultipleTxSupported;
+	BOOLEAN MediaPresentSupported;
+	BOOLEAN MediaPresent;
+} EFI_SIMPLE_NETWORK_MODE;
+
+typedef struct EFI_SIMPLE_NETWORK_PROTOCOL EFI_SIMPLE_NETWORK_PROTOCOL;
+struct EFI_SIMPLE_NETWORK_PROTOCOL {
+	UINT64 Revision;
+	EFI_STATUS (EFIAPI *Start)(EFI_SIMPLE_NETWORK_PROTOCOL *This);
+	EFI_STATUS (EFIAPI *Stop)(EFI_SIMPLE_NETWORK_PROTOCOL *This);
+	EFI_STATUS (EFIAPI *Initialize)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    UINTN ExtraRxBufferSize, UINTN ExtraTxBufferSize);
+	EFI_STATUS (EFIAPI *Reset)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    BOOLEAN ExtendedVerification);
+	EFI_STATUS (EFIAPI *Shutdown)(EFI_SIMPLE_NETWORK_PROTOCOL *This);
+	EFI_STATUS (EFIAPI *ReceiveFilters)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    UINT32 Enable, UINT32 Disable, BOOLEAN ResetMCastFilter,
+	    UINTN MCastFilterCnt, EFI_MAC_ADDRESS *MCastFilter);
+	EFI_STATUS (EFIAPI *StationAddress)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    BOOLEAN Reset, EFI_MAC_ADDRESS *New);
+	EFI_STATUS (EFIAPI *Statistics)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    BOOLEAN Reset, UINTN *StatisticsSize, void *StatisticsTable);
+	EFI_STATUS (EFIAPI *MCastIpToMac)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    BOOLEAN IPv6, void *IP, EFI_MAC_ADDRESS *MAC);
+	EFI_STATUS (EFIAPI *NvData)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    BOOLEAN ReadWrite, UINTN Offset, UINTN BufferSize, void *Buffer);
+	EFI_STATUS (EFIAPI *GetStatus)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    UINT32 *InterruptStatus, void **TxBuf);
+	EFI_STATUS (EFIAPI *Transmit)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    UINTN HeaderSize, UINTN BufferSize, void *Buffer,
+	    EFI_MAC_ADDRESS *SrcAddr, EFI_MAC_ADDRESS *DestAddr,
+	    UINT16 *Protocol);
+	EFI_STATUS (EFIAPI *Receive)(EFI_SIMPLE_NETWORK_PROTOCOL *This,
+	    UINTN *HeaderSize, UINTN *BufferSize, void *Buffer,
+	    EFI_MAC_ADDRESS *SrcAddr, EFI_MAC_ADDRESS *DestAddr,
+	    UINT16 *Protocol);
+	void *WaitForPacket;
+	EFI_SIMPLE_NETWORK_MODE *Mode;
+};
+
 /* ---- graphics output (gop), per MdePkg/Include/Protocol/GraphicsOutput.h
  *
  * Blt is the only pixel path we use. FrameBufferBase is deliberately

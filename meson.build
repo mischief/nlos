@@ -180,6 +180,7 @@ if platform == 'efi'
     'src/platform/efi/malloc.c',
     'src/platform/efi/net.c',
     'src/platform/efi/rng.c',
+    'src/platform/efi/snp.c',
   )
 else
   kernel_src += files(

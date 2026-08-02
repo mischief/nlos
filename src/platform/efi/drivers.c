@@ -12,6 +12,7 @@
 #include "lua.h"
 #include "lauxlib.h"
 
+#include "net.h"
 #include "platform.h"
 
 extern void console_write(const char *s, unsigned long n);
@@ -157,20 +158,21 @@ luaopen_los_platform_p9(lua_State *L)
 	return 1;
 }
 
-/* raw ethernet is a microvm affair. This platform gets tcp and udp from
- * the firmware's own EFI_TCP4/EFI_UDP4, so it has no use for frames and
- * no virtio-mmio driver to produce them with. Same empty-symbol
- * arrangement as p9 above.
- */
-/* no device here raises anything a driver could sleep on: tcp4 and udp4
- * completions are Events that net.c polls itself, deliberately outside
- * kernel_run's wait set (see kernel_new_net_event). So this never
- * changes, and the pump that watches it never fires.
+/* frames received since boot, which is what pump_eth compares.
+ *
+ * Not interrupts: there are none to count here. SNP's Receive reports
+ * an empty card rather than raising a line, so the receive path counts
+ * what it took and this reports that -- the pump only needs a number
+ * that changes when the device has done something.
+ *
+ * The firmware's own tcp4/udp4 completions are still Events that net.c
+ * polls itself, deliberately outside kernel_run's wait set (see
+ * kernel_new_net_event), and are unrelated to this.
  */
 unsigned long
 platform_dev_irqs(void)
 {
-	return 0;
+	return snp_rx_count();
 }
 
 /* two devices here: the firmware's ConIn is the keyboard and com2 is
@@ -185,16 +187,9 @@ platform_console_input(void)
 int
 platform_have_eth(void)
 {
-	return 0;
+	return snp_init();
 }
 
-static const luaL_Reg eth_emptylib[] = { { NULL, NULL } };
-
-int luaopen_los_platform_eth(lua_State *L);
-
-int
-luaopen_los_platform_eth(lua_State *L)
-{
-	luaL_newlib(L, eth_emptylib);
-	return 1;
-}
+/* los.platform.eth lives in snp.c on this platform: the firmware's
+ * EFI_SIMPLE_NETWORK_PROTOCOL, with our own stack above it.
+ */

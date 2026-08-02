@@ -1,6 +1,8 @@
 #ifndef NET_H
 #define NET_H
 
+#include <stddef.h>	/* size_t, for the snp entry points below */
+
 /* raw EFI TCP4 primitives. every long-running op is two-phase
  * (start/poll) so nothing here blocks the reactor; see net.c.
  */
@@ -44,5 +46,19 @@ int	udp_send_poll(void *token);
 void	*udp_recv_start(void *conn, unsigned long maxlen);
 int	udp_recv_poll(void *token, void **data, unsigned long *len,
 	    unsigned int *srcip_be, unsigned short *srcport);
+
+/* snp.c -- the nic underneath all of the above, reached directly. The
+ * two are alternatives, not layers: snp_init takes the card away from
+ * the firmware (DisconnectController), which is what stops the drivers
+ * net.c uses from working on that handle.
+ */
+int	snp_init(void);
+int	snp_present(void);
+int	snp_mac(unsigned char *out, size_t n);
+int	snp_send(const void *frame, size_t n);
+int	snp_recv(void *buf, size_t cap);
+unsigned long snp_rx_count(void);	/* card said a frame arrived */
+unsigned long snp_rx_frames(void);	/* frames actually read off it */
+void	*snp_wait_event(void);	/* EFI_EVENT, or 0 if the driver has none */
 
 #endif
