@@ -192,5 +192,95 @@ bench("rev call empty", 1, 2000,
 bench("rev call string", 4096, 1000,
     function(sz, n) crossproc_rev(sz, n, revcall) end)
 
+-- ---- alt: what selecting over several ports costs ----
+--
+-- the shape every exclusive device task runs (wire, tcp, udp all alt
+-- over their own port plus a raw device line), so it is the loop the
+-- machine spends its idle time in rather than a corner case.
+--
+-- two things are separated here because they are fixed by different
+-- edits. The CASE TABLE is the caller's: `alt({{port=a},{port=b}})`
+-- builds three tables every time round the loop, and the cases never
+-- change, so hoisting it out is a call-site fix. What is left is alt's
+-- own cost, which is the scan plus -- when nothing is ready -- the
+-- plist/marks/waiter allocations inside it.
+--
+-- both are measured on a port that already has a message, so no park
+-- happens and what is timed is the scan and the construction alone.
+-- the parking path is measured separately below.
+local function alt_inline(_, iters)
+	local a, b = sys.newport(), sys.newport()
+
+	for _ = 1, iters do
+		sys.send(b, true)
+		thread.alt({ { port = a }, { port = b } })
+	end
+	sys.close(a)
+	sys.close(b)
+end
+
+local function alt_hoisted(_, iters)
+	local a, b = sys.newport(), sys.newport()
+	local cases = { { port = a }, { port = b } }
+
+	for _ = 1, iters do
+		sys.send(b, true)
+		thread.alt(cases)
+	end
+	sys.close(a)
+	sys.close(b)
+end
+
+-- the first case ready rather than the second: alt scans in order and
+-- returns on the first hit, so the pair bounds how much the scan itself
+-- contributes.
+local function alt_first(_, iters)
+	local a, b = sys.newport(), sys.newport()
+	local cases = { { port = a }, { port = b } }
+
+	for _ = 1, iters do
+		sys.send(a, true)
+		thread.alt(cases)
+	end
+	sys.close(a)
+	sys.close(b)
+end
+
+-- ---- alt that actually parks ----
+--
+-- the path that allocates: plist, marks, and a waiter per channel case,
+-- all rebuilt on every trip round alt's inner loop. driven from a
+-- thread, because parking is what a thread does differently -- a
+-- top-level alt goes to sys.altblock instead and never touches marks.
+local function alt_park(sz, iters)
+	local _, h = sys.spawn(echo, { name = "echo" })
+	local rp = sys.newport()
+	local idle = sys.newport()
+
+	sys.send(h, { reply = { __right = rp } })
+
+	local payload = string.rep("x", sz)
+	local cases = { { port = rp }, { port = idle } }
+
+	thread.spawn(function()
+		for _ = 1, iters do
+			sys.send(h, payload)
+			thread.alt(cases)
+		end
+		sys.send(h, "done")
+	end)
+	thread.run()
+	sys.close(rp)
+	sys.close(idle)
+end
+
+print("# --- alt: the device-task select loop (nothing parks) ---")
+bench("alt inline", 1, 20000, alt_inline)
+bench("alt hoisted", 1, 20000, alt_hoisted)
+bench("alt first case", 1, 20000, alt_first)
+
+print("# --- alt that parks (cross-proc, from a thread) ---")
+bench("alt park", 1, 2000, function(_, n) alt_park(1, n) end)
+
 print("ok 1 - benchmarked")
 sys.send(sys.granted().power, { op = "reset", mode = "shutdown" })
