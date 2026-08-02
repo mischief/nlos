@@ -17,14 +17,10 @@
  * as a bare string. Worth knowing before concluding this is broken
  * again.
  *
- * Two real things did come out of the search. uart_init is called
- * twice, by microvm_main and again by kernel_init, and the second call
- * cleared IER and switched receive interrupts back off -- rx_irq_on
- * exists for that. And qemu's main loop sleeps on this machine with
- * nothing to wake it, since pit, rtc and pic are off and the LAPIC
- * timer lives inside KVM, so host input can sit undelivered until
- * something else stirs the loop. That is why identical experiments gave
- * different answers depending on timing.
+ * One real defect came out of the search and is fixed: uart_init is
+ * called twice, by microvm_main and again by kernel_init, and the
+ * second call cleared IER and switched receive interrupts back off.
+ * rx_irq_on exists for that.
  */
 
 #include "microvm.h"
