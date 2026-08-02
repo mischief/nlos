@@ -234,6 +234,7 @@ else
     'lib/dns.lua',
     'lib/dnsc.lua',
     'lib/caps.lua',
+    'lib/http.lua',
     'lib/tcb.lua',
     'task/ip.lua',
     'task/tcp4.lua',
@@ -682,6 +683,7 @@ if have_hostutil
     protocol: 'tap',
     timeout: 90,
     env: hostenv,
+    depends: hostutil,
   )
 endif
 
@@ -733,6 +735,23 @@ foreach t : microvm_tests
   )
 endforeach
 
+# http over the lua tcp stack, host-driven for the reason its own header
+# gives: a guest cannot reach its own listener (slirp does not hairpin),
+# so hostfwd gives the host a door in and hostutil walks through it. This
+# is the test listen and accept exist for -- the guest runs lib/http.lua
+# and lib/caps.lua unmodified, and the client is a separate
+# implementation on the host.
+if have_hostutil
+  test('microvm-http', lua_interp,
+    args: [files('test/microvm_http.lua'), luaos_microvm_elf,
+      files('test/boot/microvm_httpd.lua')],
+    protocol: 'tap',
+    timeout: 90,
+    env: {'HOSTUTIL_SO': hostutil.full_path()},
+    depends: hostutil,
+  )
+endif
+
 # serial receive needs the port in BOTH directions, which the boottest
 # harness cannot do -- it points the guest's serial at a file. This one
 # drives a unix socket instead, so it is host-driven like the efi
@@ -748,6 +767,7 @@ if have_hostutil
     protocol: 'tap',
     timeout: 120,
     env: {'HOSTUTIL_SO': hostutil.full_path()},
+    depends: hostutil,
   )
 endif
 
@@ -758,6 +778,7 @@ if have_hostutil
     protocol: 'tap',
     timeout: 120,
     env: {'HOSTUTIL_SO': hostutil.full_path()},
+    depends: hostutil,
   )
 endif
 

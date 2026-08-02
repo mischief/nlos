@@ -33,9 +33,9 @@
 -- whole proc alive for the 2*MSL a TIME-WAIT connection spends doing
 -- nothing at all.
 --
--- What is not here yet: retransmission, out-of-order reassembly, a
--- graceful close, and listen/accept. close aborts today -- see its op
--- below -- and each gap has a commit coming.
+-- What is not here: congestion control, Nagle and delayed
+-- acknowledgments, which live in lib/tcb.lua's half of the work and are
+-- the last commit rather than this one.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -59,8 +59,9 @@ local MSS = 1500 - ip4.HDRLEN - tcp4.HDRLEN
 -- whole of a dial's patience rather than the last resort behind it.
 local DIAL_MS = 10000
 
-local conns = {}	-- connid -> connection record
+local conns = {}	-- connid -> connection record, or a listener
 local byname = {}	-- "remote address, both ports" -> connid
+local listeners = {}	-- local port -> the listener record
 local nextconn = 1
 local nextephem = 32768
 
@@ -74,11 +75,24 @@ local stat = {
 	reset_sent = 0,
 	closing = 0,
 	timedout = 0,
+	accepted = 0,
+	backlogged = 0,
 }
+
+-- How many connections may sit completed and unaccepted before the next
+-- one is refused. A listener that is not accepting is a service that is
+-- not serving, and holding an unbounded queue of connections for it only
+-- moves the failure somewhere less obvious -- the peer is better told
+-- now than left in an established connection nobody will ever read.
+local BACKLOG = 8
 
 -- the packets from task/ip.lua arrive here. Registered once, below,
 -- with a right that this proc keeps for as long as it runs.
 local pktport = sys.newport()
+
+-- forward declarations: incoming() calls service(), and on_packet()
+-- calls incoming().
+local service, incoming
 
 local function reply_to(m, v)
 	local h = type(m) == "table" and type(m.reply) == "table" and
@@ -115,6 +129,23 @@ end
 
 local function ipconfig()
 	return thread.rpc(iph, { op = "config" }) or {}
+end
+
+-- The initial sequence number must not be a counter and must not be
+-- guessable from another connection's (RFC 6528): an off-path attacker
+-- who can predict it can inject into the stream. lib/tcb.lua
+-- deliberately does not generate it -- it has no clock and no secret --
+-- so it is drawn here, from the machine's rng.
+--
+-- nil rather than a fallback when there is no rng. A counter dressed up
+-- as an ISN is worse than a refusal, because it looks like it works.
+local function draw_iss()
+	local ok, rng = pcall(require, "los.platform.rng")
+
+	if not ok or not rng then
+		return nil
+	end
+	return string.unpack(">I4", rng.bytes(4))
 end
 
 -- ---- the wire ----
@@ -169,7 +200,12 @@ end
 
 local function forget(c)
 	conns[c.id] = nil
-	byname[c.key] = nil
+	if c.key then
+		byname[c.key] = nil
+	end
+	if c.listener and listeners[c.lport] == c then
+		listeners[c.lport] = nil
+	end
 end
 
 -- answer everyone parked on this connection, and say the same thing to
@@ -177,6 +213,12 @@ end
 -- been reset must come back with nil rather than waiting for a segment
 -- that cannot arrive.
 local function wake(c, value)
+	if c.waiters then
+		for _, m in ipairs(c.waiters) do
+			reply_to(m, nil)
+		end
+		c.waiters = {}
+	end
 	for _, m in ipairs(c.readers) do
 		reply_to(m, value)
 	end
@@ -238,14 +280,28 @@ end
 -- one pass over everything a segment or a request may have changed.
 -- Called after every entry point, so that no path has to remember which
 -- of these it might have made possible.
-local function service(c)
+function service(c)
 	for _, e in ipairs(c.t:events()) do
 		if e.kind == "established" then
-			stat.dialed = stat.dialed + 1
 			if c.dialer then
+				stat.dialed = stat.dialed + 1
 				reply_to(c.dialer, c.id)
 				c.dialer = nil
 				c.deadline = nil
+			elseif c.listener_id then
+				-- an inbound connection completed. It goes to
+				-- whoever is already waiting in accept, or waits
+				-- in the backlog for someone to ask.
+				local l = conns[c.listener_id]
+
+				c.deadline = nil
+				if l and #l.waiters > 0 then
+					stat.accepted = stat.accepted + 1
+					reply_to(table.remove(l.waiters, 1), c.id)
+				elseif l then
+					stat.backlogged = stat.backlogged + 1
+					l.backlog[#l.backlog + 1] = c.id
+				end
 			end
 		elseif e.kind == "refused" or e.kind == "reset" then
 			if e.kind == "refused" then
@@ -279,6 +335,56 @@ local function service(c)
 	end
 end
 
+-- a connection request for a listening port. The child is an ordinary
+-- connection in every respect except that it announces itself to its
+-- listener rather than to a dialer.
+--
+-- It gets a deadline like a dial does: a half-open connection whose
+-- final acknowledgment never arrives would otherwise sit in
+-- SYN-RECEIVED for as long as the retransmissions last, and a listener
+-- is exactly what an unfriendly peer aims a flood of those at.
+function incoming(l, src, dst, seg)
+	if #l.backlog >= BACKLOG then
+		-- refuse rather than queue. See BACKLOG's comment: a
+		-- listener that is not accepting is better answered now
+		-- than left holding connections nobody will read.
+		refuse(src, dst, seg)
+		return
+	end
+
+	local iss = draw_iss()
+
+	if not iss then
+		refuse(src, dst, seg)
+		return
+	end
+
+	local id = nextconn
+
+	nextconn = nextconn + 1
+
+	local c = {
+		id = id,
+		laddr = dst, lport = l.lport,
+		raddr = src, rport = seg.sport,
+		key = name(src, seg.sport, l.lport),
+		readers = {},
+		listener_id = l.id,
+		deadline = sys.uptime_ms() + DIAL_MS,
+	}
+
+	c.t = tcb.new({
+		laddr = dst, lport = l.lport,
+		raddr = src, rport = seg.sport,
+		iss = iss, mss = MSS,
+	})
+	c.t:listen()
+	conns[id] = c
+	byname[c.key] = id
+	c.t:segment(seg, sys.uptime_ms())
+	service(c)
+end
+
 -- ---- inbound ----
 
 local function on_packet(m)
@@ -303,8 +409,18 @@ local function on_packet(m)
 	local c = id and conns[id]
 
 	if not c then
-		stat.no_conn = stat.no_conn + 1
-		refuse(m.src, m.dst, seg)
+		local l = listeners[seg.dport]
+
+		-- a SYN with no acknowledgment is a connection request;
+		-- anything else addressed to a listening port belongs to a
+		-- connection that no longer exists, and is refused.
+		if l and (seg.flags & tcp4.SYN) ~= 0 and
+		    (seg.flags & tcp4.ACK) == 0 then
+			incoming(l, m.src, m.dst, seg)
+		else
+			stat.no_conn = stat.no_conn + 1
+			refuse(m.src, m.dst, seg)
+		end
 		return
 	end
 
@@ -358,21 +474,9 @@ local function on_request(m)
 			deadline = sys.uptime_ms() + DIAL_MS,
 		}
 
-		-- The initial sequence number must not be a counter and must
-		-- not be guessable from another connection's (RFC 6528): an
-		-- off-path attacker who can predict it can inject into the
-		-- stream. lib/tcb.lua deliberately does not generate it --
-		-- it has no clock and no secret -- so it is drawn here, from
-		-- the machine's rng.
-		local iss
+		local iss = draw_iss()
 
-		local ok, rng = pcall(require, "los.platform.rng")
-
-		if ok and rng then
-			iss = string.unpack(">I4", rng.bytes(4))
-		else
-			-- no rng on this platform. Say so rather than
-			-- quietly using a counter and calling it an ISN.
+		if not iss then
 			reply_to(m, nil)
 			return
 		end
@@ -421,6 +525,17 @@ local function on_request(m)
 			return
 		end
 
+		if c.listener then
+			-- closing a listener refuses whoever is waiting in
+			-- accept and gives the port back; connections it
+			-- already handed out are their own from then on.
+			for _, w in ipairs(c.waiters) do
+				reply_to(w, nil)
+			end
+			forget(c)
+			return
+		end
+
 		-- A graceful close: the FIN goes out behind everything
 		-- already written, and the connection stays in the table
 		-- until the state machine reaches CLOSED. That is what makes
@@ -464,11 +579,41 @@ local function on_request(m)
 		end
 		reply_to(m, thread.rpc(iph, cfg) and true or false)
 
-	elseif m.op == "listen" or m.op == "accept" then
-		-- not yet. nil is the protocol's own answer for "could not",
-		-- and a client that gets it fails where it asked rather than
-		-- blocking forever on an accept that will never complete.
-		reply_to(m, nil)
+	elseif m.op == "listen" then
+		local port = whole(m.port, 0xffff)
+
+		if not port or port == 0 or listeners[port] then
+			-- an occupied port is refused rather than shared:
+			-- two services on one port is a mistake, not a
+			-- configuration to arbitrate.
+			reply_to(m, nil)
+			return
+		end
+
+		local id = nextconn
+
+		nextconn = nextconn + 1
+		conns[id] = { id = id, listener = true, lport = port,
+		    backlog = {}, waiters = {}, readers = {} }
+		listeners[port] = conns[id]
+		reply_to(m, id)
+
+	elseif m.op == "accept" then
+		local l = conns[m.connid]
+
+		if not l or not l.listener then
+			reply_to(m, nil)
+			return
+		end
+		if #l.backlog > 0 then
+			stat.accepted = stat.accepted + 1
+			reply_to(m, table.remove(l.backlog, 1))
+			return
+		end
+		-- nothing waiting: park. accept blocks, which is what every
+		-- client of this protocol expects and what task/sshd.lua's
+		-- loop is written around.
+		l.waiters[#l.waiters + 1] = m
 
 	elseif m.op == "stats" then
 		local s = { conns = 0 }
@@ -477,9 +622,14 @@ local function on_request(m)
 			s[k] = v
 		end
 		s.states = {}
+		s.listeners = 0
 		for _, c in pairs(conns) do
-			s.conns = s.conns + 1
-			s.states[#s.states + 1] = c.t.state
+			if c.listener then
+				s.listeners = s.listeners + 1
+			else
+				s.conns = s.conns + 1
+				s.states[#s.states + 1] = c.t.state
+			end
 		end
 		reply_to(m, s)
 
@@ -500,6 +650,9 @@ local function expire(now)
 	end
 
 	for _, c in pairs(live) do
+		if c.listener then
+			goto continue
+		end
 		-- the dial deadline is this task's, not the state machine's:
 		-- it bounds how long a client waits, and a connection whose
 		-- SYN is still being retransmitted is one the client has
@@ -519,6 +672,7 @@ local function expire(now)
 			c.t:tick(now)
 		end
 		service(c)
+		::continue::
 	end
 end
 
@@ -531,6 +685,7 @@ local function rearm()
 	local soonest
 
 	for _, c in pairs(conns) do
+		if not c.listener then
 		-- two deadlines per connection and one timer for the task:
 		-- the dial timeout above, and whatever the state machine
 		-- wants next -- a retransmission, or the end of a TIME-WAIT.
@@ -541,6 +696,7 @@ local function rearm()
 		end
 		if want and (not soonest or want < soonest) then
 			soonest = want
+		end
 		end
 	end
 
