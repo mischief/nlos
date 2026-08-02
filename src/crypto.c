@@ -31,8 +31,12 @@
  *     multiply, add and shift, all native on x86_64, aarch64 and
  *     riscv64.
  *   - No unaligned loads and no endian assumption: every 32-bit word is
- *     assembled from bytes explicitly. Slightly more code, correct
- *     everywhere, and it costs nothing a compiler cannot fold.
+ *     assembled from and written back as bytes, by u32le/p32le. There is
+ *     no #ifdef on byte order anywhere here, and there was: a
+ *     little-endian fast path that copied the keystream block in one go
+ *     measured 4% and had to be correct on three architectures to earn
+ *     it. Plan 9 gets this right with plain get/put functions and so can
+ *     we.
  *   - No static mutable state. Every function keeps its state on the
  *     stack, so this is reentrant and safe to call from several Lua
  *     states at once, which is how lua-os would use it.
@@ -106,22 +110,7 @@ chacha20_block(uint8_t out[64], const uint8_t key[32], uint32_t counter,
 	}
 
 	for (i = 0; i < 16; i++)
-		x[i] += s[i];
-
-	/*
-	 * The keystream is little-endian, so on a little-endian target the
-	 * words are already in the right order and the whole block is one
-	 * copy. __builtin_memcpy of a constant size is folded by the
-	 * compiler into moves; it is not a call and needs no libc.
-	 * __BYTE_ORDER__ is compiler-provided, so this costs no header.
-	 */
-#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && \
-    __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-	__builtin_memcpy(out, x, 64);
-#else
-	for (i = 0; i < 16; i++)
-		p32le(out + 4 * i, x[i]);
-#endif
+		p32le(out + 4 * i, x[i] + s[i]);
 }
 
 static void
