@@ -18,6 +18,7 @@
 
 local ninep = require("ninep")
 local dev = require("dev")
+local sys = require("los.sys")
 local thread = require("los.thread")
 
 local M = {}
@@ -70,8 +71,14 @@ end
 -- subdivided. The tag exists precisely because of that, and this is the
 -- one layer where it earns its keep -- above, in the routed case, it is
 -- only an assertion.
-function M.new(transport)
+-- opts.timeout: milliseconds before a request is given up on and
+-- flushed. Stream transports only, and off by default -- a slow server
+-- is not a broken one, and the right deadline is the caller's to know.
+-- Meaningless for a routed transport, where the wait lives inside the
+-- transport and there is no tag to flush.
+function M.new(transport, opts)
 	local p9 = transport or require("los.platform.p9")
+	local timeout = opts and opts.timeout
 	local B = {}
 	local next_fid = 1
 
@@ -181,8 +188,119 @@ function M.new(transport)
 	-- which is not allocated and cannot be, but on a stream it still
 	-- has to be waited for through the mux -- the reader thread is
 	-- already running by then and would otherwise swallow the reply.
+	-- wait for one reply, or `ms` milliseconds, whichever comes first.
+	-- Returns the frame, or nil on timeout, or false if the
+	-- connection died under us.
+	--
+	-- alt rather than Channel:recv because a deadline is a port and a
+	-- reply is a channel, and thread.alt is the one primitive that
+	-- takes both. sys.timer's port is closed on every path -- timers
+	-- are a machine-wide fixed pool (MAXTIMERS), so leaking one per
+	-- timed-out request would exhaust it far sooner than the ports
+	-- would.
+	local function waitreply(ch, ms)
+		if not ms then
+			local frame, alive = ch:recv()
+
+			if alive == false then
+				return false
+			end
+			return frame
+		end
+
+		local timer = sys.timer(ms)
+
+		if not timer then
+			local frame, alive = ch:recv()
+
+			if alive == false then
+				return false
+			end
+			return frame
+		end
+
+		local which, v, alive = thread.alt({
+			{ c = ch, op = "recv" },
+			{ port = timer },
+		})
+
+		sys.close(timer)
+		if which ~= 1 then
+			return nil		-- deadline
+		end
+		if alive == false then
+			return false
+		end
+		return v
+	end
+
+	-- give up on `tag`, per flush(5).
+	--
+	-- The Tflush carries its own tag; the server echoes THAT one, so
+	-- the Rflush routes to a waiter of its own and never to the
+	-- request being abandoned. Both outcomes then have to be handled,
+	-- and neither is an error:
+	--
+	--   the original reply arrives first -- honour it. The request
+	--   completed, and "completed" can mean a fid was allocated or a
+	--   file created. Returning it to the caller is what keeps that
+	--   fid accounted for; discarding it here would leak one on the
+	--   server with nothing left holding its number.
+	--
+	--   the Rflush arrives first -- the transaction is cancelled and
+	--   is to be treated as never sent, so there is nothing to clean
+	--   up and the caller gets its timeout.
+	--
+	-- oldtag is not released either way until the Rflush lands: a
+	-- server may still answer a flushed request, and a tag reused
+	-- before then would collect someone else's reply. If the Rflush
+	-- never comes the tag stays poisoned for the life of the
+	-- connection, which is a bounded leak of tag space and the only
+	-- safe reading of a server that has stopped answering at all.
+	local function flush(oldtag, oldch, ms)
+		local ftag = alloctag()
+		local fch = thread.chancreate(1)
+
+		pending[ftag] = fch
+		if not pcall(p9.send, ninep.tflush(ftag, oldtag)) then
+			pending[ftag] = nil
+			intag[ftag] = nil
+			poisoned[oldtag] = true
+			return nil
+		end
+
+		local late
+
+		while true do
+			local which, v, alive = thread.alt({
+				{ c = oldch, op = "recv" },
+				{ c = fch, op = "recv" },
+			})
+
+			if which == 1 then
+				if alive == false then
+					break
+				end
+				late = v		-- honour it, but keep waiting
+			else
+				break			-- Rflush, or the connection went
+			end
+		end
+
+		pending[ftag] = nil
+		pending[oldtag] = nil
+		intag[ftag] = nil
+		intag[oldtag] = nil
+		return late
+	end
+
 	local function rawrpc(bytes, tag)
 		if not pending then
+			-- a routed transport answers the request it was given,
+			-- and the wait lives inside it (los.platform.p9 yields
+			-- between device polls). There is no point at which
+			-- this side could time out, and nothing to flush: a
+			-- slot is not a tag.
 			return p9.rpc(bytes)
 		end
 
@@ -196,12 +314,21 @@ function M.new(transport)
 			error(e, 0)
 		end
 
-		local frame, alive = ch:recv()
+		local frame = waitreply(ch, timeout)
 
-		pending[tag] = nil
-		if alive == false then
+		if frame == false then
+			pending[tag] = nil
 			dev.error(dev.Eio)
 		end
+		if frame == nil then
+			local late = flush(tag, ch, timeout)
+
+			if late then
+				return late
+			end
+			dev.error("9p: request timed out")
+		end
+		pending[tag] = nil
 		return frame
 	end
 
@@ -213,11 +340,13 @@ function M.new(transport)
 		local t = alloctag()
 		local ok, rep = pcall(rawrpc, build(t), t)
 
+		-- rawrpc has already settled what happens to the tag: a
+		-- completed flush frees it, a flush that could not be
+		-- established poisons it. Anything else here -- a failed
+		-- send, a dead connection, an Rerror -- leaves nothing
+		-- outstanding to collide with.
 		intag[t] = nil
 		if not ok then
-			-- the request is out and the tag is still spoken for
-			-- by whatever reply it may yet produce
-			poisoned[t] = true
 			error(rep, 0)
 		end
 		return checkreply(rep, wanttype, what, t)

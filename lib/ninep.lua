@@ -287,6 +287,20 @@ function M.tclunk(tag, fid)
 	return frame(M.Tclunk, tag, spack("<I4", fid))
 end
 
+-- abandon a pending request. `tag` is this message's OWN tag, which is
+-- what the server echoes back in the Rflush -- not `oldtag`, which
+-- names the request being given up on. Getting that backwards routes
+-- the Rflush to the very waiter that is being cancelled.
+--
+-- A Tflush is never answered with an Rerror (see flush(5)), so a client
+-- has only two outcomes to handle: the Rflush, or the original reply
+-- arriving first. The second is not an error either -- the request may
+-- have completed, and a completed Twalk allocated a fid that now has to
+-- be accounted for.
+function M.tflush(tag, oldtag)
+	return frame(M.Tflush, tag, spack("<I2", oldtag))
+end
+
 -- Twalk with an empty wname list: 9P's clone-a-fid idiom (walk zero
 -- elements, land on newfid pointing at the same file as fid). used to
 -- give each attach()/open() its own fid without a second Tattach.
