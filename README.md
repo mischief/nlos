@@ -98,6 +98,14 @@ Three things about it that are prototype, not design:
 - **You need an ed25519 key.** `ssh-ed25519` is the only host key and
   user key algorithm offered; there is no RSA anywhere.
 
+The key exchange is `mlkem768x25519-sha256` -- post-quantum, so OpenSSH
+10 does not warn about it. ML-KEM-768 encapsulation costs 14ms on this
+machine, against 85ms for the X25519 half it is paired with, so the
+quantum-resistant part is the cheap part. Authentication stays
+`ssh-ed25519` deliberately: harvest-now-decrypt-later attacks
+confidentiality, and a signature forged in 2040 verifies nothing today.
+`curve25519-sha256` is still offered for clients that want it.
+
 `etc/services.lua` is what starts it, and `args.trace = true` there logs
 every packet's message number to the console -- which is on because this
 is a branch for working on it.

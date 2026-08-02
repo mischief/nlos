@@ -123,7 +123,10 @@ end
 -- key exchange
 
 function S:kex()
-  local i_s = kex.kexinit(self.conn.rand, "server")
+  -- The hybrid is on unless the embedder turns it off. A server can do
+  -- ML-KEM with encapsulation alone, which is the cheap half.
+  local opts = { hybrid = self.conf.hybrid ~= false }
+  local i_s = kex.kexinit(self.conn.rand, "server", opts)
   local ok, err = self:send(i_s)
   if not ok then return fail(err) end
 
@@ -131,8 +134,9 @@ function S:kex()
   i_c, err = self:recv()
   if not i_c then return fail(err) end
 
-  local opts
-  opts, err = kex.check(i_c, "server")
+  -- No `local` here: this must be the offer built above, not a fresh
+  -- nil. Shadowing it means check() is told we support nothing.
+  opts, err = kex.check(i_c, "server", opts)
   if not opts then return fail(err) end
   if not opts.strict then
     return fail("client does not support " .. kex.STRICT_C)
@@ -144,6 +148,7 @@ function S:kex()
     recvpkt = function() return self:recv() end,
     rand = self.conn.rand,
     v_c = self.v_c, v_s = self.v_s, i_c = i_c, i_s = i_s,
+    hybrid = opts.hybrid,
     hostkey_seed = self.hostkey_seed,
     hostkey_pub = self.hostkey_pub,
     session_id = self.session_id,
