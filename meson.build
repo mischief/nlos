@@ -344,6 +344,28 @@ else
   )
 endif
 
+# hostutil: the one C module backing the host-driven test clients
+# (test/test_9p.lua etc) -- sockets and argv-array process spawning,
+# neither of which stock Lua has. built native regardless of
+# -Dplatform/cross-file, since this runs on the machine driving the
+# tests, never the guest. optional like fw_network below: a host
+# without lua5.4's headers just doesn't run these four tests, rather
+# than failing the whole configure.
+lua54_dep = dependency('lua5.4', native: true, required: false)
+have_hostutil = lua54_dep.found()
+if have_hostutil
+  hostutil = shared_module('hostutil', 'test/hostutil.c',
+    dependencies: lua54_dep,
+    native: true,
+    name_prefix: '',
+  )
+else
+  warning('lua5.4 dev headers not found: skipping the host-driven ' +
+          '9p/http/mcp/web-terminal tests (need liblua5.4-dev or ' +
+          'equivalent for test/hostutil.c).')
+endif
+
+
 if platform == 'efi'
 
 lua_payload = files(
@@ -457,27 +479,6 @@ foreach t : boot_tests
     env: archenv,
   )
 endforeach
-
-# hostutil: the one C module backing the host-driven test clients
-# (test/test_9p.lua etc) -- sockets and argv-array process spawning,
-# neither of which stock Lua has. built native regardless of
-# -Dplatform/cross-file, since this runs on the machine driving the
-# tests, never the guest. optional like fw_network below: a host
-# without lua5.4's headers just doesn't run these four tests, rather
-# than failing the whole configure.
-lua54_dep = dependency('lua5.4', native: true, required: false)
-have_hostutil = lua54_dep.found()
-if have_hostutil
-  hostutil = shared_module('hostutil', 'test/hostutil.c',
-    dependencies: lua54_dep,
-    native: true,
-    name_prefix: '',
-  )
-else
-  warning('lua5.4 dev headers not found: skipping the host-driven ' +
-          '9p/http/mcp/web-terminal tests (need liblua5.4-dev or ' +
-          'equivalent for test/hostutil.c).')
-endif
 
 hostenv = archenv
 if have_hostutil
@@ -601,6 +602,20 @@ foreach t : microvm_tests
     is_parallel: true,
   )
 endforeach
+
+# serial receive needs the port in BOTH directions, which the boottest
+# harness cannot do -- it points the guest's serial at a file. This one
+# drives a unix socket instead, so it is host-driven like the efi
+# platform's 9p test and needs hostutil for the same reason.
+if have_hostutil
+  test('microvm-serialrx', lua_interp,
+    args: [files('test/microvm_serial.lua'), luaos_microvm_elf,
+      files('test/boot/microvm_serialrx.lua')],
+    protocol: 'tap',
+    timeout: 120,
+    env: {'HOSTUTIL_SO': hostutil.full_path()},
+  )
+endif
 
 endif # platform == 'microvm'
 
