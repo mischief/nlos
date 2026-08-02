@@ -51,10 +51,12 @@
  * same way. That last one matters: receive was already broken before
  * any of this was written, rather than broken by it.
  *
- * Linux's programming was compared against ours and differs in two
- * visible ways -- it uses FCR=0x00 and MCR=0x01 where we use 0x07 and
- * 0x0B. Neither substitution on its own changes anything here; a full
- * match has not been tried and is the obvious next step.
+ * The programming is not the cause either, which is the strongest
+ * elimination so far. Linux's init was lifted straight out of the
+ * trace -- IER=0x00, LCR=0x93, divisor 12, LCR=0x13, FCR=0x00,
+ * MCR=0x01 -- and reproduced here byte for byte. Still nothing. So the
+ * device is configured identically to a guest that demonstrably
+ * receives, on the same machine, and ours still never sees DR.
  *
  * Also worth knowing: src/x86_64/uart.c, which does receive and is what
  * the 9p-protocol test drives over com2 every run, has a byte-identical
