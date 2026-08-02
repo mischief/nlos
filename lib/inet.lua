@@ -22,6 +22,11 @@ local udp4 = require("udp4")
 
 local inet = {}
 
+-- how many looped packets may be waiting to be picked up. A sender that
+-- never drains its own loopback queue is a bug in that proc, and this
+-- is what stops it becoming a bug in the machine's memory.
+local LOOP_MAX = 64
+
 local Host = {}
 
 Host.__index = Host
@@ -38,6 +43,37 @@ function inet.new(wire, cfg)
 		gw = cfg.gw,
 		id = 0,
 	}, Host)
+end
+
+-- does this destination reach the wire at all, or is it us?
+--
+-- Two ways to be us: anything in 127/8, and our own address. The second
+-- matters as much as the first -- a proc that looks up its own address
+-- and sends to it must not have the packet leave and come back, which
+-- on a switched segment means it never arrives.
+--
+-- ip4.ANY is excluded because before DHCP answers, self.ip IS ANY, and
+-- treating a send to 0.0.0.0 as a send to ourselves would swallow the
+-- broadcasts DHCP bootstraps with.
+function Host:islocal(dst)
+	if ip4.is_loopback(dst) then
+		return true
+	end
+	return self.ip ~= nil and self.ip ~= ip4.ANY and dst == self.ip
+end
+
+-- what to put in the source field for a packet to dst.
+--
+-- Not always self.ip: a packet to 127.0.0.1 comes FROM 127.0.0.1, which
+-- is what a caller comparing the reply's source against where it sent
+-- expects. It has to agree with whatever computed the udp checksum,
+-- since that covers a pseudo-header of both addresses -- disagree and
+-- every loopback datagram is discarded as corrupt by its receiver.
+function Host:srcfor(dst)
+	if ip4.is_loopback(dst) then
+		return ip4.LOOPBACK
+	end
+	return self.ip
 end
 
 -- which address to ARP for: the destination if it shares our link, the
@@ -85,6 +121,33 @@ end
 -- the wire cannot read it from inside a send without fighting its own
 -- receive path.
 function Host:output(dst, proto, payload)
+	-- checked before broadcast and before arp, because a loopback
+	-- destination has neither a next hop nor a mac to resolve: there is
+	-- no link under it to ask on.
+	if self:islocal(dst) then
+		local q = self.lo
+
+		if not q then
+			q = {}
+			self.lo = q
+		end
+
+		-- bounded, and the arrival is what loses. Same choice
+		-- task/ip.lua makes for its receive queues and for the same
+		-- reason: dropping the oldest hands a slow reader the newest
+		-- datagrams and loses the ones it was waiting for, which for
+		-- a request/reply protocol is precisely backwards.
+		if #q >= LOOP_MAX then
+			return nil, "full"
+		end
+
+		q[#q + 1] = {
+			src = self:srcfor(dst), dst = dst,
+			proto = proto, payload = payload,
+		}
+		return true, "loop"
+	end
+
 	if dst == ip4.BROADCAST then
 		-- nobody to ask and nobody to ask for: a broadcast goes to
 		-- the ethernet broadcast address by definition. This is also
@@ -244,9 +307,35 @@ function Host:input(frame)
 	return p
 end
 
+-- the next packet that was sent to ourselves, or nil.
+--
+-- Already decoded -- it never became a frame, so there is nothing to
+-- parse back -- and it is returned in the same shape input() returns,
+-- so a caller demultiplexes both through one path.
+--
+-- A task that alts rather than pumping has to drain this itself after
+-- anything that may have sent, because a looped packet arrives with no
+-- interrupt behind it: nothing will wake the loop to collect it.
+function Host:loopnext()
+	local q = self.lo
+
+	if not q or #q == 0 then
+		return nil
+	end
+	return table.remove(q, 1)
+end
+
 -- read one frame and act on it. The convenience for a caller that owns
 -- the wire; a task uses input() on what its own loop received.
 function Host:pump(ms)
+	-- ours first, and without waiting: it is already here, and a wire
+	-- read would block up to ms before noticing.
+	local lo = self:loopnext()
+
+	if lo then
+		return lo
+	end
+
 	local frame
 
 	if self.wire.recv_wait then

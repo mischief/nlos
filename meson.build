@@ -711,6 +711,7 @@ microvm_tests = [
   ['dns', ['--net']],
   ['iptask', ['--net']],
   ['udpq', ['--net']],
+  ['loopback', ['--net']],
   ['autoip', ['--net']],
   ['idle', []],
 ]

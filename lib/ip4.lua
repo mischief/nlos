@@ -14,6 +14,14 @@ ip4.LEN = 4
 
 ip4.ANY = string.rep("\0", 4)
 ip4.BROADCAST = string.rep("\255", 4)
+ip4.LOOPBACK = "\127\0\0\1"
+
+-- the whole of 127.0.0.0/8, not just 127.0.0.1: the block is reserved
+-- for this and a host is required to treat all of it as its own, which
+-- is what lets 127.0.0.2 be a distinct address of the same machine.
+function ip4.is_loopback(a)
+	return type(a) == "string" and #a == ip4.LEN and a:byte(1) == 127
+end
 
 -- "10.0.2.2" -> "\10\0\2\2", or nil for anything that is not one.
 -- Strict about range because a silent truncation to a byte turns a

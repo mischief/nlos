@@ -269,8 +269,14 @@ local function on_request(m)
 		end
 
 		local dst = string.char(a, b, cc, d)
+		-- srcfor, not host.ip: a datagram to 127.0.0.1 comes from
+		-- 127.0.0.1, and the checksum below covers a pseudo-header
+		-- of both addresses -- so the address claimed here and the
+		-- one the packet is stamped with in output() have to be the
+		-- same one, or the receiver discards it as corrupt.
+		local src = host:srcfor(dst)
 		local ok, why = host:output(dst, ip4.PROTO_UDP,
-		    udp4.encode(c.port, port, m.data, host.ip, dst))
+		    udp4.encode(c.port, port, m.data, src, dst))
 
 		if not ok then
 			stat.frames_out_fail = stat.frames_out_fail + 1
@@ -403,5 +409,22 @@ while true do
 		end
 	else
 		on_request(m)
+
+		-- a packet sent to ourselves never reached the wire, so
+		-- nothing will interrupt to say it arrived: this loop is
+		-- the only thing that can collect it, and only right after
+		-- the request that produced it. Drained here rather than in
+		-- the send op so one request cannot recurse into another.
+		while true do
+			local p = host:loopnext()
+
+			if not p then
+				break
+			end
+			stat.frames_in = stat.frames_in + 1
+			if p.proto == ip4.PROTO_UDP then
+				on_udp(p)
+			end
+		end
 	end
 end
