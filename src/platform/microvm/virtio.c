@@ -1,42 +1,18 @@
-/* virtio-mmio core: register access, legacy queue setup, descriptor
- * allocation, and both a synchronous and an asynchronous submit path.
- * See virtio.h.
+/* virtio core: legacy queue setup, descriptor allocation, and both a
+ * synchronous and an asynchronous submit path. See virtio.h.
  *
- * device discovery is a fixed scan, not a bus walk: microvm has
- * exactly 8 virtio-mmio slots at a fixed base and stride (see
- * qemu's include/hw/i386/microvm.h), already covered by the flat
- * identity map (src/platform/microvm/boot.S), so there is no MMIO
- * window to set up beyond reading the registers.
+ * Everything here is transport-independent. How a device's registers
+ * are reached -- memory-mapped in qemu's microvm window, or an IO BAR
+ * on a PCI bus under OpenBSD vmd -- is virtio_mmio.c and virtio_pci.c,
+ * behind struct virtio_transport. The rings are identical either way:
+ * both machines speak the legacy layout, one contiguous page-aligned
+ * desc/avail/used allocation addressed by page number.
  */
 
 #include <string.h>
 
 #include "microvm.h"
 #include "virtio.h"
-
-#define VIRTIO_MMIO_BASE   0xfeb00000UL
-#define VIRTIO_MMIO_STRIDE 0x200UL	/* 512 */
-#define VIRTIO_NUM_SLOTS   8
-
-#define MAGIC_VALUE 0x74726976UL	/* "virt" */
-
-#define REG_MAGIC             0x000
-#define REG_VERSION           0x004
-#define REG_DEVICE_ID         0x008
-#define REG_DEV_FEATURES      0x010
-#define REG_DEV_FEATURES_SEL  0x014
-#define REG_DRV_FEATURES      0x020
-#define REG_DRV_FEATURES_SEL  0x024
-#define REG_GUEST_PAGE_SIZE   0x028
-#define REG_QUEUE_SEL         0x030
-#define REG_QUEUE_NUM_MAX     0x034
-#define REG_QUEUE_NUM         0x038
-#define REG_QUEUE_ALIGN       0x03c
-#define REG_QUEUE_PFN         0x040
-#define REG_QUEUE_NOTIFY      0x050
-#define REG_INT_STATUS        0x060
-#define REG_INT_ACK           0x064
-#define REG_STATUS            0x070
 
 #define STATUS_ACK        0x01
 #define STATUS_DRIVER     0x02
@@ -54,73 +30,50 @@
  */
 #define barrier() __asm__ volatile ("" ::: "memory")
 
-static inline uint32_t
-rd(struct virtio_dev *d, unsigned off)
-{
-	return d->regs[off / 4];
-}
-
-static inline void
-wr(struct virtio_dev *d, unsigned off, uint32_t v)
-{
-	d->regs[off / 4] = v;
-}
-
 static size_t
 align_up(size_t n, size_t a)
 {
 	return (n + (a - 1)) & ~(a - 1);
 }
 
+uint8_t
+virtio_config8(struct virtio_dev *d, unsigned off)
+{
+	return d->t->config8(d, off);
+}
+
+/* which transport to look on, decided by whether the machine has a PCI
+ * bus at all.
+ *
+ * Not "try one, then the other": the mmio window cannot be probed on a
+ * machine that has PCI. 0xfeb00000 lies inside the range vmd declares
+ * VM_MEM_MMIO, and reading an address no emulated device claims
+ * terminates the guest outright -- no trap, nothing logged. So the bus
+ * has to be ruled out before the first load, not after. See pci.c.
+ */
 int
 virtio_find(uint32_t device_id, struct virtio_dev *out)
 {
-	/* the window is only there on a machine with no PCI, and on one
-	 * that has PCI the read is not merely useless but fatal: under
-	 * OpenBSD vmd 0xfeb00000 lies inside the range declared
-	 * VM_MEM_MMIO, and reading an address no emulated device claims
-	 * terminates the guest outright -- no trap, nothing logged. So
-	 * the bus has to be ruled out before the first load, not after.
-	 * See pci.c.
-	 */
 	if (pci_present())
-		return -1;
-
-	for (int i = 0; i < VIRTIO_NUM_SLOTS; i++) {
-		volatile uint32_t *regs =
-		    (volatile uint32_t *)(VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STRIDE);
-
-		if (regs[REG_MAGIC / 4] != MAGIC_VALUE)
-			continue;
-		if (regs[REG_DEVICE_ID / 4] != device_id)
-			continue;
-		memset(out, 0, sizeof *out);
-		out->regs = regs;
-		out->slot = i;		/* fixes its gsi; see virtio_irq_enable */
-		return 0;
-	}
-	return -1;
+		return virtio_pci_find(device_id, out);
+	return virtio_mmio_find(device_id, out);
 }
 
 int
 virtio_dev_begin(struct virtio_dev *d, uint32_t want, uint32_t *got)
 {
-	wr(d, REG_STATUS, 0);				/* reset */
-	wr(d, REG_STATUS, STATUS_ACK);
-	wr(d, REG_STATUS, STATUS_ACK | STATUS_DRIVER);
+	d->t->set_status(d, 0);				/* reset */
+	d->t->set_status(d, STATUS_ACK);
+	d->t->set_status(d, STATUS_ACK | STATUS_DRIVER);
 
-	wr(d, REG_DEV_FEATURES_SEL, 0);
-
-	uint32_t offered = rd(d, REG_DEV_FEATURES);
+	uint32_t offered = d->t->get_features(d);
 	uint32_t accept = offered & want;
 
-	wr(d, REG_DRV_FEATURES_SEL, 0);
-	wr(d, REG_DRV_FEATURES, accept);
+	d->t->set_features(d, accept);
 
 	if (got)
 		*got = accept;
 
-	wr(d, REG_GUEST_PAGE_SIZE, PAGE_SIZE);
 	return 0;
 }
 
@@ -132,16 +85,12 @@ virtio_queue_init(struct virtio_dev *d, unsigned qi, uint16_t qsize)
 
 	struct virtq *q = &d->q[qi];
 
-	wr(d, REG_QUEUE_SEL, qi);
-
-	uint32_t max = rd(d, REG_QUEUE_NUM_MAX);
+	uint16_t max = d->t->queue_max(d, qi);
 
 	if (max == 0)
 		return -1;		/* device has no such queue */
 	if (qsize > max)
-		qsize = (uint16_t)max;
-	wr(d, REG_QUEUE_NUM, qsize);
-	wr(d, REG_QUEUE_ALIGN, PAGE_SIZE);
+		qsize = max;
 
 	/* legacy layout: desc[qsize], avail hdr+ring+used_event, padding
 	 * to QUEUE_ALIGN, then used hdr+ring+avail_event.
@@ -180,14 +129,14 @@ virtio_queue_init(struct virtio_dev *d, unsigned qi, uint16_t qsize)
 	q->free_head = 0;
 	q->nfree = qsize;
 
-	wr(d, REG_QUEUE_PFN, (uint32_t)(mem / PAGE_SIZE));
+	d->t->queue_setup(d, qi, qsize, (uint32_t)(mem / PAGE_SIZE));
 	return 0;
 }
 
 void
 virtio_dev_ready(struct virtio_dev *d)
 {
-	wr(d, REG_STATUS, STATUS_ACK | STATUS_DRIVER | STATUS_DRIVER_OK);
+	d->t->set_status(d, STATUS_ACK | STATUS_DRIVER | STATUS_DRIVER_OK);
 }
 
 int
@@ -269,7 +218,7 @@ virtio_submit(struct virtio_dev *d, unsigned qi, uint16_t head)
 	q->avail->idx = idx + 1;
 	barrier();			/* idx visible before notify */
 
-	wr(d, REG_QUEUE_NOTIFY, qi);
+	d->t->notify(d, qi);
 }
 
 int
@@ -305,25 +254,21 @@ virtio_poll_used(struct virtio_dev *d, unsigned qi, uint16_t *id, uint32_t *len)
 	 * With no line routed there is nothing to race, and the ack has to
 	 * happen here or the level stays asserted forever.
 	 */
-	if (!d->irq_routed) {
-		uint32_t is = rd(d, REG_INT_STATUS);
-
-		if (is)
-			wr(d, REG_INT_ACK, is);
-	}
+	if (!d->irq_routed)
+		d->t->isr_ack(d);
 	return 1;
 }
 
 /* ---- interrupts ----
  *
- * One vector for every virtio device. The lines are level-triggered, so
- * the handler has to clear the source at the device that raised it, and
- * with a shared vector it does that by asking each registered device
- * whether it has anything pending. There are at most eight.
+ * One handler for every virtio device. The lines are level-triggered
+ * (and shared, on a PCI machine), so the handler has to clear the
+ * source at the device that raised it, and it does that by asking each
+ * registered device whether it has anything pending. There are few.
  */
 
-
-static struct virtio_dev *irq_devs[VIRTIO_NUM_SLOTS];
+static struct virtio_dev *irq_devs[VIRTIO_MAX_DEVS];
+static int irq_last_gsi = -1;
 static volatile unsigned long irq_taken;
 
 void virtio_isr(void);
@@ -331,28 +276,28 @@ void virtio_isr(void);
 void
 virtio_isr(void)
 {
-	for (int i = 0; i < VIRTIO_NUM_SLOTS; i++) {
+	for (int i = 0; i < VIRTIO_MAX_DEVS; i++) {
 		struct virtio_dev *d = irq_devs[i];
 
 		if (!d)
 			continue;
 
-		uint32_t is = rd(d, REG_INT_STATUS);
-
-		if (is) {
-			/* clears the level at the source. Without this the
-			 * IOAPIC would re-raise the moment we return.
-			 */
-			wr(d, REG_INT_ACK, is);
+		/* reading is also the acknowledgement on PCI, so this asks
+		 * once and acts on the answer -- clearing the level at the
+		 * source, without which the controller re-raises the moment
+		 * we return.
+		 */
+		if (d->t->isr_ack(d))
 			irq_taken++;
-		}
 	}
-	/* every slot shares the handler but not the vector, so the line
-	 * being acknowledged is the one that was routed last. They are all
-	 * on the same controller; a non-specific EOI is what both
-	 * controllers want here anyway.
+
+	/* the line to end, which is whichever was routed last: with one
+	 * device per line and a shared handler there is no way to tell
+	 * from here which of them the controller delivered, and a
+	 * non-specific EOI is what both controllers want anyway.
 	 */
-	intr_eoi(VIRTIO_MMIO_GSI_BASE);
+	if (irq_last_gsi >= 0)
+		intr_eoi(irq_last_gsi);
 }
 
 unsigned long
@@ -364,15 +309,25 @@ virtio_irq_count(void)
 void
 virtio_irq_enable(struct virtio_dev *d)
 {
-	if (d->slot < 0 || d->slot >= VIRTIO_NUM_SLOTS)
-		return;
-	if (irq_devs[d->slot] == d)
-		return;			/* already routed */
+	int slot = -1;
 
-	irq_devs[d->slot] = d;
+	for (int i = 0; i < VIRTIO_MAX_DEVS; i++) {
+		if (irq_devs[i] == d)
+			return;			/* already routed */
+		if (irq_devs[i] == 0 && slot < 0)
+			slot = i;
+	}
+	if (slot < 0)
+		return;
+
+	irq_devs[slot] = d;
+	irq_last_gsi = d->gsi;
 	d->irq_routed = 1;	/* the handler owns the ack from here */
 
-	intr_route(VIRTIO_MMIO_GSI_BASE + d->slot, isr_virtio);
+	/* the transport worked out the line: a slot's position in the mmio
+	 * window fixes it there, config space names it on PCI.
+	 */
+	intr_route(d->gsi, isr_virtio);
 }
 
 /* submit a chain and busy-wait for it. Returns the byte count the

@@ -113,8 +113,15 @@ uart_irq_enable(void)
 	outb(COM1 + IER, IER_RX_AVAIL);
 }
 
-/* drain the hardware fifo into the ring. Called from the handler, and
- * from uart_poll for anything that arrived before routing was set up.
+/* drain the hardware fifo into the ring.
+ *
+ * The ring has one consumer and, by design, one producer. This is that
+ * producer, and it must run either in the isr or with interrupts off --
+ * never both at once. Two contexts reading the fifo and advancing
+ * rxhead together interleave the bytes: typing "ps" at the console
+ * echoed back "sp".
+ *
+ * Call it from the isr, or through drain_masked below. Nowhere else.
  */
 static void
 uart_drain(void)
@@ -128,6 +135,23 @@ uart_drain(void)
 		rxring[rxhead] = c;
 		rxhead = next;
 	}
+}
+
+/* the same drain for everyone who is not the isr. Both such callers --
+ * uart_poll, from the scheduler loop on every proc resume, and uart_rx
+ * when its ring is empty -- run with the uart interrupt live, so
+ * without this they race it. uart_poll was the frequent one, which is
+ * why the reordering showed up under load.
+ */
+static void
+drain_masked(void)
+{
+	unsigned long flags;
+
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	uart_drain();
+	if (flags & 0x200)	/* IF: only re-enable if it was already on */
+		__asm__ volatile ("sti");
 }
 
 void
@@ -144,7 +168,7 @@ uart_isr(void)
 void
 uart_poll(void)
 {
-	uart_drain();
+	drain_masked();
 }
 
 int
@@ -154,24 +178,8 @@ uart_rx(void)
 		/* nothing buffered. Look at the port anyway: bytes that
 		 * arrived before uart_irq_enable ran are sitting in the
 		 * fifo with no interrupt coming for them.
-		 *
-		 * With interrupts off, because this call makes uart_rx a
-		 * second producer on a ring that works only with one. An
-		 * interrupt landing inside it has both contexts reading the
-		 * fifo and advancing rxhead, and bytes come out reordered:
-		 * typing "ps" at the console echoed back "sp". Rare enough
-		 * to pass a test run either way, which is why it is worth
-		 * writing down. Masked here rather than inside uart_drain,
-		 * so the isr path -- already atomic by virtue of being the
-		 * isr -- does not pay for it.
 		 */
-		unsigned long flags;
-
-		__asm__ volatile ("pushfq; popq %0; cli"
-		    : "=r" (flags) : : "memory");
-		uart_drain();
-		if (flags & 0x200)	/* IF: only re-enable if it was on */
-			__asm__ volatile ("sti");
+		drain_masked();
 		if (rxtail == rxhead)
 			return -1;
 	}

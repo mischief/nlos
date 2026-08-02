@@ -80,6 +80,18 @@ void	ioapic_mask(int gsi);
  */
 int	pci_present(void);
 uint32_t pci_config_read(int bus, int dev, int fn, int reg);
+void	pci_config_write(int bus, int dev, int fn, int reg, uint32_t v);
+
+/* what a driver needs about a device it found, and nothing more: where
+ * its IO BAR is and which line it raises.
+ */
+struct pci_dev {
+	int bus, dev, fn;
+	uint16_t iobase;	/* 0 if BAR0 is memory-mapped, not IO */
+	int irq;		/* the interrupt line, as config space names it */
+};
+
+int	pci_find(uint16_t vendor, uint16_t device, struct pci_dev *out);
 
 /* idt_stubs.S */
 void	isr_timer(void);

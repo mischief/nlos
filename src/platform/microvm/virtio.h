@@ -40,6 +40,12 @@ struct virtq_used {
  */
 #define VIRTIO_MAX_QUEUES 2
 
+/* how many devices may have their interrupt routed at once. The mmio
+ * window has eight slots and a PCI machine here has fewer devices than
+ * that, so eight covers both.
+ */
+#define VIRTIO_MAX_DEVS 8
+
 #define VIRTQ_NO_DESC 0xffff
 
 struct virtq {
@@ -60,18 +66,72 @@ struct virtq {
 	uint16_t nfree;
 };
 
+struct virtio_dev;
+
+/* how to reach a device's registers, which is the only thing that
+ * differs between the two machines this platform runs on.
+ *
+ * qemu's microvm has virtio-mmio: registers memory-mapped in a fixed
+ * window, 32 bits wide, one page-ish slot per device. OpenBSD vmd has
+ * legacy virtio-PCI: the same registers, semantically, in an IO BAR at
+ * different offsets and mixed widths (usr.sbin/vmd/virtio.c against
+ * sys/dev/pci/virtio_pcireg.h's "Virtio 0.9 config space").
+ *
+ * The split is at what the registers MEAN, not where they are, because
+ * offsets are not the whole difference: legacy PCI has no
+ * guest-page-size or queue-align register (both are implicitly 4096)
+ * and its queue size and notify are 16-bit while mmio's are 32. A
+ * register-address mapping would have to lie about all of that; an
+ * operation does not.
+ *
+ * Everything above this line -- the rings, the descriptors, the setup
+ * order, the polling -- is identical on both and lives in virtio.c.
+ */
+struct virtio_transport {
+	const char *name;
+	uint32_t (*get_features)(struct virtio_dev *d);
+	void	(*set_features)(struct virtio_dev *d, uint32_t v);
+	void	(*set_status)(struct virtio_dev *d, uint8_t status);
+	uint16_t (*queue_max)(struct virtio_dev *d, unsigned qi);
+	/* select the queue, size it, and hand over the ring's page number */
+	void	(*queue_setup)(struct virtio_dev *d, unsigned qi,
+		    uint16_t qsize, uint32_t pfn);
+	void	(*notify)(struct virtio_dev *d, unsigned qi);
+	/* read the interrupt status and acknowledge it in one go: mmio
+	 * needs two registers for that and PCI clears on read.
+	 */
+	uint32_t (*isr_ack)(struct virtio_dev *d);
+	uint8_t	(*config8)(struct virtio_dev *d, unsigned off);
+};
+
 struct virtio_dev {
-	volatile uint32_t *regs;
+	const struct virtio_transport *t;
+	volatile uint32_t *regs;	/* mmio: the register window */
+	uint16_t iobase;		/* pci: the IO BAR */
 	struct virtq q[VIRTIO_MAX_QUEUES];
-	int slot;		/* which mmio slot, which fixes its gsi */
+	int slot;		/* mmio: which slot, which fixes its gsi */
+	int gsi;		/* the line this device raises */
 	int irq_routed;		/* set by virtio_irq_enable; see the ack rule */
 };
 
-/* scans the 8 fixed microvm virtio-mmio slots (0xfeb00000 + i*512, see
- * qemu's include/hw/i386/microvm.h) for one matching device_id. 0 and
- * fills *out, -1 if none present.
+/* find a device of this virtio type on whichever transport the machine
+ * has. 0 and fills *out, -1 if none present. `device_id` is the virtio
+ * device type (1 net, 4 rng, 9 9p), not a bus id -- PCI spells those
+ * 0x1040 + type, and this is the layer that knows it.
  */
 int	virtio_find(uint32_t device_id, struct virtio_dev *out);
+
+/* the per-transport halves of that search, each returning 0 and filling
+ * *out with its own ops attached. virtio_mmio.c and virtio_pci.c.
+ */
+int	virtio_mmio_find(uint32_t device_id, struct virtio_dev *out);
+int	virtio_pci_find(uint32_t device_id, struct virtio_dev *out);
+
+/* one device-config byte, whatever the transport. Drivers read their
+ * config space (a mac address, a mount tag length) through this rather
+ * than off d->regs, which only one of the two transports has.
+ */
+uint8_t	virtio_config8(struct virtio_dev *d, unsigned off);
 
 /* ---- setup, in three steps ----
  *

@@ -42,13 +42,13 @@ virtio_9p_tag(char *buf, size_t bufcap)
 	if (!p9_ready)
 		return -1;
 
-	volatile uint8_t *cfg = (volatile uint8_t *)p9dev.regs + CONFIG_OFF;
-	uint16_t len = cfg[0] | ((uint16_t)cfg[1] << 8);
+	uint16_t len = virtio_config8(&p9dev, 0) |
+	    ((uint16_t)virtio_config8(&p9dev, 1) << 8);
 
 	if ((size_t)len >= bufcap)
 		return -1;
 	for (uint16_t i = 0; i < len; i++)
-		buf[i] = (char)cfg[2 + i];
+		buf[i] = (char)virtio_config8(&p9dev, 2 + i);
 	buf[len] = '\0';
 	return len;
 }

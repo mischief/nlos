@@ -118,11 +118,8 @@ virtio_net_init(void)
 	}
 
 	if (got & VIRTIO_NET_F_MAC) {
-		volatile uint8_t *cfg =
-		    (volatile uint8_t *)netdev.regs + CONFIG_OFF;
-
 		for (int i = 0; i < 6; i++)
-			net_mac[i] = cfg[i];
+			net_mac[i] = virtio_config8(&netdev, i);
 		have_mac = 1;
 	}
 

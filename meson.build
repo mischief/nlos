@@ -82,6 +82,8 @@ if arch == 'x86_64'
       'src/platform/microvm/reset.c',
       'src/platform/microvm/efi_shim.c',
       'src/platform/microvm/virtio.c',
+      'src/platform/microvm/virtio_mmio.c',
+      'src/platform/microvm/virtio_pci.c',
       'src/platform/microvm/virtio_rng.c',
       'src/platform/microvm/virtio_9p.c',
       'src/platform/microvm/virtio_net.c',

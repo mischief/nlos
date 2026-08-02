@@ -44,15 +44,26 @@ inl(uint16_t port)
 	return v;
 }
 
+static uint32_t
+cfg_addr(int bus, int dev, int fn, int reg)
+{
+	return CONFIG_ENABLE |
+	    ((uint32_t)bus << 16) | ((uint32_t)(dev & 0x1f) << 11) |
+	    ((uint32_t)(fn & 7) << 8) | (uint32_t)(reg & 0xfc);
+}
+
 uint32_t
 pci_config_read(int bus, int dev, int fn, int reg)
 {
-	uint32_t addr = CONFIG_ENABLE |
-	    ((uint32_t)bus << 16) | ((uint32_t)(dev & 0x1f) << 11) |
-	    ((uint32_t)(fn & 7) << 8) | (uint32_t)(reg & 0xfc);
-
-	outl(PCI_CONFIG_ADDR, addr);
+	outl(PCI_CONFIG_ADDR, cfg_addr(bus, dev, fn, reg));
 	return inl(PCI_CONFIG_DATA);
+}
+
+void
+pci_config_write(int bus, int dev, int fn, int reg, uint32_t v)
+{
+	outl(PCI_CONFIG_ADDR, cfg_addr(bus, dev, fn, reg));
+	outl(PCI_CONFIG_DATA, v);
 }
 
 /* 00:00.0's vendor id. A real host bridge answers with its own; an
@@ -72,4 +83,77 @@ pci_present(void)
 		probed = 1;
 	}
 	return present;
+}
+
+/* config space offsets, the ones this needs and no more */
+#define CFG_ID       0x00	/* vendor (low) and device (high) */
+#define CFG_COMMAND  0x04
+#define CFG_HEADER   0x0c	/* header type in bits 23:16 */
+#define CFG_BAR0     0x10
+#define CFG_INTLINE  0x3c	/* irq line (low byte) */
+
+#define COMMAND_IO     0x0001
+#define COMMAND_MASTER 0x0004
+
+#define BAR_IS_IO   0x1
+#define BAR_IO_MASK 0xfffffffcUL
+
+#define HEADER_MULTIFUNCTION 0x80
+
+/* bus 0 only, and no bridges walked.
+ *
+ * Every machine this runs on puts its virtio devices directly on bus 0
+ * -- vmd's pci.c does not emulate a bridge at all -- so recursing
+ * behind one would be code with nothing to find. A machine that does
+ * have bridges will need the walk; it will also need much else.
+ */
+int
+pci_find(uint16_t vendor, uint16_t device, struct pci_dev *out)
+{
+	if (!pci_present())
+		return -1;
+
+	for (int dev = 0; dev < 32; dev++) {
+		int nfn = 1;
+
+		for (int fn = 0; fn < nfn; fn++) {
+			uint32_t id = pci_config_read(0, dev, fn, CFG_ID);
+
+			if (fn == 0) {
+				uint32_t hdr = pci_config_read(0, dev, 0,
+				    CFG_HEADER);
+
+				if ((hdr >> 16) & HEADER_MULTIFUNCTION)
+					nfn = 8;
+			}
+
+			if ((id & 0xffff) != vendor)
+				continue;
+			if (((id >> 16) & 0xffff) != device)
+				continue;
+
+			uint32_t bar = pci_config_read(0, dev, fn, CFG_BAR0);
+			uint32_t line = pci_config_read(0, dev, fn, CFG_INTLINE);
+
+			out->bus = 0;
+			out->dev = dev;
+			out->fn = fn;
+			out->iobase = (bar & BAR_IS_IO) ?
+			    (uint16_t)(bar & BAR_IO_MASK) : 0;
+			out->irq = (int)(line & 0xff);
+
+			/* the BAR is useless until the device is told to
+			 * decode it. Firmware normally does this; there is
+			 * no firmware here, and vmd leaves the command
+			 * register at whatever it was.
+			 */
+			uint32_t cmd = pci_config_read(0, dev, fn,
+			    CFG_COMMAND);
+
+			pci_config_write(0, dev, fn, CFG_COMMAND,
+			    cmd | COMMAND_IO | COMMAND_MASTER);
+			return 0;
+		}
+	}
+	return -1;
 }
