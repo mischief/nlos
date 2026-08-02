@@ -335,9 +335,13 @@ local function session(connid)
 					break
 				end
 				shellpid = pid
+				-- giveright, not a bare sendright: the send
+				-- copies, and this daemon outlives every
+				-- session it starts. One right per shell,
+				-- never closed, is a server that stops
+				-- accepting after MAXRIGHTS logins.
 				sys.send(h, {
-					cons = { __right =
-					    sys.sendright(consport) },
+					cons = thread.giveright(consport),
 					nsdesc = nsdesc,
 					banner = BANNER,
 				})

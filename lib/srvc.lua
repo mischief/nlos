@@ -9,18 +9,12 @@ local thread = require("los.thread")
 
 local M = {}
 
+-- thread.rpc owns minting and closing the reply right. Hand-rolling it
+-- here spent one of MAXRIGHTS per call and got away with it only
+-- because a srv conversation is short -- lib/ethwire.lua wrote the same
+-- four lines and ran out mid-DHCP.
 local function rpc(srv, msg)
-	local reply = thread.replyport()
-
-	msg.reply = { __right = sys.sendright(reply) }
-
-	local ok, sent = pcall(sys.send, srv, msg)
-
-	if not ok or not sent then
-		return nil, "srv: not answering"
-	end
-
-	local r = thread.recv(reply)
+	local r = thread.rpc(srv, msg)
 
 	if not r then
 		return nil, "srv: no reply"
@@ -31,12 +25,20 @@ local function rpc(srv, msg)
 	return r
 end
 
--- publish `right` under `name`. The right is given away: srvd holds it
--- from here on, which is what lets a service outlive the proc that
--- posted it.
+-- publish `right` under `name`, and take ownership of it: srvd gets its
+-- own copy, which is what lets a service outlive the proc that posted
+-- it, and the caller's is closed here.
+--
+-- "given away" is what this comment used to say, and it was the same
+-- misreading that has cost this tree five leaks: sending COPIES, so a
+-- caller that mints a right to post and then treats it as gone keeps
+-- spending one of MAXRIGHTS per post. Closing it here rather than
+-- asking every caller to is what makes the sentence above true.
 function M.post(srv, name, right)
 	local r, err = rpc(srv, { op = "post", name = name,
 	    port = { __right = right } })
+
+	pcall(sys.close, right)
 
 	return r and true or nil, err
 end

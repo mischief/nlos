@@ -83,8 +83,12 @@ while true do
 			-- over a receive right would let a client take the
 			-- server's own requests. The registry keeps its copy,
 			-- so many clients can open one name.
-			reply(m, { ok = true,
-			    port = { __right = sys.sendright(h) } })
+			--
+			-- thread.giveright rather than a bare sendright,
+			-- because sending copies and this server never exits:
+			-- one right per lookup, never closed, is a registry
+			-- that stops answering after MAXRIGHTS opens.
+			reply(m, { ok = true, port = thread.giveright(h) })
 		end
 	elseif m.op == "remove" then
 		local h = names[m.name]
