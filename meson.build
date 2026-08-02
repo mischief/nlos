@@ -203,8 +203,13 @@ else
   # main.c falls back to when no fw_cfg one was injected, which is the
   # only way this image boots on a loader whose fw_cfg cannot serve
   # arbitrary files (OpenBSD vmd).
+  # -Dboot_payload names what gets embedded AS /boot/microvm.lua, so
+  # main.c's BOOT_PAYLOAD path stays fixed and only the contents change.
+  # See meson.options for why this is worth an option: on vmd it is the
+  # only program that can ever run.
+  boot_payload = get_option('boot_payload')
+
   embed_files = [
-    'boot/microvm.lua',
     'lib/thread.lua',
     'task/cons.lua',
     'task/wire.lua',
@@ -246,13 +251,15 @@ else
     'lib/tap.lua',
     'lib/ps.lua',
   ]
-  embed_args = []
+  embed_args = ['/boot/microvm.lua=' +
+      (boot_payload.startswith('/') ? boot_payload
+       : meson.current_source_dir() / boot_payload)]
   foreach f : embed_files
     embed_args += '/' + f + '=' + meson.current_source_dir() / f
   endforeach
   embedfs_src = custom_target('embedfs.c',
     output: 'embedfs.c',
-    input: files(embed_files),
+    input: files(embed_files) + files(boot_payload),
     command: [lua_interp, files('tools/gen_embedfs.lua'), '@OUTPUT@'] + embed_args,
   )
   kernel_src += embedfs_src

@@ -21,3 +21,17 @@ option('fw_network', type: 'feature', value: 'auto',
 # runs whichever suite that build can produce a guest for.
 option('platform', type: 'combo', choices: ['efi', 'microvm'], value: 'efi',
   description: 'efi (firmware boot, all arches) or microvm (bare PVH, x86_64 only)')
+
+# What the microvm image runs when fw_cfg injects nothing.
+#
+# On qemu the payload is a host file handed over through fw_cfg, which
+# is how every boot test starts code. OpenBSD vmd cannot do that: its
+# fw_cfg serves a fixed list and will not take a file, so the embedded
+# fallback is the ONLY thing that can ever run there. Leaving it hard
+# coded meant vmd could boot exactly one program -- the console repl --
+# and so could never run a test.
+#
+# Pointing this at a test payload builds an image that runs it on vmd
+# with nothing injected and nothing typed.
+option('boot_payload', type: 'string', value: 'boot/microvm.lua',
+  description: 'lua payload embedded in the microvm image as the fw_cfg fallback')
