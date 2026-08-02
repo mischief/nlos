@@ -4784,10 +4784,25 @@ kernel_init(void)
 	 * no net task gets spawned later, same as any other optional
 	 * boot-time resource.
 	 */
-	have_net = (net_init() == 0);
-	have_udp = net_have_udp();
-	have_p9 = platform_have_p9();
+	/* the nic first, because taking it decides the rest.
+	 *
+	 * platform_have_eth() on efi calls DisconnectController, which
+	 * unbinds the firmware's MNP/IP4/TCP4/UDP4 from the card -- it has
+	 * to, since SNP has one receive queue and no fan-out, so a
+	 * firmware stack left bound would eat frames we never see. Once
+	 * that has happened net_init() cannot succeed and must not be
+	 * asked to: its service bindings are gone, and any that lingered
+	 * would be a second stack competing for the same wire.
+	 *
+	 * So this is an either/or rather than a preference, and the Lua
+	 * stack wins. A machine with a NIC runs task/eth.lua, task/ip.lua
+	 * and task/tcp4.lua on both platforms; the firmware's sockets are
+	 * what is left when there is no SNP to take.
+	 */
 	have_eth = platform_have_eth();
+	have_net = !have_eth && (net_init() == 0);
+	have_udp = have_net && net_have_udp();
+	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
 	return 0;
 }

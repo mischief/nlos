@@ -470,6 +470,22 @@ lua_payload = files(
   'lib/ssh/server.lua',
   'lib/dhcp.lua',
   'task/dhcpd.lua',
+  # the ipv4 stack. On the efi image because that platform now drives
+  # the nic directly through EFI_SIMPLE_NETWORK_PROTOCOL (src/platform/
+  # efi/snp.c) instead of the firmware's EFI_TCP4/EFI_UDP4 -- so these
+  # are the stack on both platforms rather than microvm's alone, and
+  # this list mirrors the microvm embed_files above.
+  'lib/ether.lua',
+  'lib/ethwire.lua',
+  'lib/ip4.lua',
+  'lib/arp.lua',
+  'lib/icmp.lua',
+  'lib/udp4.lua',
+  'lib/inet.lua',
+  'lib/tcp4.lua',
+  'lib/tcb.lua',
+  'task/ip.lua',
+  'task/tcp4.lua',
   'lib/dns.lua',
   'task/dns.lua',
   'lib/espfs.lua',
