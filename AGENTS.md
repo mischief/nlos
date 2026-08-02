@@ -343,6 +343,30 @@ The scheduled unit is a real stackful coroutine, not a callback — same
 trick as libtask or goroutines, which is where `los.thread`'s shape
 comes from.
 
+**Request/reply goes through `thread.call(h, msg, replyh)`, not
+`sys.call` directly.** `sys.call` fuses the send and the wait into one
+kernel entry, but the wait it does marks the whole *proc* blocked and
+takes it off the run queue — so a coroutine yielding out of one would
+strand every sibling thread. The kernel refuses it outright
+(`blocking_twice`) rather than letting that happen quietly, so a thread
+that calls it gets an error, not a corrupted waiter list.
+`thread.call` picks the fused entry only at the top level.
+
+That costs a thread nothing, because its expensive half is already
+fused: `thread.run` hands every parked port to `sys.altrecv`, which
+blocks and takes a message in one entry on behalf of all of them at
+once. What is left over is a plain send, which never blocks.
+
+**`thread.await(h)` is the receive half**, and the one blocking receive
+that can report an ending: a *reply* port holds two rights while a
+request is in flight, so a drop back to one with nothing queued means
+the holder died without answering. `thread.recv` cannot say that about
+an ordinary service port — a right that *can* send is indistinguishable
+from one that will — which is why the two exist separately. `sys.call`
+reports the same condition as `nil, "hungup"`. Without it a dead server
+parks its clients forever, and since the ESP is a server proc, that is
+every proc's filesystem.
+
 **Corollary: anything that busy-spins instead of parking breaks both
 levels at once.** `sys.yield()` keeps a proc READY, so the outer loop's
 "is anything runnable" test is always yes and it never reaches its idle

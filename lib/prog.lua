@@ -112,21 +112,20 @@ function PipeStream:write(data)
 end
 
 function PipeStream:read(_)
-	while true do
-		local ok, m = sys.tryrecv(self.h)
+	-- thread.await is exactly this: drain first, and only then treat
+	-- empty AND nobody else holding the port as the end. it parks
+	-- until something arrives OR a right is dropped, since port_unref
+	-- wakes receivers precisely so the hangup gets re-tested after a
+	-- writer exits.
+	local m, why = thread.await(self.h)
 
-		if ok then
-			return (m and m.data) or ""
-		end
-		-- empty AND nobody else holds the port: no more is coming
-		if sys.hungup(self.h) then
-			return ""
-		end
-		-- park until something arrives OR a right is dropped;
-		-- port_unref wakes receivers precisely so the hungup check
-		-- above gets re-run after a writer exits
-		thread.park(self.h)
+	-- eof is "" rather than nil because a Stream's read returns a
+	-- string, and it is read from `why` rather than from m being nil
+	-- because a message with no data is not an ending.
+	if why then
+		return ""
 	end
+	return (m and m.data) or ""
 end
 
 function PipeStream:close()

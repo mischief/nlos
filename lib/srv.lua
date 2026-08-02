@@ -354,16 +354,19 @@ function M.serve(backend, port, opts)
 	local workers = opts and opts.workers or 0
 
 	if workers < 2 then
+		-- thread.await is the drain-then-test-hangup loop this used to
+		-- write out by hand, and the hangup half is the same question
+		-- lib/mnt.lua asks on the other side of the port: our right is
+		-- the last one, so every client has gone. the reason to answer
+		-- it from `why` rather than from the message being nil is that
+		-- a message legitimately can be.
 		while true do
-			local ok, m = sys.tryrecv(port)
+			local m, why = thread.await(port)
 
-			if ok then
-				dispatch(S, m)
-			elseif sys.hungup(port) then
+			if why then
 				return
-			else
-				thread.park(port)
 			end
+			dispatch(S, m)
 		end
 	end
 

@@ -95,33 +95,29 @@ function M.new(right)
 		msg.seq = nextseq()
 		msg.reply = { __right = reply }
 
-		local ok, sent = pcall(sys.send, right, msg)
+		-- the pcall catches a bad or closed right, which raises;
+		-- everything thread.call REPORTS -- a dead or full port, a
+		-- hangup -- comes back as a nil below.
+		local ok, res = pcall(thread.call, right, msg, reply)
 
-		if not ok or not sent then
+		if not ok then
 			dev.error(dev.Eio)
 		end
 		while true do
-			local got, res = sys.tryrecv(reply)
-
-			if got then
-				if type(res) ~= "table" then
-					dev.error(dev.Eio)
-				end
-				if res.seq == msg.seq then
-					if res.err then
-						dev.error(res.err)
-					end
-					if type(res.port) ~= "table" or
-					    not res.port.__right then
-						dev.error(dev.Enotimpl)
-					end
-					return res.port.__right
-				end
-			elseif sys.hungup(reply) then
+			if type(res) ~= "table" then
 				dev.error(dev.Eio)
-			else
-				thread.park(reply)
 			end
+			if res.seq == msg.seq then
+				if res.err then
+					dev.error(res.err)
+				end
+				if type(res.port) ~= "table" or
+				    not res.port.__right then
+					dev.error(dev.Enotimpl)
+				end
+				return res.port.__right
+			end
+			res = thread.await(reply)
 		end
 	end
 
@@ -135,29 +131,33 @@ function M.new(right)
 		msg.seq = nextseq()
 		msg.reply = { __right = reply }
 
-		-- BOTH results matter. the pcall catches a bad or closed right,
-		-- which raises; `sent` catches a dead or full port, which
-		-- sys.send REPORTS rather than raising. checking only the pcall
-		-- treats an undelivered request as sent and then parks forever
-		-- waiting for a reply nobody will send.
-		local ok, sent = pcall(sys.send, session, msg)
-
-		if not ok or not sent then
-			dev.error(dev.Eio)	-- server gone, or right closed
-		end
-
+		-- the send and the wait as one operation, and at the top level
+		-- as one kernel entry (sys.call). inside a thread it is a send
+		-- plus the scheduler's own block, which is already fused
+		-- across every parked thread -- los.thread's call() explains
+		-- why that leaves nothing on the table.
+		--
+		-- BOTH failure kinds still matter, and they arrive separately.
+		-- the pcall catches a bad or closed right, which RAISES; a
+		-- dead or full port is REPORTED as a nil. checking only the
+		-- pcall would treat an undelivered request as sent and then
+		-- wait forever for a reply nobody will send.
+		--
 		-- ---- and this is where a dead server is noticed ----
 		--
-		-- while a request is in flight the reply port has TWO rights:
-		-- ours, and the one that travelled with the message. the
-		-- serializer counts the in-flight one immediately, so the
-		-- second right exists from the moment we send.
+		-- the third reported failure is a hangup, and it is the one
+		-- worth spelling out. while a request is in flight the reply
+		-- port has TWO rights: ours, and the one that travelled with
+		-- the message. the serializer counts the in-flight one
+		-- immediately, so the second right exists from the moment we
+		-- send.
 		--
 		-- so if it drops back to one and there is nothing queued,
 		-- nobody can ever reply: either the server answered and closed
-		-- (drained above), or it died and proc_kill released its
-		-- rights. sys.hungup is exactly that question, and it is the
-		-- same test lib/srv.lua uses to know its last client left.
+		-- (drained first), or it died and proc_kill released its
+		-- rights. that is the same test lib/srv.lua uses to know its
+		-- last client left, and it now lives in call/await rather than
+		-- being made by hand after each wake.
 		--
 		-- it is not a timeout, deliberately. a slow backend is not a
 		-- broken one, and no deadline can tell them apart -- but the
@@ -168,35 +168,31 @@ function M.new(right)
 		-- this matters more than it looks. the ESP is a server proc
 		-- now, so it is every proc's filesystem; without this its
 		-- death parked the entire machine with no diagnostic.
-		while true do
-			local got, res = sys.tryrecv(reply)
+		local ok, res = pcall(thread.call, session, msg, reply)
 
-			if got then
-				if type(res) ~= "table" then
-					dev.error(dev.Eio)
-				end
-				if res.seq == msg.seq then
-					if res.err then
-						dev.error(res.err)
-					end
-					return res
-				end
-				-- a NON-matching reply belongs to a request
-				-- this thread abandoned -- today only possible
-				-- if an error (a memory cap, say) unwinds
-				-- between the send and the recv. dropping it is
-				-- the difference between one lost call and
-				-- every later call reading the previous one's
-				-- answer.
-				--
-				-- note this is NOT a tag: nothing routes on it,
-				-- no table maps it to a waiter. it only says
-				-- "not mine".
-			elseif sys.hungup(reply) then
-				dev.error(dev.Eio)	-- nobody left to answer
-			else
-				thread.park(reply)
+		if not ok then
+			dev.error(dev.Eio)	-- right closed, or not a right
+		end
+		while true do
+			if type(res) ~= "table" then
+				dev.error(dev.Eio)	-- undelivered, or nobody left
 			end
+			if res.seq == msg.seq then
+				if res.err then
+					dev.error(res.err)
+				end
+				return res
+			end
+			-- a NON-matching reply belongs to a request this
+			-- thread abandoned -- today only possible if an error
+			-- (a memory cap, say) unwinds between the send and the
+			-- recv. dropping it is the difference between one lost
+			-- call and every later call reading the previous one's
+			-- answer.
+			--
+			-- note this is NOT a tag: nothing routes on it, no
+			-- table maps it to a waiter. it only says "not mine".
+			res = thread.await(reply)
 		end
 	end
 
