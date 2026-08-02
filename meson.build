@@ -150,6 +150,7 @@ inc = include_directories('include', 'src', 'lua', 'src/platform' / platform)
 # platform.h + fs.h/net.h/efi.h, all resolved from the per-platform
 # include dir above); everything else is the platform's own.
 kernel_src = files(
+  'src/crypto.c',
   'src/dirs.c',
   'src/kernel.c',
   'src/linit.c',
@@ -196,8 +197,6 @@ else
   'lib/crypto/hashstate.lua',
   'lib/crypto/sha256.lua',
   'lib/crypto/sha512.lua',
-  'lib/crypto/chacha20.lua',
-  'lib/crypto/poly1305.lua',
   'lib/crypto/field25519.lua',
   'lib/crypto/x25519.lua',
   'lib/crypto/ed25519.lua',
@@ -409,8 +408,6 @@ lua_payload = files(
   'lib/crypto/hashstate.lua',
   'lib/crypto/sha256.lua',
   'lib/crypto/sha512.lua',
-  'lib/crypto/chacha20.lua',
-  'lib/crypto/poly1305.lua',
   'lib/crypto/field25519.lua',
   'lib/crypto/x25519.lua',
   'lib/crypto/ed25519.lua',

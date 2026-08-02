@@ -2476,6 +2476,8 @@ static const luaL_Reg kapi[] = {
 
 extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
 extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
+extern int luaopen_crypto_chacha20(lua_State *L);	/* crypto.c */
+extern int luaopen_crypto_poly1305(lua_State *L);	/* crypto.c */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
@@ -2765,6 +2767,26 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 
 	lua_pushcfunction(p->L, luaopen_los_efi);
 	lua_setfield(p->L, -2, "los.efi");
+
+	/* crypto.chacha20 and crypto.poly1305 (src/crypto.c). Ambient,
+	 * unlike everything below, and the distinction is the one this
+	 * file already draws for sys.send: authority is an ARGUMENT here,
+	 * not the function. It computes on a key the caller supplies and
+	 * does nothing for a caller that has not got one -- so there is
+	 * nothing to attenuate and no owner to be the only one. Contrast
+	 * los.platform.rng, where the raw draw IS the capability.
+	 *
+	 * These take the module names the Lua implementations had, so
+	 * nothing that requires them knows the difference. The Lua ones
+	 * live on in the host tree (~/code/lua/ssh), where the RFC 8439
+	 * vectors run against both and would catch a disagreement; there
+	 * is no reason to carry a second copy of the arithmetic here.
+	 */
+	lua_pushcfunction(p->L, luaopen_crypto_chacha20);
+	lua_setfield(p->L, -2, "crypto.chacha20");
+
+	lua_pushcfunction(p->L, luaopen_crypto_poly1305);
+	lua_setfield(p->L, -2, "crypto.poly1305");
 	/* los.fs is the whole of raw ESP access -- enumeration, metadata
 	 * and file data. it is registered for exactly two procs: the esp
 	 * server task, which serves the disk to everyone else over a port
