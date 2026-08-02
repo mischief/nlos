@@ -144,6 +144,11 @@ freestanding_args = [
   '-fshort-wchar',
   '-nostdinc',
   '-I' + gccinc,
+  # src/coreg.h, through the hook lua provides for exactly this: it
+  # redefines LUA_EXTRASPACE and the luai_userstate* macros so the
+  # kernel can keep every lua_State of a proc on a list. lua/ is a
+  # submodule of upstream and stays untouched.
+  '-DLUA_USER_H="coreg.h"',
   '-DLUA_PATH_DEFAULT="/?.lua;/lib/?.lua"',
   '-DLUA_CPATH_DEFAULT=""',
 ] + arch_args
@@ -418,6 +423,7 @@ lua_payload = files(
   'bin/cat.lua',
   'bin/ps.lua',
   'bin/stack.lua',
+  'bin/trace.lua',
   'bin/ls.lua',
   'bin/seq.lua',
   'bin/smiley.lua',
@@ -567,7 +573,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'procfs', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount', 'p9stream', 'p9flush',
               'ports',
               'fb', 'fbprog',
-              'nohook', 'preempt', 'idle', 'stack', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
+              'nohook', 'preempt', 'idle', 'stack', 'broke', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
               'strictglobals']
 foreach t : boot_tests
   test('boot-' + t, boottest,

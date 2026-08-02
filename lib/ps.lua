@@ -39,9 +39,15 @@ stats_mt.__tostring = function()
 	local live = s.lua_live or 0
 	local mapped = s.lua_mapped or 0
 
+	-- corpses only when there are any: a held broke proc is a thing
+	-- to go and look at with stack(pid), and a permanent "broke=0"
+	-- on a healthy machine would be noise rather than news.
+	local broke = (s.broke or 0) > 0
+	    and string.format(" broke=%d", s.broke) or ""
+
 	return string.format(
-	    "procs=%d ports=%d heap=%dK lua=%dK/%dK (%.2fx) mem=%dK/%dK free",
-	    s.procs, s.ports, (s.heap_used or 0) // 1024,
+	    "procs=%d%s ports=%d heap=%dK lua=%dK/%dK (%.2fx) mem=%dK/%dK free",
+	    s.procs, broke, s.ports, (s.heap_used or 0) // 1024,
 	    live // 1024, mapped // 1024,
 	    live > 0 and mapped / live or 0,
 	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024)
@@ -113,6 +119,43 @@ function M.stack(pid)
 			out[#out + 1] =
 			    "     (no frames -- dead or never started)"
 		end
+	end
+	return table.concat(out, "\n")
+end
+
+-- trace(pid): the last lines a proc ran, oldest first.
+--
+-- the companion to stack(). a stack shows the calls that are still
+-- open, so after a fault it describes the shape of the failure and not
+-- the route to it -- the call that returned just before everything went
+-- wrong is exactly what it cannot show. runs of one line are collapsed
+-- because a loop otherwise fills the ring with the same entry, and the
+-- thread column is what keeps an interleaved lib/thread proc from
+-- reading as one impossible execution.
+function M.trace(pid)
+	local tr = sys.trace(pid)
+	local out = { string.format("%s (pid %d): last %d lines",
+	    sys.name(pid), pid, #tr) }
+
+	if #tr == 0 then
+		out[#out + 1] = "  (not traced -- sys.set_trace(pid, n))"
+		return table.concat(out, "\n")
+	end
+
+	local i = 1
+
+	while i <= #tr do
+		local e = tr[i]
+		local n = 1
+
+		while tr[i + n] and tr[i + n].line == e.line
+		    and tr[i + n].source == e.source
+		    and tr[i + n].thread == e.thread do
+			n = n + 1
+		end
+		out[#out + 1] = string.format("  [%d] %s:%d%s", e.thread,
+		    e.source, e.line, n > 1 and (" (x%d)"):format(n) or "")
+		i = i + n
 	end
 	return table.concat(out, "\n")
 end

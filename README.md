@@ -180,5 +180,11 @@ along, and blocks forever the moment anything requires it.
   walked, known debts, non-goals. Written for agents, useful to humans.
 - [docs/uefi-notes.md](docs/uefi-notes.md) — boot path, toolchain facts
   that cost blood, firmware quirks, EFI event semantics.
+- [docs/scheduling.md](docs/scheduling.md) — the two schedulers and how
+  they meet: where a yield lands, where a preempted proc resumes, how a
+  message reaches a parked thread.
+- [docs/debugging.md](docs/debugging.md) — asking a proc what it is
+  doing: stacks, the Broke state a faulted proc is held in, and the
+  line-trace ring.
 - [docs/namespace-design.md](docs/namespace-design.md) — a parked design;
   a recorded argument rather than a commitment.

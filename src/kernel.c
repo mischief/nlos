@@ -108,7 +108,22 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
  */
 #define PRI_BASE	10
 
-enum { DEAD, READY, BLOCKED };
+/* BROKE is plan 9's: a proc that died of an error and is being held so
+ * something can look at it. it is not runnable and holds no rights, but
+ * its lua_State is still standing, which is the whole point -- a
+ * coroutine that errors out of lua_resume does not unwind, so at the
+ * moment of death every frame is still there. today that stack lives
+ * exactly long enough for luaL_traceback to flatten it into one string
+ * and is then closed, which throws away everything except the summary
+ * right when the summary stops being enough.
+ *
+ * sys.stack already reads a suspended proc's state without disturbing
+ * it (see src/debug.c). a corpse is a proc suspended forever, so the
+ * rules that file keeps -- run nothing, allocate nothing, restore the
+ * top -- hold on it unchanged. holding the state costs nothing but the
+ * heap it sits in, so the number of corpses is capped.
+ */
+enum { DEAD, READY, BLOCKED, BROKE };
 /* PRIV_BOOT is proc 0 and nothing else. it is not a device capability
  * like the rest -- it means "this proc is where the raw ESP reaches",
  * which is true only of the proc the kernel starts itself, and is what
@@ -116,6 +131,55 @@ enum { DEAD, READY, BLOCKED };
  */
 enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
     PRIV_TCP, PRIV_UDP, PRIV_P9, PRIV_ETH, PRIV_FB };
+
+/* line trace: the last N lines a proc executed, in a ring.
+ *
+ * sys.stack answers "where is this proc now", which is the wrong
+ * question after a fault -- by then the interesting part is how it got
+ * there, and a stack shows the calls that are still open, not the ones
+ * that returned. this is the other half, and it is only worth having
+ * because a broke proc survives long enough to be read.
+ *
+ * cost is the reason it is off by default. a line hook fires per line
+ * rather than per REDUCTIONS instructions, so the fixed cost per entry
+ * decides what a traced proc runs like. hence: the line number arrives
+ * free (lua fills ar->currentline before calling the hook for a line
+ * event, so no lua_getinfo is needed for it), and the source name is
+ * interned by pointer, which hits on every line of a run inside one
+ * function -- that is nearly all of them.
+ *
+ * the ring is C memory, deliberately: charging it to the proc's
+ * mem_limit would mean the act of debugging a proc near its cap could
+ * push it over, the same reason src/debug.c allocates nothing in a
+ * target it is reading.
+ */
+#define TRACESRC	32	/* distinct source files remembered */
+#define TRACECO		16	/* coroutines distinguished, as in debug.c */
+#define TRACEMAX	4096	/* entries, per proc */
+
+struct tracent {
+	int line;
+	unsigned short src;	/* index into ktrace.name */
+	unsigned short co;	/* index into ktrace.co */
+};
+
+struct ktrace {
+	struct tracent *ent;
+	unsigned int cap;	/* entries */
+	unsigned int n;		/* entries written, ever */
+	char name[TRACESRC][LUA_IDSIZE];
+	int nname;
+	/* the fast path: consecutive lines almost always come from the
+	 * same function, so a one-entry cache on the source pointer
+	 * turns interning into a compare. the pointer is only ever
+	 * compared, never dereferenced, because the string it names
+	 * belongs to the target and may be collected.
+	 */
+	const void *lastsrc;
+	int lastid;
+	const void *co[TRACECO];
+	int nco;
+};
 
 struct kmsg {
 	struct kmsg *next;
@@ -245,6 +309,9 @@ struct kproc {
 	struct right rights[NRIGHTS_INLINE];
 	struct right *xrights;		/* MAXRIGHTS - NRIGHTS_INLINE, or null */
 	int rhint;			/* lowest slot that might be free */
+	int rhigh;			/* one past the highest slot ever used */
+	TAILQ_HEAD(, kextra) coros;	/* every lua_State of this proc */
+	int hookforced;			/* 0 none, 1 p->co armed, 2 all armed */
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	int reductions;		/* instruction budget per slice */
@@ -269,6 +336,8 @@ struct kproc {
 	unsigned long long resumed;	/* tsc at the current resume, for the hook */
 	struct grant grants[MAXGRANTS];
 	int ngrants;
+	struct ktrace *trace;	/* line trace ring, or 0; see sys.set_trace */
+	unsigned int brokeseq;	/* death order, so the cap reaps the oldest */
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
 	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
@@ -381,6 +450,11 @@ static unsigned long long hangup_gen;
 
 static void wake_receivers(struct kport *port);
 static void proc_kill(struct kproc *p, const char *why);
+static void proc_break(struct kproc *p, const char *why);
+static void proc_reap(struct kproc *p);
+static void proc_rearm(struct kproc *p);
+static int trace_arm(struct kproc *p, int n);
+static unsigned int brokeseq;
 static void wake_senders(struct kport *port);
 static int reprioritize(struct kproc *p, int nrunnable);
 static int count_runnable(void);
@@ -897,6 +971,8 @@ right_new(struct kproc *p, struct kport *port, int recv)
 			if (recv)
 				port->nrecv++;
 			p->rhint = i + 1;
+			if (i + 1 > p->rhigh)
+				p->rhigh = i + 1;
 			return i;
 		}
 	}
@@ -1505,6 +1581,15 @@ kernel_current_is_boot(void)
 
 /* ---- lua api (proc pointer lives in the state's extra space) ---- */
 
+/* the state a per-state record belongs to: the record sits immediately
+ * before it, which is what lua_getextraspace computes in reverse.
+ */
+static lua_State *
+kx_state(struct kextra *kx)
+{
+	return (lua_State *)((char *)kx + LUA_EXTRASPACE);
+}
+
 static struct kproc *
 self(lua_State *L)
 {
@@ -1921,6 +2006,38 @@ api_hangups(lua_State *L)
 	return 1;
 }
 
+/* sys.anyready() -> bool. does any port this proc can receive on have a
+ * message waiting?
+ *
+ * the question a RUNNABLE proc cannot otherwise ask. port_push wakes
+ * whoever is parked on the port, which does nothing for a proc that is
+ * in the middle of running -- so a lib/thread proc with one thread that
+ * never parks has no event telling it a message arrived for one of its
+ * parked siblings, and the message waits for the run queue to drain.
+ *
+ * this is deliberately coarser than sys.altpoll and much cheaper: no
+ * table to build or read, no port set, just a scan of this proc's own
+ * rights bounded by the highest it has ever held. it answers "is a
+ * sweep worth doing at all", so the scheduler can ask every round and
+ * pay for altpoll only when the answer is yes.
+ */
+static int
+api_anyready(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	for (int i = 0; i < p->rhigh; i++) {
+		struct right *r = right_slot(p, i);
+
+		if (r && r->used && r->recv && r->port->head) {
+			lua_pushboolean(L, 1);
+			return 1;
+		}
+	}
+	lua_pushboolean(L, 0);
+	return 1;
+}
+
 /* sys.altpoll(set) -> index | nil. altblock's non-blocking half, for a
  * proc that is still runnable and only wants to know whether any of its
  * parked threads could make progress. without it los.thread has to wake
@@ -2141,7 +2258,7 @@ api_newport(lua_State *L)
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
     int is_file, int reductions, size_t mem_limit, int priv);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason,
-    int status, const char *exitmsg);
+    int status, const char *exitmsg, int broke);
 
 struct dumpbuf {
 	char *data;
@@ -2236,11 +2353,25 @@ api_spawn(lua_State *L)
 		code = luaL_checklstring(L, 1, &n);
 	}
 	int reductions = 0;
+	int trace = 0;
 	size_t mem_limit = 0;
 	char chunkname[32] = "=spawn";
 
 	if (!lua_isnoneornil(L, 2)) {
 		luaL_checktype(L, 2, LUA_TTABLE);
+		/* opts.trace: arm the ring before the chunk runs.
+		 *
+		 * sys.set_trace cannot cover a proc that dies quickly --
+		 * spawning and then arming is a race the proc usually
+		 * wins, and arming a corpse is too late by definition.
+		 * a short-lived proc that faults is exactly the one
+		 * worth tracing, so the only place to start is before
+		 * its first line.
+		 */
+		lua_getfield(L, 2, "trace");
+		if (!lua_isnil(L, -1))
+			trace = (int)luaL_checkinteger(L, -1);
+		lua_pop(L, 1);
 		lua_getfield(L, 2, "reductions");
 		if (!lua_isnil(L, -1))
 			reductions = (int)luaL_checkinteger(L, -1);
@@ -2312,6 +2443,15 @@ api_spawn(lua_State *L)
 		free(argw.p);
 		return luaL_error(L, "spawn: child vanished");
 	}
+	/* before the child has run a line, which is the whole point of
+	 * asking for it here. a failure to allocate the ring is not a
+	 * failure to spawn: the proc is fine, it is only untraced.
+	 */
+	if (trace > 0) {
+		if (trace > TRACEMAX)
+			trace = TRACEMAX;
+		trace_arm(child, trace);
+	}
 
 	/* push the arg onto the child's stack, above the loaded chunk, so
 	 * the first resume passes it as `...`.
@@ -2358,8 +2498,15 @@ api_monitor(lua_State *L)
 	int pid = (int)luaL_checkinteger(L, 1);
 	struct kproc *target = find_proc(pid);
 
+	/* a corpse is not monitorable: its death notification has already
+	 * gone out, and it will never die a second time. treating BROKE as
+	 * absent here is what keeps "monitor something already gone" an
+	 * immediate noproc rather than a wait for an event in the past.
+	 */
+	if (target && target->status == BROKE)
+		target = 0;
 	if (!target) {
-		notify_exit(p, pid, "noproc", -1, 0);
+		notify_exit(p, pid, "noproc", -1, 0, 0);
 		lua_pushboolean(L, 1);
 		return 1;
 	}
@@ -2422,19 +2569,29 @@ api_meminfo(lua_State *L)
 static int
 api_stats(lua_State *L)
 {
-	int nports = 0, nprocs = 0;
+	int nports = 0, nprocs = 0, nbroke = 0;
 
 	for (int i = 0; i < porthigh; i++)
 		if (portv[i])
 			nports++;
+	/* corpses are counted separately rather than as procs. they are
+	 * listed by sys.procs, because a corpse you cannot find is a
+	 * corpse you cannot inspect, but they hold no rights and will
+	 * never run -- counting them here would make "procs" disagree
+	 * with nlive and read as a leak after every crash.
+	 */
 	for (int i = 0; i < prochigh; i++)
-		if (procv[i] && procv[i]->status != DEAD)
+		if (procv[i] && procv[i]->status == BROKE)
+			nbroke++;
+		else if (procv[i] && procv[i]->status != DEAD)
 			nprocs++;
 	lua_createtable(L, 0, 3);
 	lua_pushinteger(L, nports);
 	lua_setfield(L, -2, "ports");
 	lua_pushinteger(L, nprocs);
 	lua_setfield(L, -2, "procs");
+	lua_pushinteger(L, nbroke);
+	lua_setfield(L, -2, "broke");
 	lua_pushinteger(L, (lua_Integer)nidle);
 	lua_setfield(L, -2, "idles");
 	lua_pushinteger(L, rights_high);
@@ -2640,6 +2797,9 @@ api_wchan(lua_State *L)
 	case DEAD:
 		lua_pushliteral(L, "dead");
 		return 1;
+	case BROKE:
+		lua_pushliteral(L, "broke");
+		return 1;
 	case READY:
 		lua_pushliteral(L, "ready");
 		return 1;
@@ -2736,6 +2896,175 @@ api_stack(lua_State *L)
 	 * three frames for an idle proc and a deadlocked one.
 	 */
 	debug_push_stacks(L, p->L, p->co);
+	return 1;
+}
+
+/* (re)size a proc's ring and make the mask match. n == 0 frees it.
+ *
+ * shared by sys.set_trace and spawn's opts.trace, so there is one place
+ * that knows the flag has to be set BEFORE proc_rearm -- proc_hookmask
+ * reads it, and proc_rearm is what makes the mask real on every
+ * coroutine of the proc.
+ */
+static int
+trace_arm(struct kproc *p, int n)
+{
+	if (p->trace) {
+		free(p->trace->ent);
+		free(p->trace);
+		p->trace = 0;
+	}
+	if (n > 0) {
+		struct ktrace *t = malloc(sizeof *t);
+
+		if (!t)
+			return -1;
+		memset(t, 0, sizeof *t);
+		t->ent = malloc((size_t)n * sizeof *t->ent);
+		if (!t->ent) {
+			free(t);
+			return -1;
+		}
+		t->cap = (unsigned int)n;
+		t->lastid = -1;
+		p->trace = t;
+	}
+	proc_rearm(p);
+	return 0;
+}
+
+/* sys.set_trace(pid, entries): record the last N lines this proc runs.
+ * entries = 0 turns it off and frees the ring.
+ *
+ * this is the expensive one, and says so. a line hook fires per line
+ * instead of every REDUCTIONS instructions: measured on a tight
+ * arithmetic loop, 3ms untraced against 14ms traced, so 4.7x. that is
+ * the whole cost model -- it buys a record of how a proc reached its
+ * fault, which a stack cannot give because a stack shows only the calls
+ * still open.
+ *
+ * concretely: a proc recursing through outer -> inner until it raises
+ * has a traceback of "dier:8: in function <dier:7> | (...tail calls...)
+ * | dier:11: in main chunk". the recursion is not in it, collapsed into
+ * one tail-call marker, because those frames are exactly the ones no
+ * longer open. the ring holds every iteration and the line the last one
+ * diverged on.
+ *
+ * an untraced proc pays nothing: the mask carries LUA_MASKLINE only
+ * while a ring exists, so the line hook is absent rather than idle.
+ *
+ * ambient, like sys.stack and sys.reap, and this is the weakest of the
+ * three claims: slowing a proc down is a real effect on it, unlike
+ * reading it. what makes it acceptable is the same threat model the
+ * rest of this file runs on -- buggy lua, not hostile procs -- plus the
+ * fact that anything wanting to wreck a neighbour's timing can already
+ * do it by spinning. it is a tool for the person at the console.
+ */
+static int
+api_set_trace(lua_State *L)
+{
+	struct kproc *p = self(L);
+	int arg = 1;
+	lua_Integer n;
+
+	if (lua_gettop(L) > 1 || (lua_gettop(L) == 1 && lua_isnoneornil(L, 1)))
+		arg = 2;
+	if (arg == 2 && !lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+	n = luaL_checkinteger(L, arg);
+	if (n < 0)
+		return luaL_error(L, "trace size must not be negative");
+	if (n > TRACEMAX)
+		n = TRACEMAX;
+	if (!p->L)
+		return luaL_error(L, "proc %d has no state", p->id);
+	/* a trace has to be armed before the death it is meant to
+	 * explain. arming a corpse can only ever produce an empty ring,
+	 * which reads as "this proc ran no lines" rather than "you are
+	 * too late", so it is refused. for a proc too short-lived to
+	 * catch, spawn's opts.trace is the way in.
+	 */
+	if (p->status == BROKE && n > 0)
+		return luaL_error(L,
+		    "proc %d is broke; trace before it dies, or spawn "
+		    "with opts.trace", p->id);
+
+	if (trace_arm(p, (int)n) != 0)
+		return luaL_error(L, "out of memory");
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* sys.trace([pid]) -> { {source=, line=, thread=}, ... }, oldest first.
+ *
+ * readable on a corpse, which is the point: the ring is freed with the
+ * state, so a broke proc still says how it got where it stopped.
+ */
+static int
+api_trace(lua_State *L)
+{
+	struct kproc *p = self(L);
+	struct ktrace *t;
+	unsigned int n, start;
+
+	if (!lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+	t = p->trace;
+	if (!t || !t->cap) {
+		lua_newtable(L);
+		return 1;
+	}
+	n = t->n < t->cap ? t->n : t->cap;
+	start = t->n - n;
+
+	lua_createtable(L, (int)n, 0);
+	for (unsigned int i = 0; i < n; i++) {
+		struct tracent *e = &t->ent[(start + i) % t->cap];
+
+		lua_createtable(L, 0, 3);
+		lua_pushstring(L, e->src < t->nname ? t->name[e->src] : "?");
+		lua_setfield(L, -2, "source");
+		lua_pushinteger(L, e->line);
+		lua_setfield(L, -2, "line");
+		lua_pushinteger(L, e->co);
+		lua_setfield(L, -2, "thread");
+		lua_rawseti(L, -2, (int)i + 1);
+	}
+	return 1;
+}
+
+/* sys.reap(pid): release a corpse.
+ *
+ * ambient for the same reason sys.stack is, and the reasoning survives
+ * the fact that this one destroys something: what it destroys is
+ * already dead. a corpse holds no rights and will never run again, so
+ * the only thing lost is a debugging record that MAXBROKE was going to
+ * discard on the next crash anyway. the threat model here is buggy lua,
+ * not a proc that wants to hide its own death -- and a proc that wanted
+ * to could simply not break.
+ *
+ * this is also why it cannot be PRIV_BOOT: /proc is a dev backend, so
+ * writing /proc/<pid>/ctl runs procfs code inside whichever proc has it
+ * mounted, which for any shell is not proc 0. gating on boot would
+ * leave the file there and always failing.
+ */
+static int
+api_reap(lua_State *L)
+{
+	struct kproc *p = find_proc((int)luaL_checkinteger(L, 1));
+
+	if (!p)
+		return luaL_error(L, "no such proc");
+	if (p->status != BROKE)
+		return luaL_error(L, "proc %d is not broke", p->id);
+	proc_reap(p);
+	lua_pushboolean(L, 1);
 	return 1;
 }
 
@@ -2973,6 +3302,7 @@ static const luaL_Reg kapi[] = {
 	{ "sendblock", api_sendblock },
 	{ "altblock", api_altblock },
 	{ "altpoll", api_altpoll },
+	{ "anyready", api_anyready },
 	{ "hangups", api_hangups },
 	{ "altrecv", api_altrecv },
 	{ "altrecvnb", api_altrecvnb },
@@ -2991,6 +3321,9 @@ static const luaL_Reg kapi[] = {
 	{ "name", api_procname },
 	{ "wchan", api_wchan },
 	{ "stack", api_stack },
+	{ "reap", api_reap },
+	{ "set_trace", api_set_trace },
+	{ "trace", api_trace },
 	{ "set_priority", api_set_priority },
 	{ "priority", api_priority },
 	{ "ticks", api_ticks },
@@ -3169,6 +3502,58 @@ proc_freestate(struct kproc *p)
 		lua_close(p->L);
 	p->L = 0;
 	p->co = 0;
+	/* lua_close frees every coroutine through kernel_cofree, so the
+	 * list is already empty; re-init rather than trust that, since a
+	 * reused slot would inherit whatever is left
+	 */
+	TAILQ_INIT(&p->coros);
+	p->hookforced = 0;
+	/* the trace outlives the death and not the state: it is freed
+	 * here, with the heap it describes, so a corpse still answers
+	 * "how did it get there" for as long as it answers "where"
+	 */
+	if (p->trace) {
+		free(p->trace->ent);
+		free(p->trace);
+		p->trace = 0;
+	}
+}
+
+/* lua's per-state creation and teardown hooks (src/coreg.h).
+ *
+ * costart runs after lua has copied the new state's extra space from
+ * the main thread, so the kproc pointer is already right and only the
+ * links need setting. cofree runs before the state's memory goes back,
+ * which is the last moment the link is still valid -- and it is reached
+ * for every coroutine, including on lua_close, since that frees them
+ * through the same path.
+ *
+ * a state created before the proc's own pointer is in place (the main
+ * state itself) has no proc to be listed under and is simply not
+ * listed; the kernel never needs to arm it, because the chunk runs in
+ * p->co and every coroutine descends from there.
+ */
+void
+kernel_costart(lua_State *from, lua_State *nw)
+{
+	struct kextra *kx = (struct kextra *)lua_getextraspace(nw);
+	struct kproc *p = ((struct kextra *)lua_getextraspace(from))->p;
+
+	kx->p = p;
+	memset(&kx->link, 0, sizeof kx->link);
+	if (p && p->coros.tqh_last)
+		TAILQ_INSERT_TAIL(&p->coros, kx, link);
+}
+
+void
+kernel_cofree(lua_State *from, lua_State *dead)
+{
+	struct kextra *kx = (struct kextra *)lua_getextraspace(dead);
+
+	(void)from;
+	if (kx->p && kx->link.tqe_prev)
+		TAILQ_REMOVE(&kx->p->coros, kx, link);
+	memset(&kx->link, 0, sizeof kx->link);
 }
 
 /* the closest thing we have to plan 9's hzsched.
@@ -3197,17 +3582,184 @@ proc_freestate(struct kproc *p)
  * for as long as it takes. that needs an interrupt, which means leaving
  * boot services.
  */
+/* record one line. only ever called from a line event, where lua has
+ * already filled ar->currentline -- asking lua_getinfo for it would be
+ * paying twice for something the hook was handed.
+ */
+/* the only place a hook mask is decided.
+ *
+ * LUA_MASKCOUNT is not conditional and must never become so: it is the
+ * preemption budget, and a proc whose count hook went missing holds the
+ * machine until it blocks. tracing can only ever ADD LUA_MASKLINE to
+ * it, and every lua_sethook in this kernel goes through here with
+ * p->reductions rather than naming a mask of its own, so turning
+ * tracing off cannot be a route to turning preemption off with it.
+ */
+static int
+proc_hookmask(struct kproc *p)
+{
+	return LUA_MASKCOUNT | (p->trace ? LUA_MASKLINE : 0);
+}
+
+/* arm every coroutine of a proc at `count`.
+ *
+ * every one, not just p->co: lua_newthread copies the hook when it is
+ * created and never looks again, so a mask or count set on one
+ * coroutine reaches no other. the list is exact (src/coreg.h) rather
+ * than inferred from reachability, which matters both for a coroutine
+ * held only from a C closure's upvalue and for being able to do this
+ * from inside the hook without allocating.
+ */
+static void
+proc_armall(struct kproc *p, int count)
+{
+	struct kextra *kx;
+
+	if (!p->L || !p->co)
+		return;
+	TAILQ_FOREACH(kx, &p->coros, link)
+		lua_sethook(kx_state(kx), preempt_hook, proc_hookmask(p),
+		    count);
+}
+
+static void
+proc_rearm(struct kproc *p)
+{
+	proc_armall(p, p->reductions);
+}
+
+/* record one line. only ever called from a line event, where lua has
+ * already filled ar->currentline -- asking lua_getinfo for it would be
+ * paying twice for something the hook was handed.
+ */
+static void
+trace_line(struct kproc *p, lua_State *L, lua_Debug *ar)
+{
+	struct ktrace *t = p->trace;
+	int src = 0, co = 0;
+
+	if (!t || !t->cap)
+		return;
+
+	/* "S" is push-free and call-free, the same reason src/debug.c
+	 * asks for "Sln" and not "f" or "L": a hook that could run target
+	 * code or allocate in the target would be changing the thing it
+	 * is recording.
+	 */
+	if (lua_getinfo(L, "S", ar) && ar->source) {
+		if (ar->source == t->lastsrc) {
+			src = t->lastid;
+		} else {
+			for (src = 0; src < t->nname; src++)
+				if (!strcmp(t->name[src], ar->short_src))
+					break;
+			if (src == t->nname) {
+				if (t->nname >= TRACESRC)
+					src = 0;	/* out of slots */
+				else
+					snprintf(t->name[t->nname++],
+					    LUA_IDSIZE, "%s", ar->short_src);
+			}
+			t->lastsrc = ar->source;
+			t->lastid = src;
+		}
+	}
+
+	/* which coroutine, by identity only: the pointer names a thread
+	 * for as long as this trace is worth reading and is never
+	 * dereferenced. lib/thread procs interleave threads line by
+	 * line, and a trace that could not tell them apart would read as
+	 * one impossible execution.
+	 */
+	for (co = 0; co < t->nco; co++)
+		if (t->co[co] == (const void *)L)
+			break;
+	if (co == t->nco) {
+		if (t->nco >= TRACECO)
+			co = 0;
+		else
+			t->co[t->nco++] = (const void *)L;
+	}
+
+	struct tracent *e = &t->ent[t->n % t->cap];
+
+	e->line = ar->currentline;
+	e->src = (unsigned short)src;
+	e->co = (unsigned short)co;
+	t->n++;
+}
+
 static void
 preempt_hook(lua_State *L, lua_Debug *ar)
 {
 	struct kproc *p = *(struct kproc **)lua_getextraspace(L);
 
-	(void)ar;
+	/* a line event is a trace event and nothing else. preemption
+	 * stays entirely on the count event, so turning tracing on does
+	 * not change when a proc yields -- the scheduling this hook
+	 * exists for is the same whether or not anyone is watching.
+	 */
+	if (ar->event == LUA_HOOKLINE) {
+		if (p)
+			trace_line(p, L, ar);
+		return;
+	}
+	/* the forced trip below leaves states sampling every instruction.
+	 * put them back the moment it has done its job, which is the
+	 * first time the hook fires on p->co afterwards.
+	 */
+	if (p && L == p->co && p->hookforced) {
+		if (p->hookforced == 2)
+			proc_armall(p, p->reductions);
+		else
+			lua_sethook(p->co, preempt_hook, proc_hookmask(p),
+			    p->reductions);
+		p->hookforced = 0;
+	}
 	if (!lua_isyieldable(L))
 		return;
 	if (p && p->resumed && quantum_cycles &&
 	    platform_ticks() - p->resumed < quantum_cycles)
 		return;		/* under quantum: let it keep the cpu */
+
+	/* yielding only ever reaches the resumer of the state the hook
+	 * fired in. for a thread that is the proc's own scheduler, one
+	 * level down from the kernel, so yielding here suspends the
+	 * thread and hands the cpu straight back to thread.run -- the
+	 * proc keeps the machine and the quantum means nothing. measured
+	 * with a spinner inside a thread, everything else on the machine
+	 * got 0.02 of its fair share.
+	 *
+	 * lua has no yield-across-levels to ask for, so the trip is
+	 * forced instead: arm the proc's outermost state to fire on its
+	 * very next instruction. the thread yields to thread.run,
+	 * thread.run runs one instruction, and the hook fires again with
+	 * L == p->co, where a yield does reach the kernel.
+	 *
+	 * that also lands the proc in the right place. resuming into the
+	 * interrupted coroutine would let one thread hold the cpu across
+	 * proc slices; resuming into thread.run leaves the choice of what
+	 * runs next where it belongs, with the scheduler that owns
+	 * threads. the kernel picks procs, thread.run picks threads, and
+	 * neither has to know how the other decides.
+	 */
+	if (p && L != p->co) {
+		if (p->hookforced) {
+			/* p->co was already armed and still has not been
+			 * reached, so the chain is deeper than one level:
+			 * a thread running a scheduler of its own never
+			 * returns to p->co on its own. arm every
+			 * coroutine instead, and the yield walks out one
+			 * instruction per level.
+			 */
+			proc_armall(p, 1);
+			p->hookforced = 2;
+		} else {
+			lua_sethook(p->co, preempt_hook, proc_hookmask(p),
+			    1);
+			p->hookforced = 1;
+		}
+	}
 	lua_yield(L, 0);
 }
 
@@ -3250,6 +3802,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * inside the protected resume (clean LUA_ERRMEM death).
 	 */
 	p->mem_limit = 0;
+	/* before any lua_State exists: kernel_costart consults this to
+	 * decide whether the proc is ready to own coroutines
+	 */
+	TAILQ_INIT(&p->coros);
+	p->hookforced = 0;
 	p->L = lua_newstate(kalloc, p);
 	if (!p->L)
 		return -1;
@@ -3257,7 +3814,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * set before the thread is created so lua_newthread copies it into
 	 * the coroutine's extra space too.
 	 */
-	*(struct kproc **)lua_getextraspace(p->L) = p;
+	/* the whole record, not just the pointer: the links are copied
+	 * into every coroutine from here, so they have to start empty
+	 */
+	memset(lua_getextraspace(p->L), 0, LUA_EXTRASPACE);
+	((struct kextra *)lua_getextraspace(p->L))->p = p;
 	p->id = nextpid++;	/* unique forever; slots recycle, pids don't */
 	{
 		/* lua chunknames conventionally lead with '=' (shown as-is)
@@ -3443,7 +4004,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	/* the lua runtime (los.thread) is a preloaded module now, pulled in
 	 * on demand by require("los.thread") -- no auto-run bootstrap.
 	 */
-	lua_sethook(p->co, preempt_hook, LUA_MASKCOUNT, p->reductions);
+	lua_sethook(p->co, preempt_hook, proc_hookmask(p), p->reductions);
 	p->priv = priv;
 	p->mem_limit = mem_limit;
 	p->weight = 1;
@@ -3464,11 +4025,17 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 }
 
 /* build and deliver an exit notification: {exit=pid, normal=bool,
- * reason=string?} to the watcher's self port.
+ * reason=string?, broke=true?} to the watcher's self port.
+ *
+ * broke=true is what makes a plain sys.monitor into linux's
+ * core_pattern handler: the notification arrives while the corpse is
+ * still held, so a watcher that cares can sys.stack the pid it was just
+ * told about and sys.reap it when done. one flag on a message that was
+ * already being sent, rather than a second notification mechanism.
  */
 static void
 notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
-    const char *exitmsg)
+    const char *exitmsg, int broke)
 {
 	struct wbuf w = { 0 };
 	unsigned int npairs = 3;
@@ -3478,6 +4045,8 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 	if (reason)
 		npairs++;
 	if (exitmsg && exitmsg[0])
+		npairs++;
+	if (broke)
 		npairs++;
 
 	if (wbyte(&w, 'B') || wput(&w, &npairs, 4))
@@ -3520,33 +4089,40 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 		    wput(&w, &rlen, 4) || wput(&w, reason, rlen))
 			goto fail;
 	}
+	if (broke) {
+		klen = 5;
+		if (wbyte(&w, 'S') || wput(&w, &klen, 4) ||
+		    wput(&w, "broke", 5) || wbyte(&w, 'T'))
+			goto fail;
+	}
 	port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0);
 	return;
 fail:
 	free(w.p);
 }
 
+/* everything dying does except freeing the state.
+ *
+ * the split exists for BROKE: a corpse must stop being part of the
+ * machine the instant it dies -- off the run queue, holding no rights,
+ * with its monitors already told -- and only then linger. deferring any
+ * of that until the reaper ran would make a corpse a hazard rather than
+ * a record. a parent blocked in sys.monitor would wait on a proc that is
+ * never coming back, and a broke fileserver would hold its ports open
+ * and wedge every client instead of failing them.
+ *
+ * the deferred half is only lua_close, and only the __gc finalizers care
+ * that the rights are already gone. they are written to tolerate it:
+ * lib/mnt.lua's fid and session finalizers wrap the send and the close
+ * in pcall, and src/dirs.c's is idempotent by construction. a finalizer
+ * running against a released right fails and is swallowed, exactly as it
+ * does for a handle closed by hand.
+ */
 static void
-proc_kill(struct kproc *p, const char *why)
+proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 {
-	char reason[224];
-
-	/* copy the reason out: it usually points into the lua state we
-	 * are about to close
-	 */
-	if (why) {
-		snprintf(reason, sizeof reason, "%s", why);
-
-		char buf[256];
-
-		snprintf(buf, sizeof buf, "proc %d (%s) died: %s", p->id,
-		    p->name, reason);
-		kernel_log(buf);
-	}
 	wait_clear(p);
 	rq_del(p);
-	proc_freestate(p);
-	p->status = DEAD;
 	nlive--;
 
 	/* release every right this proc held; ports lose refs, orphaned
@@ -3568,9 +4144,81 @@ proc_kill(struct kproc *p, const char *why)
 		if (w)
 			notify_exit(w, p->id, why ? reason : 0,
 			    why ? -1 : p->exitcode,
-			    why ? 0 : p->exitmsg);
+			    why ? 0 : p->exitmsg, broke);
 	}
 	p->nwatch = 0;
+}
+
+/* log line and copied reason are shared by both exits; the reason
+ * usually points into the lua state, which one path is about to close
+ * and the other will close later, so it is copied either way.
+ */
+static void
+proc_logdeath(struct kproc *p, const char *why, char *reason, size_t n)
+{
+	char buf[256];
+
+	if (!why)
+		return;
+	snprintf(reason, n, "%s", why);
+	snprintf(buf, sizeof buf, "proc %d (%s) died: %s", p->id, p->name,
+	    reason);
+	kernel_log(buf);
+}
+
+static void
+proc_kill(struct kproc *p, const char *why)
+{
+	char reason[224];
+
+	proc_logdeath(p, why, reason, sizeof reason);
+	proc_freestate(p);
+	proc_detach(p, why, reason, 0);
+	p->status = DEAD;
+}
+
+/* how many corpses may be held at once.
+ *
+ * each one is a whole lua_State parked in the shared heap -- tens of
+ * kilobytes that no live proc can use -- so this is a cache of recent
+ * deaths, not a graveyard. breaking past the cap reaps the oldest, on
+ * the theory that the death you are looking into is the one that just
+ * happened.
+ */
+#define MAXBROKE	2
+
+static void
+proc_reap(struct kproc *p)
+{
+	if (p->status != BROKE)
+		return;
+	proc_freestate(p);
+	p->status = DEAD;
+}
+
+static void
+proc_break(struct kproc *p, const char *why)
+{
+	char reason[224];
+	struct kproc *oldest = 0;
+	int n = 0;
+
+	proc_logdeath(p, why, reason, sizeof reason);
+	proc_detach(p, why, reason, 1);
+	p->status = BROKE;
+	p->brokeseq = ++brokeseq;
+
+	for (int i = 0; i < prochigh; i++) {
+		struct kproc *q = procv[i];
+
+		if (!q || q->status != BROKE)
+			continue;
+		n++;
+		if (!oldest || q->brokeseq < oldest->brokeseq)
+			oldest = q;
+	}
+	if (n > MAXBROKE && oldest)
+		proc_reap(oldest);
 }
 
 /* ---- serial pump (9p wire on com2) ---- */
@@ -4293,8 +4941,14 @@ run_proc(struct kproc *p)
 			 * allocates to build the traceback string) and, this
 			 * proc being already at its limit, fail again -- skip
 			 * it here, same plain message as before.
+			 *
+			 * it breaks rather than dies all the same: an
+			 * out-of-memory corpse is both the one most worth
+			 * looking at and the one no traceback can describe,
+			 * and sys.stack reads it precisely because
+			 * src/debug.c allocates nothing in the target.
 			 */
-			proc_kill(p, lua_tostring(p->co, -1));
+			proc_break(p, lua_tostring(p->co, -1));
 		else {
 			/* a coroutine that errors out of lua_resume
 			 * deliberately does NOT unwind its stack -- that's
@@ -4303,13 +4957,19 @@ run_proc(struct kproc *p)
 			 * from the C side after resume already returned
 			 * instead of during unwinding.
 			 *
-			 * error object is on the stack; read it before
-			 * proc_kill closes the state.
+			 * error object is on the stack; read it before the
+			 * traceback replaces the top.
+			 *
+			 * the traceback is built here as well as held in
+			 * the corpse, because it is what reaches the console
+			 * log: the corpse answers a question someone thought
+			 * to ask, the log answers the one nobody was there
+			 * for.
 			 */
 			const char *errmsg = lua_tostring(p->co, -1);
 
 			luaL_traceback(p->co, p->co, errmsg, 0);
-			proc_kill(p, lua_tostring(p->co, -1));
+			proc_break(p, lua_tostring(p->co, -1));
 		}
 		break;	/* proc died, nothing left to resume */
 	}
