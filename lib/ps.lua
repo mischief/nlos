@@ -39,9 +39,15 @@ stats_mt.__tostring = function()
 	local live = s.lua_live or 0
 	local mapped = s.lua_mapped or 0
 
+	-- corpses only when there are any: a held broke proc is a thing
+	-- to go and look at with stack(pid), and a permanent "broke=0"
+	-- on a healthy machine would be noise rather than news.
+	local broke = (s.broke or 0) > 0
+	    and string.format(" broke=%d", s.broke) or ""
+
 	return string.format(
-	    "procs=%d ports=%d heap=%dK lua=%dK/%dK (%.2fx) mem=%dK/%dK free",
-	    s.procs, s.ports, (s.heap_used or 0) // 1024,
+	    "procs=%d%s ports=%d heap=%dK lua=%dK/%dK (%.2fx) mem=%dK/%dK free",
+	    s.procs, broke, s.ports, (s.heap_used or 0) // 1024,
 	    live // 1024, mapped // 1024,
 	    live > 0 and mapped / live or 0,
 	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024)

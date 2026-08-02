@@ -108,7 +108,22 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
  */
 #define PRI_BASE	10
 
-enum { DEAD, READY, BLOCKED };
+/* BROKE is plan 9's: a proc that died of an error and is being held so
+ * something can look at it. it is not runnable and holds no rights, but
+ * its lua_State is still standing, which is the whole point -- a
+ * coroutine that errors out of lua_resume does not unwind, so at the
+ * moment of death every frame is still there. today that stack lives
+ * exactly long enough for luaL_traceback to flatten it into one string
+ * and is then closed, which throws away everything except the summary
+ * right when the summary stops being enough.
+ *
+ * sys.stack already reads a suspended proc's state without disturbing
+ * it (see src/debug.c). a corpse is a proc suspended forever, so the
+ * rules that file keeps -- run nothing, allocate nothing, restore the
+ * top -- hold on it unchanged. holding the state costs nothing but the
+ * heap it sits in, so the number of corpses is capped.
+ */
+enum { DEAD, READY, BLOCKED, BROKE };
 /* PRIV_BOOT is proc 0 and nothing else. it is not a device capability
  * like the rest -- it means "this proc is where the raw ESP reaches",
  * which is true only of the proc the kernel starts itself, and is what
@@ -251,6 +266,7 @@ struct kproc {
 	unsigned long long resumed;	/* tsc at the current resume, for the hook */
 	struct grant grants[MAXGRANTS];
 	int ngrants;
+	unsigned int brokeseq;	/* death order, so the cap reaps the oldest */
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
 	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
@@ -363,6 +379,9 @@ static unsigned long long hangup_gen;
 
 static void wake_receivers(struct kport *port);
 static void proc_kill(struct kproc *p, const char *why);
+static void proc_break(struct kproc *p, const char *why);
+static void proc_reap(struct kproc *p);
+static unsigned int brokeseq;
 static void wake_senders(struct kport *port);
 static int reprioritize(struct kproc *p, int nrunnable);
 static int count_runnable(void);
@@ -2093,7 +2112,7 @@ api_newport(lua_State *L)
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
     int is_file, int reductions, size_t mem_limit, int priv);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason,
-    int status, const char *exitmsg);
+    int status, const char *exitmsg, int broke);
 
 struct dumpbuf {
 	char *data;
@@ -2310,8 +2329,15 @@ api_monitor(lua_State *L)
 	int pid = (int)luaL_checkinteger(L, 1);
 	struct kproc *target = find_proc(pid);
 
+	/* a corpse is not monitorable: its death notification has already
+	 * gone out, and it will never die a second time. treating BROKE as
+	 * absent here is what keeps "monitor something already gone" an
+	 * immediate noproc rather than a wait for an event in the past.
+	 */
+	if (target && target->status == BROKE)
+		target = 0;
 	if (!target) {
-		notify_exit(p, pid, "noproc", -1, 0);
+		notify_exit(p, pid, "noproc", -1, 0, 0);
 		lua_pushboolean(L, 1);
 		return 1;
 	}
@@ -2374,19 +2400,29 @@ api_meminfo(lua_State *L)
 static int
 api_stats(lua_State *L)
 {
-	int nports = 0, nprocs = 0;
+	int nports = 0, nprocs = 0, nbroke = 0;
 
 	for (int i = 0; i < porthigh; i++)
 		if (portv[i])
 			nports++;
+	/* corpses are counted separately rather than as procs. they are
+	 * listed by sys.procs, because a corpse you cannot find is a
+	 * corpse you cannot inspect, but they hold no rights and will
+	 * never run -- counting them here would make "procs" disagree
+	 * with nlive and read as a leak after every crash.
+	 */
 	for (int i = 0; i < prochigh; i++)
-		if (procv[i] && procv[i]->status != DEAD)
+		if (procv[i] && procv[i]->status == BROKE)
+			nbroke++;
+		else if (procv[i] && procv[i]->status != DEAD)
 			nprocs++;
 	lua_createtable(L, 0, 3);
 	lua_pushinteger(L, nports);
 	lua_setfield(L, -2, "ports");
 	lua_pushinteger(L, nprocs);
 	lua_setfield(L, -2, "procs");
+	lua_pushinteger(L, nbroke);
+	lua_setfield(L, -2, "broke");
 	lua_pushinteger(L, (lua_Integer)nidle);
 	lua_setfield(L, -2, "idles");
 	lua_pushinteger(L, rights_high);
@@ -2514,6 +2550,9 @@ api_wchan(lua_State *L)
 	case DEAD:
 		lua_pushliteral(L, "dead");
 		return 1;
+	case BROKE:
+		lua_pushliteral(L, "broke");
+		return 1;
 	case READY:
 		lua_pushliteral(L, "ready");
 		return 1;
@@ -2610,6 +2649,35 @@ api_stack(lua_State *L)
 	 * three frames for an idle proc and a deadlocked one.
 	 */
 	debug_push_stacks(L, p->L, p->co);
+	return 1;
+}
+
+/* sys.reap(pid): release a corpse.
+ *
+ * ambient for the same reason sys.stack is, and the reasoning survives
+ * the fact that this one destroys something: what it destroys is
+ * already dead. a corpse holds no rights and will never run again, so
+ * the only thing lost is a debugging record that MAXBROKE was going to
+ * discard on the next crash anyway. the threat model here is buggy lua,
+ * not a proc that wants to hide its own death -- and a proc that wanted
+ * to could simply not break.
+ *
+ * this is also why it cannot be PRIV_BOOT: /proc is a dev backend, so
+ * writing /proc/<pid>/ctl runs procfs code inside whichever proc has it
+ * mounted, which for any shell is not proc 0. gating on boot would
+ * leave the file there and always failing.
+ */
+static int
+api_reap(lua_State *L)
+{
+	struct kproc *p = find_proc((int)luaL_checkinteger(L, 1));
+
+	if (!p)
+		return luaL_error(L, "no such proc");
+	if (p->status != BROKE)
+		return luaL_error(L, "proc %d is not broke", p->id);
+	proc_reap(p);
+	lua_pushboolean(L, 1);
 	return 1;
 }
 
@@ -2864,6 +2932,7 @@ static const luaL_Reg kapi[] = {
 	{ "name", api_procname },
 	{ "wchan", api_wchan },
 	{ "stack", api_stack },
+	{ "reap", api_reap },
 	{ "set_priority", api_set_priority },
 	{ "priority", api_priority },
 	{ "ticks", api_ticks },
@@ -3337,11 +3406,17 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 }
 
 /* build and deliver an exit notification: {exit=pid, normal=bool,
- * reason=string?} to the watcher's self port.
+ * reason=string?, broke=true?} to the watcher's self port.
+ *
+ * broke=true is what makes a plain sys.monitor into linux's
+ * core_pattern handler: the notification arrives while the corpse is
+ * still held, so a watcher that cares can sys.stack the pid it was just
+ * told about and sys.reap it when done. one flag on a message that was
+ * already being sent, rather than a second notification mechanism.
  */
 static void
 notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
-    const char *exitmsg)
+    const char *exitmsg, int broke)
 {
 	struct wbuf w = { 0 };
 	unsigned int npairs = 3;
@@ -3351,6 +3426,8 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 	if (reason)
 		npairs++;
 	if (exitmsg && exitmsg[0])
+		npairs++;
+	if (broke)
 		npairs++;
 
 	if (wbyte(&w, 'B') || wput(&w, &npairs, 4))
@@ -3393,33 +3470,40 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 		    wput(&w, &rlen, 4) || wput(&w, reason, rlen))
 			goto fail;
 	}
+	if (broke) {
+		klen = 5;
+		if (wbyte(&w, 'S') || wput(&w, &klen, 4) ||
+		    wput(&w, "broke", 5) || wbyte(&w, 'T'))
+			goto fail;
+	}
 	port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0);
 	return;
 fail:
 	free(w.p);
 }
 
+/* everything dying does except freeing the state.
+ *
+ * the split exists for BROKE: a corpse must stop being part of the
+ * machine the instant it dies -- off the run queue, holding no rights,
+ * with its monitors already told -- and only then linger. deferring any
+ * of that until the reaper ran would make a corpse a hazard rather than
+ * a record. a parent blocked in sys.monitor would wait on a proc that is
+ * never coming back, and a broke fileserver would hold its ports open
+ * and wedge every client instead of failing them.
+ *
+ * the deferred half is only lua_close, and only the __gc finalizers care
+ * that the rights are already gone. they turn out to be written for it:
+ * lib/mnt.lua's fid and session finalizers wrap the send and the close
+ * in pcall, and src/dirs.c's is idempotent by construction. a finalizer
+ * running against a released right fails and is swallowed, which is the
+ * behaviour it already had for a handle closed by hand.
+ */
 static void
-proc_kill(struct kproc *p, const char *why)
+proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 {
-	char reason[224];
-
-	/* copy the reason out: it usually points into the lua state we
-	 * are about to close
-	 */
-	if (why) {
-		snprintf(reason, sizeof reason, "%s", why);
-
-		char buf[256];
-
-		snprintf(buf, sizeof buf, "proc %d (%s) died: %s", p->id,
-		    p->name, reason);
-		kernel_log(buf);
-	}
 	wait_clear(p);
 	rq_del(p);
-	proc_freestate(p);
-	p->status = DEAD;
 	nlive--;
 
 	/* release every right this proc held; ports lose refs, orphaned
@@ -3441,9 +3525,81 @@ proc_kill(struct kproc *p, const char *why)
 		if (w)
 			notify_exit(w, p->id, why ? reason : 0,
 			    why ? -1 : p->exitcode,
-			    why ? 0 : p->exitmsg);
+			    why ? 0 : p->exitmsg, broke);
 	}
 	p->nwatch = 0;
+}
+
+/* log line and copied reason are shared by both exits; the reason
+ * usually points into the lua state, which one path is about to close
+ * and the other will close later, so it is copied either way.
+ */
+static void
+proc_logdeath(struct kproc *p, const char *why, char *reason, size_t n)
+{
+	char buf[256];
+
+	if (!why)
+		return;
+	snprintf(reason, n, "%s", why);
+	snprintf(buf, sizeof buf, "proc %d (%s) died: %s", p->id, p->name,
+	    reason);
+	kernel_log(buf);
+}
+
+static void
+proc_kill(struct kproc *p, const char *why)
+{
+	char reason[224];
+
+	proc_logdeath(p, why, reason, sizeof reason);
+	proc_freestate(p);
+	proc_detach(p, why, reason, 0);
+	p->status = DEAD;
+}
+
+/* how many corpses may be held at once.
+ *
+ * each one is a whole lua_State parked in the shared heap -- tens of
+ * kilobytes that no live proc can use -- so this is a cache of recent
+ * deaths, not a graveyard. breaking past the cap reaps the oldest, on
+ * the theory that the death you are looking into is the one that just
+ * happened.
+ */
+#define MAXBROKE	2
+
+static void
+proc_reap(struct kproc *p)
+{
+	if (p->status != BROKE)
+		return;
+	proc_freestate(p);
+	p->status = DEAD;
+}
+
+static void
+proc_break(struct kproc *p, const char *why)
+{
+	char reason[224];
+	struct kproc *oldest = 0;
+	int n = 0;
+
+	proc_logdeath(p, why, reason, sizeof reason);
+	proc_detach(p, why, reason, 1);
+	p->status = BROKE;
+	p->brokeseq = ++brokeseq;
+
+	for (int i = 0; i < prochigh; i++) {
+		struct kproc *q = procv[i];
+
+		if (!q || q->status != BROKE)
+			continue;
+		n++;
+		if (!oldest || q->brokeseq < oldest->brokeseq)
+			oldest = q;
+	}
+	if (n > MAXBROKE && oldest)
+		proc_reap(oldest);
 }
 
 /* ---- serial pump (9p wire on com2) ---- */
@@ -4068,8 +4224,14 @@ run_proc(struct kproc *p)
 			 * allocates to build the traceback string) and, this
 			 * proc being already at its limit, fail again -- skip
 			 * it here, same plain message as before.
+			 *
+			 * it still breaks rather than dies: an out-of-memory
+			 * corpse is both the one most worth looking at and
+			 * the one a traceback could not describe, and
+			 * sys.stack can read it precisely because src/debug.c
+			 * allocates nothing in the target.
 			 */
-			proc_kill(p, lua_tostring(p->co, -1));
+			proc_break(p, lua_tostring(p->co, -1));
 		else {
 			/* a coroutine that errors out of lua_resume
 			 * deliberately does NOT unwind its stack -- that's
@@ -4078,13 +4240,19 @@ run_proc(struct kproc *p)
 			 * from the C side after resume already returned
 			 * instead of during unwinding.
 			 *
-			 * error object is on the stack; read it before
-			 * proc_kill closes the state.
+			 * error object is on the stack; read it before the
+			 * traceback replaces the top.
+			 *
+			 * the traceback is still built here even though the
+			 * state now survives, because it is the line that
+			 * reaches the console log: the corpse answers a
+			 * question someone thought to ask, the log answers
+			 * the one nobody was there for.
 			 */
 			const char *errmsg = lua_tostring(p->co, -1);
 
 			luaL_traceback(p->co, p->co, errmsg, 0);
-			proc_kill(p, lua_tostring(p->co, -1));
+			proc_break(p, lua_tostring(p->co, -1));
 		}
 		break;	/* proc died, nothing left to resume */
 	}
