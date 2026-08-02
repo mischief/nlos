@@ -700,6 +700,7 @@ microvm_tests = [
   ['dhcp', ['--net']],
   ['dns', ['--net']],
   ['iptask', ['--net']],
+  ['udpq', ['--net']],
   ['idle', []],
 ]
 

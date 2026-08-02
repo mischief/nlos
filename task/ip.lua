@@ -79,7 +79,30 @@ end
 
 -- ---- udp state ----
 
-local conns = {}	-- connid -> {port=}
+-- datagrams that arrived with nobody waiting, per conn.
+--
+-- Bounded two ways, and the arriving datagram is what loses.
+--
+-- Which end to drop is not a toss-up. Dropping the oldest -- what this
+-- did at first -- hands a slow reader the NEWEST datagrams and silently
+-- loses the ones it was waiting for, which for every request/reply
+-- protocol above udp is precisely backwards: the reply you are blocked
+-- on is the oldest unread. Dropping the arrival instead leaves an
+-- intact prefix, so a client that comes back late gets a correct
+-- sequence, merely a short one. It is also what a real socket does when
+-- its receive buffer is full, and what kernel.c does at MAXQUEUE: the
+-- thing that does not fit is the thing that fails.
+--
+-- Bytes are the real bound, for the reason kernel.c gives for bounding
+-- ports in bytes: eight small datagrams and eight full-sized ones are
+-- very different amounts of memory. A count cap sits alongside it
+-- because a flood of one-byte datagrams costs far more in Lua table
+-- overhead than its byte count admits.
+local RCVBUF_DEFAULT = 32 * 1024
+local RCVQ_MAX = 64
+
+local conns = {}	-- connid -> {port=, queue=, waiting=, ...}
+local rcvbuf = RCVBUF_DEFAULT
 local nextconn = 1
 local nextephem = 32768
 
@@ -100,10 +123,6 @@ local stat = {
 	unresolved = 0,
 }
 
--- datagrams that arrived with nobody waiting, per conn. Bounded: a
--- client that stops reading must not grow this task's heap without
--- limit, and dropping the oldest is what a socket buffer does.
-local QUEUE_MAX = 8
 
 local function reply_to(m, v)
 	local h = type(m.reply) == "table" and m.reply.__right or nil
@@ -123,19 +142,33 @@ local function bound(port)
 	return nil
 end
 
--- hand a datagram to whoever is waiting for it, or hold it.
+-- hand a datagram to whoever is waiting for it, or hold it -- or, if
+-- there is no room to hold it, drop it and say so.
 local function deliver(c, msg)
 	if #c.waiting > 0 then
 		reply_to(table.remove(c.waiting, 1), msg)
 		return
 	end
-	c.queue[#c.queue + 1] = msg
-	stat.udp_queued = stat.udp_queued + 1
-	if #c.queue > QUEUE_MAX then
-		table.remove(c.queue, 1)
+
+	local n = #msg.data
+
+	if #c.queue >= RCVQ_MAX or c.qbytes + n > c.rcvbuf then
 		stat.udp_dropped = stat.udp_dropped + 1
-		c.dropped = (c.dropped or 0) + 1
+		c.dropped = c.dropped + 1
+		return
 	end
+
+	c.queue[#c.queue + 1] = msg
+	c.qbytes = c.qbytes + n
+	stat.udp_queued = stat.udp_queued + 1
+end
+
+-- take the head of the queue, keeping the byte count honest.
+local function dequeue(c)
+	local msg = table.remove(c.queue, 1)
+
+	c.qbytes = c.qbytes - #msg.data
+	return msg
 end
 
 local function on_udp(p)
@@ -180,18 +213,28 @@ local function on_request(m)
 		local id = nextconn
 
 		nextconn = nextconn + 1
-		conns[id] = { port = port, waiting = {}, queue = {} }
+		conns[id] = { port = port, waiting = {}, queue = {},
+		    qbytes = 0, dropped = 0, rcvbuf = rcvbuf }
 		reply_to(m, id)
 
 	elseif m.op == "send" then
 		local c = conns[m.connid]
 
-		if not c or type(m.data) ~= "string" then
+		-- every field checked before it is used, because a client
+		-- must not be able to kill the stack. It could: a send with
+		-- a missing octet reached string.char as a nil and took the
+		-- whole task down, and with it the network for every other
+		-- proc on the machine. A bad request is answered false.
+		if not c or type(m.data) ~= "string" or
+		    type(m.port) ~= "number" or
+		    type(m.a) ~= "number" or type(m.b) ~= "number" or
+		    type(m.c) ~= "number" or type(m.d) ~= "number" then
 			reply_to(m, false)
 			return
 		end
 
-		local dst = string.char(m.a, m.b, m.c, m.d)
+		local dst = string.char(m.a & 0xff, m.b & 0xff, m.c & 0xff,
+		    m.d & 0xff)
 		local ok, why = host:output(dst, ip4.PROTO_UDP,
 		    udp4.encode(c.port, m.port, m.data, host.ip, dst))
 
@@ -216,7 +259,7 @@ local function on_request(m)
 			return
 		end
 		if #c.queue > 0 then
-			reply_to(m, table.remove(c.queue, 1))
+			reply_to(m, dequeue(c))
 			return
 		end
 		c.waiting[#c.waiting + 1] = m
@@ -247,9 +290,20 @@ local function on_request(m)
 		end
 
 	elseif m.op == "configure" then
+		-- only what was named. Assigning m.mask and m.gw
+		-- unconditionally meant a caller setting one field silently
+		-- lost the others -- a client adjusting its receive buffer
+		-- would drop the route it had just been given by dhcp.
 		host.ip = m.ip or host.ip
-		host.mask = m.mask
-		host.gw = m.gw
+		host.mask = m.mask or host.mask
+		host.gw = m.gw or host.gw
+		-- the receive budget for conns opened from here on, which is
+		-- what SO_RCVBUF is on a unix. Existing conns keep theirs:
+		-- changing a buffer under a client that is using it is a
+		-- surprise nobody asked for.
+		if m.rcvbuf then
+			rcvbuf = m.rcvbuf
+		end
 		reply_to(m, true)
 
 	elseif m.op == "config" then
@@ -262,11 +316,15 @@ local function on_request(m)
 		for k, v in pairs(stat) do
 			s[k] = v
 		end
+		s.queued, s.waiting, s.qbytes, s.conn_dropped = 0, 0, 0, 0
 		for _, c in pairs(conns) do
 			s.conns = s.conns + 1
-			s.queued = (s.queued or 0) + #c.queue
-			s.waiting = (s.waiting or 0) + #c.waiting
+			s.queued = s.queued + #c.queue
+			s.waiting = s.waiting + #c.waiting
+			s.qbytes = s.qbytes + c.qbytes
+			s.conn_dropped = s.conn_dropped + c.dropped
 		end
+		s.rcvbuf = rcvbuf
 		reply_to(m, s)
 
 	else
