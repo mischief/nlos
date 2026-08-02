@@ -293,6 +293,30 @@ local function readyall()
 	end
 end
 
+-- wake the threads parked on ports that have actually hung up.
+--
+-- the narrow answer to the question hungupsince() can only ask
+-- coarsely. sys.hangups() counts every port on the MACHINE losing a
+-- reference, so on a system where anything else is doing ipc it moves
+-- constantly -- a client's reply port, created and dropped per
+-- request, ticks it twice -- and none of that says anything about the
+-- ports we are parked on. altset is exactly those ports, by
+-- construction in gatherports, so asking each one costs altn kernel
+-- calls and replaces waking every thread to have it ask for itself.
+--
+-- a hangup on a port outside altset needs no wake at all: nobody here
+-- is parked on it.
+local function wakehungup()
+	local woke = false
+
+	for i = 1, altn do
+		if sys.hungup(altset[i]) and readyon(altset[i]) then
+			woke = true
+		end
+	end
+	return woke
+end
+
 -- a hangup is the one wake a ready-port hint can never describe: the
 -- thread that has to notice its peer is gone is precisely the one with
 -- nothing queued. sys.hangups() changes whenever any port loses a
@@ -399,18 +423,53 @@ function thread.run()
 						readyall()
 					end
 				end
+				-- the machine-wide counter says a hangup
+				-- happened somewhere; only our own ports
+				-- say whether it concerns us. there is no
+				-- readyall fallback here on purpose --
+				-- wakehungup is a COMPLETE answer for
+				-- hangups, since altset is every port any
+				-- thread of ours is parked on, and a hangup
+				-- anywhere else is by definition not ours to
+				-- notice. falling back to readyall when it
+				-- finds nothing would put the herd straight
+				-- back: the counter moves for other procs'
+				-- reply ports constantly.
 				if hungupsince() then
-					readyall()
+					wakehungup()
 				end
 			else
 				local i = sys.altblock(altset)
 
 				-- the hint names the port that has
 				-- something; only its threads need to run.
-				-- no hint (a wake with nothing ready, or a
-				-- hangup) falls back to waking everyone.
-				if hungupsince() or
-				    not (i and readyon(altset[i])) then
+				--
+				-- the hint is taken FIRST and on its own
+				-- merits. it used to sit behind
+				-- `hungupsince() or ...`, which reads as a
+				-- cheap early-out and is not one: `or`
+				-- short-circuits, so on any machine where
+				-- another proc was doing ipc the counter had
+				-- always moved, readyon was never called at
+				-- all, and every wake fell through to
+				-- readyall. measured on esp serving one file
+				-- read: readyon 0 calls, readyall 4, 32
+				-- threads woken to find 4 messages.
+				local woke = i and readyon(altset[i]) or false
+
+				-- a hangup is a wake the ready-port hint
+				-- cannot describe -- the thread that has to
+				-- notice its peer is gone is precisely the
+				-- one with nothing queued -- so it is asked
+				-- separately rather than instead.
+				if hungupsince() then
+					woke = wakehungup() or woke
+				end
+				-- last resort, and now genuinely last: a
+				-- wake we cannot attribute to any port of
+				-- ours still has to be safe, so everyone
+				-- gets to look.
+				if not woke then
 					readyall()
 				end
 			end
