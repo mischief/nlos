@@ -373,3 +373,39 @@ platform_have_eth(void)
 	}
 	return present;
 }
+
+/* not implemented, and NOT because this machine cannot have a display.
+ * `-device virtio-gpu-device` is the virtio-mmio spelling of virtio-gpu
+ * and qemu attaches it to microvm's mmio bus quite happily (measured:
+ * it lands on virtio-mmio-bus.23), so the register scan in virtio.c
+ * could find one the same way it finds 9p and rng. what is missing is
+ * the driver.
+ *
+ * worth knowing before writing it: virtio-gpu is the nicer backend of
+ * the two, not the harder one. RESOURCE_ATTACH_BACKING puts the pixels
+ * in OUR memory, so unload, fill and scroll all become local reads and
+ * memmoves, and only load costs a TRANSFER_TO_HOST_2D plus a
+ * RESOURCE_FLUSH over the damaged rectangle. GOP is the awkward one,
+ * where every pixel that moves does so behind a firmware call.
+ *
+ * same empty-symbol arrangement the efi side uses for p9 and eth: the
+ * switch in proc_new takes the address unconditionally, so the symbol
+ * must link even though no task is ever spawned with the priv that
+ * would reach it.
+ */
+int
+platform_have_fb(void)
+{
+	return 0;
+}
+
+static const luaL_Reg fb_emptylib[] = { { NULL, NULL } };
+
+int luaopen_los_platform_fb(lua_State *L);
+
+int
+luaopen_los_platform_fb(lua_State *L)
+{
+	luaL_newlib(L, fb_emptylib);
+	return 1;
+}

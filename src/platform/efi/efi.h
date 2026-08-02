@@ -485,6 +485,83 @@ struct EFI_TCP4_PROTOCOL {
 	EFI_STATUS (EFIAPI *Poll)(EFI_TCP4_PROTOCOL *This);
 };
 
+/* ---- graphics output (gop), per MdePkg/Include/Protocol/GraphicsOutput.h
+ *
+ * Blt is the only pixel path we use. FrameBufferBase is deliberately
+ * left as a plain address we never dereference: it is meaningless when
+ * PixelFormat is PixelBltOnly, and using it anywhere else would mean
+ * writing a per-format packer for the three layouts below. Blt takes
+ * EFI_GRAPHICS_OUTPUT_BLT_PIXEL -- always BGRx in that order, whatever
+ * the hardware format is -- and the firmware does the conversion.
+ */
+
+typedef enum {
+	PixelRedGreenBlueReserved8BitPerColor,
+	PixelBlueGreenRedReserved8BitPerColor,
+	PixelBitMask,
+	PixelBltOnly,
+	PixelFormatMax
+} EFI_GRAPHICS_PIXEL_FORMAT;
+
+typedef struct {
+	UINT32 RedMask;
+	UINT32 GreenMask;
+	UINT32 BlueMask;
+	UINT32 ReservedMask;
+} EFI_PIXEL_BITMASK;
+
+typedef struct {
+	UINT32 Version;
+	UINT32 HorizontalResolution;
+	UINT32 VerticalResolution;
+	EFI_GRAPHICS_PIXEL_FORMAT PixelFormat;
+	EFI_PIXEL_BITMASK PixelInformation;
+	UINT32 PixelsPerScanLine;
+} EFI_GRAPHICS_OUTPUT_MODE_INFORMATION;
+
+typedef struct {
+	UINT32 MaxMode;
+	UINT32 Mode;
+	EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *Info;
+	UINTN SizeOfInfo;
+	EFI_PHYSICAL_ADDRESS FrameBufferBase;
+	UINTN FrameBufferSize;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
+
+typedef struct {
+	UINT8 Blue;
+	UINT8 Green;
+	UINT8 Red;
+	UINT8 Reserved;
+} EFI_GRAPHICS_OUTPUT_BLT_PIXEL;
+
+typedef enum {
+	EfiBltVideoFill,
+	EfiBltVideoToBltBuffer,
+	EfiBltBufferToVideo,
+	EfiBltVideoToVideo,
+	EfiGraphicsOutputBltOperationMax
+} EFI_GRAPHICS_OUTPUT_BLT_OPERATION;
+
+typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL EFI_GRAPHICS_OUTPUT_PROTOCOL;
+struct EFI_GRAPHICS_OUTPUT_PROTOCOL {
+	EFI_STATUS (EFIAPI *QueryMode)(EFI_GRAPHICS_OUTPUT_PROTOCOL *This,
+	    UINT32 ModeNumber, UINTN *SizeOfInfo,
+	    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION **Info);
+	EFI_STATUS (EFIAPI *SetMode)(EFI_GRAPHICS_OUTPUT_PROTOCOL *This,
+	    UINT32 ModeNumber);
+	/* Delta is the source buffer's stride IN BYTES, and 0 means "the
+	 * rectangle is exactly Width wide". Passing a pixel count here is
+	 * the classic Blt bug.
+	 */
+	EFI_STATUS (EFIAPI *Blt)(EFI_GRAPHICS_OUTPUT_PROTOCOL *This,
+	    EFI_GRAPHICS_OUTPUT_BLT_PIXEL *BltBuffer,
+	    EFI_GRAPHICS_OUTPUT_BLT_OPERATION BltOperation,
+	    UINTN SourceX, UINTN SourceY, UINTN DestinationX,
+	    UINTN DestinationY, UINTN Width, UINTN Height, UINTN Delta);
+	EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE *Mode;
+};
+
 /* ---- udp4: connectionless sibling of tcp4 above -- same token/Event
  * async shape (Transmit/Receive, no Connect/Accept since there's no
  * connection), field order/sizes again exactly per spec, verified

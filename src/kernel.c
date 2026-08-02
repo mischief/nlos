@@ -114,7 +114,7 @@ enum { DEAD, READY, BLOCKED };
  * lets it build the root namespace every other proc inherits.
  */
 enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
-    PRIV_TCP, PRIV_UDP, PRIV_P9, PRIV_ETH };
+    PRIV_TCP, PRIV_UDP, PRIV_P9, PRIV_ETH, PRIV_FB };
 
 struct kmsg {
 	struct kmsg *next;
@@ -405,6 +405,7 @@ static int have_net;
 static int have_udp;
 static int have_p9;
 static int have_eth;
+static int have_fb;
 
 /* cycles per millisecond, measured once at boot. platform_ticks() is a
  * raw hardware counter -- a tick count, not a time -- and its rate is
@@ -2347,6 +2348,7 @@ extern int luaopen_los_platform_tcp(lua_State *L);	/* net.c */
 extern int luaopen_los_platform_udp(lua_State *L);	/* net.c */
 extern int luaopen_los_platform_p9(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_eth(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
+extern int luaopen_los_platform_fb(lua_State *L);	/* gop.c: efi only, no-op elsewhere */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
  * kernel-owned primitives that outlive efi (ticks). registered in
@@ -2375,6 +2377,20 @@ los_sys_open(lua_State *L)
 	 */
 	lua_pushinteger(L, 0);
 	lua_setfield(L, -2, "SELF");
+
+	/* the serializer's ceiling on one message, so a client that has to
+	 * split a large payload can ask instead of hardcoding it. reported
+	 * rather than merely enforced because the alternative is every
+	 * caller carrying its own copy of the number and one of them being
+	 * wrong after it changes -- lib/caps.lua's fb.load splits raw pixel
+	 * rectangles on exactly this bound.
+	 *
+	 * the whole message is bounded by this, not just the payload
+	 * string, so a caller splitting to exactly MAXMSG still fails on
+	 * the table around it. leave room.
+	 */
+	lua_pushinteger(L, MAXMSG);
+	lua_setfield(L, -2, "MAXMSG");
 	return 1;
 }
 
@@ -2659,6 +2675,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	case PRIV_ETH:
 		lua_pushcfunction(p->L, luaopen_los_platform_eth);
 		lua_setfield(p->L, -2, "los.platform.eth");
+		break;
+	case PRIV_FB:
+		lua_pushcfunction(p->L, luaopen_los_platform_fb);
+		lua_setfield(p->L, -2, "los.platform.fb");
 		break;
 	}
 
@@ -2995,6 +3015,7 @@ kernel_init(void)
 	have_udp = net_have_udp();
 	have_p9 = platform_have_p9();
 	have_eth = platform_have_eth();
+	have_fb = platform_have_fb();
 	return 0;
 }
 
@@ -3118,6 +3139,16 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_ETH, .devport = 0, .devrecv = 0,
 		  .what = "networking (raw ethernet)", .enabled = have_eth,
 		  .capname = "eth" },
+		/* the framebuffer. no devport: unlike the console or the
+		 * wire there is nothing to poll -- a screen produces no
+		 * events, and the input devices that go with one are
+		 * already somebody else's capability. so this task only
+		 * ever receives from procs holding a right to it.
+		 */
+		{ .path = "/lib/fb.lua", .chunkname = "=fb",
+		  .priv = PRIV_FB, .devport = 0, .devrecv = 0,
+		  .what = "the framebuffer", .enabled = have_fb,
+		  .capname = "fb" },
 	};
 	size_t ndrivers = sizeof drivers / sizeof drivers[0];
 	int pids[sizeof drivers / sizeof drivers[0]];

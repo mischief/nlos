@@ -160,6 +160,7 @@ if platform == 'efi'
     'src/platform/efi/console.c',
     'src/platform/efi/drivers.c',
     'src/platform/efi/fs.c',
+    'src/platform/efi/gop.c',
     'src/platform/efi/los.c',
     'src/platform/efi/main.c',
     'src/platform/efi/malloc.c',
@@ -382,11 +383,13 @@ lua_payload = files(
   'lib/cons.lua',
   'lib/chan.lua',
   'lib/dev.lua',
+  'lib/draw.lua',
   'lib/dhcp.lua',
   'lib/dhcpd.lua',
   'lib/dns.lua',
   'lib/espfs.lua',
   'lib/espsrv.lua',
+  'lib/fb.lua',
   'lib/http.lua',
   'lib/idle.lua',
   'lib/json.lua',
@@ -448,6 +451,18 @@ run_target('fetch-mcp',
   env: archenv,
 )
 
+# boots test/boot/fbdraw.lua, waits for it to say it has finished
+# drawing, and captures the screen to <builddir>/screenshot.png. the
+# framebuffer is the one output here no serial line can carry, so this
+# is how you look at it -- test/boot/test_fb.lua proves the pixels are
+# what we asked for, which is a different claim from what a person
+# sitting in front of the machine would see.
+run_target('screenshot',
+  command: [lua_interp, files('scripts/screenshot.lua'), luaos_img,
+    files('test/boot/fbdraw.lua'), 'screenshot.ppm'],
+  env: archenv,
+)
+
 # boots test/boot/srvweb.lua instead of init.lua: the browser shell,
 # reachable at http://localhost:8080/ (WEB_PORT to change it)
 run_target('website',
@@ -469,7 +484,8 @@ boottest = files('scripts/boottest.lua')
 boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
               'math',
               'srv', 'mountcmd', 'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
-              'procfs', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount']
+              'procfs', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount',
+              'fb']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

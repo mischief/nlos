@@ -380,6 +380,15 @@ at thousands of timers, and `MAXPROCS` is 32.
   `docs/uefi-notes.md`; `test/tcp4echo/` exists to answer this class of
   question from outside the kernel, which is the only place it can be
   answered.
+- **Pixels do not fit in a message.** `sys.MAXMSG` is 64KiB, which is
+  16384 BGRx pixels — a 128x128 tile — so "load the whole screen in one
+  call" cannot exist, in either direction (a reply is a message too).
+  `lib/caps.lua`'s `fb.load`/`fb.unload` split into bands of whole rows
+  on that bound. Do not raise MAXMSG to dodge this: it is a global limit
+  protecting every port, and the design that survives the copy is the
+  one that only ever ships the rectangle that changed. The serializer
+  bounds the whole message, not just the payload string, so a caller
+  splitting to exactly MAXMSG still fails on the table around it.
 - **Coalescing the wakeup ping is not enough** to stop it monopolising
   the scheduler — the task drains it the same lap it arrives, so the
   next lap pushes another. Pace it to the tick. Unpaced cost 9.8s CPU
@@ -629,6 +638,15 @@ and on a stick".
 Third-party code in the tree. `include/sys/queue.h` is the one vendored
 file and it is pure macros; a network stack is the usual way this rule
 gets tested, and importing lwip for microvm is not on the table.
+
+A window system inside the framebuffer. It is two layers on purpose and
+the seam is plan 9's: `src/platform/efi/gop.c` plus `lib/fb.lua` are
+libmemdraw — a rectangle of pixels, and `load`/`unload`/`fill`/`scroll`
+to move them — and anything that stacks, clips, routes input or knows
+what a window is goes above, in another proc holding a right to that
+one. That is what libmemlayer is, and it works precisely because the
+layer under it never heard of a window. Do not teach `fb` about
+z-order, focus or fonts; add a proc.
 
 ## Open questions — recorded arguments, not commitments
 

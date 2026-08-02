@@ -140,6 +140,156 @@ function M.dns(handle)
 	return d
 end
 
+-- the framebuffer (lib/fb.lua). unlike the wrappers above, every reply
+-- there is a {ok=} / {err=} table -- sys.send carries one value, so a
+-- bare nil would lose the reason -- and this is where that is unwrapped
+-- into the nil-plus-message shape the rest of caps.lua returns.
+--
+-- fill, load and scroll can be sent WITHOUT waiting: they answer true
+-- and nothing else, and a client redrawing a screen should not pay a
+-- round trip per rectangle. pass wait=true when you need to know
+-- whether one worked, or call sync() once at the end.
+function M.fb(handle)
+	local req = requester(handle)
+	local f = { handle = handle }	-- for re-granting to a spawned child: {__right = f.handle}
+
+	local function ask(m)
+		local r = req(m)
+
+		if r.err then
+			return nil, r.err
+		end
+		return r.ok
+	end
+
+	-- send with no reply port, so nothing blocks. errors are not lost,
+	-- only deferred: the next call that does wait reports its own
+	-- failure, and sync() exists to ask on purpose.
+	local function tell(m, wait)
+		if wait then
+			return ask(m)
+		end
+		sys.send(handle, m)
+		return true
+	end
+
+	function f.mode()
+		return ask({ op = "mode" })
+	end
+	function f.modes()
+		return ask({ op = "modes" })
+	end
+	function f.setmode(n)
+		return ask({ op = "setmode", n = n })
+	end
+	function f.fill(r, color, wait)
+		return tell({ op = "fill", r = r, color = color }, wait)
+	end
+	-- pixels are the one thing here big enough to hit the serializer's
+	-- ceiling: sys.MAXMSG is 64KiB, which is 16384 pixels, which is a
+	-- 128x128 tile. a screen is two orders of magnitude past that, so
+	-- "load the whole screen in one call" is not a thing that can
+	-- exist, and pretending otherwise just moves the failure to
+	-- whichever caller first draws something large.
+	--
+	-- so split, here, once, into bands of whole rows. rows rather than
+	-- tiles because a band is a contiguous slice of the data string --
+	-- no repacking -- and because a damaged region is usually wider
+	-- than it is tall anyway.
+	--
+	-- this is also the honest argument for keeping pixels behind a port
+	-- rather than reaching for shared memory: the copy is real, and the
+	-- design that survives it is the one that only ever ships the
+	-- rectangle that changed.
+	local function loadband(r, data, wait)
+		local stride = r.w * 4
+		local perband = stride > 0 and (sys.MAXMSG - 512) // stride or 0
+
+		if perband < 1 then
+			-- a single row already exceeds a message. nothing here
+			-- can fix that; the caller has to draw narrower.
+			return nil, ("row of %d bytes exceeds the %d byte " ..
+			    "message limit"):format(stride, sys.MAXMSG)
+		end
+		if perband >= r.h then
+			return tell({ op = "load", r = r, data = data }, wait)
+		end
+
+		local y = 0
+
+		while y < r.h do
+			local n = r.h - y
+
+			if n > perband then
+				n = perband
+			end
+			local band = { x = r.x, y = r.y + y, w = r.w, h = n }
+			local from = y * stride + 1
+			local slice = data:sub(from, from + n * stride - 1)
+			-- only the LAST band waits: the task handles messages
+			-- in order, so its reply reports the whole sequence.
+			local last = y + n >= r.h
+			local ok, err = tell({ op = "load", r = band,
+			    data = slice }, wait and last)
+
+			if not ok then
+				return nil, err
+			end
+			y = y + n
+		end
+		return true
+	end
+
+	function f.load(r, data, wait)
+		return loadband(r, data, wait)
+	end
+	-- the reply is a message too, so readback needs the same banding as
+	-- load above -- the limit is on messages, not on direction.
+	function f.unload(r)
+		local stride = r.w * 4
+		local perband = stride > 0 and (sys.MAXMSG - 512) // stride or 0
+
+		if perband < 1 then
+			return nil, ("row of %d bytes exceeds the %d byte " ..
+			    "message limit"):format(stride, sys.MAXMSG)
+		end
+		if perband >= r.h then
+			return ask({ op = "unload", r = r })
+		end
+
+		local out = {}
+		local y = 0
+
+		while y < r.h do
+			local n = r.h - y
+
+			if n > perband then
+				n = perband
+			end
+			local piece, err = ask({ op = "unload",
+			    r = { x = r.x, y = r.y + y, w = r.w, h = n } })
+
+			if not piece then
+				return nil, err
+			end
+			out[#out + 1] = piece
+			y = y + n
+		end
+		return table.concat(out)
+	end
+	function f.scroll(r, to, wait)
+		return tell({ op = "scroll", r = r, to = to }, wait)
+	end
+
+	-- round-trip the cheapest op there is. one task handles its
+	-- messages in order, so a reply to this one means every load sent
+	-- before it has already reached the screen.
+	function f.sync()
+		return ask({ op = "mode" }) ~= nil
+	end
+	return f
+end
+
 function M.power(handle)
 	local p = { handle = handle }	-- for re-granting to a spawned child: {__right = p.handle}
 

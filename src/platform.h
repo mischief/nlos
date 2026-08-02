@@ -40,6 +40,18 @@ int	platform_have_p9(void);
  */
 int	platform_have_eth(void);
 
+/* is there a framebuffer? efi answers by probing for a GraphicsOutput
+ * (src/platform/efi/gop.c); microvm always says no today, for want of a
+ * virtio-gpu driver rather than for want of a device -- see the comment
+ * on its platform_have_fb, which is where that story is.
+ *
+ * a machine booted with no display is the normal case and not a
+ * failure, so this gates the /lib/fb.lua task exactly as have_net gates
+ * the tcp one. the efi probe caches the protocol it locates, so calling
+ * this is also what makes los.platform.fb usable afterwards.
+ */
+int	platform_have_fb(void);
+
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);
