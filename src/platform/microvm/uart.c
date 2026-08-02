@@ -18,8 +18,17 @@
  * the receive path, the IOAPIC route and the ISR are all correct, with
  * no host involvement at all.
  *
- * The host side works too. A real Linux kernel booted on identical
- * machine arguments takes input from the same chardev indefinitely.
+ * The host side works too, and this is the fact to start from: tracing
+ * serial_read while a Linux kernel runs on identical machine arguments
+ * shows LSR reading 0x61 -- DR set -- 3117 times, beginning exactly
+ * when the host starts writing. DR is device state that only
+ * serial_receive1 sets, so qemu genuinely delivers bytes into the
+ * microvm ISA serial. (Linux never reads RBR there; console=ttyS0
+ * earlycon is output-only. Its input piling up unread is why it looks
+ * stuck, not evidence against delivery.)
+ *
+ * So the machine is not at fault and neither is qemu. Our guest reads
+ * the same register on the same port and sees 0x60 every time.
  *
  * Between those, our guest never sees a byte from the host. Identical
  * with the fifo on and off, at divisor 1 and 12, under kvm and tcg, and
@@ -42,14 +51,15 @@
  * same way. That last one matters: receive was already broken before
  * any of this was written, rather than broken by it.
  *
- * The clearest remaining clue is that src/x86_64/uart.c -- which does
- * receive, and is what the 9p-protocol test drives over com2 -- has a
- * byte-identical uart_init to this one. The difference between the two
- * is the machine, not the driver: that one runs on qemu's pc machine
- * with firmware having touched the port first, this one on microvm
- * where nothing has. Whatever qboot leaves unset, or whatever the pc
- * machine's ISA wiring provides that microvm's does not, is where this
- * ends.
+ * Linux's programming was compared against ours and differs in two
+ * visible ways -- it uses FCR=0x00 and MCR=0x01 where we use 0x07 and
+ * 0x0B. Neither substitution on its own changes anything here; a full
+ * match has not been tried and is the obvious next step.
+ *
+ * Also worth knowing: src/x86_64/uart.c, which does receive and is what
+ * the 9p-protocol test drives over com2 every run, has a byte-identical
+ * uart_init to this one. So the same programming works on qemu's pc
+ * machine and not on microvm, which is what makes this stubborn.
  *
  * The ring and handler are therefore written but untested against real
  * input, and uart_rx still polls the port as a fallback.
