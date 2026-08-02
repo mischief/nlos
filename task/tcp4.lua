@@ -446,16 +446,24 @@ local function on_request(m)
 		end
 
 		local cfg = ipconfig()
+		local raddr = string.char(a, b, cc, d)
 
-		-- no address, no connection. A SYN from 0.0.0.0 would be
-		-- answered by nobody, and failing here says why rather than
-		-- leaving the caller to wait out the dial timeout.
-		if not cfg.ip or cfg.ip == ip4.ANY then
+		-- Our own address for this connection, which for loopback is
+		-- not our address at all. lib/inet.lua's srcfor makes the same
+		-- choice for the packet; making it here too is what lets the
+		-- TCB checksum and match on the same pair the wire will carry.
+		local laddr = ip4.is_loopback(raddr) and ip4.LOOPBACK or cfg.ip
+
+		-- No address, no connection -- but only off the machine. A SYN
+		-- from 0.0.0.0 would be answered by nobody, so failing here
+		-- says why rather than leaving the caller to wait out the dial
+		-- timeout. 127.0.0.1 is the exception and not an edge case:
+		-- it is reachable on a machine dhcp has never answered, which
+		-- is most of the point of having it.
+		if not laddr or laddr == ip4.ANY then
 			reply_to(m, nil)
 			return
 		end
-
-		local raddr = string.char(a, b, cc, d)
 		local lport = nextephem
 
 		nextephem = 32768 + ((nextephem - 32767) % 28000)
@@ -466,7 +474,7 @@ local function on_request(m)
 
 		local c = {
 			id = id,
-			laddr = cfg.ip, lport = lport,
+			laddr = laddr, lport = lport,
 			raddr = raddr, rport = port,
 			key = name(raddr, port, lport),
 			readers = {},
@@ -482,7 +490,7 @@ local function on_request(m)
 		end
 
 		c.t = tcb.new({
-			laddr = cfg.ip, lport = lport,
+			laddr = laddr, lport = lport,
 			raddr = raddr, rport = port,
 			iss = iss, mss = MSS,
 		})

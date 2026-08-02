@@ -736,6 +736,7 @@ microvm_tests = [
   ['autoip', ['--net']],
   ['ipraw', ['--net']],
   ['tcp', ['--netecho']],
+  ['tcploop', ['--net']],
   ['idle', []],
 ]
 

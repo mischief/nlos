@@ -199,10 +199,12 @@ local function pair(cfg)
 
 	local a = tcb.new({ laddr = A_IP, lport = 40000, raddr = B_IP,
 	    rport = 80, iss = 1000, mss = cfg.mss or 1460,
-	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf, sack = cfg.sack_a })
+	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf, sack = cfg.sack_a,
+	    msl = cfg.msl })
 	local b = tcb.new({ laddr = B_IP, lport = 80, raddr = A_IP,
 	    rport = 40000, iss = 500000, mss = cfg.mss or 1460,
-	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf, sack = cfg.sack_b })
+	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf, sack = cfg.sack_b,
+	    msl = cfg.msl })
 
 	return a, b
 end
@@ -999,6 +1001,59 @@ do
 
 	is(a.state, tcb.CLOSED, "a peer that answers no probe is given up on")
 	is(kinds(a), "reset", "and the user is told")
+end
+
+
+-- ---- two peers in TIME-WAIT must go quiet ----
+--
+-- A simultaneous close leaves both ends in TIME-WAIT at once. If that
+-- state acknowledges every acceptable segment -- rather than only a
+-- retransmitted FIN, which is the only thing 3.10.7.4 says can arrive
+-- -- then each side's bare acknowledgment is acceptable to the other
+-- and provokes another, forever.
+--
+-- Across a network that is a storm between two hosts. Over loopback both
+-- ends live in one machine and it never leaves at all -- and there it
+-- wedges rather than merely slows: two procs that keep each other
+-- runnable hold the kernel inside a single dispatch lap, and timers are
+-- serviced between laps, so a 300ms sleep in an unrelated proc never
+-- fired at all. The scheduler half is written up in /tmp/schedbug.md.
+-- This is the cheap way to keep our half found.
+do
+	-- A wait long enough to still be running when the quiet is
+	-- checked: with a short MSL both ends leave TIME-WAIT before the
+	-- interesting moment, and the test asserts nothing.
+	local a, b = pair({ msl = 2000 })
+	local l = link(a, b, { rtt = 20 })
+
+	connect(l)
+
+	a:close(l.now)
+	b:close(l.now)
+
+	l:run(l.now + 500)
+
+	is(a.state, tcb.TIME_WAIT, "a simultaneous close leaves one end in TIME-WAIT")
+	is(b.state, tcb.TIME_WAIT, "and the other")
+
+	local before = l.sent.a + l.sent.b
+
+	l:run(l.now + 150)
+
+	local after = l.sent.a + l.sent.b
+
+	is(after, before, "and neither end says anything more: " ..
+	    (after - before) .. " segments in 150ms")
+
+	-- and they still leave when the wait expires. Run with a condition
+	-- rather than a bare deadline: without one, run() jumps the clock
+	-- straight to the deadline when the next event is beyond it, and
+	-- never ticks the endpoints on the way.
+	l:run(l.now + 5000, function()
+		return a.state == tcb.CLOSED and b.state == tcb.CLOSED
+	end)
+	is(a.state, tcb.CLOSED, "both close when 2*MSL is up")
+	is(b.state, tcb.CLOSED, "on both ends")
 end
 
 io.write(("1..%d\n"):format(count))

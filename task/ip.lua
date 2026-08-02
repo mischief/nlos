@@ -570,8 +570,16 @@ while true do
 				break
 			end
 			stat.frames_in = stat.frames_in + 1
+
+			-- the same demux the wire path uses. Handling only udp
+			-- here -- which is what the two changes produced when
+			-- they were merged, each correct alone -- silently
+			-- drops a loopback segment for any protocol served in
+			-- another proc, tcp included.
 			if p.proto == ip4.PROTO_UDP then
 				on_udp(p)
+			else
+				on_raw(p)
 			end
 		end
 	end

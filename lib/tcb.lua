@@ -1340,7 +1340,15 @@ function T:_in_synchronized(seg)
 			    (seg.flags & tcp4.FIN) ~= 0 then
 				self.timewait = self.now + 2 * self.msl
 			end
-			self:_ack()
+
+			-- An unacceptable segment is normally answered with
+			-- where we really are, so the peer can resynchronise.
+			-- A bare acknowledgment in TIME-WAIT is the exception,
+			-- for the reason above: answering it is how two closing
+			-- peers deadlock the machine between them.
+			if self.state ~= tcb.TIME_WAIT or tcp4.seglen(seg) > 0 then
+				self:_ack()
+			end
 		end
 		return
 	end
@@ -1372,14 +1380,35 @@ function T:_in_synchronized(seg)
 	end
 
 	if self.state == tcb.TIME_WAIT then
-		-- the only thing that can arrive here is a retransmission of
-		-- the peer's FIN, which means our last acknowledgment was
-		-- lost. Send it again and start the wait over -- which is
-		-- most of what TIME-WAIT is for.
-		if (seg.flags & tcp4.FIN) ~= 0 then
-			self.timewait = self.now + 2 * self.msl
+		-- "The only thing that can arrive in this state is a
+		-- retransmission of the remote FIN. Acknowledge it, and
+		-- restart the 2 MSL timeout." The emphasis belongs on
+		-- retransmission: only a segment that occupies sequence space
+		-- is answered.
+		--
+		-- Acknowledging anything at all here, which is what this did
+		-- first, means two peers that are both in TIME-WAIT
+		-- acknowledge each other forever -- each bare ACK is
+		-- acceptable to the other and provokes another. On a network
+		-- that is a storm between two hosts. Over loopback both ends
+		-- are in one task, so the exchange never leaves the machine.
+		--
+		-- No proc spins and every one of them yields properly, so
+		-- this looks like mere saturation and is not: it wedges the
+		-- machine. kernel_run's phase two drains its run queue with
+		-- no bound, and a woken proc joins the CURRENT lap, so two
+		-- procs feeding each other keep the lap alive forever --
+		-- and expire_timers, pump_eth and pump_serial all live at
+		-- the top of the loop, between laps. A 300ms timer in an
+		-- unrelated proc then never fires at all. Written up in
+		-- /tmp/schedbug.md; the scheduler side is not ours to fix,
+		-- but generating an unbounded exchange is.
+		if tcp4.seglen(seg) > 0 then
+			if (seg.flags & tcp4.FIN) ~= 0 then
+				self.timewait = self.now + 2 * self.msl
+			end
+			self:_ack()
 		end
-		self:_ack()
 		return
 	end
 
