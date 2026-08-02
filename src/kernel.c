@@ -909,12 +909,24 @@ static int
 wput(struct wbuf *w, const void *src, size_t n)
 {
 	if (w->len + n > w->cap) {
+		size_t need = w->len + n;
+
+		/* the limit belongs to the message, not to the growth
+		 * policy. doubling is free to overshoot MAXMSG and get
+		 * clamped; only a message that genuinely does not fit is
+		 * refused. while every cap was a power of two the two
+		 * tests agreed, and pre-sizing from a hint is what makes
+		 * an arbitrary cap -- and an overshoot -- possible.
+		 */
+		if (need > MAXMSG)
+			return -1;
+
 		size_t ncap = w->cap ? w->cap * 2 : 256;
 
-		while (ncap < w->len + n)
+		while (ncap < need)
 			ncap *= 2;
 		if (ncap > MAXMSG)
-			return -1;
+			ncap = MAXMSG;
 		unsigned char *np = realloc(w->p, ncap);
 
 		if (!np)

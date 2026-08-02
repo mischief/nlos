@@ -4,7 +4,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(11)
+tap.plan(13)
 
 -- echo child reflects whatever it gets back through a reply right
 local _, w = sys.spawn([[
@@ -44,6 +44,30 @@ tap.is(t3.list[1], 1, "messages are copies, not references")
 local ok, err = pcall(sys.send, w, { f = function() end })
 tap.ok(not ok and err:find("unserializable") ~= nil,
     "function refused with error")
+
+-- a payload over half of MAXMSG, carried in the shape the framebuffer
+-- sends: a nested table beside the bytes. api_send pre-sizes the write
+-- buffer from a hint that deliberately does not agree with the
+-- serializer, and the hint counts a nested table as one small value
+-- rather than walking it -- so the serializer runs past the pre-sized
+-- cap, and doubling from an arbitrary cap overshoots the 64KiB limit
+-- for a message nowhere near it. Refusing on the overshoot rather than
+-- on the requirement lost six of a smiley's seven bands.
+--
+-- the nesting is the part that matters: a flat table of the same size
+-- stays under its own hint and proves nothing.
+local BIG = string.rep("x", 40000)
+local big = roundtrip({ op = "load", r = { x = 0, y = 0, w = 200, h = 50 },
+    data = BIG })
+
+tap.ok(type(big) == "table" and big.data == BIG and big.r.w == 200,
+    "a payload past half of MAXMSG survives the round trip")
+
+-- and the limit itself still holds, so the fix is a correction to
+-- where the test is made and not its removal
+local toobig = pcall(sys.send, w, { data = string.rep("x", 70000) })
+
+tap.ok(not toobig, "a payload genuinely over MAXMSG is still refused")
 
 -- right transfer chain: pass a fresh recv right THROUGH the echo,
 -- then use it
