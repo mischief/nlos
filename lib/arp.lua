@@ -79,19 +79,66 @@ end
 
 -- ---- the cache ----
 --
--- No expiry. An entry going stale matters on a network where addresses
--- move, and the cost of being wrong is a timeout and a re-resolve --
--- which is what this would do anyway on a miss. Ageing goes in when
--- something is observed to break without it, not before.
+-- Entries age out, and the machine staying up is why. A mapping is only
+-- true until the address moves -- a router failing over, a replaced
+-- box, a guest migrated to another host -- and an entry that never
+-- expires means sending to a mac that no longer exists, forever, with
+-- nothing to make us ask again. A stack that is only up for the length
+-- of a test never notices; one that is meant to stay up does.
+--
+-- Two lifetimes, because the evidence differs. A reply to our own
+-- question is a peer answering for itself. An entry learned from
+-- somebody else's request is a claim we overheard and never checked --
+-- it is worth having, since it saves asking, but it is worth
+-- distrusting sooner.
+--
+-- The clock is passed in rather than read here: this module requires
+-- nothing and can be exercised on the host with a fake one, which is
+-- how the expiry below is tested without waiting five minutes.
 
-local cache = {}
+arp.TTL_REPLY = 5 * 60 * 1000		-- ms
+arp.TTL_OVERHEARD = 60 * 1000
 
-function arp.cached(ip)
-	return cache[ip]
+local cache = {}			-- ip -> {mac=, expires=}
+
+-- nil once the entry has aged out, which makes a stale mapping a miss
+-- and a miss is already handled everywhere: lib/inet.lua's output arps
+-- and drops, and the caller retries.
+function arp.cached(ip, now)
+	local e = cache[ip]
+
+	if not e then
+		return nil
+	end
+	if now and e.expires and now >= e.expires then
+		cache[ip] = nil
+		return nil
+	end
+	return e.mac
 end
 
-function arp.remember(ip, mac)
-	cache[ip] = mac
+function arp.remember(ip, mac, now, ttl)
+	cache[ip] = {
+		mac = mac,
+		expires = now and (now + (ttl or arp.TTL_REPLY)) or nil,
+	}
+end
+
+-- for a test, and for a machine that has just changed address: every
+-- mapping we hold was learned as a host we no longer are.
+function arp.forget()
+	cache = {}
+end
+
+-- how many live entries, for stats. Counts without expiring, since a
+-- counter should not have side effects.
+function arp.count()
+	local n = 0
+
+	for _ in pairs(cache) do
+		n = n + 1
+	end
+	return n
 end
 
 -- Every ARP frame seen teaches something, including ones addressed to
@@ -101,7 +148,7 @@ end
 --
 -- Returns the decoded ARP if the frame was one, so a caller can decide
 -- whether it also needs to answer.
-function arp.observe(frame, mac)
+function arp.observe(frame, mac, now)
 	local f = ether.decode(frame)
 
 	if not f or f.type ~= ether.ARP then
@@ -117,7 +164,10 @@ function arp.observe(frame, mac)
 		return nil
 	end
 	if a.spa ~= ip4.ANY then
-		arp.remember(a.spa, a.sha)
+		-- an answer to a question is better evidence than a claim
+		-- overheard in passing, and is trusted for longer.
+		arp.remember(a.spa, a.sha, now,
+		    a.op == arp.REPLY and arp.TTL_REPLY or arp.TTL_OVERHEARD)
 	end
 	return a
 end
@@ -141,8 +191,10 @@ end
 -- `wire` is {send=f(frame), recv=f()->frame|nil, now=f()->ms,
 -- yield=f()}. Returns the mac, or nil and a reason.
 function arp.resolve(wire, mymac, myip, target, timeout_ms, retry_ms)
-	if cache[target] then
-		return cache[target]
+	local hit = arp.cached(target, wire.now())
+
+	if hit then
+		return hit
 	end
 
 	timeout_ms = timeout_ms or 3000
@@ -174,9 +226,12 @@ function arp.resolve(wire, mymac, myip, target, timeout_ms, retry_ms)
 			-- learn from everything, not just the reply we want:
 			-- the answer may arrive behind other traffic, and on a
 			-- bridge there is other traffic.
-			arp.observe(frame, mymac)
-			if cache[target] then
-				return cache[target]
+			arp.observe(frame, mymac, wire.now())
+
+			local got = arp.cached(target, wire.now())
+
+			if got then
+				return got
 			end
 		elseif not wire.recv_wait then
 			wire.yield()

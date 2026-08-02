@@ -20,7 +20,7 @@ local ip4 = require("ip4")
 local arp = require("arp")
 local ethwire = require("ethwire")
 
-tap.plan(9)
+tap.plan(12)
 
 local caps = sys.granted()
 
@@ -99,5 +99,28 @@ local waited = sys.uptime_ms() - t0
 tap.diag("an unanswered wait returned after " .. waited .. " ms")
 tap.ok(none == nil and waited >= 250,
     "a parked receive waits for its deadline rather than spinning")
+
+-- ---- and entries do not live forever ----
+--
+-- Pure function calls with a clock we make up, so this does not wait
+-- five minutes and does not need the network at all. The behaviour it
+-- pins is the one that matters on a machine meant to stay up: a mapping
+-- stops being true when the address moves, and something has to make us
+-- ask again.
+local FAKE = ip4.parse("192.0.2.7")	-- RFC 5737 documentation range
+local FMAC = "\1\2\3\4\5\6"
+
+arp.remember(FAKE, FMAC, 1000, 500)
+
+tap.ok(arp.cached(FAKE, 1200) == FMAC,
+    "a fresh entry is returned before its ttl")
+
+tap.ok(arp.cached(FAKE, 1600) == nil,
+    "and is gone after it, without anyone sweeping")
+
+-- an overheard request is trusted for less time than an answer to our
+-- own question, because it is a claim nobody was asked to make.
+tap.ok(arp.TTL_OVERHEARD < arp.TTL_REPLY,
+    "an overheard mapping expires sooner than an answered one")
 
 tap.done()

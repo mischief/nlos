@@ -73,7 +73,7 @@ function Host:output(dst, proto, payload)
 	else
 		local hop = self:nexthop(dst)
 
-		mac = arp.cached(hop)
+		mac = arp.cached(hop, self.wire.now())
 		if not mac then
 			self.wire.send(arp.request_frame(self.mac, self.ip, hop))
 			return nil, "resolving " .. ip4.str(hop)
@@ -100,7 +100,7 @@ function Host:send(dst, proto, payload)
 	if dst ~= ip4.BROADCAST then
 		local hop = self:nexthop(dst)
 
-		if not arp.cached(hop) then
+		if not arp.cached(hop, self.wire.now()) then
 			if not arp.resolve(self.wire, self.mac, self.ip, hop,
 			    2000) then
 				return nil, "no route to " .. ip4.str(hop)
@@ -136,7 +136,7 @@ function Host:input(frame)
 	end
 
 	if f.type == ether.ARP then
-		local a = arp.observe(frame, self.mac)
+		local a = arp.observe(frame, self.mac, self.wire.now())
 
 		if a then
 			-- answering is not optional: a peer that cannot

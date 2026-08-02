@@ -43,6 +43,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local ip4 = require("ip4")
 local udp4 = require("udp4")
+local arp = require("arp")
 local inet = require("inet")
 local ethwire = require("ethwire")
 
@@ -325,6 +326,10 @@ local function on_request(m)
 			s.conn_dropped = s.conn_dropped + c.dropped
 		end
 		s.rcvbuf = rcvbuf
+		-- live arp entries: a number that should sit still on a
+		-- quiet link and climb on a busy one, and which says
+		-- whether expiry is doing anything at all.
+		s.arp = arp.count()
 		reply_to(m, s)
 
 	else
