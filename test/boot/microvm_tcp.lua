@@ -19,7 +19,7 @@ local tap = require("tap")
 local caps = require("caps")
 local ip4 = require("ip4")
 
-tap.plan(14)
+tap.plan(15)
 
 local granted = sys.granted()
 local tcph = granted.tcp
@@ -148,13 +148,26 @@ tap.diag(string.format(
 tap.is(s.seg_bad, 0, "no segment failed to decode")
 
 net.close(conn)
+thread.sleep(500)
 
--- close aborts today rather than closing gracefully -- there is no FIN
--- in the sending half yet -- so what is asserted is that the connection
--- is gone, not how politely.
-thread.sleep(200)
+-- A closed connection does not disappear, and that is the whole point
+-- of the last state. We send a FIN, `cat` sees end of file and sends
+-- its own, and we sit in TIME-WAIT for 2*MSL so that a delayed
+-- duplicate cannot be mistaken for part of the next connection between
+-- these two ports -- and so that a lost final acknowledgment can still
+-- be resent.
+--
+-- So what is asserted is that it closed rather than aborted. Waiting
+-- out the minute would be a minute of test.
 local after = thread.rpc(tcph, { op = "stats" })
+local state = after.states and after.states[1]
 
-tap.is(after.conns, 0, "and closing lets go of the connection")
+tap.diag("after close: conns=" .. after.conns .. " state=" ..
+    tostring(state))
+
+tap.ok(state == "TIME-WAIT" or state == "FIN-WAIT-1" or
+    state == "FIN-WAIT-2" or state == nil,
+    "closing shuts the connection down in order, not by reset")
+tap.is(after.reset_sent, 0, "and no reset was sent to do it")
 
 tap.done()

@@ -43,6 +43,10 @@ local function is(got, want, name)
 	return ok(got == want, name)
 end
 
+-- lib/tcb.lua gives up after this many retransmissions; the loop below
+-- needs one more than that to see it happen.
+local MAX_RETX_TRIES = 9
+
 local A_IP, B_IP = "\10\0\0\1", "\10\0\0\2"
 local ISS_A, ISS_B = 0x10000, 0x900000
 
@@ -51,7 +55,7 @@ local function newA(cfg)
 	return tcb.new({ laddr = A_IP, lport = 40000,
 	    raddr = B_IP, rport = 80,
 	    iss = cfg.iss or ISS_A, mss = cfg.mss or 1460,
-	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf })
+	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf, msl = cfg.msl })
 end
 
 local function newB(cfg)
@@ -59,7 +63,7 @@ local function newB(cfg)
 	return tcb.new({ laddr = B_IP, lport = 80,
 	    raddr = A_IP, rport = 40000,
 	    iss = cfg.iss or ISS_B, mss = cfg.mss or 1460,
-	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf })
+	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf, msl = cfg.msl })
 end
 
 -- everything one side wants to send, handed to the other. Returns the
@@ -241,10 +245,10 @@ peer:take()
 local base = peer.snd_nxt
 local rnext = r.rcv_nxt
 
--- a segment from the future: reassembly is not implemented yet, so it
--- is dropped and the peer is told what we actually want. Asserted
--- rather than left implicit, because when reassembly lands this test is
--- the one that must change.
+-- a segment from the future is held, not delivered: there is a hole in
+-- front of it. What goes back is still an acknowledgment of rcv_nxt,
+-- because without SACK there is no way to say "and also these" -- which
+-- is exactly the duplicate acknowledgment fast retransmit reads.
 r:segment(seg({ flags = tcp4.ACK, seq = tcp4.add(rnext, 100),
     ack = r.snd_nxt, data = "future" }))
 is(r:read(), "", "a segment beyond the hole is not delivered")
@@ -462,6 +466,275 @@ is(w2.state, tcb.ESTABLISHED, "and the listener too")
 w1:write("over the wire")
 ok(wire(w1, w2, A_IP, B_IP), "data encodes and decodes")
 is(w2:read(), "over the wire", "and arrives intact")
+
+
+-- ---- reassembly ----
+--
+-- A hole is the normal consequence of one lost segment, and what a
+-- stack does about it decides whether that loss costs one
+-- retransmission or the whole window. Holding what arrives behind the
+-- hole is the difference.
+
+local function connected(ca, cb)
+	local x, y = newA(ca), newB(cb)
+
+	x:connect()
+	y:listen()
+	pipe(x, y)
+	pipe(y, x)
+	pipe(x, y)
+	x:take()
+	y:take()
+	x:events()
+	y:events()
+	return x, y
+end
+
+local ra = connected()
+local r0 = ra.rcv_nxt
+
+ra:segment(seg({ flags = tcp4.ACK, seq = tcp4.add(r0, 3),
+    ack = ra.snd_nxt, data = "def" }))
+is(ra:read(), "", "a segment behind a hole is not delivered")
+is(ra:status().held, 1, "but it is held rather than dropped")
+
+ra:segment(seg({ flags = tcp4.ACK, seq = r0, ack = ra.snd_nxt,
+    data = "abc" }))
+is(ra:read(), "abcdef", "and is released in order when the hole fills")
+is(ra:status().held, 0, "leaving nothing held")
+
+-- one arrival can release several: the segments queue up behind the
+-- hole in whatever order they turned up, and filling it must drain all
+-- of them, not just the one immediately behind.
+local rb = connected()
+local b0 = rb.rcv_nxt
+
+rb:segment(seg({ flags = tcp4.ACK, seq = tcp4.add(b0, 6),
+    ack = rb.snd_nxt, data = "ghi" }))
+rb:segment(seg({ flags = tcp4.ACK, seq = tcp4.add(b0, 3),
+    ack = rb.snd_nxt, data = "def" }))
+is(rb:status().held, 2, "two segments wait behind the hole")
+rb:segment(seg({ flags = tcp4.ACK, seq = b0, ack = rb.snd_nxt,
+    data = "abc" }))
+is(rb:read(), "abcdefghi", "and one arrival releases them all")
+
+-- a FIN can arrive out of order too, and must not end the stream early:
+-- there is still data in front of it.
+local rf = connected()
+local f0 = rf.rcv_nxt
+
+rf:segment(seg({ flags = tcp4.ACK | tcp4.FIN, seq = tcp4.add(f0, 3),
+    ack = rf.snd_nxt }))
+is(rf.state, tcb.ESTABLISHED, "a FIN behind a hole does not close anything")
+rf:segment(seg({ flags = tcp4.ACK, seq = f0, ack = rf.snd_nxt,
+    data = "abc" }))
+is(rf.state, tcb.CLOSE_WAIT, "until the data in front of it arrives")
+is(rf:read(), "abc", "and the data is delivered")
+is(rf:read(), nil, "with the stream ended behind it")
+
+-- the hold is bounded. A peer that sends everything except the segment
+-- we are waiting for must not be able to spend our memory indefinitely;
+-- over the bound a segment is dropped, which is what would have
+-- happened anyway and costs one retransmission.
+local rl = connected({ rcvbuf = 200 })
+local l0 = rl.rcv_nxt
+
+for i = 1, 10 do
+	rl:segment(seg({ flags = tcp4.ACK, seq = tcp4.add(l0, i * 100),
+	    ack = rl.snd_nxt, data = string.rep("q", 100) }))
+end
+ok(rl:status().held <= 2, "the out-of-order queue is bounded")
+
+-- ---- retransmission ----
+
+local x = connected()
+local xseq = x.snd_nxt
+
+x:write("hello", 1000)
+
+local first = x:take()
+
+is(#first, 1, "a write goes out once")
+is(x:deadline(), 2000, "and arms the timer one RTO ahead")
+
+x:tick(1500)
+is(#x:take(), 0, "nothing is resent before the timer expires")
+
+x:tick(2000)
+
+local again = x:take()
+
+is(#again, 1, "and exactly one segment when it does")
+is(again[1].data, "hello", "carrying the same bytes")
+is(again[1].seq, xseq, "from the same place in the sequence space")
+
+-- RFC 6298 5.5: the timeout doubles. A stack that retries at a fixed
+-- interval makes a congested link worse at exactly the wrong moment.
+is(x:status().rto, 2000, "the timeout backs off")
+is(x:deadline(), 4000, "and the next attempt is that much later")
+
+x:tick(4000)
+x:take()
+is(x:status().rto, 4000, "and again")
+
+-- an acknowledgment of everything outstanding turns the timer off
+-- entirely (5.2). Leaving it armed is how a quiet connection
+-- retransmits into silence.
+x:segment(seg({ flags = tcp4.ACK, seq = x.rcv_nxt,
+    ack = tcp4.add(xseq, 5) }), 4100)
+is(x:deadline(), nil, "an acknowledgment of everything stops the timer")
+is(x:status().retries, 0, "and forgets the backoff")
+
+-- ---- the round trip estimate ----
+
+-- The first measurement of a connection is the handshake's: the SYN
+-- occupies sequence space, so it is timed like anything else. Done on a
+-- raw pair rather than through connected(), which does the handshake at
+-- time zero and would make the first sample zero.
+local m, mpeer = newA(), newB()
+
+m:connect(1000)
+mpeer:listen()
+pipe(m, mpeer)
+m:segment(mpeer:take()[1], 1100)
+is(m:status().srtt, 100, "the handshake is the first round trip measured")
+
+-- and a later sample is smoothed rather than replacing it: RFC 6298's
+-- alpha is 1/8, so a 300ms sample against a 100ms estimate moves it to
+-- 125 and not to 300. A stack that tracked the last sample instead
+-- would set its timeout from whichever segment happened to be slowest.
+local mseq = m.snd_nxt
+
+m:write("timed", 2000)
+m:take()
+m:segment(seg({ flags = tcp4.ACK, seq = m.rcv_nxt,
+    ack = tcp4.add(mseq, 5) }), 2300)
+is(m:status().srtt, 125, "and later ones are smoothed into it")
+
+-- Karn's algorithm: no sample from a segment that was sent twice. An
+-- acknowledgment does not say which transmission it answers, so a
+-- sample taken here is as likely to be wrong by a whole RTO as right.
+-- The estimate must come back unchanged, not merely unset -- the
+-- handshake has already seeded it by this point.
+local k = connected()
+local before_karn = k:status().srtt
+local kseq = k.snd_nxt
+
+k:write("karn", 1000)
+k:take()
+k:tick(2000)
+k:take()
+k:segment(seg({ flags = tcp4.ACK, seq = k.rcv_nxt,
+    ack = tcp4.add(kseq, 4) }), 2050)
+is(k:status().srtt, before_karn,
+    "no round trip is measured from a retransmission")
+
+-- a peer that never answers is eventually declared gone rather than
+-- retried forever.
+local g = connected()
+
+g:write("gone", 1000)
+
+local t = 1000
+
+for _ = 1, MAX_RETX_TRIES do
+	t = t + 100000
+	g:tick(t)
+	g:take()
+end
+is(g.state, tcb.CLOSED, "a peer that never answers is given up on")
+is(kinds(g), "reset", "and the user is told")
+
+-- ---- closing ----
+
+local c1 = connected({ msl = 100 })
+
+c1:close(0)
+
+local fin = c1:take()
+
+is(#fin, 1, "close sends one segment")
+ok((fin[1].flags & tcp4.FIN) ~= 0, "and it carries a FIN")
+is(c1.state, tcb.FIN_WAIT_1, "leaving us in FIN-WAIT-1")
+
+c1:segment(seg({ flags = tcp4.ACK, seq = c1.rcv_nxt, ack = c1.snd_nxt }), 10)
+is(c1.state, tcb.FIN_WAIT_2, "an acknowledgment of our FIN reaches FIN-WAIT-2")
+
+c1:segment(seg({ flags = tcp4.ACK | tcp4.FIN, seq = c1.rcv_nxt,
+    ack = c1.snd_nxt }), 20)
+is(c1.state, tcb.TIME_WAIT, "and the peer's FIN reaches TIME-WAIT")
+
+-- TIME-WAIT is not idling. A retransmitted FIN means our last
+-- acknowledgment was lost, and it has to be sent again -- which is half
+-- of why the state exists at all.
+c1:take()
+c1:segment(seg({ flags = tcp4.ACK | tcp4.FIN,
+    seq = tcp4.add(c1.rcv_nxt, 0 - 1), ack = c1.snd_nxt }), 30)
+is(#c1:take(), 1, "a retransmitted FIN is acknowledged again")
+is(c1:deadline(), 30 + 200, "and the wait starts over")
+
+c1:tick(30 + 200)
+is(c1.state, tcb.CLOSED, "and after 2*MSL the connection is gone")
+
+-- the other order: they close first, we keep writing, then we close.
+local c2, peer2 = connected()
+
+c2:segment(seg({ flags = tcp4.ACK | tcp4.FIN, seq = c2.rcv_nxt,
+    ack = c2.snd_nxt }), 0)
+is(c2.state, tcb.CLOSE_WAIT, "their FIN puts us in CLOSE-WAIT")
+is(c2:write("still here"), 10, "where we may still write")
+
+c2:close(10)
+is(c2.state, tcb.LAST_ACK, "and closing goes to LAST-ACK")
+
+c2:take()
+c2:segment(seg({ flags = tcp4.ACK, seq = c2.rcv_nxt, ack = c2.snd_nxt }), 20)
+is(c2.state, tcb.CLOSED, "an acknowledgment of our FIN ends it")
+ok(peer2 ~= nil, "the peer object survives its connection")
+
+-- both close at once: neither FIN is acknowledged when the other
+-- arrives, which is the only way to reach CLOSING.
+local s1 = connected({ msl = 100 })
+
+s1:close(0)
+s1:take()
+s1:segment(seg({ flags = tcp4.ACK | tcp4.FIN, seq = s1.rcv_nxt,
+    ack = tcp4.add(s1.snd_nxt, 0 - 1) }), 5)
+is(s1.state, tcb.CLOSING, "a simultaneous close reaches CLOSING")
+s1:segment(seg({ flags = tcp4.ACK, seq = s1.rcv_nxt, ack = s1.snd_nxt }), 10)
+is(s1.state, tcb.TIME_WAIT, "and then TIME-WAIT once our FIN is acknowledged")
+
+-- close means "no more data from me", not "discard what I gave you".
+-- A client that writes a request and closes must still have the request
+-- arrive, which is what makes close different from abort.
+local d1, d2 = connected()
+
+d1:write("request")
+d1:close(0)
+
+local closing = pipe(d1, d2)
+local carried = 0
+
+for _, sg in ipairs(closing) do
+	carried = carried + #(sg.data or "")
+end
+is(carried, 7, "everything written before a close still goes out")
+is(d2:read(), "request", "and arrives")
+is(d2.state, tcb.CLOSE_WAIT, "with the FIN behind it")
+
+-- abort is the other one: nothing is delivered and the peer is told at
+-- once.
+local a1 = connected()
+
+a1:write("never mind")
+a1:take()
+a1:abort(0)
+
+local rstout = a1:take()
+
+is(#rstout, 1, "an abort sends one segment")
+ok((rstout[1].flags & tcp4.RST) ~= 0, "and it is a reset")
+is(a1.state, tcb.CLOSED, "with the connection gone immediately")
 
 io.write(("1..%d\n"):format(count))
 os.exit(failed == 0 and 0 or 1)

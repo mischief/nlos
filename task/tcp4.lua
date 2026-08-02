@@ -72,6 +72,8 @@ local stat = {
 	seg_bad = 0,
 	no_conn = 0,
 	reset_sent = 0,
+	closing = 0,
+	timedout = 0,
 }
 
 -- the packets from task/ip.lua arrive here. Registered once, below,
@@ -219,7 +221,7 @@ local function push(c)
 		return
 	end
 
-	local n = c.t:write(w.data:sub(w.off + 1))
+	local n = c.t:write(w.data:sub(w.off + 1), sys.uptime_ms())
 
 	if n == nil then
 		reply_to(w.m, false)
@@ -250,7 +252,19 @@ local function service(c)
 				stat.refused = stat.refused + 1
 			end
 			c.dead = true
+		elseif e.kind == "closing" then
+			-- the peer is done sending. Nothing to do here: a
+			-- reader learns it from recv returning nil, and the
+			-- user may still write.
+			stat.closing = stat.closing + 1
 		end
+	end
+
+	-- the state machine reaching CLOSED is what ends a connection,
+	-- whether that was a reset, a timeout, or an orderly close that has
+	-- finished waiting out its TIME-WAIT.
+	if c.t.state == tcb.CLOSED then
+		c.dead = true
 	end
 
 	push(c)
@@ -294,7 +308,7 @@ local function on_packet(m)
 		return
 	end
 
-	c.t:segment(seg)
+	c.t:segment(seg, sys.uptime_ms())
 	service(c)
 end
 
@@ -370,7 +384,7 @@ local function on_request(m)
 		})
 		conns[id] = c
 		byname[c.key] = id
-		c.t:connect()
+		c.t:connect(sys.uptime_ms())
 		service(c)
 
 	elseif m.op == "send" then
@@ -407,23 +421,20 @@ local function on_request(m)
 			return
 		end
 
-		-- An abort, not a graceful close: a reset goes out and the
-		-- connection is gone. That is honest for what exists today
-		-- -- there is no FIN in lib/tcb.lua's sending half yet, so
-		-- pretending to close politely would mean silently dropping
-		-- the connection and leaving the peer to time out. A reset
-		-- at least tells it. The graceful close, with its FIN and
-		-- its TIME-WAIT, is the next commit.
-		if c.t.state ~= tcb.CLOSED and c.t.state ~= tcb.LISTEN then
-			output(c, {
-				sport = c.lport, dport = c.rport,
-				seq = c.t.snd_nxt, ack = c.t.rcv_nxt,
-				flags = tcp4.RST | tcp4.ACK, wnd = 0,
-			})
-			stat.reset_sent = stat.reset_sent + 1
-		end
+		-- A graceful close: the FIN goes out behind everything
+		-- already written, and the connection stays in the table
+		-- until the state machine reaches CLOSED. That is what makes
+		-- a client able to write a request, close, and still have
+		-- the request arrive.
+		--
+		-- Anyone parked on this connection is answered now rather
+		-- than being left to wait out a TIME-WAIT they have no
+		-- interest in: from the client's side the connection is over
+		-- the moment it says so.
+		c.closed_by_user = true
+		c.t:close(sys.uptime_ms())
 		wake(c, nil)
-		forget(c)
+		service(c)
 
 	elseif m.op == "hwaddr" then
 		-- the NIC's address belongs to the layer that owns the NIC,
@@ -480,16 +491,34 @@ end
 -- ---- deadlines ----
 
 local function expire(now)
-	for _, c in pairs(conns) do
+	-- a copy, because service() may remove a connection from conns and
+	-- modifying a table while iterating it with pairs is undefined.
+	local live = {}
+
+	for id, c in pairs(conns) do
+		live[id] = c
+	end
+
+	for _, c in pairs(live) do
+		-- the dial deadline is this task's, not the state machine's:
+		-- it bounds how long a client waits, and a connection whose
+		-- SYN is still being retransmitted is one the client has
+		-- already given up on.
 		if c.deadline and now >= c.deadline then
 			c.deadline = nil
+			stat.timedout = stat.timedout + 1
 			if c.dialer then
 				reply_to(c.dialer, nil)
 				c.dialer = nil
 			end
-			wake(c, nil)
-			forget(c)
+			c.t:abort(now)
+			c.dead = true
+		else
+			-- retransmissions and TIME-WAIT belong to the state
+			-- machine, which is told the time and decides.
+			c.t:tick(now)
 		end
+		service(c)
 	end
 end
 
@@ -502,8 +531,16 @@ local function rearm()
 	local soonest
 
 	for _, c in pairs(conns) do
-		if c.deadline and (not soonest or c.deadline < soonest) then
-			soonest = c.deadline
+		-- two deadlines per connection and one timer for the task:
+		-- the dial timeout above, and whatever the state machine
+		-- wants next -- a retransmission, or the end of a TIME-WAIT.
+		local want = c.t:deadline()
+
+		if c.deadline and (not want or c.deadline < want) then
+			want = c.deadline
+		end
+		if want and (not soonest or want < soonest) then
+			soonest = want
 		end
 	end
 

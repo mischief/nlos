@@ -14,12 +14,15 @@
 -- number that laps the space. Against OpenBSD those are unreachable.
 -- Against this they are three lines and a table.
 --
--- What is here: the eleven states, active and passive open through to
--- ESTABLISHED, in-order data in both directions, and a FIN received.
--- What is deliberately not here yet: the retransmission timer, holding
--- out-of-order segments for reassembly, closing from our side, and
--- congestion control. Each has its own commit; the shape below has
--- somewhere for all of them to go.
+-- What is here: the eleven states, active and passive open, data in
+-- both directions with out-of-order segments held and reassembled, the
+-- retransmission timer of RFC 6298 including Karn's algorithm, and the
+-- full four-way close with TIME-WAIT.
+--
+-- What is deliberately not here: congestion control (RFC 5681), Nagle,
+-- delayed acknowledgments, and the sender's half of silly-window
+-- avoidance. All four make an implementation politer and none make it
+-- more correct, which is why they are last.
 --
 -- Names follow the RFC, in lower case: snd_una is SND.UNA. Keeping them
 -- recognisable matters more than keeping them pretty, because every
@@ -57,6 +60,30 @@ local SNDBUF_DEFAULT = 32 * 1024
 -- rather than silently truncated -- a wrapped window field would invite
 -- the peer to overrun us by exactly as much as we failed to say.
 local WND_MAX = 0xffff
+
+-- ---- retransmission, RFC 6298 ----
+--
+-- The constants are the RFC's, including the one that looks wrong: the
+-- minimum RTO is a whole second (2.4, SHOULD) even on a link where the
+-- round trip is measured in microseconds. It is not a latency budget
+-- but a floor on how soon a stack is willing to conclude that a segment
+-- is lost, and setting it by the observed round trip is how a stack
+-- retransmits into a link that was merely busy.
+local RTO_INIT = 1000
+local RTO_MIN = 1000
+local RTO_MAX = 60000
+local RTT_K = 4			-- RTO = SRTT + K * RTTVAR
+
+-- How many times a segment is resent before the connection is declared
+-- dead. With binary backoff from a second, eight attempts is a little
+-- over four minutes of trying, which comfortably clears RFC 1122's R2
+-- of 100 seconds.
+local MAX_RETX = 8
+
+-- 2*MSL in TIME-WAIT. The RFC's MSL is two minutes, making the wait
+-- four; nothing in practice waits that long, and 30 seconds is what the
+-- unixes settled on. Configurable because a test cannot wait either.
+local MSL_DEFAULT = 30000
 
 local T = {}
 
@@ -113,8 +140,39 @@ function tcb.new(cfg)
 		-- second copy of anything.
 		sndq = "",
 
+		-- segments that arrived ahead of a gap, held until the gap
+		-- fills. Each is {seq=, data=, fin=}. Bounded, because a peer
+		-- that sends everything except the one segment we are waiting
+		-- for would otherwise cost us memory for as long as it liked.
+		ooo = {},
+		ooobytes = 0,
+
+		-- the retransmission timer (RFC 6298). retx is when the
+		-- earliest unacknowledged segment gives up waiting; nil means
+		-- nothing is outstanding and the timer is off.
+		rto = RTO_INIT,
+		srtt = nil,
+		rttvar = nil,
+		retx = nil,
+		retries = 0,
+
+		-- what is being timed for an RTT sample, and since when. Karn's
+		-- algorithm is the reason both are cleared on a retransmission:
+		-- once a segment has been sent twice, an acknowledgment does
+		-- not say which of them it is for, and a sample taken anyway is
+		-- as likely to be wrong by a whole RTO as right.
+		rtt_seq = nil,
+		rtt_at = nil,
+
+		msl = cfg.msl or MSL_DEFAULT,
+		timewait = nil,
+
+		now = 0,
+
 		passive = false,
 		fin_rcvd = false,
+		fin_sent = false,
+		fin_seq = nil,
 
 		out = {},
 		ev = {},
@@ -170,10 +228,15 @@ end
 -- queue a segment, filling in everything that is the same on all of
 -- them. seq defaults to snd_nxt, which is right for everything except a
 -- reset answering a bad acknowledgment.
+--
+-- Anything occupying sequence space starts the retransmission timer if
+-- it is not already running (RFC 6298, 5.1) and is a candidate for an
+-- RTT sample. A pure acknowledgment does neither: it is never resent,
+-- so nothing would ever turn the timer off again.
 function T:_send(flags, data, seq)
 	self.rcv_wnd = self:_window()
 
-	self.out[#self.out + 1] = {
+	local s = {
 		sport = self.lport, dport = self.rport,
 		seq = seq or self.snd_nxt,
 		ack = self.rcv_nxt,
@@ -181,6 +244,46 @@ function T:_send(flags, data, seq)
 		wnd = self.rcv_wnd,
 		data = data,
 	}
+
+	self.out[#self.out + 1] = s
+
+	if tcp4.seglen(s) > 0 then
+		if not self.retx then
+			self.retx = self.now + self.rto
+		end
+		-- one sample in flight at a time, which is all RFC 6298 asks
+		-- for (3.1: at most one per round trip).
+		if not self.rtt_seq then
+			self.rtt_seq = tcp4.add(s.seq, tcp4.seglen(s))
+			self.rtt_at = self.now
+		end
+	end
+	return s
+end
+
+-- RFC 6298 section 2, both cases: the first measurement seeds the
+-- estimators, later ones smooth them.
+function T:_sample_rtt(r)
+	if not self.srtt then
+		self.srtt = r
+		self.rttvar = r / 2
+	else
+		-- beta = 1/4, alpha = 1/8. The variance is updated first,
+		-- deliberately: it uses the old SRTT, and updating them the
+		-- other way round quietly changes the filter.
+		self.rttvar = 0.75 * self.rttvar + 0.25 * math.abs(self.srtt - r)
+		self.srtt = 0.875 * self.srtt + 0.125 * r
+	end
+
+	local rto = self.srtt + RTT_K * self.rttvar
+
+	if rto < RTO_MIN then
+		rto = RTO_MIN
+	end
+	if rto > RTO_MAX then
+		rto = RTO_MAX
+	end
+	self.rto = math.floor(rto)
 end
 
 -- <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>, which the RFC asks for in so
@@ -217,7 +320,9 @@ end
 -- ---- opening ----
 
 -- active open: CLOSED -> SYN-SENT.
-function T:connect()
+function T:connect(now)
+	self.now = now or self.now
+
 	if self.state ~= tcb.CLOSED then
 		return nil, "not closed"
 	end
@@ -231,6 +336,67 @@ function T:connect()
 	-- still 0 -- correct, and the flags are what make it meaningless.
 	self:_send(tcp4.SYN, nil, self.iss)
 	self.out[#self.out].opt = { mss = self.rcv_mss }
+	return true
+end
+
+-- "I have no more data to send", which is all CLOSE means (3.6). The
+-- receiving half stays open: the peer may still be sending, and a user
+-- that closes must keep reading until told the stream ended. That
+-- asymmetry is why this is not called shutdown -- there is only one
+-- direction to close here, and it is ours.
+function T:close(now)
+	self.now = now or self.now
+
+	if self.fin_sent then
+		return true		-- already said so
+	end
+
+	if self.state == tcb.CLOSED or self.state == tcb.LISTEN then
+		self.state = tcb.CLOSED
+		return true
+	end
+
+	if self.state == tcb.SYN_SENT then
+		-- nothing was ever established, so there is nothing to close
+		-- politely and nobody who would understand a FIN.
+		self:_dead("closed")
+		return true
+	end
+
+	-- everything still queued goes out first: the RFC is explicit that
+	-- a close delivers what was already sent (3.6), which is what lets
+	-- a client write a request, close, and still expect it to arrive.
+	self:_transmit()
+	self:_send_fin()
+
+	if self.state == tcb.CLOSE_WAIT then
+		self.state = tcb.LAST_ACK
+	else
+		self.state = tcb.FIN_WAIT_1
+	end
+	return true
+end
+
+-- The FIN occupies one sequence number, which is what makes it
+-- acknowledgeable and retransmittable like data. Recording where it
+-- sits is how we later recognise the acknowledgment of it.
+function T:_send_fin()
+	self.fin_sent = true
+	self.fin_seq = self.snd_nxt
+	self:_send(tcp4.ACK | tcp4.FIN)
+	self.snd_nxt = tcp4.add(self.snd_nxt, 1)
+end
+
+-- give up on the connection now and tell the peer why. Unlike close
+-- this discards anything queued, which is the difference between ABORT
+-- and CLOSE in 3.9.1 and the reason both exist.
+function T:abort(now)
+	self.now = now or self.now
+
+	if self.state ~= tcb.CLOSED and self.state ~= tcb.LISTEN then
+		self:_send(tcp4.RST | tcp4.ACK)
+	end
+	self:_dead("closed")
 	return true
 end
 
@@ -250,7 +416,9 @@ end
 -- on a socket does. Short is not an error: the caller writes the rest
 -- when the window and the buffer allow, and a caller that treats short
 -- as failure would have been broken by a slow peer anyway.
-function T:write(data)
+function T:write(data, now)
+	self.now = now or self.now
+
 	if self.state ~= tcb.ESTABLISHED and self.state ~= tcb.CLOSE_WAIT then
 		return nil, "not connected"
 	end
@@ -445,6 +613,7 @@ function T:_in_syn_sent(seg)
 
 	if acked then
 		self.snd_una = seg.ack
+		self:_acked(seg)
 	end
 
 	if tcp4.gt(self.snd_una, self.iss) then
@@ -468,6 +637,33 @@ function T:_in_syn_sent(seg)
 	self.snd_wl2 = seg.ack
 	self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss)
 	self.out[#self.out].opt = { mss = self.rcv_mss }
+end
+
+-- the bookkeeping every acknowledgment of new data owes, wherever it
+-- was processed. SYN-SENT does its own ack handling rather than going
+-- through _check_ack, and forgetting this there left the timer armed
+-- from the SYN for the life of the connection -- so an established
+-- connection with nothing outstanding would eventually retransmit into
+-- a peer that had said everything it had to say.
+function T:_acked(seg)
+	-- an RTT sample, unless Karn forbids it. rtt_seq is cleared by
+	-- every retransmission precisely so this cannot fire for a segment
+	-- that was sent twice.
+	if self.rtt_seq and tcp4.ge(seg.ack, self.rtt_seq) then
+		self:_sample_rtt(self.now - self.rtt_at)
+		self.rtt_seq = nil
+		self.rtt_at = nil
+	end
+
+	-- RFC 6298 5.3: new data acknowledged restarts the timer, and 5.2:
+	-- nothing outstanding turns it off. The backoff is forgotten here
+	-- too -- it applies to one lost segment, not to the connection.
+	self.retries = 0
+	if tcp4.lt(self.snd_una, self.snd_nxt) then
+		self.retx = self.now + self.rto
+	else
+		self.retx = nil
+	end
 end
 
 -- the fifth step of 3.10.7.4, shared by every synchronized state.
@@ -502,11 +698,27 @@ function T:_check_ack(seg)
 	if tcp4.lt(self.snd_una, seg.ack) then
 		local n = tcp4.diff(seg.ack, self.snd_una)
 
-		-- drop the acknowledged bytes from the send buffer. What is
-		-- left begins at the new snd_una, which keeps the invariant
-		-- the retransmission queue will be built on.
-		self.sndq = self.sndq:sub(n + 1)
+		-- The SYN and the FIN each occupy a sequence number but no
+		-- byte of the buffer, so what is dropped is the acknowledged
+		-- span less whichever of them it covered. Getting this wrong
+		-- eats a byte of the caller's data per control flag, which
+		-- shows up as a stream that is subtly short rather than as
+		-- anything that looks like a bug in TCP.
+		local bytes = n
+
+		if tcp4.le(self.snd_una, self.iss) and
+		    tcp4.ge(seg.ack, tcp4.add(self.iss, 1)) then
+			bytes = bytes - 1		-- our SYN
+		end
+		if self.fin_seq and tcp4.gt(seg.ack, self.fin_seq) then
+			bytes = bytes - 1		-- our FIN
+		end
+		if bytes > 0 then
+			self.sndq = self.sndq:sub(bytes + 1)
+		end
 		self.snd_una = seg.ack
+
+		self:_acked(seg)
 	end
 
 	-- the window update, guarded so that a reordered segment cannot
@@ -517,7 +729,126 @@ function T:_check_ack(seg)
 		self.snd_wl1 = seg.seq
 		self.snd_wl2 = seg.ack
 	end
+
+	-- our FIN, if this acknowledged it. Strictly greater: the FIN sits
+	-- at fin_seq and occupies it, so an acknowledgment of exactly
+	-- fin_seq is for the byte before it.
+	local finacked = self.fin_seq and tcp4.gt(seg.ack, self.fin_seq)
+
+	if self.state == tcb.FIN_WAIT_1 and finacked then
+		self.state = tcb.FIN_WAIT_2
+	elseif self.state == tcb.CLOSING and finacked then
+		self:_time_wait()
+	elseif self.state == tcb.LAST_ACK and finacked then
+		-- both sides have closed and both FINs are acknowledged.
+		-- There is nothing left to wait for, and no TIME-WAIT: that
+		-- belongs to whoever closed first, which was the peer.
+		self:_dead("closed")
+		return false
+	end
 	return true
+end
+
+-- TIME-WAIT exists so that a delayed duplicate from this connection
+-- cannot be taken for part of the next one between the same two ports,
+-- and so that a lost final acknowledgment can be resent. Both need the
+-- connection to linger after it is otherwise finished.
+function T:_time_wait()
+	self.state = tcb.TIME_WAIT
+	self.timewait = self.now + 2 * self.msl
+	self.retx = nil
+	self.sndq = ""
+end
+
+-- keep a segment that arrived ahead of the gap, for when the gap fills.
+--
+-- Bounded by the receive buffer, because a peer that sends everything
+-- except the one segment we are waiting for would otherwise cost us
+-- memory for as long as it cared to. Over the bound the segment is
+-- dropped, which is exactly what would have happened without any of
+-- this and costs only a retransmission.
+function T:_hold(seg)
+	local data = seg.data or ""
+	local fin = (seg.flags & tcp4.FIN) ~= 0
+
+	if #data == 0 and not fin then
+		return
+	end
+	if self.ooobytes + #data > self.rcvbuf then
+		return
+	end
+
+	-- a duplicate of something already held is not worth a second copy.
+	for _, h in ipairs(self.ooo) do
+		if h.seq == seg.seq and #h.data >= #data then
+			return
+		end
+	end
+
+	self.ooo[#self.ooo + 1] = { seq = seg.seq, data = data, fin = fin }
+	self.ooobytes = self.ooobytes + #data
+end
+
+-- take everything held that is now contiguous with rcv_nxt. Repeated
+-- until nothing more fits, since one arriving segment can bridge a gap
+-- that releases several.
+function T:_drain_held()
+	local moved = true
+
+	while moved do
+		moved = false
+
+		for i, h in ipairs(self.ooo) do
+			local off = tcp4.diff(self.rcv_nxt, h.seq)
+
+			if off >= 0 and off <= #h.data then
+				local data = h.data:sub(off + 1)
+
+				if #data > 0 then
+					self.rcvq[#self.rcvq + 1] = data
+					self.rcvbytes = self.rcvbytes + #data
+					self.rcv_nxt = tcp4.add(self.rcv_nxt, #data)
+				end
+				if h.fin then
+					self.rcv_nxt = tcp4.add(self.rcv_nxt, 1)
+					self.fin_rcvd = true
+				end
+				self.ooobytes = self.ooobytes - #h.data
+				table.remove(self.ooo, i)
+				moved = true
+				break
+			elseif off > #h.data then
+				-- entirely behind us now; it was a duplicate.
+				self.ooobytes = self.ooobytes - #h.data
+				table.remove(self.ooo, i)
+				moved = true
+				break
+			end
+		end
+	end
+end
+
+-- where a FIN takes us, which depends entirely on what we had already
+-- said ourselves. The four-way close is two independent two-way ones,
+-- and this is the half the peer drives.
+function T:_on_fin()
+	signal(self, "closing")
+
+	if self.state == tcb.ESTABLISHED or self.state == tcb.SYN_RECEIVED then
+		-- they are done, we are not. The user may keep writing.
+		self.state = tcb.CLOSE_WAIT
+	elseif self.state == tcb.FIN_WAIT_1 then
+		-- we both closed at about the same moment and neither FIN is
+		-- acknowledged yet. This is the simultaneous close of figure
+		-- 13, and the state it needs exists only for this case.
+		self.state = tcb.CLOSING
+	elseif self.state == tcb.FIN_WAIT_2 then
+		self:_time_wait()
+	elseif self.state == tcb.TIME_WAIT then
+		-- a retransmitted FIN: our last acknowledgment was lost, so
+		-- it is sent again and the wait starts over.
+		self.timewait = self.now + 2 * self.msl
+	end
 end
 
 -- the seventh and eighth steps: the data, and the FIN behind it.
@@ -533,6 +864,16 @@ function T:_text(seg)
 	local off = tcp4.diff(self.rcv_nxt, seg.seq)
 
 	if off < 0 then
+		-- a hole in front of it. Held rather than dropped: the
+		-- alternative is making the peer resend everything after a
+		-- single loss, which on a link with any reordering at all
+		-- turns one lost segment into a stall.
+		--
+		-- The acknowledgment still says rcv_nxt, because that is what
+		-- we actually have -- without SACK there is no way to say
+		-- "and also these". It is a duplicate ACK, which is precisely
+		-- the signal fast retransmit reads.
+		self:_hold(seg)
 		self:_ack()
 		return
 	end
@@ -564,13 +905,23 @@ function T:_text(seg)
 			self.rcv_nxt = tcp4.add(self.rcv_nxt, 1)
 			self.fin_rcvd = true
 			consumed = true
-
-			if self.state == tcb.ESTABLISHED or
-			    self.state == tcb.SYN_RECEIVED then
-				self.state = tcb.CLOSE_WAIT
-			end
-			signal(self, "closing")
+		else
+			self:_hold(seg)
 		end
+	end
+
+	-- this segment may have bridged a gap, releasing everything that
+	-- was waiting behind it.
+	local before = self.rcv_nxt
+
+	self:_drain_held()
+	if self.rcv_nxt ~= before then
+		consumed = true
+	end
+
+	if self.fin_rcvd and not self.fin_seen then
+		self.fin_seen = true
+		self:_on_fin()
 	end
 
 	if consumed then
@@ -588,6 +939,20 @@ function T:_in_synchronized(seg)
 		-- where we are, unless it is a reset -- answering a reset
 		-- keeps two hosts talking forever.
 		if (seg.flags & tcp4.RST) == 0 then
+			-- A retransmitted FIN in TIME-WAIT arrives here rather
+			-- than below, and the distinction matters. It sits one
+			-- before rcv_nxt, because we already took it, so the
+			-- acceptability test of 3.10.7.4 calls it an old
+			-- duplicate -- while the TIME-WAIT text says to
+			-- acknowledge it and restart the wait. Both are right:
+			-- it is an old duplicate, and it is also the evidence
+			-- that our last acknowledgment never arrived. Not
+			-- restarting here is how a connection leaves TIME-WAIT
+			-- while the peer is still asking to be let go of.
+			if self.state == tcb.TIME_WAIT and
+			    (seg.flags & tcp4.FIN) ~= 0 then
+				self.timewait = self.now + 2 * self.msl
+			end
 			self:_ack()
 		end
 		return
@@ -619,7 +984,19 @@ function T:_in_synchronized(seg)
 		return
 	end
 
-	if self.state == tcb.ESTABLISHED or self.state == tcb.SYN_RECEIVED then
+	if self.state == tcb.TIME_WAIT then
+		-- the only thing that can arrive here is a retransmission of
+		-- the peer's FIN, which means our last acknowledgment was
+		-- lost. Send it again and start the wait over -- which is
+		-- most of what TIME-WAIT is for.
+		if (seg.flags & tcp4.FIN) ~= 0 then
+			self.timewait = self.now + 2 * self.msl
+		end
+		self:_ack()
+		return
+	end
+
+	if self.state ~= tcb.CLOSED then
 		self:_text(seg)
 	end
 
@@ -627,10 +1004,88 @@ function T:_in_synchronized(seg)
 	self:_transmit()
 end
 
+-- ---- time ----
+
+-- resend the earliest thing not acknowledged, and only that: RFC 6298
+-- 5.4 is explicit that a timeout retransmits one segment, not the whole
+-- window. Sending everything again is how a stack turns a single loss
+-- into a burst on a link that was already struggling.
+function T:_retransmit()
+	self.retries = self.retries + 1
+
+	if self.retries > MAX_RETX then
+		-- eight attempts with binary backoff is over four minutes,
+		-- which clears RFC 1122's R2. A peer that has not answered in
+		-- that time is gone, and saying so beats retrying forever.
+		self:_dead("reset", "connection timed out")
+		return
+	end
+
+	if self.state == tcb.SYN_SENT then
+		self:_send(tcp4.SYN, nil, self.iss)
+		self.out[#self.out].opt = { mss = self.rcv_mss }
+	elseif self.state == tcb.SYN_RECEIVED then
+		self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss)
+		self.out[#self.out].opt = { mss = self.rcv_mss }
+	else
+		local n = math.min(#self.sndq, self.snd_mss)
+		local flags = tcp4.ACK
+		local data = n > 0 and self.sndq:sub(1, n) or nil
+
+		-- the FIN rides along only when everything before it is in
+		-- this segment; otherwise it would arrive ahead of data it
+		-- is supposed to follow.
+		if self.fin_sent and n == #self.sndq then
+			flags = flags | tcp4.FIN
+		end
+		if data or (flags & tcp4.FIN) ~= 0 then
+			self:_send(flags, data, self.snd_una)
+		end
+	end
+
+	-- Karn's algorithm, and the order matters: _send would otherwise
+	-- have just started timing the segment it resent. An acknowledgment
+	-- of a segment sent twice does not say which transmission it is
+	-- for, and a sample taken anyway is as likely to be wrong by a
+	-- whole RTO as right.
+	self.rtt_seq = nil
+	self.rtt_at = nil
+
+	-- exponential backoff (6298 5.5), cleared by the next acknowledgment
+	-- of new data.
+	self.rto = math.min(self.rto * 2, RTO_MAX)
+	self.retx = self.now + self.rto
+end
+
+-- when this connection next wants attention, or nil if it is content to
+-- wait forever. The caller arms one timer for the earliest across all of
+-- its connections -- see task/tcp4.lua on why there is only one.
+function T:deadline()
+	if self.timewait and self.retx then
+		return math.min(self.timewait, self.retx)
+	end
+	return self.timewait or self.retx
+end
+
+function T:tick(now)
+	self.now = now or self.now
+
+	if self.timewait and self.now >= self.timewait then
+		self.timewait = nil
+		self:_dead("closed")
+		return
+	end
+	if self.retx and self.now >= self.retx then
+		self:_retransmit()
+	end
+end
+
 -- the entry point: one segment, already decoded and checksummed by
 -- lib/tcp4.lua, and already matched to this connection by whoever owns
 -- the table of them.
-function T:segment(seg)
+function T:segment(seg, now)
+	self.now = now or self.now
+
 	if self.state == tcb.CLOSED then
 		return
 	elseif self.state == tcb.LISTEN then
@@ -652,6 +1107,11 @@ function T:status()
 		unsent = #self.sndq - tcp4.diff(self.snd_nxt, self.snd_una),
 		readable = self.rcvbytes,
 		fin_rcvd = self.fin_rcvd,
+		fin_sent = self.fin_sent,
+		held = #self.ooo,
+		rto = self.rto,
+		srtt = self.srtt,
+		retries = self.retries,
 	}
 end
 
