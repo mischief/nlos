@@ -543,6 +543,12 @@ local function park(h)
 	end
 end
 
+-- exported because "am I running under the scheduler" decides more
+-- than blocking does: code that spawns helper threads and then waits
+-- for them has to park on a channel when it is itself a thread, and
+-- drive thread.run() when it is not. Getting that backwards either
+-- stalls the proc or nests a second scheduler inside the first.
+thread.inthread = inthread
 thread.park = park
 
 -- park until a port might have ROOM, the send-side mirror of park().

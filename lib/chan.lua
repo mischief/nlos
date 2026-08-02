@@ -37,6 +37,7 @@
 -- walk are position-free, like their 9P messages.
 
 local dev = require("dev")
+local thread = require("los.thread")
 
 local M = {}
 
@@ -154,6 +155,162 @@ function Chan:readdir()
 		return nil, res
 	end
 	return res
+end
+
+
+-- ---- reading a file with several requests in flight ----
+--
+-- Chan:read is one round trip, and the caller waits out every one of
+-- them in turn. That is the right shape for a small file and the wrong
+-- one for a large one over anything with latency: the transport can
+-- hold a window of requests (los.platform.p9's slots, and lib/srv.lua's
+-- worker pool behind them), and a single reader leaves all of it idle.
+--
+-- readparallel issues `window` reads at once, each in its own thread,
+-- and hands the blocks back IN ORDER. The threads exist for the
+-- duration of one group and retire with it -- there is no pool to own,
+-- and a caller that stops iterating early leaves nothing running.
+--
+-- One fid, not one per thread. A 9P fid has no position and every Tread
+-- carries its own offset, so concurrent reads on one open file are
+-- ordinary -- which is why this takes no extra opens and clunks
+-- nothing. self.pos is advanced as blocks are yielded, so an
+-- interrupted iteration leaves the Chan where the caller stopped
+-- reading rather than where the reads got to.
+--
+-- Groups rather than a sliding window: the group's threads all finish
+-- before the next group starts, so the window drains and refills
+-- instead of staying full. That costs a bubble every `window` blocks
+-- and buys working in both contexts -- see runjoin -- and a shape where
+-- "the coroutines retire at the end of the call" is literally true.
+--
+-- A short read is NOT eof and is retried for the remainder; only a
+-- zero-length reply ends the file. This matters far more here than it
+-- does serially: once replies can land out of order, "the last block
+-- was short" says nothing about where the file ends.
+
+local function readfull(B, h, off, n)
+	local parts, got = {}, 0
+
+	while got < n do
+		local d = B.read(h, off + got, n - got)
+
+		if d == nil or d == "" then
+			break
+		end
+		parts[#parts + 1] = d
+		got = got + #d
+	end
+	return table.concat(parts)
+end
+
+-- run `n` worker threads to completion, whichever side of the scheduler
+-- we are on. Inside a thread we must park -- thread.run() is already
+-- running above us and starting a second one would drive the same run
+-- queue from two places. Outside one, nobody is driving it at all and
+-- thread.run() is exactly what is needed.
+local function runjoin(spawn, n)
+	if not thread.inthread() then
+		for i = 1, n do
+			spawn(i, nil)
+		end
+		thread.run()
+		return
+	end
+
+	local done = thread.chancreate(n)
+
+	for i = 1, n do
+		spawn(i, done)
+	end
+	for _ = 1, n do
+		done:recv()
+	end
+end
+
+-- for block, err in f:readparallel(32) do ... end
+--
+-- yields successive blocks of the file from the current position. Ends
+-- at eof; on failure yields nil plus the error, which stops a `for ... in`
+-- loop on the first value and leaves the message for the caller to
+-- inspect.
+function Chan:readparallel(window, blocksize)
+	window = window or 16
+	blocksize = blocksize or 4096
+
+	local B, h = self.B, self.h
+	local off = self.pos
+	local buf, n, i = {}, 0, 0
+	local eof, failed = false, nil
+
+	return function()
+		if failed then
+			return nil
+		end
+		if i < n then
+			i = i + 1
+			off = off + #buf[i]
+			self.pos = off
+			return buf[i]
+		end
+		if eof then
+			return nil
+		end
+
+		local res, errs = {}, {}
+		local base = off
+
+		runjoin(function(k, done)
+			thread.spawn(function()
+				local ok, d = pcall(readfull, B, h,
+				    base + (k - 1) * blocksize, blocksize)
+
+				if ok then
+					res[k] = d
+				else
+					errs[k] = d
+				end
+				if done then
+					done:send(true)
+				end
+			end)
+		end, window)
+
+		-- in order, and stop at the first hole: a short block is the
+		-- end of the file, so whatever later threads read past it is
+		-- not ours to hand back
+		buf, n, i = {}, 0, 0
+		for k = 1, window do
+			if errs[k] then
+				failed = errs[k]
+				break
+			end
+
+			local d = res[k]
+
+			if d == nil or d == "" then
+				eof = true
+				break
+			end
+			buf[#buf + 1] = d
+			if #d < blocksize then
+				eof = true
+				break
+			end
+		end
+		n = #buf
+
+		if n == 0 then
+			if failed then
+				return nil, failed
+			end
+			return nil
+		end
+		i = 1
+		off = off + #buf[1]
+		self.pos = off
+		return buf[1]
+	end
 end
 
 -- idempotent, because __close runs even on a path that already closed

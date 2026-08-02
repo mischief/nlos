@@ -634,6 +634,7 @@ microvm_tests = [
   ['rng', []],
   ['p9mount', ['--9p']],
   ['p9bench', ['--9p']],
+  ['p9par', ['--9p']],
   ['eth', ['--net']],
   ['idle', []],
 ]
