@@ -4,7 +4,7 @@
 -- /<name>; lib/*, bin/*, svc/* and etc/* land under the same name, so
 -- a file's path in the namespace matches its path here.
 
-local SGDISK = os.getenv("SGDISK") or "/sbin/sgdisk"
+local SFDISK = os.getenv("SFDISK") or "sfdisk"
 local BOOT_EFI = os.getenv("BOOT_EFI") or "bootx64.efi"
 
 local function quote(s)
@@ -22,12 +22,36 @@ local out = arg[1]
 local efi = arg[2]
 local qout = quote(out)
 
+-- The FAT geometry below is fixed (-h 32 -t 44 -n 64 = 90112 sectors),
+-- so the partition is sized to match it exactly rather than to whatever
+-- is left over.
+local PART_START = 2048
+local PART_SECTORS = 32 * 44 * 64
+local SECTORS = PART_START + PART_SECTORS + 34	-- + room for the backup GPT
+
 os.remove(out)
-run("dd if=/dev/zero of=" .. qout .. " bs=512 count=93750 2>/dev/null")
-run(quote(SGDISK) .. " -Z " .. qout .. " >/dev/null")
-run(quote(SGDISK) .. " -N 1 " .. qout .. " >/dev/null")
-run(quote(SGDISK) .. " -t 1:ef00 " .. qout .. " >/dev/null")
-run(quote(SGDISK) .. " -c 1:\"EFI\" " .. qout .. " >/dev/null")
+
+-- sparse: nothing reads the zeroes, and mtools only materialises what it
+-- writes.
+run("truncate -s " .. (SECTORS * 512) .. " " .. qout)
+
+-- sfdisk rather than sgdisk, and it is worth saying why, because sgdisk
+-- is the more obvious tool and was here first.
+--
+-- sgdisk sleeps for one second on exit, unconditionally, with no flag to
+-- stop it -- it is waiting for a kernel to reread a partition table,
+-- which for a plain file means waiting for nobody. Four calls made four
+-- seconds, and that WAS the build: the fifty mcopy calls that look like
+-- the expensive part total 0.05s.
+--
+-- sfdisk does the same job in about 15ms, is util-linux rather than a
+-- separate gptfdisk package, and --no-reread --no-tell-kernel say
+-- explicitly that there is no kernel here to tell.
+run("printf %s " ..
+    quote("label: gpt\nstart=" .. PART_START .. ", size=" ..
+        PART_SECTORS .. ", type=uefi, name=\"EFI\"\n") ..
+    " | " .. quote(SFDISK) .. " --no-reread --no-tell-kernel -q " ..
+    qout .. " >/dev/null")
 
 local drive = out .. "@@1M"	-- mtools' own syntax; not a shell-quoted path itself
 local qdrive = quote(drive)
