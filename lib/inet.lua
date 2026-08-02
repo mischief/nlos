@@ -53,7 +53,15 @@ function Host:nexthop(dst)
 	return self.gw
 end
 
-function Host:send(dst, proto, payload)
+-- put a packet on the wire, or say why not. Never waits.
+--
+-- An address this has no mac for is not an error and not a stall: the
+-- request goes out and the packet is dropped, which is what a real
+-- stack does with the first packet to an unresolved host. Everything
+-- above here retries -- udp is lossy by nature and every client already
+-- copes -- and the alternative is a stack that stops serving everyone
+-- else while it waits for one arp reply.
+function Host:output(dst, proto, payload)
 	local mac
 
 	if dst == ip4.BROADCAST then
@@ -67,10 +75,8 @@ function Host:send(dst, proto, payload)
 
 		mac = arp.cached(hop)
 		if not mac then
-			mac = arp.resolve(self.wire, self.mac, self.ip, hop, 2000)
-			if not mac then
-				return nil, "no route to " .. ip4.str(hop)
-			end
+			self.wire.send(arp.request_frame(self.mac, self.ip, hop))
+			return nil, "resolving " .. ip4.str(hop)
 		end
 	end
 
@@ -84,6 +90,26 @@ function Host:send(dst, proto, payload)
 	return self.wire.send(ether.encode(mac, self.mac, ether.IPV4, pkt))
 end
 
+-- output, but resolve first if we have to.
+--
+-- For a caller that owns the wire and can afford to block on it -- a
+-- test, a one-shot script. A task serving several clients wants output
+-- and its own retry, since this stops reading the wire for anyone else
+-- while it waits.
+function Host:send(dst, proto, payload)
+	if dst ~= ip4.BROADCAST then
+		local hop = self:nexthop(dst)
+
+		if not arp.cached(hop) then
+			if not arp.resolve(self.wire, self.mac, self.ip, hop,
+			    2000) then
+				return nil, "no route to " .. ip4.str(hop)
+			end
+		end
+	end
+	return self:output(dst, proto, payload)
+end
+
 -- a udp datagram, wrapped and sent. Separate from send() because udp's
 -- checksum covers the addresses it is about to be wrapped in, so the
 -- two layers cannot be composed blindly (see lib/udp4.lua).
@@ -95,18 +121,14 @@ end
 -- one frame's worth of work. Returns the decoded IP packet when one
 -- arrived for us, or nil. ARP is handled internally and never returned:
 -- it is this layer's own business, not its caller's.
-function Host:pump(ms)
-	local frame
-
-	if self.wire.recv_wait then
-		frame = self.wire.recv_wait(ms or 100)
-	else
-		frame = self.wire.recv()
-	end
-	if not frame then
-		return nil
-	end
-
+-- act on one frame someone else read. Returns the decoded IP packet
+-- when one arrived for us, or nil.
+--
+-- Separate from pump because a task that alts between its clients and
+-- its device already has the frame in hand, and must not go back to the
+-- wire for it. ARP is handled here and never returned: it is this
+-- layer's own business, not its caller's.
+function Host:input(frame)
 	local f = ether.decode(frame)
 
 	if not f or not ether.for_us(f, self.mac) then
@@ -170,6 +192,22 @@ function Host:pump(ms)
 	end
 
 	return p
+end
+
+-- read one frame and act on it. The convenience for a caller that owns
+-- the wire; a task uses input() on what its own loop received.
+function Host:pump(ms)
+	local frame
+
+	if self.wire.recv_wait then
+		frame = self.wire.recv_wait(ms or 100)
+	else
+		frame = self.wire.recv()
+	end
+	if not frame then
+		return nil
+	end
+	return self:input(frame)
 end
 
 -- send a udp datagram and wait for a reply to the port it came from,

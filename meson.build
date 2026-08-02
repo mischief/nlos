@@ -226,6 +226,8 @@ else
     'lib/ntp.lua',
     'lib/dns.lua',
     'lib/dnsc.lua',
+    'lib/caps.lua',
+    'task/ip.lua',
     'lib/tap.lua',
     'lib/ps.lua',
   ]
@@ -697,6 +699,7 @@ microvm_tests = [
   ['ping', ['--net']],
   ['dhcp', ['--net']],
   ['dns', ['--net']],
+  ['iptask', ['--net']],
   ['idle', []],
 ]
 
