@@ -137,8 +137,13 @@ local irqright = sys.sendright(irqport)
 local irqdeadline = sys.uptime_ms() + 500
 
 while sys.uptime_ms() < irqdeadline do
-	sys.send(caps.eth, { op = "irqs", reply = { __right = irqright } })
-	irqs = thread.recv(irqport)
+	-- sys.call rather than send-then-recv: this is the send-then-wait
+	-- shape it exists for, and one kernel entry instead of two. It
+	-- takes the reply port rather than making one, which is why it is
+	-- no help with the lifetime problem above -- the port is still
+	-- the caller's to own, and here it is owned once for the loop.
+	irqs = sys.call(caps.eth,
+	    { op = "irqs", reply = { __right = irqright } }, irqport)
 	if irqs and irqs.n and irqs.n > 0 then
 		break
 	end
