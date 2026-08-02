@@ -52,17 +52,26 @@ M.stats = setmetatable({}, stats_mt)
 -- blocked on. a factory rather than a bare value because it takes an
 -- argument, so unlike ps/stats it is a plain function and the
 -- __tostring question never arises.
+-- sys.stack returns one entry per COROUTINE, not a flat frame list: a
+-- proc built on lib/thread keeps its threads inside its own state, and
+-- reporting only the main one showed the scheduler parked in altblock
+-- whether the proc was idle or wedged. src/debug.c finds the rest.
 function M.stack(pid)
-	local frames = sys.stack(pid)
+	local coros = sys.stack(pid)
 	local out = { string.format("%s (pid %d) %s", sys.name(pid), pid,
 	    sys.wchan(pid)) }
 
-	for i, f in ipairs(frames) do
-		out[#out + 1] = string.format("  %2d %s:%d in %s",
-		    i, f.source, f.line, f.name)
-	end
-	if #frames == 0 then
-		out[#out + 1] = "  (no frames -- dead or never started)"
+	for _, co in ipairs(coros) do
+		out[#out + 1] = string.format("  [%s] %s", co.label,
+		    co.status)
+		for i, f in ipairs(co.frames) do
+			out[#out + 1] = string.format("    %2d %s:%d in %s",
+			    i, f.source, f.line, f.name)
+		end
+		if #co.frames == 0 then
+			out[#out + 1] =
+			    "     (no frames -- dead or never started)"
+		end
 	end
 	return table.concat(out, "\n")
 end

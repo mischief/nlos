@@ -4,23 +4,12 @@
 -- but the caller is suspended between resumes -- there is no moment when
 -- a stack is half-built.
 --
--- ---- read the output knowing this ----
---
--- sys.stack walks the proc's MAIN coroutine, and lib/thread runs its
--- threads as coroutines inside that. So a proc built on lib/thread --
--- svc/sshd.lua, and anything else with more than one thing to wait on --
--- reports its SCHEDULER, not whichever thread is actually stuck:
---
---   1 [C]:-1 altblock (C)
---   2 /lib/thread.lua:84 run (Lua)
---   3 sshd:446 ? (main)
---
--- which is the same three frames whether it is idle or deadlocked. That
--- cost real time once: a session hung on a reply that was never coming,
--- and this said only "in the scheduler", exactly as it does when
--- everything is fine. Descending into lib/thread's coroutines needs no
--- kernel change -- debug.traceback takes a coroutine -- and is the
--- obvious next thing for this program to grow.
+-- Reports every coroutine of the proc, not only its main one. That
+-- distinction is the whole value: a proc built on lib/thread keeps its
+-- threads as coroutines inside its own state, so reporting just the
+-- main one showed the SCHEDULER -- altblock / thread.run / entrypoint,
+-- identical whether the proc was idle or deadlocked. src/debug.c walks
+-- the target state for the rest.
 
 local unistd = require("posix.unistd")
 

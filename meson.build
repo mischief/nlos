@@ -151,6 +151,7 @@ inc = include_directories('include', 'src', 'lua', 'src/platform' / platform)
 # include dir above); everything else is the platform's own.
 kernel_src = files(
   'src/crypto.c',
+  'src/debug.c',
   'src/dirs.c',
   'src/kernel.c',
   'src/linit.c',
@@ -530,7 +531,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'srv', 'mountcmd', 'sendwait', 'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
               'procfs', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount', 'p9stream', 'p9flush',
               'fb', 'fbprog',
-              'nohook', 'preempt', 'idle', 'rng', 'sshcrypto', 'mlkem']
+              'nohook', 'preempt', 'idle', 'stack', 'rng', 'sshcrypto', 'mlkem']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

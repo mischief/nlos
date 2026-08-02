@@ -25,6 +25,7 @@
 #include "lualib.h"
 #include "lauxlib.h"
 #include "luaheap.h"
+#include "debug.h"
 #include "platform.h"
 
 /* bodies are heap-allocated, so what these cost statically is one pointer
@@ -2209,28 +2210,12 @@ api_stack(lua_State *L)
 			return luaL_error(L, "no such proc");
 	}
 
-	lua_State *co = p->co;
-	lua_Debug ar;
-	int n = 0;
-
-	lua_newtable(L);
-	for (int level = 0; level < MAXFRAMES; level++) {
-		if (!lua_getstack(co, level, &ar))
-			break;
-		if (!lua_getinfo(co, "Sln", &ar))
-			break;
-
-		lua_createtable(L, 0, 4);
-		lua_pushstring(L, ar.short_src);
-		lua_setfield(L, -2, "source");
-		lua_pushinteger(L, ar.currentline);
-		lua_setfield(L, -2, "line");
-		lua_pushstring(L, ar.name ? ar.name : "?");
-		lua_setfield(L, -2, "name");
-		lua_pushstring(L, ar.what ? ar.what : "?");
-		lua_setfield(L, -2, "what");
-		lua_rawseti(L, -2, ++n);
-	}
+	/* src/debug.c: every coroutine, not just the proc's own. A proc
+	 * built on lib/thread keeps its threads as coroutines inside its
+	 * state, and walking only p->co reported the scheduler -- the same
+	 * three frames for an idle proc and a deadlocked one.
+	 */
+	debug_push_stacks(L, p->L, p->co);
 	return 1;
 }
 
