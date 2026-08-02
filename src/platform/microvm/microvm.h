@@ -17,6 +17,7 @@ void	uart_irq_enable(void);
 /* tsc.c */
 void	tsc_calibrate(void);
 unsigned long long tsc_hz(void);
+const char *tsc_source(void);	/* where tsc_hz came from, for the boot log */
 void	platform_stall_us(unsigned long us);
 
 /* lapic.c -- only ever called on a machine intr.c found an APIC on. */

@@ -135,13 +135,21 @@ end
 -- what src/platform/microvm/microvm.h's VIRTIO_MMIO_GSI_BASE assumes,
 -- and a default is a poor thing to leave that resting on.
 --
+-- pit=on is for the clock, not for interrupts: nothing routes irq 0,
+-- and src/platform/microvm/tsc.c only latches channel 0 to count the
+-- TSC against for 10ms at boot. It is needed because cpuid answers
+-- nothing about frequency on an AMD host under qemu -- 0x15 is Intel,
+-- 0x16 reads zero, and KVM's 0x40000010 reads zero too -- which left
+-- the guest on a 1GHz default against a 4.5GHz TSC, running every
+-- timeout in the system 4.5 times fast.
+--
 -- no pinning of the boot device here, unlike the efi harness: that
 -- works around a stall inside OVMF during boot device selection, and
 -- there is no OVMF.
 local cmd = table.concat({
 	"timeout", TIMEOUT,
 	"qemu-system-x86_64",
-	"-M microvm,pit=off,pic=off,rtc=off,ioapic2=off,acpi=on",
+	"-M microvm,pit=on,pic=off,rtc=off,ioapic2=off,acpi=on",
 	"-enable-kvm -cpu host -m 256",
 	"-kernel " .. q(elf),
 	payload ~= "-" and

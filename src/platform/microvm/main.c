@@ -160,10 +160,17 @@ microvm_main(unsigned long start_info)
 	char cbuf[96];
 
 	kernel_log("boot: lua-os starting (microvm)");
-	snprintf(cbuf, sizeof cbuf,
-	    "clock: %llu cycles/ms (from cpuid, not wall-clock measured)",
-	    kernel_cyc_per_ms());
+	snprintf(cbuf, sizeof cbuf, "clock: %llu cycles/ms (%s)",
+	    kernel_cyc_per_ms(), tsc_source());
 	kernel_log(cbuf);
+
+	/* an uncalibrated clock is wrong by a constant factor, which
+	 * nothing inside the guest can measure, so say so here or it goes
+	 * unnoticed until a timeout somewhere fires at the wrong length.
+	 */
+	if (tsc_hz() == 1000000000ULL)
+		kernel_log("clock: WARNING no frequency source answered; "
+		    "every timeout in the system is suspect");
 
 	{
 		unsigned long long total = 0, avail = 0;

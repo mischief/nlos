@@ -28,7 +28,7 @@ local payload = arg[2]
 -- bus=virtio-mmio-bus.N (N < 8) to be sure.
 local cmd = table.concat({
 	"qemu-system-x86_64",
-	"-M microvm,pit=off,pic=off,rtc=off,ioapic2=off,acpi=on",
+	"-M microvm,pit=on,pic=off,rtc=off,ioapic2=off,acpi=on",
 	"-enable-kvm -cpu host -m 256",
 	"-kernel " .. q(elf),
 	"-fw_cfg name=opt/org.luaos.test,file=" .. q(payload),

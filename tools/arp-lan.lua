@@ -126,7 +126,7 @@ f:close()
 local cmd = table.concat({
 	"timeout 60",
 	"qemu-system-x86_64",
-	"-M microvm,pit=off,pic=off,rtc=off,ioapic2=off,acpi=on",
+	"-M microvm,pit=on,pic=off,rtc=off,ioapic2=off,acpi=on",
 	"-enable-kvm -cpu host -m 256",
 	"-kernel " .. q(elf),
 	"-fw_cfg name=opt/org.luaos.test,file=" .. q(payload),
