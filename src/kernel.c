@@ -1084,10 +1084,18 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		return wput(w, s, n);
 	}
 	case LUA_TTABLE: {
-		/* {__right = handle} transfers a right. if __right is present
-		 * but not an integer handle it's a mistake (e.g. a float);
-		 * refuse it rather than silently shipping the table as data
-		 * and dropping the intended capability.
+		/* {__right = handle} sends a right, and COPIES it: the port
+		 * is taken out of the sender's handle and the handle stays
+		 * live and still counts against MAXRIGHTS. A caller minting
+		 * one per request must therefore close it, which is what
+		 * lib/thread.lua's rpc is for -- forgetting has cost this
+		 * tree three separate bugs, each one surfacing far from the
+		 * leak as a driver that mysteriously stopped working.
+		 *
+		 * if __right is present but not an integer handle it's a
+		 * mistake (e.g. a float); refuse it rather than silently
+		 * shipping the table as data and dropping the intended
+		 * capability.
 		 */
 		lua_getfield(L, idx, "__right");
 		if (!lua_isnil(L, -1)) {

@@ -1066,8 +1066,76 @@ local function call(h, msg, replyh)
 	return await(replyh)
 end
 
+
+-- giveright: a {__right=} table that closes the right it minted.
+--
+-- For putting a capability to ANOTHER port in a message -- what
+-- task/srvd.lua answers a lookup with, and what task/sshd.lua hands a
+-- session. Not for a reply port: call() takes that as a handle and
+-- needs no right minted at all.
+--
+-- Sending COPIES. The serializer takes its own reference to the port --
+-- kernel.c bumps nrights on the message's behalf, precisely so the
+-- sender closing its copy cannot flush the queue -- and leaves the
+-- caller's handle live, still spending one of MAXRIGHTS. A server that
+-- mints one per request and forgets it stops answering after 512 of
+-- them, which is why task/srvd.lua and task/sshd.lua use this: both run
+-- forever.
+--
+-- The __gc is a net, not the mechanism. Collection is not prompt, so a
+-- burst can still exhaust MAXRIGHTS between cycles; what it buys is
+-- that forgetting stops being permanent.
+--
+-- Not for a right meant to outlive its message: a capability handed to
+-- a child in sys.spawn's arg must not be closed when the arg table is
+-- collected.
+local function giveright(h)
+	local r = sys.sendright(h)
+
+	if not r then
+		return nil
+	end
+
+	return setmetatable({ __right = r }, {
+		__gc = function()
+			pcall(sys.close, r)
+		end,
+	})
+end
+
+-- rpc: call() for a caller that has no reply port of its own.
+--
+-- call() is the transport and wants a reply handle; this is the wrapper
+-- that supplies one -- the per-coroutine replyport, named directly
+-- rather than as a minted send right, which is what lib/mnt.lua and
+-- lib/srv.lua do and is the only shape that cannot leak: there is
+-- nothing to close because nothing was minted.
+--
+-- Worth stating why that is safe to reuse across calls: a reply
+-- arriving after a timeout lands in the same port the next call reads.
+-- So `timeout` is for callers that can tolerate that, and a protocol
+-- that cannot should carry its own sequence number, as lib/mnt.lua's
+-- does.
+local function rpc(dest, msg, timeout)
+	local reply = replyport()
+
+	msg.reply = { __right = reply }
+
+	if timeout then
+		local ok, why = sys.send(dest, msg)
+
+		if not ok then
+			return nil, why or "dead"
+		end
+		return recvtimeout(reply, timeout)
+	end
+	return call(dest, msg, reply)
+end
+
+thread.giveright = giveright
 thread.parksend = parksend
 thread.recv = recv
+thread.rpc = rpc
 thread.await = await
 thread.call = call
 thread.replyport = replyport

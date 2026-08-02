@@ -24,18 +24,21 @@ local ethwire = {}
 function ethwire.new(cap)
 	local w = { cap = cap }
 
-	-- a private port for the ordinary request/reply calls, and a
-	-- second one dedicated to the parked receive, so a reply to a
-	-- send() cannot be mistaken for the frame a wait is holding out
-	-- for.
-	local rpcport = sys.newport()
+	-- the ordinary calls go through thread.rpc, which owns minting and
+	-- closing the reply right. Writing that out here is what exhausted
+	-- MAXRIGHTS partway through a DHCP exchange, and it is the third
+	-- time this tree has made that mistake; see thread.rpc.
+	--
+	-- The parked receive below cannot use it: rpc waits for its answer,
+	-- and the whole point of a park is to leave the request outstanding
+	-- and come back to it. So that one owns its right explicitly, and
+	-- has a port of its own so a reply to a send() cannot be mistaken
+	-- for the frame a wait is holding out for.
 	local waitport = sys.newport()
 	local parked = false
 
 	local function rpc(msg)
-		msg.reply = { __right = sys.sendright(rpcport) }
-		sys.send(cap, msg)
-		return thread.recv(rpcport)
+		return thread.rpc(cap, msg)
 	end
 
 	w.rpc = rpc
@@ -66,10 +69,13 @@ function ethwire.new(cap)
 
 	-- wait up to ms for a frame. nil if none came in that time, with
 	-- the request left parked for the next call to wait on again.
+	local waitright
+
 	function w.recv_wait(ms)
 		if not parked then
+			waitright = sys.sendright(waitport)
 			sys.send(cap, { op = "recv", wait = true,
-			    reply = { __right = sys.sendright(waitport) } })
+			    reply = { __right = waitright } })
 			parked = true
 		end
 
@@ -79,6 +85,8 @@ function ethwire.new(cap)
 			return nil		-- still parked; ask again later
 		end
 		parked = false
+		sys.close(waitright)
+		waitright = nil
 		return m.data
 	end
 
