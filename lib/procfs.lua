@@ -2,6 +2,7 @@
 --
 --   /proc/4/status    name, state, scheduling
 --   /proc/4/stack     a live cross-proc traceback
+--   /proc/4/trace     the last lines it ran, if traced
 --   /proc/4/mem       lua heap used/peak/limit
 --   /proc/self/...    whoever is reading
 --
@@ -69,6 +70,25 @@ local function fmt_stack(pid)
 	return table.concat(out, "\n") .. "\n"
 end
 
+-- the last lines the proc ran, oldest first, empty unless something has
+-- called sys.set_trace on it. read-only like everything else here: this
+-- file reports a trace, it does not turn one on, because arming one
+-- slows the target down (measured 4.7x) and that is an effect on
+-- another proc rather than a report about it.
+local function fmt_trace(pid)
+	local tr = sys.trace(pid)
+	local out = {}
+
+	for _, e in ipairs(tr) do
+		out[#out + 1] = string.format("%d %s:%d", e.thread, e.source,
+		    e.line)
+	end
+	if #out == 0 then
+		return "(not traced)\n"
+	end
+	return table.concat(out, "\n") .. "\n"
+end
+
 local function fmt_mem(pid)
 	local used, peak, limit = sys.meminfo(pid)
 
@@ -82,10 +102,11 @@ end
 local FILES = {
 	status = fmt_status,
 	stack = fmt_stack,
+	trace = fmt_trace,
 	mem = fmt_mem,
 }
 
-local FILENAMES = { "mem", "stack", "status" }	-- sorted
+local FILENAMES = { "mem", "stack", "status", "trace" }	-- sorted
 
 -- ---- the backend ----
 

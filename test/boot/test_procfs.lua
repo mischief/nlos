@@ -49,7 +49,7 @@ for _, e in ipairs(files or {}) do
 	fnames[#fnames + 1] = e.name
 end
 table.sort(fnames)
-tap.is(table.concat(fnames, ","), "mem,stack,status",
+tap.is(table.concat(fnames, ","), "mem,stack,status,trace",
     "a proc directory lists its files")
 
 -- ---- reading, through the namespace like any other file ----

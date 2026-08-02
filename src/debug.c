@@ -246,3 +246,40 @@ debug_push_stacks(lua_State *to, lua_State *target_main, lua_State *target_co)
 		lua_rawseti(to, -2, ++n);
 	}
 }
+
+/* Arm a hook across a whole proc.
+ *
+ * lua_newthread copies hook, mask and count from its parent, but at
+ * creation time and never again (lstate.c). That is what makes the
+ * kernel's count hook inescapable -- a coroutine is born already
+ * preempted -- and it is also why changing a mask later cannot be done
+ * on one coroutine and left there: the proc's existing threads would
+ * keep the old mask, and for lib/thread that is every thread the proc
+ * has. So the same walk that finds coroutines to report on finds them
+ * to re-arm.
+ *
+ * Same rules as the rest of this file: lua_sethook neither runs target
+ * code nor allocates, and the walk restores the stack it borrowed. The
+ * one visible effect is that re-arming resets each coroutine's
+ * countdown to a full `count`, which is a scheduling detail rather than
+ * a correctness one -- the slice is bounded by wall clock, and the
+ * count only decides how often that gets checked.
+ *
+ * Coroutines created after this call need no handling: they inherit
+ * from whichever coroutine creates them, which by then has the mask.
+ */
+void
+debug_sethook_all(lua_State *target_main, lua_State *target_co, lua_Hook f,
+    int mask, int count)
+{
+	struct walk w = { .nfound = 0, .nseen = 0 };
+
+	collect(target_main, &w);
+
+	lua_sethook(target_co, f, mask, count);
+	if (target_main != target_co)
+		lua_sethook(target_main, f, mask, count);
+	for (int i = 0; i < w.nfound; i++)
+		if (w.found[i] != target_co && w.found[i] != target_main)
+			lua_sethook(w.found[i], f, mask, count);
+}
