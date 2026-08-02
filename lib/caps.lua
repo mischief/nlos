@@ -44,15 +44,21 @@ local M = {}
 -- stays true while a large message is still refused by a queue holding
 -- another one -- so it returns at once, the send fails again, and the
 -- loop eats the whole slice. That measured as 33ms per band on the
--- framebuffer path. The payload length is the size that matters; the
--- table around it is small, and the estimate only has to avoid
--- under-asking.
-local function sendwait(handle, m)
-	local need = 0
+-- framebuffer path.
 
+-- how big a queue slot this message needs, for sendblock. The payload
+-- length is the size that matters; the table around it is small, and
+-- the estimate only has to avoid under-asking. Named rather than
+-- inlined because requester needs the same number.
+local function needof(m)
 	if type(m) == "table" and type(m.data) == "string" then
-		need = #m.data + 256
+		return #m.data + 256
 	end
+	return 0
+end
+
+local function sendwait(handle, m)
+	local need = needof(m)
 
 	while true do
 		local ok, why = sys.send(handle, m)
@@ -69,25 +75,51 @@ end
 
 M.sendwait = sendwait
 
+-- the canonical request/reply, and the most-travelled one in the tree:
+-- caps.udp, caps.tcp, caps.dns, caps.fb and caps.wire all come through
+-- here.
+--
+-- thread.call is the transport -- one kernel entry at the top level,
+-- send plus the scheduler's own block inside a thread -- and
+-- thread.replyport() supplies the port, so nothing is minted and
+-- nothing has to be closed. That is the whole of what this used to get
+-- wrong three times over in other files: a port or a right per request,
+-- and a leak that surfaced somewhere else entirely.
+--
+-- ---- why the retry loop stays here ----
+--
+-- thread.call REPORTS a full queue rather than waiting it out, on
+-- purpose: the kernel refuses to decide between a pipe writer that
+-- should wait and a server reply that must not, and so does call. For a
+-- request whose reply we are about to wait for, the answer is always
+-- "wait" -- so the policy lives here, where that is known.
+--
+-- It could not move into thread.call anyway. What makes this park
+-- instead of spin is the SIZE passed to sendblock, and the size lives
+-- in m.data -- a convention of these messages, not a fact the scheduler
+-- has any business knowing. Without it sendblock only asks "is the
+-- queue non-full", which stays true while a large message is still
+-- refused by a queue holding another one: 33ms per band, measured, on
+-- the framebuffer path.
+--
+-- Only "full" retries. "dead" and "hungup" are answers, not conditions
+-- to wait out.
 local function requester(target)
 	return function(extra)
-		local replyport = sys.newport()
+		local reply = thread.replyport()
 
-		extra.reply = { __right = replyport }
+		extra.reply = { __right = reply }
 
-		local ok, why = sendwait(target, extra)
+		while true do
+			local result, why = thread.call(target, extra, reply)
 
-		if not ok then
-			-- never wait for a reply to a request that did not go:
-			-- thread.recv here would block forever.
-			sys.close(replyport)
-			return nil, why
+			if why ~= "full" then
+				-- includes the ordinary success case, where
+				-- why is nil and result is the reply
+				return result, why
+			end
+			sys.sendblock(target, needof(extra))
 		end
-
-		local result = thread.recv(replyport)
-
-		sys.close(replyport)
-		return result
 	end
 end
 
