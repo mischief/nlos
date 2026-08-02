@@ -197,6 +197,7 @@ else
     'lib/chan.lua',
     'lib/p9fs.lua',
     'lib/p9srv.lua',
+  'lib/p9tcp.lua',
     'lib/eth.lua',
     'lib/tap.lua',
   ]
@@ -407,6 +408,7 @@ lua_payload = files(
   'lib/power.lua',
   'lib/p9fs.lua',
   'lib/p9srv.lua',
+  'lib/p9tcp.lua',
   'lib/proc.lua',
   'lib/procfs.lua',
   'lib/prog.lua',
