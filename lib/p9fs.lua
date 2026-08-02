@@ -18,6 +18,7 @@
 
 local ninep = require("ninep")
 local dev = require("dev")
+local thread = require("los.thread")
 
 local M = {}
 
@@ -41,12 +42,34 @@ local function checkreply(rep, wanttype, what, tag)
 	return m
 end
 
--- transport defaults to the real device (los.platform.p9, PRIV_P9
--- only); pass one explicitly to talk to anything else that answers
--- {rpc = function(reqbytes) return replybytes end} -- e.g. a self-mount
--- loopback straight into lib/ninep.lua's OWN M.responder(), which is
--- how test/boot/test_ninep_selfmount.lua exercises the base-9P2000
--- code path with no virtio-9p device at all (qemu's is .u-only).
+-- ---- two shapes of transport, and why the difference is not ours ----
+--
+-- ROUTED: {rpc = function(reqbytes) return replybytes end}. The reply
+-- returned IS the reply to that request. los.platform.p9 is this: it
+-- keeps a window of slots and the device answers into the slot's own
+-- buffer, so routing is positional and no tag is ever read. The
+-- self-mount loopback in test/boot/test_ninep_selfmount.lua is this
+-- too, trivially, since it computes the answer inline.
+--
+-- STREAM: {send = function(bytes), recv = function() return frame end}.
+-- One channel, replies interleaved in whatever order the server chose,
+-- and nothing but the tag to say whose is whose. recv returns exactly
+-- one complete frame, or nil at end of connection -- de-framing belongs
+-- to whatever owns the byte stream, since that is where the partial
+-- reads live.
+--
+-- The mux for the second lives HERE rather than in the transport,
+-- because the tag it routes on is allocated here. Splitting them would
+-- mean the transport had to learn a number this file chose -- by
+-- parsing it back out of the bytes, or by being handed it -- and then
+-- two places would have to agree about tag lifetime for no benefit.
+--
+-- Note this is the demultiplexer lib/mnt.lua deliberately does not
+-- have. It is not a failure to reproduce that trick: mnt can give every
+-- caller its own port, and a byte stream is one channel that cannot be
+-- subdivided. The tag exists precisely because of that, and this is the
+-- one layer where it earns its keep -- above, in the routed case, it is
+-- only an assertion.
 function M.new(transport)
 	local p9 = transport or require("los.platform.p9")
 	local B = {}
@@ -72,23 +95,129 @@ function M.new(transport)
 	local intag = {}
 	local nexttag = 0
 
+	-- a tag abandoned mid-flight is never handed out again, because the
+	-- reply to it may still be coming and would then be delivered to
+	-- whichever request got the number next. Only reachable when
+	-- something unwinds between the send and the receive -- an error in
+	-- a sibling that kills the thread, say -- but the failure it
+	-- prevents is one call silently answering with another's data,
+	-- which is not a thing to leave to chance.
+	--
+	-- Bounded: a poisoned tag is retired by the reply that eventually
+	-- arrives for it (see deliver below), so this cannot grow without
+	-- the server having lost a reply outright.
+	local poisoned = {}
+
+	local function alloctag()
+		local t = nexttag
+
+		repeat
+			t = (t % 0xfffe) + 1
+			if t == nexttag then
+				dev.error("9p: no free tags")
+			end
+		until not intag[t] and not poisoned[t]
+		nexttag = t
+		intag[t] = true
+		return t
+	end
+
+	-- ---- the mux, for a stream transport only ----
+	--
+	-- pending[tag] is the waiting caller's own one-slot channel. A
+	-- channel rather than resuming the coroutine directly because the
+	-- reader is a thread like any other and thread.lua's scheduler owns
+	-- who runs -- handing it the value and letting the scheduler wake
+	-- the waiter is the same shape lib/dos.lua joins its stages with.
+	-- nil for a routed transport, a table for a stream one. Written as
+	-- a statement because `p9.rpc and nil or {}` is always {}: `and
+	-- nil` makes the left side falsy, so the `or` always fires.
+	local pending
+	local reader
+
+	if not p9.rpc then
+		pending = {}
+	end
+
+	local function deliver(frame)
+		-- peek, do not decode: the waiter decodes it anyway in
+		-- checkreply, and the reader has no use for the rest.
+		local tag = select(3, string.unpack("<I4BI2", frame))
+		local ch = pending[tag]
+
+		if ch then
+			pending[tag] = nil
+			ch:send(frame)
+		elseif poisoned[tag] then
+			-- the late reply we were holding the tag for; it can
+			-- be reused now
+			poisoned[tag] = nil
+		end
+		-- otherwise a reply to nothing: a server bug, and dropping it
+		-- is strictly better than guessing whose it might be
+	end
+
+	if pending then
+		reader = thread.spawn(function()
+			while true do
+				local frame = p9.recv()
+
+				if not frame then
+					break		-- connection gone
+				end
+				deliver(frame)
+			end
+			-- wake everyone still waiting; their recv would
+			-- otherwise never return
+			for t, ch in pairs(pending) do
+				pending[t] = nil
+				ch:close()
+			end
+		end)
+	end
+
+	-- one round trip under a tag the caller already owns, on either
+	-- shape of transport. Tversion needs this: it goes out under NOTAG,
+	-- which is not allocated and cannot be, but on a stream it still
+	-- has to be waited for through the mux -- the reader thread is
+	-- already running by then and would otherwise swallow the reply.
+	local function rawrpc(bytes, tag)
+		if not pending then
+			return p9.rpc(bytes)
+		end
+
+		local ch = thread.chancreate(1)
+
+		pending[tag] = ch
+		local ok, e = pcall(p9.send, bytes)
+
+		if not ok then
+			pending[tag] = nil
+			error(e, 0)
+		end
+
+		local frame, alive = ch:recv()
+
+		pending[tag] = nil
+		if alive == false then
+			dev.error(dev.Eio)
+		end
+		return frame
+	end
+
 	-- build(tag) -> request bytes; returns the decoded reply, already
 	-- checked. The check lives in here rather than at the call sites
 	-- so that the tag never has to be threaded back out to them --
 	-- which is what makes it impossible for a call site to forget it.
 	local function rpc(build, wanttype, what)
-		local t = nexttag
-
-		repeat
-			t = (t % 0xfffe) + 1
-		until not intag[t]
-		nexttag = t
-		intag[t] = true
-
-		local ok, rep = pcall(p9.rpc, build(t))
+		local t = alloctag()
+		local ok, rep = pcall(rawrpc, build(t), t)
 
 		intag[t] = nil
 		if not ok then
+			-- the request is out and the tag is still spoken for
+			-- by whatever reply it may yet produce
+			poisoned[t] = true
 			error(rep, 0)
 		end
 		return checkreply(rep, wanttype, what, t)
@@ -101,7 +230,8 @@ function M.new(transport)
 	-- below drives every place after this that the two dialects
 	-- differ (Tattach's n_uname, Tcreate's extension). anything else
 	-- (including "unknown") is a server we can't drive at all.
-	local vm = ninep.decode(p9.rpc(ninep.tversion(ninep.NOTAG, 8192, "9P2000.u")))
+	local vm = ninep.decode(rawrpc(
+	    ninep.tversion(ninep.NOTAG, 8192, "9P2000.u"), ninep.NOTAG))
 
 	if vm.type ~= ninep.Rversion or
 	    (vm.version ~= "9P2000.u" and vm.version ~= "9P2000") then
