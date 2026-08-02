@@ -5,11 +5,13 @@ local sys = require("los.sys")
 local magic = require("ps")
 local tap = require("tap")
 
-tap.plan(10)
+tap.plan(11)
 
 -- ---- the reporting ones are pure and safe to traverse ----
 tap.ok(tostring(magic.ps):find("PID") ~= nil, "ps renders a table with a header")
 tap.ok(tostring(magic.stats):find("procs=") ~= nil, "stats renders counters")
+tap.ok(tostring(magic.ports):find("DROPF") ~= nil,
+    "ports renders a table with a header")
 
 -- ---- halt explains itself when printed, and does not fire ----
 local power = sys.granted().power
@@ -22,14 +24,15 @@ tap.ok(shown:find("halt%(%)") ~= nil,
 -- the regression that matters: a generic traversal that tostrings every
 -- value must not power the machine off. this is `pairs(_G)` in
 -- miniature, and it used to be fatal.
-local env = { ps = magic.ps, stats = magic.stats, halt = halt, n = 1 }
+local env = { ps = magic.ps, stats = magic.stats, ports = magic.ports,
+    halt = halt, n = 1 }
 local seen = 0
 
 for _, v in pairs(env) do
     local _ = tostring(v)
     seen = seen + 1
 end
-tap.ok(seen == 4, "traversing a table of magic values tostrings all of them")
+tap.ok(seen == 5, "traversing a table of magic values tostrings all of them")
 
 -- if we are still executing, __tostring did not shut us down
 tap.ok(true, "still running after tostring'ing halt")

@@ -13,7 +13,7 @@
 local sys = require("los.sys")
 local tap = require("tap")
 
-tap.plan(12)
+tap.plan(13)
 
 -- a handle is not a port index -- handles are per-proc and the index is
 -- what the port is called kernel-wide -- and nothing in sys maps one to
@@ -114,5 +114,12 @@ local drow = row(deadidx)
 
 tap.ok(drow and drow.dead and drow.dropdead >= 1,
     "a send to a port whose receiver hung up is counted as dead")
+
+-- owner is absent, not zero, when nobody holds the receive right. Zero
+-- could not have meant "nobody": pid 0 is the console, which owns
+-- ports, and every one of them reported as unowned until this was
+-- separated out.
+tap.ok(drow and drow.owner == nil,
+    "and a port with no receiver reports no owner rather than pid 0")
 
 tap.done()

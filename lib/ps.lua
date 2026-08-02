@@ -48,6 +48,47 @@ stats_mt.__tostring = function()
 end
 M.stats = setmetatable({}, stats_mt)
 
+-- ports: where messages are going, and what is being refused.
+--
+-- The two drop columns are the reason this exists. A task cannot see
+-- its own refused sends as anything but a boolean, and it cannot see
+-- another port's at all -- so a stack that has fallen behind and one
+-- that is merely quiet look identical from every vantage point except
+-- this one.
+--
+-- QPEAK earns its column over QLEN: a queue is rarely looked at while
+-- it is deep. One that touched MAXQUEUE and drained shows QLEN 0, and
+-- is exactly the port worth asking about.
+local ports_mt = {}
+ports_mt.__tostring = function()
+	local lines = {
+	    " IDX OWNER            R RCV   QLEN  QPEAK     SENT  DROPF  DROPD" }
+
+	for _, p in ipairs(sys.ports()) do
+		-- owner is whoever holds the receive right, and is absent
+		-- rather than zero when nobody does -- pid 0 is the
+		-- console, so zero could not have meant "nobody". A port
+		-- has no holder once its receive right is closed, which is
+		-- what dead means, or while one is in flight between procs.
+		local who
+
+		if p.owner then
+			who = sys.name(p.owner)
+		elseif p.dead then
+			who = "(hungup)"
+		else
+			who = "-"
+		end
+
+		lines[#lines + 1] = string.format(
+		    "%4d %-14s %3d %3d %6d %6d %8d %6d %6d",
+		    p.port, who, p.rights, p.recv, p.qbytes, p.qpeak,
+		    p.sent, p.dropfull, p.dropdead)
+	end
+	return table.concat(lines, "\n")
+end
+M.ports = setmetatable({}, ports_mt)
+
 -- stack(pid): where another proc actually is, not just what it is
 -- blocked on. a factory rather than a bare value because it takes an
 -- argument, so unlike ps/stats it is a plain function and the

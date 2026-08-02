@@ -36,6 +36,7 @@ _G.sys = sys
 _G.thread = thread
 _G.ps = magic.ps
 _G.stats = magic.stats
+_G.ports = magic.ports
 _G.stack = function(pid)
 	return magic.stack(pid or sys.self())
 end

@@ -439,6 +439,7 @@ local repl_worker_src = [[
 		return magic.stack(pid or sys.self())
 	end
 	_G.stats = magic.stats
+	_G.ports = magic.ports
 	_G.caps = caps
 	_G.wire = caps.wire(wireh)
 	_G.power = caps.power(powerh)

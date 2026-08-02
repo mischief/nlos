@@ -2526,7 +2526,11 @@ api_procs(lua_State *L)
 	return 1;
 }
 
-/* which proc holds the receive right to a port, or 0. Answered by
+/* which proc holds the receive right to a port, or -1. Not 0: pid 0 is
+ * the console, a real proc that really does own ports, and using it as
+ * the "nobody" sentinel reported every one of them as unowned.
+ *
+ * Answered by
  * looking rather than by a field on the port, because a receive right
  * moves: the holder is wherever it was last sent, and a field would be
  * one more thing to keep true on every transfer for the sake of a call
@@ -2547,7 +2551,7 @@ port_owner(const struct kport *port)
 				return p->id;
 		}
 	}
-	return 0;
+	return -1;
 }
 
 /* sys.ports(): one row per live port, for an ss-shaped view of where
@@ -2570,8 +2574,15 @@ api_ports(lua_State *L)
 		lua_createtable(L, 0, 9);
 		lua_pushinteger(L, port->idx);
 		lua_setfield(L, -2, "port");
-		lua_pushinteger(L, port_owner(port));
-		lua_setfield(L, -2, "owner");
+		/* absent rather than a sentinel when no proc holds the
+		 * receive right, so no valid pid can be mistaken for one.
+		 */
+		int owner = port_owner(port);
+
+		if (owner >= 0) {
+			lua_pushinteger(L, owner);
+			lua_setfield(L, -2, "owner");
+		}
 		lua_pushinteger(L, port->nrights);
 		lua_setfield(L, -2, "rights");
 		lua_pushinteger(L, port->nrecv);
