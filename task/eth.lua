@@ -50,8 +50,26 @@ local function reply(m, msg)
 	end
 end
 
--- hand out whatever the device has, to whoever has been waiting
--- longest, until one of the two runs out.
+-- hand out whatever the device has. Every frame goes to EVERY parked
+-- receiver, not to one of them.
+--
+-- A wire is not a queue with an owner. Several procs can have a
+-- legitimate interest in the same frame -- the ip stack, a second
+-- protocol family, a capture -- and handing each frame to whichever
+-- happened to ask first means none of them sees a whole conversation.
+-- That is not hypothetical: the moment kernel.c started the ip task at
+-- boot, every test that drove the wire directly began losing frames to
+-- it, which showed up as a ping that sometimes went unanswered.
+--
+-- This is the ethernet driver's job in plan 9 too: /net/ether0 hands a
+-- copy to every connection whose type matches, rather than electing
+-- one reader. There is no type filter here yet, so everyone sees
+-- everything and filters for themselves -- ether.for_us and the
+-- ethertype check in lib/inet.lua are already exactly that.
+--
+-- The cost is a copy per extra listener, and in an ordinary boot there
+-- are none: only the stack is parked, and a broadcast to one receiver
+-- is a send.
 local function drain()
 	while #waiting > 0 do
 		local frame = eth.recv()
@@ -59,7 +77,13 @@ local function drain()
 		if not frame then
 			return
 		end
-		reply(table.remove(waiting, 1), { data = frame })
+
+		local w = waiting
+
+		waiting = {}
+		for _, m in ipairs(w) do
+			reply(m, { data = frame })
+		end
 	end
 end
 

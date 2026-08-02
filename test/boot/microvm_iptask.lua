@@ -29,17 +29,18 @@ if not tap.ok(granted.eth ~= nil, "an eth capability was granted") then
 	return
 end
 
--- ---- start the stack ----
-local ipsrc = assert(io.open("/task/ip.lua")):read("a")
-local pid, iph = sys.spawn(ipsrc, { name = "ip" })
+-- ---- the stack is already running ----
+--
+-- Not started here: kernel.c spawns it beside the other tasks and
+-- grants it eth, so a booted machine has a stack whether or not
+-- anything asks for one. This test used to start its own, which meant
+-- it proved the code worked and not that the machine did.
+local iph = granted.ip
 
-if not tap.ok(iph ~= nil, "the ip task started") then
+if not tap.ok(iph ~= nil, "the kernel started the ip task") then
 	tap.done()
 	return
 end
-
--- it needs the wire before it can be a host on one.
-sys.send(iph, { eth = { __right = sys.sendright(granted.eth) } })
 
 -- ---- it answers as a udp service ----
 --

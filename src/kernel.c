@@ -3698,6 +3698,18 @@ struct driver_desc {
 	const char *what;
 	int enabled;
 	const char *capname;	/* what sys.granted() calls it */
+
+	/* another driver this one cannot work without, by capname.
+	 *
+	 * The device tasks each own a raw right and need nothing from each
+	 * other, but a task can also be built on one of them: the ip stack
+	 * is a proc whose device is the eth task. Naming it here rather
+	 * than passing the right in a first message keeps a task's
+	 * capabilities in one place -- sys.granted() -- however it got
+	 * them, and means a task whose dependency failed to start is
+	 * simply a task with nothing under it, which it can say so about.
+	 */
+	const char *needs;
 };
 
 static int
@@ -3758,6 +3770,19 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_ETH, .devport = ethport, .devrecv = 1,
 		  .what = "networking (raw ethernet)", .enabled = have_eth,
 		  .capname = "eth" },
+		/* the ipv4 stack: arp, ip, icmp and udp over the eth task
+		 * above. Not a device owner -- it holds no raw right of its
+		 * own, only a send right to eth -- but a task all the same,
+		 * and one that must be running for the machine to be on a
+		 * network at all rather than merely able to get onto one.
+		 *
+		 * After eth in this table because it is granted eth's port,
+		 * and the loop below resolves that by looking backwards.
+		 */
+		{ .path = "/task/ip.lua", .chunkname = "=ip",
+		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
+		  .what = "the ipv4 stack", .enabled = have_eth,
+		  .capname = "ip", .needs = "eth" },
 		/* the framebuffer. no devport: unlike the console or the
 		 * wire there is nothing to poll -- a screen produces no
 		 * events, and the input devices that go with one are
@@ -3809,6 +3834,31 @@ spawn_init(const char *code, size_t len, int is_file)
 	 * doesn't appear in the mapping, and everything after it shifts
 	 * down a slot harmlessly.
 	 */
+	/* a task that names another gets a send right to it, under the
+	 * same name the boot proc knows it by. Done before the boot proc's
+	 * own grants purely for reading order; the two are independent.
+	 */
+	for (i = 0; i < ndrivers; i++) {
+		if (!drivers[i].needs || pids[i] < 0)
+			continue;
+
+		struct kproc *np = find_proc(pids[i]);
+
+		for (size_t j = 0; j < ndrivers; j++) {
+			if (pids[j] < 0 || !drivers[j].capname)
+				continue;
+			if (strcmp(drivers[j].capname, drivers[i].needs) != 0)
+				continue;
+
+			struct kproc *dep = find_proc(pids[j]);
+
+			if (np && dep)
+				grant_named(np, drivers[j].capname,
+				    dep->rights[0].port, 0);
+			break;
+		}
+	}
+
 	for (i = 0; i < ndrivers; i++) {
 		struct kproc *dp = pids[i] >= 0 ? find_proc(pids[i]) : 0;
 

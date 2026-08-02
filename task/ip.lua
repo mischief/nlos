@@ -31,6 +31,7 @@
 --
 --   {op="configure", ip=, mask=, gw=, reply=}   -> true
 --   {op="config", reply=}                       -> {ip=,mask=,gw=,mac=}
+--   {op="stats", reply=}                        -> counters, below
 --
 -- It starts with no address. That is not a degenerate case to be got
 -- through quickly: DHCP runs over this, so the stack has to serve a
@@ -45,10 +46,16 @@ local udp4 = require("udp4")
 local inet = require("inet")
 local ethwire = require("ethwire")
 
--- the eth right arrives in the first message, like every other proc
--- that is spawned rather than kernel-registered (see task/dns.lua).
-local m0 = thread.recv(sys.SELF)
-local ethh = m0.eth.__right
+-- the eth right is granted by name, like every other task's device --
+-- this one's device just happens to be another task. kernel.c's driver
+-- table says so with .needs = "eth"; see struct driver_desc.
+local ethh = sys.granted().eth
+
+if not ethh then
+	-- nothing under us. Say it once and stop, rather than serving a
+	-- protocol we cannot carry.
+	error("ip: no eth capability granted", 0)
+end
 
 local wire = ethwire.new(ethh)
 local host = inet.new(wire, { mac = wire.mac(), ip = ip4.ANY })
@@ -75,6 +82,23 @@ end
 local conns = {}	-- connid -> {port=}
 local nextconn = 1
 local nextephem = 32768
+
+-- counters, because a stack that misbehaves quietly is the hard kind.
+--
+-- Every one of these exists because its absence cost time: frames in
+-- and out say whether the wire is the problem, dropped says whether we
+-- are, and the split between "not for us" and "nothing bound" is the
+-- difference between a switch flooding us and a client that has not
+-- opened the port it thinks it has.
+local stat = {
+	frames_in = 0,
+	frames_out_fail = 0,
+	udp_in = 0,
+	udp_unbound = 0,
+	udp_queued = 0,
+	udp_dropped = 0,
+	unresolved = 0,
+}
 
 -- datagrams that arrived with nobody waiting, per conn. Bounded: a
 -- client that stops reading must not grow this task's heap without
@@ -106,8 +130,11 @@ local function deliver(c, msg)
 		return
 	end
 	c.queue[#c.queue + 1] = msg
+	stat.udp_queued = stat.udp_queued + 1
 	if #c.queue > QUEUE_MAX then
 		table.remove(c.queue, 1)
+		stat.udp_dropped = stat.udp_dropped + 1
+		c.dropped = (c.dropped or 0) + 1
 	end
 end
 
@@ -118,9 +145,12 @@ local function on_udp(p)
 		return
 	end
 
+	stat.udp_in = stat.udp_in + 1
+
 	local id = bound(d.dport)
 
 	if not id then
+		stat.udp_unbound = stat.udp_unbound + 1
 		return		-- nothing bound; a real host would send an
 				-- icmp port-unreachable, which nothing here
 				-- yet consumes
@@ -162,8 +192,15 @@ local function on_request(m)
 		end
 
 		local dst = string.char(m.a, m.b, m.c, m.d)
-		local ok = host:output(dst, ip4.PROTO_UDP,
+		local ok, why = host:output(dst, ip4.PROTO_UDP,
 		    udp4.encode(c.port, m.port, m.data, host.ip, dst))
+
+		if not ok then
+			stat.frames_out_fail = stat.frames_out_fail + 1
+			if why and why:find("resolving", 1, true) then
+				stat.unresolved = stat.unresolved + 1
+			end
+		end
 
 		-- a send that had to resolve first is reported as failed and
 		-- the arp request is on its way, so the caller's own retry
@@ -219,6 +256,19 @@ local function on_request(m)
 		reply_to(m, { ip = host.ip, mask = host.mask, gw = host.gw,
 		    mac = host.mac })
 
+	elseif m.op == "stats" then
+		local s = { conns = 0 }
+
+		for k, v in pairs(stat) do
+			s[k] = v
+		end
+		for _, c in pairs(conns) do
+			s.conns = s.conns + 1
+			s.queued = (s.queued or 0) + #c.queue
+			s.waiting = (s.waiting or 0) + #c.waiting
+		end
+		reply_to(m, s)
+
 	else
 		reply_to(m, nil)
 	end
@@ -236,6 +286,10 @@ while true do
 
 	if which == 2 then
 		parked = false
+
+		if m and m.data then
+			stat.frames_in = stat.frames_in + 1
+		end
 
 		local p = m and m.data and host:input(m.data)
 
