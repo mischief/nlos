@@ -14,9 +14,11 @@
 #include "microvm.h"
 #include "virtio.h"
 
-#define STATUS_ACK        0x01
-#define STATUS_DRIVER     0x02
-#define STATUS_DRIVER_OK  0x04
+#define STATUS_ACK          0x01
+#define STATUS_DRIVER       0x02
+#define STATUS_DRIVER_OK    0x04
+#define STATUS_FEATURES_OK  0x08
+#define STATUS_FAILED       0x80
 
 #define DESC_F_NEXT  1
 #define DESC_F_WRITE 2
@@ -59,21 +61,54 @@ virtio_find(uint32_t device_id, struct virtio_dev *out)
 	return virtio_mmio_find(device_id, out);
 }
 
+/* the specification's initialization sequence (virtio 1.3, 3.1.1), which
+ * is the same eight steps on both transports -- reset, ACKNOWLEDGE,
+ * DRIVER, negotiate, FEATURES_OK, re-read, queues, DRIVER_OK -- with
+ * one difference: steps 5 and 6 are virtio-1.0 steps, and a legacy
+ * device has no FEATURES_OK bit to set. Which of the two this is falls
+ * out of the negotiation itself rather than being asked separately: if
+ * VERSION_1 ended up in the accepted set, the modern rules apply.
+ */
 int
-virtio_dev_begin(struct virtio_dev *d, uint32_t want, uint32_t *got)
+virtio_dev_begin(struct virtio_dev *d, uint64_t want, uint64_t *got)
 {
 	d->t->set_status(d, 0);				/* reset */
 	d->t->set_status(d, STATUS_ACK);
 	d->t->set_status(d, STATUS_ACK | STATUS_DRIVER);
 
-	uint32_t offered = d->t->get_features(d);
-	uint32_t accept = offered & want;
+	uint64_t offered = d->t->get_features(d);
+	uint64_t need = d->t->required_features;
+
+	/* a transport that cannot work without a bit the device does not
+	 * offer has nothing to fall back to, and saying so here is better
+	 * than failing later in a queue setup that cannot work.
+	 */
+	if ((offered & need) != need) {
+		d->t->set_status(d, STATUS_FAILED);
+		return -1;
+	}
+
+	uint64_t accept = (offered & want) | need;
 
 	d->t->set_features(d, accept);
+	d->features = accept;
 
 	if (got)
 		*got = accept;
 
+	if (!(accept & VIRTIO_F_VERSION_1))
+		return 0;			/* legacy: no such handshake */
+
+	d->t->set_status(d, STATUS_ACK | STATUS_DRIVER | STATUS_FEATURES_OK);
+
+	/* step 6, and it is a real check rather than a formality: the
+	 * device clears this bit to say it cannot live with the subset we
+	 * chose, and it is the only way it can say so.
+	 */
+	if (!(d->t->get_status(d) & STATUS_FEATURES_OK)) {
+		d->t->set_status(d, STATUS_FAILED);
+		return -1;
+	}
 	return 0;
 }
 
@@ -129,14 +164,23 @@ virtio_queue_init(struct virtio_dev *d, unsigned qi, uint16_t qsize)
 	q->free_head = 0;
 	q->nfree = qsize;
 
-	d->t->queue_setup(d, qi, qsize, (uint32_t)(mem / PAGE_SIZE));
+	d->t->queue_setup(d, qi, qsize, (uint64_t)mem,
+	    (uint64_t)(mem + desc_sz), (uint64_t)(mem + used_off));
 	return 0;
 }
 
 void
 virtio_dev_ready(struct virtio_dev *d)
 {
-	d->t->set_status(d, STATUS_ACK | STATUS_DRIVER | STATUS_DRIVER_OK);
+	uint8_t status = STATUS_ACK | STATUS_DRIVER | STATUS_DRIVER_OK;
+
+	/* FEATURES_OK has to stay set once it is set: the status register
+	 * is written whole, so dropping it here would read to the device
+	 * as the driver withdrawing it.
+	 */
+	if (d->features & VIRTIO_F_VERSION_1)
+		status |= STATUS_FEATURES_OK;
+	d->t->set_status(d, status);
 }
 
 int

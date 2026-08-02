@@ -83,7 +83,7 @@ rx_post(int i)
 int
 virtio_net_init(void)
 {
-	uint32_t got = 0;
+	uint64_t got = 0;
 
 	if (virtio_find(VIRTIO_ID_NET, &netdev) != 0)
 		return -1;

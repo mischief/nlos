@@ -57,7 +57,15 @@ wr(struct virtio_dev *d, unsigned off, uint32_t v)
 	d->regs[off / 4] = v;
 }
 
-static uint32_t
+/* word 0 only.
+ *
+ * A legacy device has no feature bits above 31 -- VERSION_1 is bit 32,
+ * and its absence is precisely what makes this the legacy interface --
+ * so reading the high word would be reading a register the device does
+ * not implement. The seam is 64 bits wide because the other transport
+ * needs it to be; here the top half is always zero.
+ */
+static uint64_t
 mmio_get_features(struct virtio_dev *d)
 {
 	wr(d, REG_DEV_FEATURES_SEL, 0);
@@ -65,10 +73,10 @@ mmio_get_features(struct virtio_dev *d)
 }
 
 static void
-mmio_set_features(struct virtio_dev *d, uint32_t v)
+mmio_set_features(struct virtio_dev *d, uint64_t v)
 {
 	wr(d, REG_DRV_FEATURES_SEL, 0);
-	wr(d, REG_DRV_FEATURES, v);
+	wr(d, REG_DRV_FEATURES, (uint32_t)v);
 
 	/* the page size every ring address is expressed in. PCI has no
 	 * such register: there it is 4096 by definition, which is what
@@ -83,6 +91,12 @@ mmio_set_status(struct virtio_dev *d, uint8_t status)
 	wr(d, REG_STATUS, status);
 }
 
+static uint8_t
+mmio_get_status(struct virtio_dev *d)
+{
+	return (uint8_t)rd(d, REG_STATUS);
+}
+
 static uint16_t
 mmio_queue_max(struct virtio_dev *d, unsigned qi)
 {
@@ -90,14 +104,22 @@ mmio_queue_max(struct virtio_dev *d, unsigned qi)
 	return (uint16_t)rd(d, REG_QUEUE_NUM_MAX);
 }
 
+/* the legacy transport addresses all three rings with the one page
+ * number they start at, so avail and used are implied by desc and the
+ * layout virtio.c built. Taking them and dropping them keeps the caller
+ * from having to know which transport it is talking to.
+ */
 static void
 mmio_queue_setup(struct virtio_dev *d, unsigned qi, uint16_t qsize,
-    uint32_t pfn)
+    uint64_t desc, uint64_t avail, uint64_t used)
 {
+	(void)avail;
+	(void)used;
+
 	wr(d, REG_QUEUE_SEL, qi);
 	wr(d, REG_QUEUE_NUM, qsize);
 	wr(d, REG_QUEUE_ALIGN, PAGE_SIZE);
-	wr(d, REG_QUEUE_PFN, pfn);
+	wr(d, REG_QUEUE_PFN, (uint32_t)(desc / PAGE_SIZE));
 }
 
 static void
@@ -129,9 +151,11 @@ mmio_config8(struct virtio_dev *d, unsigned off)
 
 static const struct virtio_transport mmio_transport = {
 	.name = "mmio",
+	.required_features = 0,		/* legacy by construction */
 	.get_features = mmio_get_features,
 	.set_features = mmio_set_features,
 	.set_status = mmio_set_status,
+	.get_status = mmio_get_status,
 	.queue_max = mmio_queue_max,
 	.queue_setup = mmio_queue_setup,
 	.notify = mmio_notify,

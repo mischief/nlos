@@ -89,14 +89,34 @@ struct virtio_dev;
  */
 struct virtio_transport {
 	const char *name;
-	uint32_t (*get_features)(struct virtio_dev *d);
-	void	(*set_features)(struct virtio_dev *d, uint32_t v);
+
+	/* what this transport cannot work without, which the negotiation
+	 * in virtio.c must therefore secure or give up. Zero on legacy
+	 * mmio; VIRTIO_F_VERSION_1 on a modern PCI device, which by
+	 * definition has no legacy interface to fall back to.
+	 */
+	uint64_t required_features;
+
+	uint64_t (*get_features)(struct virtio_dev *d);
+	void	(*set_features)(struct virtio_dev *d, uint64_t v);
 	void	(*set_status)(struct virtio_dev *d, uint8_t status);
+	uint8_t	(*get_status)(struct virtio_dev *d);
 	uint16_t (*queue_max)(struct virtio_dev *d, unsigned qi);
-	/* select the queue, size it, and hand over the ring's page number */
+
+	/* select the queue, size it, and hand over its rings.
+	 *
+	 * Three addresses rather than the one page number legacy uses:
+	 * that is what virtio 1.0 asks for, and the legacy side can
+	 * recover its page number from the first of them, since the three
+	 * are contiguous in one allocation either way. The reverse is not
+	 * true, which is why the interface is shaped this way round.
+	 */
 	void	(*queue_setup)(struct virtio_dev *d, unsigned qi,
-		    uint16_t qsize, uint32_t pfn);
+		    uint16_t qsize, uint64_t desc, uint64_t avail,
+		    uint64_t used);
+
 	void	(*notify)(struct virtio_dev *d, unsigned qi);
+
 	/* read the interrupt status and acknowledge it in one go: mmio
 	 * needs two registers for that and PCI clears on read.
 	 */
@@ -104,14 +124,30 @@ struct virtio_transport {
 	uint8_t	(*config8)(struct virtio_dev *d, unsigned off);
 };
 
+/* bit 32, so everything touching features has to be 64 bits wide. This
+ * is the bit that says "not the legacy interface".
+ */
+#define VIRTIO_F_VERSION_1 (1ULL << 32)
+
 struct virtio_dev {
 	const struct virtio_transport *t;
 	volatile uint32_t *regs;	/* mmio: the register window */
-	uint16_t iobase;		/* pci: the IO BAR */
+
+	/* pci: the IO BAR, and where in it each virtio structure the
+	 * capability list pointed at begins. See virtio_pci.c.
+	 */
+	uint16_t iobase;
+	uint16_t cfg_common;
+	uint16_t cfg_notify;
+	uint16_t cfg_isr;
+	uint16_t cfg_device;
+	uint32_t notify_mul;
+
 	struct virtq q[VIRTIO_MAX_QUEUES];
 	int slot;		/* mmio: which slot, which fixes its gsi */
 	int gsi;		/* the line this device raises */
 	int irq_routed;		/* set by virtio_irq_enable; see the ack rule */
+	uint64_t features;	/* what negotiation actually settled on */
 };
 
 /* find a device of this virtio type on whichever transport the machine
@@ -146,7 +182,7 @@ uint8_t	virtio_config8(struct virtio_dev *d, unsigned off);
  * actually offered of them. Asking for a bit the device lacks is not an
  * error -- the caller decides whether it can live without it.
  */
-int	virtio_dev_begin(struct virtio_dev *d, uint32_t want, uint32_t *got);
+int	virtio_dev_begin(struct virtio_dev *d, uint64_t want, uint64_t *got);
 
 /* configure queue `qi` at up to `qsize` entries (clamped to the
  * device's maximum). Must follow virtio_dev_begin and precede
