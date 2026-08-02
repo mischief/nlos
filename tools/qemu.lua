@@ -23,7 +23,7 @@
 --
 -- With -snapshot both files are opened read-only and written through a
 -- temporary overlay, so any number of runs coexist, including the test
--- suite (which has always done this -- see scripts/boottest.lua).
+-- suite (which has always done this -- see tools/boottest.lua).
 --
 -- The consequence to know: guest writes to the ESP do not survive the
 -- run, and neither do EFI variables. Nothing here depends on the

@@ -3247,21 +3247,21 @@ static int
 spawn_init(const char *code, size_t len, int is_file)
 {
 	struct driver_desc drivers[] = {
-		{ .path = "/lib/cons.lua", .chunkname = "=cons",
+		{ .path = "/task/cons.lua", .chunkname = "=cons",
 		  .priv = PRIV_CONS, .devport = kbdport, .devrecv = 1,
 		  .what = "console", .enabled = 1, .capname = "cons" },
-		{ .path = "/lib/wire.lua", .chunkname = "=wire",
+		{ .path = "/task/wire.lua", .chunkname = "=wire",
 		  .priv = PRIV_WIRE, .devport = serport, .devrecv = 1,
 		  .what = "the 9p wire", .enabled = 1, .capname = "wire" },
 		/* the esp server: the only proc that reaches the disk
 		 * directly. it gets diskport at handle 1, so writes are
 		 * possible here and nowhere else.
 		 */
-		{ .path = "/lib/espsrv.lua", .chunkname = "=esp",
+		{ .path = "/task/espsrv.lua", .chunkname = "=esp",
 		  .priv = PRIV_ESP, .devport = diskport, .devrecv = 0,
 		  .what = "the esp filesystem", .enabled = 1,
 		  .capname = "esp" },
-		{ .path = "/lib/power.lua", .chunkname = "=power",
+		{ .path = "/task/power.lua", .chunkname = "=power",
 		  .priv = PRIV_POWER, .devport = 0, .devrecv = 0,
 		  .what = "reset/stall", .enabled = 1, .capname = "power" },
 		/* no NIC (real hardware, or qemu -net none) is the normal
@@ -3270,11 +3270,11 @@ spawn_init(const char *code, size_t len, int is_file)
 		 * two separate exclusive tasks (see PRIV_TCP/PRIV_UDP),
 		 * soft-failing independently of each other.
 		 */
-		{ .path = "/lib/tcp.lua", .chunkname = "=tcp",
+		{ .path = "/task/tcp.lua", .chunkname = "=tcp",
 		  .priv = PRIV_TCP, .devport = netport, .devrecv = 1,
 		  .what = "networking (tcp)", .enabled = have_net,
 		  .capname = "tcp" },
-		{ .path = "/lib/udp.lua", .chunkname = "=udp",
+		{ .path = "/task/udp.lua", .chunkname = "=udp",
 		  .priv = PRIV_UDP, .devport = udpport, .devrecv = 1,
 		  .what = "networking (udp)", .enabled = have_udp,
 		  .capname = "udp" },
@@ -3287,7 +3287,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		 * virtio-9p can't exist under EFI -- see platform_have_p9's
 		 * own comment in platform.h.
 		 */
-		{ .path = "/lib/p9srv.lua", .chunkname = "=p9srv",
+		{ .path = "/task/p9srv.lua", .chunkname = "=p9srv",
 		  .priv = PRIV_P9, .devport = 0, .devrecv = 0,
 		  .what = "the virtio-9p filesystem", .enabled = have_p9,
 		  .capname = "p9" },
@@ -3297,7 +3297,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		 * everything from arp upwards is Lua on the far side of its
 		 * port (lib/eth.lua).
 		 */
-		{ .path = "/lib/eth.lua", .chunkname = "=eth",
+		{ .path = "/task/eth.lua", .chunkname = "=eth",
 		  .priv = PRIV_ETH, .devport = 0, .devrecv = 0,
 		  .what = "networking (raw ethernet)", .enabled = have_eth,
 		  .capname = "eth" },
@@ -3307,7 +3307,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		 * already somebody else's capability. so this task only
 		 * ever receives from procs holding a right to it.
 		 */
-		{ .path = "/lib/fb.lua", .chunkname = "=fb",
+		{ .path = "/task/fb.lua", .chunkname = "=fb",
 		  .priv = PRIV_FB, .devport = 0, .devrecv = 0,
 		  .what = "the framebuffer", .enabled = have_fb,
 		  .capname = "fb" },

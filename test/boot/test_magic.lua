@@ -5,7 +5,7 @@ local sys = require("los.sys")
 local magic = require("ps")
 local tap = require("tap")
 
-tap.plan(9)
+tap.plan(10)
 
 -- ---- the reporting ones are pure and safe to traverse ----
 tap.ok(tostring(magic.ps):find("PID") ~= nil, "ps renders a table with a header")
@@ -49,7 +49,13 @@ local pid = sys.spawn([[
 
 thread.sleep(200)
 
-local frames = sys.stack(pid)
+-- sys.stack reports one entry per coroutine (src/debug.c). This proc has
+-- no threads, so everything is in the first, its own.
+local coros = sys.stack(pid)
+
+tap.ok(#coros >= 1, "the wedged proc reports at least its own coroutine")
+
+local frames = coros[1].frames
 
 tap.ok(#frames >= 3, "a wedged proc has a readable stack (" .. #frames ..
     " frames)")
@@ -69,6 +75,7 @@ tap.ok(named, "and the lua function names come through")
 -- blocked in the same place afterwards, with the same depth
 local again = sys.stack(pid)
 
-tap.is(#again, #frames, "reading a stack twice is stable and side-effect free")
+tap.is(#again[1].frames, #frames,
+    "reading a stack twice is stable and side-effect free")
 
 tap.done()

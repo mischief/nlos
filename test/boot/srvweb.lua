@@ -48,7 +48,7 @@ end
 local dhcpd = nil
 
 if caps_of.udp then
-	local _, h = require("proc").spawn(slurp("/lib/dhcpd.lua"), {
+	local _, h = require("proc").spawn(slurp("/task/dhcpd.lua"), {
 		name = "dhcp",
 		arg = {
 			tcp = { __right = caps_of.tcp },

@@ -45,7 +45,7 @@ local function ok(cond, name)
 	return cond
 end
 
--- the normalisation scripts/boottest.lua applies to a serial log, for
+-- the normalisation tools/boottest.lua applies to a serial log, for
 -- the same reason: strip ansi and fold carriage returns into newlines
 -- so that every line of a guest dump carries its own "# ".
 local function diag(s)

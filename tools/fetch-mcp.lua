@@ -1,7 +1,7 @@
 #!/usr/bin/env lua5.4
 -- fetch-mcp.lua IMG -- boots IMG with test/boot/fetch_mcp.lua injected
 -- as the boot payload (replacing init.lua) via fw_cfg, same mechanism
--- scripts/boottest.lua uses for tests. exposes its mcp server (a
+-- tools/boottest.lua uses for tests. exposes its mcp server (a
 -- single "fetch" tool, see the payload itself) on host port MCP_PORT
 -- (default 8090), via qemu's usermode NAT hostfwd.
 

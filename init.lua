@@ -233,7 +233,7 @@ if has_tcp and has_udp then
 	-- port is srv.serve's, and a message arriving there would have to be
 	-- consumed before serving began and never after. rights travel
 	-- through arg exactly as through a message (api_spawn's comment).
-	local pid, h = proc.spawn(assert(rootns:readfile("/lib/dhcpd.lua")),
+	local pid, h = proc.spawn(assert(rootns:readfile("/task/dhcpd.lua")),
 	    { name = "dhcp", ns = nsdesc, arg = {
 	        tcp = { __right = caps_of.tcp },
 	        udp = { __right = caps_of.udp },
@@ -258,7 +258,7 @@ end
 -- The listing mounts at /srv so `ls /srv` shows what is there; the
 -- rights themselves come from messages to srvd, never from reading
 -- those files.
-local _, srvdh = proc.spawn(assert(rootns:readfile("/lib/srvd.lua")),
+local _, srvdh = proc.spawn(assert(rootns:readfile("/task/srvd.lua")),
     { name = "srv", ns = nsdesc })
 
 if srvdh then
@@ -298,7 +298,7 @@ end
 -- dns server proc: resolves hostnames via lib/dns.lua, riding on the
 -- udp task's capability -- not a kernel-level exclusive task itself
 -- (no raw efi access of its own), same shape as ninesrv/tcp9srv.
-local _, dnssrv = proc.spawn(assert(rootns:readfile("/lib/dns.lua")),
+local _, dnssrv = proc.spawn(assert(rootns:readfile("/task/dns.lua")),
     { name = "dns", ns = nsdesc })
 local has_dns = has_udp and
     pcall(sys.send, dnssrv, { udp = { __right = caps_of.udp } })
@@ -345,7 +345,7 @@ do
 	-- this machine runs -- and hand it the service source too, under
 	-- opt/org.luaos.svc/<name>.lua, resolved by svc.start before the
 	-- namespace -- without modifying the image at all. that is what
-	-- scripts/website.sh does to enable webterm, which is deliberately
+	-- tools/website.lua does to enable webterm, which is deliberately
 	-- commented out in the baked-in config.
 	local injected = efi.fwcfg and efi.fwcfg("opt/org.luaos.services")
 	local list, why
@@ -364,6 +364,12 @@ do
 			-- service's SOURCE as well as the config that names
 			-- it -- `-fw_cfg name=opt/org.luaos.svc/foo.lua` --
 			-- and run something this image has never seen.
+			-- NB the fw_cfg key stays opt/org.luaos.svc/ even
+			-- though the directory is now task/: it is an
+			-- external interface a host types on a qemu command
+			-- line, so renaming it would break every invocation
+			-- that exists for a tidiness nobody outside this
+			-- repo can see.
 			readfile = function(p)
 				local base = tostring(p):match("([^/]+)$")
 				local inj = base and efi.fwcfg and

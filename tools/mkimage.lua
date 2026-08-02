@@ -1,7 +1,7 @@
 #!/usr/bin/env lua5.4
 -- mkimage.lua OUTPUT LUAOS_EFI LUA_FILE... -- 48M gpt disk, one esp
 -- partition, fat via mtools (no root needed). lua files land at
--- /<name>; lib/*, bin/*, svc/* and etc/* land under the same name, so
+-- /<name>; lib/*, bin/*, task/* and etc/* land under the same name, so
 -- a file's path in the namespace matches its path here.
 
 local SFDISK = os.getenv("SFDISK") or "sfdisk"
@@ -57,7 +57,7 @@ local drive = out .. "@@1M"	-- mtools' own syntax; not a shell-quoted path itsel
 local qdrive = quote(drive)
 
 run("mformat -i " .. qdrive .. " -v EFI -F -h 32 -t 44 -n 64 -c 1")
-run("mmd -i " .. qdrive .. " efi efi/boot lib bin svc etc")
+run("mmd -i " .. qdrive .. " efi efi/boot lib bin task etc")
 run("mcopy -o -i " .. qdrive .. " " .. quote(efi) .. " ::efi/boot/" .. BOOT_EFI)
 
 local function basename(path)
@@ -72,7 +72,7 @@ end
 -- creating, and mmd on an existing directory is an error rather than a
 -- no-op.
 local made = { ["efi"] = true, ["efi/boot"] = true, ["lib"] = true,
-    ["bin"] = true, ["svc"] = true, ["etc"] = true }
+    ["bin"] = true, ["task"] = true, ["etc"] = true }
 
 local function mkdirs(dest)
 	local dir = dest:match("^(.*)/[^/]+$")
@@ -92,7 +92,7 @@ end
 
 for i = 3, #arg do
 	local f = arg[i]
-	local dest = under(f, "lib") or under(f, "bin") or under(f, "svc") or
+	local dest = under(f, "lib") or under(f, "bin") or under(f, "task") or
 	    under(f, "etc") or basename(f)
 
 	mkdirs(dest)

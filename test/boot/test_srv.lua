@@ -20,7 +20,7 @@ tap.plan(28)
 -- because sys.spawn takes a chunk and luaL_loadbuffer accepts either
 -- form.
 local srvd = select(2, sys.spawn(
-    string.dump(assert(loadfile("/lib/srvd.lua"))), { name = "srvtest" }))
+    string.dump(assert(loadfile("/task/srvd.lua"))), { name = "srvtest" }))
 
 tap.ok(srvd ~= nil, "srvd starts")
 

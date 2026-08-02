@@ -45,16 +45,26 @@ local function fmt_status(pid)
 	}, "\n") .. "\n"
 end
 
+-- sys.stack returns one entry per COROUTINE, not a flat frame list: a
+-- proc built on lib/thread keeps its threads inside its own state, and
+-- reporting only the main one showed the scheduler whether the proc was
+-- idle or wedged. See src/debug.c.
 local function fmt_stack(pid)
-	local frames = sys.stack(pid)
+	local coros = sys.stack(pid)
 	local out = {}
 
-	for i, f in ipairs(frames) do
-		out[#out + 1] = string.format("%2d %s:%d in %s (%s)",
-		    i, f.source, f.line, f.name, f.what)
+	for _, co in ipairs(coros) do
+		out[#out + 1] = string.format("[%s] %s", co.label, co.status)
+		for i, f in ipairs(co.frames) do
+			out[#out + 1] = string.format("  %2d %s:%d in %s (%s)",
+			    i, f.source, f.line, f.name, f.what)
+		end
+		if #co.frames == 0 then
+			out[#out + 1] = "  (no frames)"
+		end
 	end
 	if #out == 0 then
-		out[1] = "(no frames)"
+		out[1] = "(no coroutines)"
 	end
 	return table.concat(out, "\n") .. "\n"
 end

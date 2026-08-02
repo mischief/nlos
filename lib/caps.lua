@@ -190,7 +190,7 @@ function M.dns(handle)
 	return d
 end
 
--- the framebuffer (lib/fb.lua). unlike the wrappers above, every reply
+-- the framebuffer (task/fb.lua). unlike the wrappers above, every reply
 -- there is a {ok=} / {err=} table -- sys.send carries one value, so a
 -- bare nil would lose the reason -- and this is where that is unwrapped
 -- into the nil-plus-message shape the rest of caps.lua returns.

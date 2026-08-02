@@ -16,7 +16,7 @@ local srvfs = require("srvfs")
 tap.plan(15)
 
 local srvd = select(2, sys.spawn(
-    string.dump(assert(loadfile("/lib/srvd.lua"))), { name = "srvtest" }))
+    string.dump(assert(loadfile("/task/srvd.lua"))), { name = "srvtest" }))
 local server = select(2, sys.spawn([[
 	local dev = require("dev")
 	local srv = require("srv")

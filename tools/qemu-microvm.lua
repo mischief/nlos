@@ -6,7 +6,7 @@
 -- filesystem. console on stdio; a deliberate triple fault
 -- (src/platform/microvm/reset.c) plus -no-reboot ends the guest.
 --
--- this attaches no virtio devices. scripts/boottest-microvm.lua is the
+-- this attaches no virtio devices. tools/boottest-microvm.lua is the
 -- one that does, per test, and is what the suite runs.
 
 local here = arg[0]:match("^(.*)/[^/]+$") or "."

@@ -20,7 +20,7 @@ end
 
 -- spawn our own dns task (init.lua's supervisor isn't running -- this
 -- payload replaced it), same pattern init.lua itself uses.
-local _, dnssrv = sys.spawn(io.open("/lib/dns.lua"):read("a"),
+local _, dnssrv = sys.spawn(io.open("/task/dns.lua"):read("a"),
     { name = "dns" })
 local has_udp = caps_of.udp ~= nil and
     pcall(sys.send, dnssrv, { udp = { __right = caps_of.udp } })

@@ -263,7 +263,7 @@ the same reason 9P is.
 **Arch code lives in `src/<arch>/`.** The kernel, libc and all Lua are
 arch-blind. x86_64, aarch64 and riscv64 are ported; `meson.build` picks
 the directory from `host_machine.cpu_family()`, which a `--cross-file
-cross/<arch>.txt` sets. Meson then *tells* `scripts/arch.lua` and
+cross/<arch>.txt` sets. Meson then *tells* `tools/arch.lua` and
 `test/qemuarch.lua` which arch it built, via `LUAOS_ARCH`. They must
 never work it out from `uname` again: under a cross build the host arch
 is the wrong answer, and riscv64 has only ever been cross-built.
@@ -666,7 +666,7 @@ file and it is pure macros; a network stack is the usual way this rule
 gets tested, and importing lwip for microvm is not on the table.
 
 A window system inside the framebuffer. It is two layers on purpose and
-the seam is plan 9's: `src/platform/efi/gop.c` plus `lib/fb.lua` are
+the seam is plan 9's: `src/platform/efi/gop.c` plus `task/fb.lua` are
 libmemdraw — a rectangle of pixels, and `load`/`unload`/`fill`/`scroll`
 to move them — and anything that stacks, clips, routes input or knows
 what a window is goes above, in another proc holding a right to that

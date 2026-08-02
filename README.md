@@ -32,7 +32,7 @@ Either way you need that machine's UEFI firmware: OVMF on x86_64
 (`/usr/share/edk2-ovmf`), AAVMF on aarch64 (`/usr/share/AAVMF`),
 qemu's own `edk2-riscv-code.fd` on riscv64 (`/usr/share/qemu`), or
 `OVMF_CODE`/`OVMF_VARS` in the environment to point elsewhere. Per-arch
-qemu, firmware and devices live in `scripts/arch.lua` and
+qemu, firmware and devices live in `tools/arch.lua` and
 `test/qemuarch.lua`, which meson tells which arch it built; nothing else
 needs to know.
 
@@ -138,7 +138,7 @@ Three kinds of test, all real boots:
   HTTP/JSON-RPC over a forwarded port. A guest cannot test its own TCP
   server, because qemu's usermode network does not hairpin.
 
-`scripts/boottest.lua` extracts the TAP and dumps the whole serial trace
+`tools/boottest.lua` extracts the TAP and dumps the whole serial trace
 as diagnostics on failure. `lib/tap.lua` is the guest-side producer.
 
 Benchmarks are separate from tests and are not run by `meson test`:
@@ -151,6 +151,28 @@ They assert nothing beyond "it ran" — a throughput floor would be flaky
 on a loaded host — so read the numbers from
 `build/meson-logs/benchmarklog.txt`. Meson runs benchmarks serially,
 which is what makes them comparable between runs.
+
+## Where things live
+
+Everything is .lua, so the directory is what says which kind it is:
+
+```
+lib/     required. returns a table. loading it does nothing else.
+task/    a proc's main chunk: loaded by PATH, runs, never returns.
+         drivers (spawned by src/kernel.c) and services (spawned from
+         etc/services.lua) alike -- the difference between them is who
+         starts them and what they are granted, and both of those are
+         stated at the spawn site rather than in a directory name.
+bin/     a program under the lib/prog.lua ABI, run by a shell.
+tools/   host-side. builds and runs the image; never reaches the guest.
+test/    boot/ is guest payloads; the rest are host-side drivers.
+```
+
+`lib/` is the half that can be checked, so test/boot/test_layout.lua
+checks it: every module must require cleanly and yield a table. That
+catches a library that grew a side effect and a task that drifted into
+lib/, which is not hypothetical -- lib/idle.lua had been a proc all
+along, and blocks forever the moment anything requires it.
 
 ## Reading further
 

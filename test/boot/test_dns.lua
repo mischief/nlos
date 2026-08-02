@@ -8,7 +8,7 @@ local caps_of = sys.granted()
 
 tap.plan(3)
 
-local dnspid, dnsh = sys.spawn(io.open("/lib/dns.lua"):read("a"),
+local dnspid, dnsh = sys.spawn(io.open("/task/dns.lua"):read("a"),
     { name = "dns" })
 sys.send(dnsh, { udp = { __right = caps_of.udp } })
 

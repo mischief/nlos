@@ -1,5 +1,5 @@
 -- tap: minimal TAP producer for boot tests. output goes to the
--- console (com1 serial); scripts/boottest.sh extracts it. done()
+-- console (com1 serial); tools/boottest.sh extracts it. done()
 -- powers the vm off (via conio, the only task allowed to touch
 -- platform power) so the harness sees a clean qemu exit.
 

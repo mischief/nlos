@@ -1,6 +1,6 @@
 -- draw: rectangles and in-memory images, in the proc that wants to
 -- draw. no capability lives here -- nothing in this file can reach a
--- screen. it is the pixel arithmetic every client of lib/fb.lua would
+-- screen. it is the pixel arithmetic every client of task/fb.lua would
 -- otherwise write for itself, and the layer a rio-shaped thing would be
 -- built on.
 --
@@ -43,7 +43,7 @@ local M = {}
 --
 -- a rectangle is {x=,y=,w=,h=}, not plan 9's {min,max} pair. the two
 -- are the same information and this is the form the wire protocol in
--- lib/fb.lua and the Blt arguments underneath both already take, so
+-- task/fb.lua and the Blt arguments underneath both already take, so
 -- carrying min/max would mean converting at every boundary to gain
 -- nothing but the ability to write r.max.x.
 
@@ -178,7 +178,7 @@ function Image:draw(p, src, sr)
 	return self
 end
 
--- the raw BGRx bytes of a rectangle, in the layout lib/fb.lua's load
+-- the raw BGRx bytes of a rectangle, in the layout task/fb.lua's load
 -- wants: rows concatenated, no padding. this is plan 9's unloadimage,
 -- and it is the only way pixels leave an image.
 function M.bytes(img, r)

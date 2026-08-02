@@ -3,14 +3,14 @@
 -- under qemu's microvm machine with the test payload injected via
 -- fw_cfg, and emit the TAP the guest printed on com1.
 --
--- the efi harness's counterpart, scripts/boottest.lua, and deliberately
+-- the efi harness's counterpart, tools/boottest.lua, and deliberately
 -- separate rather than a branch inside it: there is no firmware, no
 -- pflash varstore and no disk here, the payload is the whole guest, and
 -- the guest ends by triple-faulting itself (src/platform/microvm/
 -- reset.c) rather than through ResetSystem. Little of that harness's
 -- body would survive the conditionals.
 --
--- every guest gets a virtio-rng, matching scripts/arch.lua's efi
+-- every guest gets a virtio-rng, matching tools/arch.lua's efi
 -- machines. --9p additionally serves a temporary directory over
 -- virtio-9p, seeded with the hello.txt that
 -- test/boot/microvm_p9mount.lua expects; it is opt-in because that test

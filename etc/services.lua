@@ -18,7 +18,7 @@ return {
 	-- inherit from a default config.
 	-- note port 80 rather than 7777: init's 9p-over-tcp server holds
 	-- 7777, and two listeners on one port is EFI_INVALID_PARAMETER.
-	-- { path = "/svc/webterm.lua", caps = { "tcp" },
+	-- { path = "/task/webterm.lua", caps = { "tcp" },
 	--   args = { port = 80 } },
 
 	-- an ssh server, putting a visitor at the same lua console the
@@ -26,6 +26,6 @@ return {
 	-- visitor gets a shell -- and additionally it accepts ANY public
 	-- key so far, so it is on here only because this is a branch for
 	-- working on it.
-	{ path = "/svc/sshd.lua", caps = { "tcp" },
+	{ path = "/task/sshd.lua", caps = { "tcp" },
 	  args = { port = 2222, trace = true } },
 }

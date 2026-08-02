@@ -11,7 +11,7 @@ project('lua-os', 'c',
 cc = meson.get_compiler('c')
 objcopy = find_program('objcopy')
 
-# every scripts/*.lua and test/*.lua tool is run through this rather
+# every tools/*.lua and test/*.lua tool is run through this rather
 # than relying on a shebang + preserved execute bit.
 lua_interp = find_program('lua5.4', 'lua')
 
@@ -19,7 +19,7 @@ lua_interp = find_program('lua5.4', 'lua')
 # it decides which sources build, what the esp must call the loader for
 # the firmware to find it (the UEFI spec's removable-media path), and
 # what machine-specific flags the compiler needs. everything downstream
-# -- scripts/arch.lua, test/qemuarch.lua -- is told the answer rather
+# -- tools/arch.lua, test/qemuarch.lua -- is told the answer rather
 # than working it out again; see the LUAOS_ARCH env below.
 #
 # a native build gets this from the host; a cross build gets it from
@@ -188,9 +188,9 @@ else
   # mount, not in this list -- every entry here is frozen at build time.
   embed_files = [
     'lib/thread.lua',
-    'lib/cons.lua',
-    'lib/wire.lua',
-    'lib/power.lua',
+    'task/cons.lua',
+    'task/wire.lua',
+    'task/power.lua',
     'lib/stdout.lua',
     'lib/ninep.lua',
     'lib/dev.lua',
@@ -199,9 +199,9 @@ else
     'lib/ns.lua',
     'lib/chan.lua',
     'lib/p9fs.lua',
-    'lib/p9srv.lua',
-  'lib/p9tcp.lua',
-    'lib/eth.lua',
+    'lib/p9tcp.lua',
+    'task/p9srv.lua',
+    'task/eth.lua',
     'lib/tap.lua',
   ]
   embed_args = []
@@ -211,7 +211,7 @@ else
   embedfs_src = custom_target('embedfs.c',
     output: 'embedfs.c',
     input: files(embed_files),
-    command: [lua_interp, files('scripts/gen_embedfs.lua'), '@OUTPUT@'] + embed_args,
+    command: [lua_interp, files('tools/gen_embedfs.lua'), '@OUTPUT@'] + embed_args,
   )
   kernel_src += embedfs_src
 endif
@@ -344,7 +344,7 @@ else
   # code here (no filesystem yet) -- console on stdio, -no-reboot turns
   # the deliberate triple-fault shutdown into a clean qemu exit.
   run_target('qemu-microvm',
-    command: [lua_interp, files('scripts/qemu-microvm.lua'), luaos_microvm_elf,
+    command: [lua_interp, files('tools/qemu-microvm.lua'), luaos_microvm_elf,
       files('test/boot/microvm_hello.lua')],
   )
 endif
@@ -377,9 +377,13 @@ lua_payload = files(
   'init.lua',
   # what the machine runs, and what each may touch -- see lib/svc.lua
   'etc/services.lua',
-  # services, at /svc/<name> -- started by init, not by replacing it
-  'svc/webterm.lua',
-  'svc/sshd.lua',
+  # services, at /task/<name> -- started by init rather than by
+  # replacing it. same directory as the driver tasks because the only
+  # difference is who spawns them and what they are granted, and both
+  # of those are said elsewhere: kernel.c for the drivers,
+  # etc/services.lua for the rest.
+  'task/webterm.lua',
+  'task/sshd.lua',
   # programs, at /bin/<name> -- see lib/prog.lua for the ABI they run under
   'bin/cat.lua',
   'bin/ps.lua',
@@ -388,7 +392,7 @@ lua_payload = files(
   'bin/seq.lua',
   'bin/smiley.lua',
   'lib/caps.lua',
-  'lib/cons.lua',
+  'task/cons.lua',
   'lib/chan.lua',
   'lib/dev.lua',
   'lib/draw.lua',
@@ -410,13 +414,13 @@ lua_payload = files(
   'lib/ssh/kex.lua',
   'lib/ssh/server.lua',
   'lib/dhcp.lua',
-  'lib/dhcpd.lua',
-  'lib/dns.lua',
+  'task/dhcpd.lua',
+  'task/dns.lua',
   'lib/espfs.lua',
-  'lib/espsrv.lua',
-  'lib/fb.lua',
+  'task/espsrv.lua',
+  'task/fb.lua',
   'lib/http.lua',
-  'lib/idle.lua',
+  'task/idle.lua',
   'lib/json.lua',
   'lib/log.lua',
   'lib/mcp.lua',
@@ -428,45 +432,45 @@ lua_payload = files(
   'lib/stdout.lua',
   'lib/svc.lua',
   'lib/dos.lua',
-  'lib/power.lua',
+  'task/power.lua',
   'lib/p9fs.lua',
-  'lib/p9srv.lua',
   'lib/p9tcp.lua',
+  'task/p9srv.lua',
   'lib/proc.lua',
   'lib/procfs.lua',
   'lib/prog.lua',
   'lib/ps.lua',
-  'lib/eth.lua',
+  'task/eth.lua',
   'lib/srvc.lua',
-  'lib/srvd.lua',
+  'task/srvd.lua',
   'lib/srvfs.lua',
   'lib/tap.lua',
-  'lib/tcp.lua',
+  'task/tcp.lua',
   'lib/thread.lua',
-  'lib/udp.lua',
+  'task/udp.lua',
   'lib/webterm.lua',
-  'lib/wire.lua',
+  'task/wire.lua',
 )
 
 # 48M gpt disk with one esp, assembled with sgdisk + mtools (no root)
 luaos_img = custom_target('luaos.img',
   input: [luaos_efi] + lua_payload,
   output: 'luaos.img',
-  command: [lua_interp, files('scripts/mkimage.lua'), '@OUTPUT@', '@INPUT@'],
+  command: [lua_interp, files('tools/mkimage.lua'), '@OUTPUT@', '@INPUT@'],
   env: {'BOOT_EFI': boot_efi},
   build_by_default: true,
 )
 
 # every script that boots the image needs to know which machine it is
 # booting, and must not guess: with a cross build the host arch is the
-# wrong answer. scripts/arch.lua and test/qemuarch.lua both fall back
+# wrong answer. tools/arch.lua and test/qemuarch.lua both fall back
 # to uname when this is unset, which is what a bare `qemu.lua img` gets.
 archenv = {'LUAOS_ARCH': arch}
 
 # console on stdio, 9p wire on <builddir>/9p.sock
 # mount from host: 9p -a 'unix!<builddir>/9p.sock' ls /
 run_target('qemu',
-  command: [lua_interp, files('scripts/qemu.lua'), luaos_img],
+  command: [lua_interp, files('tools/qemu.lua'), luaos_img],
   env: archenv,
 )
 
@@ -476,14 +480,14 @@ run_target('qemu',
 # graphical program from the shell needs. LUAOS_DISPLAY picks a backend
 # if the default (gtk, then sdl) is not what you want.
 run_target('qemu-gtk',
-  command: [lua_interp, files('scripts/qemu.lua'), luaos_img, 'gtk'],
+  command: [lua_interp, files('tools/qemu.lua'), luaos_img, 'gtk'],
   env: archenv,
 )
 
 # boots test/boot/fetch_mcp.lua instead of init.lua (single-url mcp
 # fetch server), mcp reachable on host tcp/8090
 run_target('fetch-mcp',
-  command: [lua_interp, files('scripts/fetch-mcp.lua'), luaos_img],
+  command: [lua_interp, files('tools/fetch-mcp.lua'), luaos_img],
   env: archenv,
 )
 
@@ -494,7 +498,7 @@ run_target('fetch-mcp',
 # what we asked for, which is a different claim from what a person
 # sitting in front of the machine would see.
 run_target('screenshot',
-  command: [lua_interp, files('scripts/screenshot.lua'), luaos_img,
+  command: [lua_interp, files('tools/screenshot.lua'), luaos_img,
     files('test/boot/fbdraw.lua'), 'screenshot.ppm'],
   env: archenv,
 )
@@ -503,7 +507,7 @@ run_target('screenshot',
 # boots test/boot/fbsmiley.lua and leaves qemu up to look at. needs a
 # DISPLAY or WAYLAND_DISPLAY; on a headless box use screenshot above.
 run_target('smiley',
-  command: [lua_interp, files('scripts/smiley.lua'), luaos_img,
+  command: [lua_interp, files('tools/smiley.lua'), luaos_img,
     files('test/boot/fbsmiley.lua')],
   env: archenv,
 )
@@ -511,7 +515,7 @@ run_target('smiley',
 # boots test/boot/srvweb.lua instead of init.lua: the browser shell,
 # reachable at http://localhost:8080/ (WEB_PORT to change it)
 run_target('website',
-  command: [lua_interp, files('scripts/website.lua'), luaos_img],
+  command: [lua_interp, files('tools/website.lua'), luaos_img],
   env: archenv,
 )
 
@@ -523,15 +527,15 @@ run_target('website',
 # test()'s program argument must be a single executable (not an argv
 # list the way run_target/custom_target's command: can be), so this
 # one relies on the shebang line + the execute bit, unlike every other
-# scripts/*.lua invocation in this file.
-boottest = files('scripts/boottest.lua')
+# tools/*.lua invocation in this file.
+boottest = files('tools/boottest.lua')
 
 boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recovery', 'ipc', 'budget', 'memlimit',
               'math',
               'srv', 'mountcmd', 'sendwait', 'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
               'procfs', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount', 'p9stream', 'p9flush',
               'fb', 'fbprog',
-              'nohook', 'preempt', 'idle', 'stack', 'rng', 'sshcrypto', 'mlkem', 'sshmem']
+              'nohook', 'preempt', 'idle', 'stack', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
@@ -650,7 +654,7 @@ if platform == 'microvm'
 #
 # see the note on `boottest` above for why this is passed as a program
 # rather than an argv list.
-microvm_boottest = files('scripts/boottest-microvm.lua')
+microvm_boottest = files('tools/boottest-microvm.lua')
 
 # every guest gets a virtio-rng. --9p additionally serves a seeded
 # temporary directory over virtio-9p; only the mount test wants one,

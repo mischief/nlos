@@ -1,7 +1,7 @@
 /* los.platform.fb: the raw framebuffer, and nothing above it.
  *
  * registered in package.preload ONLY for the one task holding PRIV_FB
- * (kernel.c's driver table spawns /lib/fb.lua with it), exactly like
+ * (kernel.c's driver table spawns /task/fb.lua with it), exactly like
  * cons/wire/power in drivers.c. every other proc reaches pixels by
  * holding a send-right to that task.
  *
