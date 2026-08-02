@@ -3,8 +3,10 @@
 -- in this proc's own table, granted by the kernel at spawn -- not a
 -- los.sys-wide constant; no other proc needs to know it). every other
 -- proc holds, at most, a send-right to this task's mailbox and talks
--- by message: {op="write", data=s}, {op="log", data=s} or
--- {op="readline", reply={__right=rp}}.
+-- by message: {op="write", data=s}, {op="log", data=s},
+-- {op="readline", reply={__right=rp}} or {op="read", reply={__right=rp}}
+-- -- the last being the same thing in the program-ABI spelling, which is
+-- what lets the console serve as a program's stdin.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -68,5 +70,20 @@ while true do
 		platform.write(m.data)
 	elseif m.op == "readline" then
 		sys.send(m.reply.__right, readline())
+	elseif m.op == "read" then
+		-- the ABI stream protocol (lib/prog.lua's PortStream), so
+		-- the console can BE a program's stdin. it is the same
+		-- readline underneath -- a terminal is line-buffered and
+		-- edited whoever is asking -- with the newline put back,
+		-- since a reader of a byte stream expects the line
+		-- terminator that a readline caller does not.
+		--
+		-- nil stays nil: readline reports eof (ctrl-d on an empty
+		-- line) that way and PortStream:read turns it into "",
+		-- which is the ABI's eof. losing that distinction here
+		-- would make ctrl-d unrepresentable to a program.
+		local line = readline()
+
+		sys.send(m.reply.__right, line and (line .. "\n") or nil)
 	end
 end

@@ -380,6 +380,16 @@ at thousands of timers, and `MAXPROCS` is 32.
   `docs/uefi-notes.md`; `test/tcp4echo/` exists to answer this class of
   question from outside the kernel, which is the only place it can be
   answered.
+- **A table carrying `__right` ships as the right and nothing else.**
+  `serialize` sees the key and emits one `R` record, so every sibling
+  field in that table is dropped in transit, silently and with no error.
+  `{__right = h, pull = true}` was the documented shape of the program
+  ABI's stdin for as long as `pull` never once arrived: `cat < file`
+  handed the program a pull server and told it by omission to drain a
+  pipe, so it called `tryrecv` on a send right. Flags go BESIDE the
+  right (`stdinpull`), never inside it. Nothing caught this because no
+  test read from a redirect; it surfaced only when a program first tried
+  to read the console.
 - **`sys.sendblock` must be told how big the message is**, or a large
   sender spins instead of parking. `port_push_owned` admits a message
   only if `qbytes + len <= MAXQUEUE`, so a message that is a large

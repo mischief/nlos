@@ -397,6 +397,7 @@ local repl_worker_src = [[
 	local tcph = m.tcp and m.tcp.__right
 	local udph = m.udp and m.udp.__right
 	local dnsh = m.dns and m.dns.__right
+	local fbh = m.fb and m.fb.__right
 
 	-- pre-imported as bare globals (_G.x, not local x): the repl's
 	-- evaluate() loads each typed line as its own chunk via load(),
@@ -454,7 +455,7 @@ local repl_worker_src = [[
 			-- no srv capability: `mount` reads /srv out of this
 			-- namespace, which the worker inherited.
 			launcher.start({ ns = require("ns").current(),
-			    cons = consh },
+			    cons = consh, fb = fbh },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")
 			return "back at the lua repl"
@@ -524,6 +525,9 @@ while true do
 	end
 	if has_dns then
 		grant.dns = { __right = dnssrv }
+	end
+	if caps_of.fb then
+		grant.fb = { __right = caps_of.fb }
 	end
 	-- no srv grant: the worker reaches the registry through /srv in
 	-- the namespace it was spawned with, the same way it reaches the

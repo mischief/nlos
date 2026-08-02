@@ -129,6 +129,11 @@ function M.new(caps)
 	return setmetatable({
 		ns = caps.ns,
 		cons = caps.cons,
+		-- the screen, lent to every program this shell spawns (see
+		-- Sh:spawn1). a shell given none hands out none, so what
+		-- decides whether programs here can draw is one grant, one
+		-- level up -- exactly like `cons`.
+		fb = caps.fb,
 		coro = caps.coro or false,
 		env = caps.env or { PATH = caps.path or "/bin", HOME = "/" },
 		cwd = "/",
@@ -378,8 +383,29 @@ function Sh:spawn1(path, argv, streams)
 			msg[k] = { __right = streams[k] }
 		end
 	end
+
+	-- the screen goes to every program, not to a declared few. that is
+	-- DOS, which this launcher takes literally: a program got the
+	-- machine, video card included, and gave it back by ending. there
+	-- is no list of graphical programs to keep in step, and a program
+	-- that never asks (prog.screen) is unaffected.
+	--
+	-- it is still not ambient authority. the shell hands it over
+	-- explicitly, in the ABI message, exactly as it hands over stdout;
+	-- a shell that was not given a screen has nothing to pass on, and
+	-- neither has anything it spawns.
+	if self.fb then
+		msg.fb = { __right = self.fb }
+	end
+	-- the pull flag rides BESIDE stdin, not inside it. a table carrying
+	-- __right is serialized as the right and nothing else (see
+	-- kernel.c's serialize), so every sibling field is silently
+	-- dropped -- which is what happened to `stdin.pull` for as long as
+	-- it was written that way: `cat < file` handed the program a pull
+	-- server and told it, by omission, to drain a pipe, and it read a
+	-- send right as a receive one.
 	if msg.stdin and streams.stdinpull then
-		msg.stdin.pull = true
+		msg.stdinpull = true
 	end
 	sys.send(h, msg)
 	sys.close(h)
@@ -611,7 +637,17 @@ function Sh:run(line)
 
 		local streams = { stderr = self.cons }
 
-		-- stdin: the previous stage's pipe, a redirect, or nothing
+		-- stdin: the previous stage's pipe, a redirect, or the
+		-- console -- which is what makes an interactive program
+		-- possible at all. it used to be nothing, so a program
+		-- reading fd 0 at the prompt got an immediate eof and no
+		-- program could ever wait for a keypress. the console
+		-- answers the ABI's read op (see lib/cons.lua) precisely so
+		-- it can stand in for a pipe here.
+		--
+		-- pull, not pipe: a terminal produces on demand and has to
+		-- be ASKED, where a pipe is drained off the port queue. that
+		-- distinction is the whole reason the ABI carries a flag.
 		if prev then
 			streams.stdin = prev
 			prev = nil
@@ -628,6 +664,9 @@ function Sh:run(line)
 			thread.spawn(M.filereader(f, rp))
 			servers[#servers + 1] = rp
 			streams.stdin = rp
+			streams.stdinpull = true
+		else
+			streams.stdin = self.cons
 			streams.stdinpull = true
 		end
 

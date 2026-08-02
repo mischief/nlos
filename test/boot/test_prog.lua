@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(31)
+tap.plan(32)
 
 local N = ns.new()
 
@@ -217,6 +217,19 @@ drain2()
 dos.once(sh2, "seq 3 > /out.txt")
 tap.is(N:readfile("/out.txt"), "1\n2\n3\n",
     "seq 3 > /out.txt wrote through a file server")
+
+-- and back OUT of a file. this direction was broken and silent: the
+-- launcher marks a file redirect as a PULL stream (the reader is a
+-- server that answers {op="read"}), and that flag used to be written
+-- inside the stdin table -- where the serializer drops it, since a table
+-- carrying __right ships as the right alone. the program therefore got a
+-- pull server and treated it as a pipe, calling tryrecv on a send right.
+--
+-- nothing caught it because nothing here read from a file redirect. it
+-- surfaced only when a program first tried to read the CONSOLE, which
+-- is a pull stream for the same reason.
+dos.once(sh2, "cat < /out.txt")
+tap.is(drain2(), "1\n2\n3\n", "cat < /out.txt read through a file server")
 
 -- ---- the program environment is the program's own ----
 --

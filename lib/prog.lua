@@ -8,10 +8,16 @@
 --     env    = { PATH = "/bin", HOME = "/" },
 --     cwd    = "/",
 --     nsdesc = <ns:describe(), so the namespace is inherited>,
---     stdin  = { __right = h, pull = <bool> } | nil,
+--     stdin  = { __right = h } | nil,
+--     stdinpull = <bool>,
 --     stdout = { __right = h } | nil,
 --     stderr = { __right = h } | nil,
 --   }
+--
+-- stdinpull sits BESIDE stdin rather than inside it, and must: a table
+-- carrying __right is serialized as that right and nothing else, so any
+-- sibling field in it is dropped in transit. it was written as
+-- stdin.pull once and silently never arrived.
 --
 -- WRITING is the same whatever is on the other end -- cons, a pipe and a
 -- file server all take {op="write", data=} -- so stdout/stderr need no
@@ -525,6 +531,14 @@ M.EXIT = "\1prog.exit"
 function M.run(ctx)
 	local who = ctx.name or "?"
 	local fds, env = install(ctx)
+
+	-- M.screen() reads this. set here rather than only in M.main so
+	-- the coroutine path (M.corun) reaches a screen too -- with the
+	-- caveat coro mode already carries everywhere else: coroutines
+	-- share one proc, so they share this, and the last one to start
+	-- wins. that is the same trade M.corun's own comment describes
+	-- for the namespace, and it is why coro is off by default.
+	M.ctx = ctx
 	local src, serr = ctx.ns:readfile(ctx.path)
 
 	if not src then
@@ -575,14 +589,21 @@ end
 function M.main()
 	local ctx = thread.recv(sys.SELF)
 
-	M.ctx = ctx
+	-- stdinpull is a TOP-LEVEL field, not one inside stdin: a table
+	-- carrying __right serializes to the right alone and drops its
+	-- siblings, so a flag written inside it never arrives. the older
+	-- spelling is still honoured for a caller that has not moved.
+	local pull = ctx.stdinpull or (ctx.stdin and ctx.stdin.pull)
 
 	ctx.stdin = ctx.stdin and
-	    (ctx.stdin.pull and M.portstream(ctx.stdin.__right) or
+	    (pull and M.portstream(ctx.stdin.__right) or
 	     M.pipestream(ctx.stdin.__right)) or nil
 	-- writes are uniform, so the cheap stream will do for both
 	ctx.stdout = ctx.stdout and M.pipestream(ctx.stdout.__right) or nil
 	ctx.stderr = ctx.stderr and M.pipestream(ctx.stderr.__right) or nil
+
+	-- the screen, if the launcher lent us one. see M.screen below.
+	ctx.fb = ctx.fb and ctx.fb.__right or nil
 
 	local N, nerr = ns.restore(ctx.nsdesc)
 
@@ -616,6 +637,7 @@ function M.corun(spec)
 		stdin = spec.stdin,
 		stdout = spec.stdout,
 		stderr = spec.stderr or spec.stdout,
+		fb = spec.fb,
 	}
 
 	if not ctx.ns then
@@ -623,6 +645,34 @@ function M.corun(spec)
 	end
 	ctx.setexit = setexit(ctx, nil)
 	return M.run(ctx)
+end
+
+-- ---- the screen ----
+--
+-- a program that was lent the framebuffer gets it here, wrapped, or nil
+-- if it was not. that is the whole test: no probing, no capability
+-- query, just whether the launcher put one in the ABI message -- the
+-- same rule AGENTS.md states for every other capability.
+--
+-- this is DOS, taken as literally as the rest of lib/dos.lua takes it: a
+-- program that wants the screen gets ALL of it, draws on it, and gives
+-- it back by exiting. there is no window, nothing to share it with, and
+-- no compositor -- because there is no window system yet, and a program
+-- like this is what you can write before there is one. windows 3.1 ran
+-- from a DOS prompt for the same reason, in the same order.
+--
+-- when a layer does arrive it goes HERE, not underneath: this returns
+-- something that draws on the whole screen today and would return a
+-- window tomorrow, and a program written against it need not care which
+-- it got. that is why it hands back a capability object rather than the
+-- raw right.
+function M.screen()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.fb then
+		return nil
+	end
+	return require("caps").fb(ctx.fb)
 end
 
 return M
