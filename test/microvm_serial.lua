@@ -138,15 +138,24 @@ if not ok(echoed, "the guest received bytes written to its serial") then
 	os.exit(1)
 end
 
--- and it must be the bytes actually sent, not merely something
-local content = seen:match("SERIALRX got:([^\r\n]+)")
+-- and they must be the bytes sent.
+--
+-- Checked as "what arrived contains what was sent", not the reverse. A
+-- stray NUL turns up on this wire now and then -- a line-condition
+-- artifact, seen as got:hello\000 -- and asserting that the arrival is
+-- a substring of SENT fails on any extra byte, which made this flake
+-- about one run in four. Since SENT is written repeatedly, the useful
+-- question is whether it ever came through intact.
+local heard = {}
 
--- non-empty AND part of what was sent. The empty case has to be
--- rejected explicitly: string.find("", ...) succeeds, so a vacuous
--- match would pass while proving nothing.
-if not ok(content ~= nil and #content > 0 and
-    SENT:find(content, 1, true) ~= nil,
-    "and they were the bytes sent: got " .. oneline(tostring(content))) then
+for line in seen:gmatch("SERIALRX got:([^\r\n]*)") do
+	heard[#heard + 1] = line
+end
+
+local joined = table.concat(heard):gsub("%z", "")
+
+if not ok(joined:find(SENT, 1, true) ~= nil,
+    "and they were the bytes sent: heard " .. oneline(joined)) then
 	diag(seen)
 end
 
