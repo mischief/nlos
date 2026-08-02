@@ -867,3 +867,21 @@ test('tcb-statemachine', lua_interp,
   protocol: 'tap',
   timeout: 20,
 )
+
+# the same state machine over a link that loses, reorders, duplicates
+# and delays. Every network this has ever been run against is perfect --
+# slirp, the LAN across 167,000 segments, and vmd all dropped nothing --
+# so its loss recovery had never once executed in a test. Congestion
+# control makes that worse rather than better, being entirely loss
+# recovery: slow start and fast retransmit are dead code on a perfect
+# link.
+#
+# Deterministic, because "drop the third data segment" is debuggable
+# where "5% loss" fails once a fortnight. And free: because the TCBs take
+# time as an argument, two minutes of simulated network costs five
+# milliseconds of wall clock.
+test('tcb-lossy', lua_interp,
+  args: [files('test/host_tcbloss.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
