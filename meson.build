@@ -784,3 +784,19 @@ if luaheap_lua_dep.found()
   )
   test('luaheap-bench', luaheap_bench, protocol: 'tap', timeout: 120)
 endif
+
+# lib/tcp4.lua is the TCP codec -- sequence arithmetic, the header and
+# its options -- with no state and no I/O in it, so like luaheap it can
+# be tested by the host's own lua without booting anything. That is new
+# for a lua module here, and it earns its place on TCP specifically: the
+# cases most likely to be wrong are the ones no real peer will produce
+# on request, such as a sequence number that laps the space or an option
+# whose length cannot advance the parser.
+#
+# It does not stand in for a boot test. It says the codec is right; only
+# test/boot can say anything is wired to anything.
+test('tcp4-codec', lua_interp,
+  args: [files('test/host_tcp4.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
