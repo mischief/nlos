@@ -8,9 +8,13 @@
  * tsc.c's CPUID-leaf-0x16 read.
  *
  * requires the guest CPU to advertise TSC-deadline (CPUID.01H:ECX.24),
- * which "-cpu max" (what scripts/qemu-microvm.sh asks for) does; a
- * cpu model without it would leave the LVT timer permanently masked
- * and this platform has no fallback for that yet.
+ * which "-cpu max" (what scripts/qemu-microvm.lua asks for) does. A
+ * machine without it has no LAPIC either in practice -- OpenBSD vmm
+ * masks CPUID_APIC and CPUIDECX_DEADLINE together -- so the fallback
+ * is not a different timer here but a different controller entirely:
+ * intr.c probes for the APIC and runs i8253.c/i8259.c instead. Nothing
+ * in this file executes on such a machine, which is what makes the
+ * fixed 0xFEE00000 above safe to keep.
  */
 
 #include <stdint.h>
@@ -33,9 +37,7 @@
 
 static volatile uint32_t *const lapic = (volatile uint32_t *)LAPIC_BASE;
 
-static volatile unsigned long long ticks;
 static unsigned long long period_cycles;
-static int periodic;
 
 static inline unsigned long long
 rdtsc(void)
@@ -79,24 +81,21 @@ lapic_timer_arm_periodic(unsigned long long period_100ns)
 	period_cycles = (tsc_hz() / 10000000ULL) * period_100ns;
 	if (period_cycles == 0)
 		period_cycles = 1;
-	periodic = 1;
 	lapic_write(REG_LVT_TIMER, LVT_TSC_DEADLINE | TIMER_VECTOR);
 	wrmsr(IA32_TSC_DEADLINE, rdtsc() + period_cycles);
 }
 
-unsigned long long
-lapic_ticks(void)
-{
-	return ticks;
-}
-
+/* TSC-deadline is one-shot: a deadline fires once and is done, so
+ * "periodic" is this, called from intr.c's timer_isr on every tick.
+ * The tick count itself lives there, since its caller must not care
+ * which of the two timers this machine has, and the EOI is that
+ * function's business for the same reason.
+ */
 void
-lapic_timer_isr(void)
+lapic_timer_rearm(void)
 {
-	ticks++;
-	if (periodic)
+	if (period_cycles)
 		wrmsr(IA32_TSC_DEADLINE, rdtsc() + period_cycles);
-	lapic_eoi();
 }
 
 void

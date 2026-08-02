@@ -134,22 +134,20 @@ microvm_main(unsigned long start_info)
 	if (claim_memory(start_info) == 0)
 		pmm_add(FALLBACK_BASE, FALLBACK_LEN);
 	idt_init();
-	ioapic_init();	/* mask every line before enabling anything */
-	lapic_init();
+	intr_init();	/* mask every line before enabling anything */
 
 	/* boot.S entered with interrupts off and nothing turned them back
 	 * on, so until now every vector was dead: the LAPIC timer could be
 	 * armed and would never deliver, and efi_shim's WaitForEvent would
 	 * have halted forever waiting for a tick that could not arrive.
 	 *
-	 * Safe to enable here because the IDT is loaded, every IOAPIC line
-	 * is masked, and the LAPIC timer's LVT entry is masked until
-	 * something arms it. The only line that can fire is one a driver
-	 * has explicitly routed.
+	 * Safe to enable here because the IDT is loaded and intr_init left
+	 * every line of whichever controller this machine has masked. The
+	 * only line that can fire is one a driver has explicitly routed.
 	 */
 	__asm__ volatile ("sti");
 
-	/* after sti and after the ioapic is masked: routing the line is
+	/* after sti and after the controller is masked: routing the line is
 	 * the last step, so nothing can fire into a half-built machine.
 	 */
 	uart_irq_enable();
@@ -163,7 +161,7 @@ microvm_main(unsigned long start_info)
 
 	kernel_log("boot: lua-os starting (microvm)");
 	snprintf(cbuf, sizeof cbuf,
-	    "clock: %llu cycles/ms (cpuid leaf 0x16, not wall-clock measured)",
+	    "clock: %llu cycles/ms (from cpuid, not wall-clock measured)",
 	    kernel_cyc_per_ms());
 	kernel_log(cbuf);
 

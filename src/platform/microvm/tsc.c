@@ -1,9 +1,21 @@
-/* TSC frequency, without ACPI/PIT/HPET to calibrate against (microvm
- * has none of those). CPUID leaf 0x16 (processor frequency info) gives
- * the base frequency in MHz directly on any CPU qemu's -cpu max/host
- * exposes it for; that's an independent anchor good enough to derive
- * every busy-wait and the LAPIC TSC-deadline timer from, with no
- * chicken-and-egg stall-to-calibrate-a-stall problem.
+/* TSC frequency, without ACPI/HPET to calibrate against and without
+ * assuming a PIT (qemu's microvm has none). Two cpuid leaves are asked,
+ * in this order:
+ *
+ * 0x15, the TSC/core-crystal ratio, which gives the frequency exactly
+ * when the crystal frequency is reported: hz = crystal * num / denom.
+ * OpenBSD vmm synthesises this leaf for a guest whenever the host TSC
+ * is invariant (sys/arch/amd64/amd64/vmm_machdep.c), so it is the one
+ * that answers there.
+ *
+ * 0x16, the processor base frequency in MHz, which is what qemu's
+ * -cpu max/host exposes. vmm passes this leaf straight through from
+ * the host, and on AMD the host reports zero -- a vmd guest was
+ * running on the 1GHz default below until 0x15 was asked first.
+ *
+ * Either is an independent anchor good enough to derive every busy-wait
+ * and the LAPIC TSC-deadline timer from, with no chicken-and-egg
+ * stall-to-calibrate-a-stall problem.
  */
 
 #include <stdint.h>
@@ -23,13 +35,28 @@ cpuid(uint32_t leaf, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
 void
 tsc_calibrate(void)
 {
-	uint32_t a, b, c, d;
+	uint32_t a, b, c, d, max;
 
-	cpuid(0, &a, &b, &c, &d);
-	if (a >= 0x16) {
+	cpuid(0, &max, &b, &c, &d);
+
+	if (max >= 0x15) {
+		/* eax = denominator, ebx = numerator, ecx = crystal hz. Any
+		 * of the three may be zero, which means "not enumerated"
+		 * rather than zero, so all three have to be there.
+		 */
+		cpuid(0x15, &a, &b, &c, &d);
+		if (a != 0 && b != 0 && c != 0) {
+			hz = (unsigned long long)c * b / a;
+			return;
+		}
+	}
+
+	if (max >= 0x16) {
 		cpuid(0x16, &a, &b, &c, &d);
-		if (a != 0)
+		if (a != 0) {
 			hz = (unsigned long long)a * 1000000ULL;
+			return;
+		}
 	}
 }
 

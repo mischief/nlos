@@ -1,6 +1,6 @@
 /* backs the small EFI Boot Services / System Table slice kernel.c
- * calls (see efi.h in this directory) with the LAPIC timer tick and
- * TSC-based stall from lapic.c/tsc.c. There is exactly one event
+ * calls (see efi.h in this directory) with whichever periodic tick
+ * this machine has (intr.c picks) and the TSC-based stall from tsc.c. There is exactly one event
  * kernel_run ever creates and checks -- the periodic scheduler tick --
  * so CreateEvent/SetTimer/CheckEvent don't need to distinguish between
  * events; each "event" is just a snapshot of the last tick count its
@@ -11,8 +11,8 @@
 
 #include "efi.h"
 
-void	lapic_timer_arm_periodic(unsigned long long period_100ns);
-unsigned long long lapic_ticks(void);
+void	timer_arm_periodic(unsigned long long period_100ns);
+unsigned long long timer_ticks(void);
 void	platform_stall_us(unsigned long us);
 
 static EFI_STATUS
@@ -28,7 +28,7 @@ shim_create_event(unsigned type, UINTN tpl, void *notify, void *ctx,
 
 	if (!seen)
 		return EFI_NOT_READY;
-	*seen = lapic_ticks();
+	*seen = timer_ticks();
 	*out = seen;
 	return EFI_SUCCESS;
 }
@@ -39,7 +39,7 @@ shim_set_timer(EFI_EVENT ev, EFI_TIMER_DELAY type,
 {
 	(void)ev;
 	(void)type;
-	lapic_timer_arm_periodic(triggertime_100ns);
+	timer_arm_periodic(triggertime_100ns);
 	return EFI_SUCCESS;
 }
 
@@ -47,7 +47,7 @@ static EFI_STATUS
 shim_check_event(EFI_EVENT ev)
 {
 	unsigned long long *seen = ev;
-	unsigned long long now = lapic_ticks();
+	unsigned long long now = timer_ticks();
 
 	if (now != *seen) {
 		*seen = now;
@@ -62,9 +62,9 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 	(void)n;
 	(void)evs;
 
-	unsigned long long before = lapic_ticks();
+	unsigned long long before = timer_ticks();
 
-	while (lapic_ticks() == before)
+	while (timer_ticks() == before)
 		__asm__ volatile ("hlt");
 	if (index)
 		*index = 0;

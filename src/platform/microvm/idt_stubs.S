@@ -76,11 +76,12 @@ trap_common:
 1:	hlt
 	jmp	1b
 
-/* the LAPIC timer gets its own entry rather than a slot in the generic
+/* the timer gets its own entry rather than a slot in the generic
  * (fatal) table above: it is the one interrupt in this slice that must
  * actually resume the interrupted proc. no vector/errcode pushed --
- * lapic_timer_isr() (idt.c) takes no argument -- and it must return
- * before iretq, unlike trap_common above.
+ * timer_isr() (intr.c) takes no argument -- and it must return before
+ * iretq, unlike trap_common above. One stub for both machines: intr.c
+ * decides whether the LAPIC or the PIT is behind it.
  */
 	.globl	isr_timer
 isr_timer:
@@ -94,7 +95,7 @@ isr_timer:
 	pushq	%r10
 	pushq	%r11
 
-	call	lapic_timer_isr
+	call	timer_isr
 
 	popq	%r11
 	popq	%r10

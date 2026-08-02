@@ -27,8 +27,7 @@
 #include "platform.h"
 
 #define COM1 0x3f8
-#define COM1_GSI 4		/* the ISA assignment, unchanged on microvm */
-#define UART_VECTOR 0x41	/* virtio has 0x40; see virtio.c */
+#define COM1_GSI 4	/* the ISA assignment, and vmd keeps it too */
 
 #define RBR 0	/* receive buffer */
 #define THR 0	/* transmit holding */
@@ -109,8 +108,7 @@ uart_init(void)
 void
 uart_irq_enable(void)
 {
-	idt_set_vector(UART_VECTOR, isr_uart);
-	ioapic_route(COM1_GSI, UART_VECTOR);
+	intr_route(COM1_GSI, isr_uart);
 	rx_irq_on = 1;
 	outb(COM1 + IER, IER_RX_AVAIL);
 }
@@ -140,7 +138,7 @@ uart_isr(void)
 	 */
 	(void)inb(COM1 + IIR);
 	uart_drain();
-	lapic_eoi();
+	intr_eoi(COM1_GSI);
 }
 
 void

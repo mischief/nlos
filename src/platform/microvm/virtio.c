@@ -75,6 +75,17 @@ align_up(size_t n, size_t a)
 int
 virtio_find(uint32_t device_id, struct virtio_dev *out)
 {
+	/* the window is only there on a machine with no PCI, and on one
+	 * that has PCI the read is not merely useless but fatal: under
+	 * OpenBSD vmd 0xfeb00000 lies inside the range declared
+	 * VM_MEM_MMIO, and reading an address no emulated device claims
+	 * terminates the guest outright -- no trap, nothing logged. So
+	 * the bus has to be ruled out before the first load, not after.
+	 * See pci.c.
+	 */
+	if (pci_present())
+		return -1;
+
 	for (int i = 0; i < VIRTIO_NUM_SLOTS; i++) {
 		volatile uint32_t *regs =
 		    (volatile uint32_t *)(VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STRIDE);
@@ -311,7 +322,6 @@ virtio_poll_used(struct virtio_dev *d, unsigned qi, uint16_t *id, uint32_t *len)
  * whether it has anything pending. There are at most eight.
  */
 
-#define VIRTIO_VECTOR 0x40	/* above the 32 architectural exceptions */
 
 static struct virtio_dev *irq_devs[VIRTIO_NUM_SLOTS];
 static volatile unsigned long irq_taken;
@@ -337,7 +347,12 @@ virtio_isr(void)
 			irq_taken++;
 		}
 	}
-	lapic_eoi();
+	/* every slot shares the handler but not the vector, so the line
+	 * being acknowledged is the one that was routed last. They are all
+	 * on the same controller; a non-specific EOI is what both
+	 * controllers want here anyway.
+	 */
+	intr_eoi(VIRTIO_MMIO_GSI_BASE);
 }
 
 unsigned long
@@ -349,8 +364,6 @@ virtio_irq_count(void)
 void
 virtio_irq_enable(struct virtio_dev *d)
 {
-	static int wired;
-
 	if (d->slot < 0 || d->slot >= VIRTIO_NUM_SLOTS)
 		return;
 	if (irq_devs[d->slot] == d)
@@ -359,11 +372,7 @@ virtio_irq_enable(struct virtio_dev *d)
 	irq_devs[d->slot] = d;
 	d->irq_routed = 1;	/* the handler owns the ack from here */
 
-	if (!wired) {
-		idt_set_vector(VIRTIO_VECTOR, isr_virtio);
-		wired = 1;
-	}
-	ioapic_route(VIRTIO_MMIO_GSI_BASE + d->slot, VIRTIO_VECTOR);
+	intr_route(VIRTIO_MMIO_GSI_BASE + d->slot, isr_virtio);
 }
 
 /* submit a chain and busy-wait for it. Returns the byte count the
