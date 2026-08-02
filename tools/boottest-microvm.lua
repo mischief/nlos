@@ -126,17 +126,22 @@ if wantnet then
 	}, " ")
 end
 
--- ioapic2=off pins virtio-mmio to the documented 8-slot/GSI-5-base
--- layout (qemu's hw/i386/microvm.c): with a second IOAPIC present the
--- machine silently switches to 24 slots at a different irq base, which
--- src/platform/microvm/virtio.c's fixed 8-slot scan would never see.
+-- ioapic2=off and acpi=on together pin where virtio-mmio lands, and
+-- both matter. microvm_devices_init (qemu's hw/i386/microvm.c) picks
+-- the slot count from the first and the irq base from both: a second
+-- ioapic gives 24 transports based at 24, acpi alone gives 8 based at
+-- 16, and neither gives 8 based at 5. acpi is microvm's default, so
+-- this pins what is already true rather than changing it -- but it is
+-- what src/platform/microvm/microvm.h's VIRTIO_MMIO_GSI_BASE assumes,
+-- and a default is a poor thing to leave that resting on.
 --
--- no pinning here, unlike the efi harness: that works around a stall
--- inside OVMF during boot device selection, and there is no OVMF.
+-- no pinning of the boot device here, unlike the efi harness: that
+-- works around a stall inside OVMF during boot device selection, and
+-- there is no OVMF.
 local cmd = table.concat({
 	"timeout", TIMEOUT,
 	"qemu-system-x86_64",
-	"-M microvm,pit=off,pic=off,rtc=off,ioapic2=off",
+	"-M microvm,pit=off,pic=off,rtc=off,ioapic2=off,acpi=on",
 	"-enable-kvm -cpu host -m 256",
 	"-kernel " .. q(elf),
 	payload ~= "-" and

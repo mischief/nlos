@@ -68,11 +68,39 @@ int	ioapic_pins(void);
 void	ioapic_route(int gsi, int vector);
 void	ioapic_mask(int gsi);
 
-/* qemu's microvm wires the eight virtio-mmio slots to consecutive GSIs
- * from here (hw/i386/microvm.c, VIRTIO_MMIO_IRQ_BASE), which is the
- * same fixed layout virtio.c's slot scan depends on.
+/* qemu's microvm wires its eight virtio-mmio slots to consecutive GSIs
+ * from here, and which base that is depends on the machine's
+ * configuration -- three cases, in microvm_devices_init
+ * (hw/i386/microvm.c):
+ *
+ *	a second ioapic	-> 24, and 24 transports rather than 8
+ *	else acpi on	-> 16
+ *	else		-> 5
+ *
+ * 16 is the one our launchers ask for: they pass ioapic2=off (so the
+ * slot layout stays the documented eight) and acpi is on, which is
+ * microvm's default and which they now pin so it cannot drift.
+ *
+ * "acpi is on" here means only what qemu's x86_machine_is_acpi_enabled
+ * means by it, which is not that this guest has ACPI. It does not: the
+ * PVH start_info arrives with rsdp_paddr = 0, and there is no BIOS area
+ * to scan, so there is no table to walk and nothing to discover this
+ * number from. qemu does build the tables and offer them over fw_cfg
+ * (etc/acpi/rsdp, etc/acpi/tables, etc/table-loader), but unassembled --
+ * table-loader is a script firmware is expected to execute to place
+ * them and patch their pointers, and with -kernel there is no firmware
+ * to do it. So the flag that picks this number is one the guest cannot
+ * observe, which is exactly how it came to be wrong and stay wrong.
+ *
+ * This was 5 for a long time, which is the no-acpi case and was simply
+ * wrong for the machine we run. Nothing noticed, because a wrong GSI
+ * costs nothing until something depends on the interrupt rather than
+ * polling: the device raised a line into a pin nobody had unmasked, and
+ * every driver here polls. 5 is also implausible on its face -- it
+ * would put virtio slots on top of the ISA assignments, and slot 7's
+ * neighbour is COM1's own line.
  */
-#define VIRTIO_MMIO_GSI_BASE 5
+#define VIRTIO_MMIO_GSI_BASE 16
 
 /* pci.c -- the other machine probe; see intr_have_apic for the first.
  * Its answer decides whether the virtio-mmio window in virtio.c exists

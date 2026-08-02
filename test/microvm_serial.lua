@@ -74,7 +74,7 @@ end
 -- scripts/boottest-microvm.lua for why every launcher passes it.
 local pid = hostutil.spawn({
 	"qemu-system-x86_64",
-	"-M", "microvm,pit=off,pic=off,rtc=off,ioapic2=off",
+	"-M", "microvm,pit=off,pic=off,rtc=off,ioapic2=off,acpi=on",
 	"-enable-kvm", "-cpu", "host", "-m", "256",
 	"-kernel", elf,
 	"-fw_cfg", "name=opt/org.luaos.test,file=" .. payload,
