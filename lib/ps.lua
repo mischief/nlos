@@ -6,10 +6,19 @@ local sys = require("los.sys")
 
 local M = {}
 
+-- one format for the heading and the rows, so a column cannot be
+-- widened without its heading moving with it. Hand-spacing the heading
+-- is what put everything from USED rightwards a column left of the
+-- numbers under it.
+--
+-- %s throughout rather than %d: it formats integers identically at the
+-- same width, and it is the only way one format string can serve both.
+local PSFMT = "%5s %-16s %9s %9s %3s %3s %4s %9s %s"
+
 local ps_mt = {}
 ps_mt.__tostring = function()
-	local lines = {
-	    "  PID NAME                 USED      PEAK  WT PRI  CPU   RESUMES WCHAN" }
+	local lines = { string.format(PSFMT, "PID", "NAME", "USED", "PEAK",
+	    "WT", "PRI", "CPU", "RESUMES", "WCHAN") }
 	for _, pid in ipairs(sys.procs()) do
 		-- one call per proc rather than one per column: name,
 		-- meminfo, priority and wchan are still there, but a row
@@ -25,8 +34,7 @@ ps_mt.__tostring = function()
 		-- pieces. A server round-tripping on ipc shows a small cpu
 		-- over a large count, and that ratio is what says whether a
 		-- proc is working or waiting.
-		lines[#lines + 1] = string.format(
-		    "%5d %-16s %9d %9d %3d %3d %4d %9d %s",
+		lines[#lines + 1] = string.format(PSFMT,
 		    s.pid, s.name, s.used, s.peak, s.weight, s.pri, s.cpu,
 		    s.resumes, s.wchan)
 	end
@@ -75,10 +83,12 @@ M.stats = setmetatable({}, stats_mt)
 -- QPEAK earns its column over QLEN: a queue is rarely looked at while
 -- it is deep. One that touched MAXQUEUE and drained shows QLEN 0, and
 -- is exactly the port worth asking about.
+local PORTFMT = "%4s %-14s %3s %3s %6s %6s %8s %6s %6s"
+
 local ports_mt = {}
 ports_mt.__tostring = function()
-	local lines = {
-	    " IDX OWNER            R RCV   QLEN  QPEAK     SENT  DROPF  DROPD" }
+	local lines = { string.format(PORTFMT, "IDX", "OWNER", "R", "RCV",
+	    "QLEN", "QPEAK", "SENT", "DROPF", "DROPD") }
 
 	for _, p in ipairs(sys.ports()) do
 		-- owner is whoever holds the receive right, and is absent
@@ -96,8 +106,7 @@ ports_mt.__tostring = function()
 			who = "-"
 		end
 
-		lines[#lines + 1] = string.format(
-		    "%4d %-14s %3d %3d %6d %6d %8d %6d %6d",
+		lines[#lines + 1] = string.format(PORTFMT,
 		    p.port, who, p.rights, p.recv, p.qbytes, p.qpeak,
 		    p.sent, p.dropfull, p.dropdead)
 	end
