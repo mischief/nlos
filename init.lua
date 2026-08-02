@@ -20,6 +20,17 @@ local caps_of = sys.granted()
 local nsmod = require("ns")
 local proc = require("proc")
 
+-- the machine's entropy source, if the firmware has one
+-- (los.platform.rng: EFI_RNG_PROTOCOL here, virtio-rng on microvm). it
+-- is registered in proc 0's package.preload and nowhere else, because
+-- the raw function IS the capability -- there is no handle to check --
+-- so what everything else gets is a seed, as data, at spawn.
+local ok_rng, rng = pcall(require, "los.platform.rng")
+
+if not ok_rng then
+	rng = nil
+end
+
 -- route proc 0's own print/io.write through the cons task, so output has
 -- an owner rather than every proc calling console_write directly. from
 -- here on everything proc.spawn creates inherits this right, and
@@ -36,6 +47,8 @@ require("stdout").set(caps_of.cons)
 local log = require("log")
 
 log.set(caps_of.cons, "init")
+log.log("entropy: %s", rng and "los.platform.rng" or
+    ("none (" .. tostring(rng == nil and ok_rng) .. ")"))
 local rootns = nsmod.new()
 
 -- mount FIRST, adopt second. adopting is what routes require() through
@@ -359,6 +372,11 @@ do
 				return inj or rootns:readfile(p)
 			end,
 			log = print,
+			-- entropy for services that want it. absent on a
+			-- machine whose firmware publishes no RNG, which
+			-- makes a service that needs one fail loudly at its
+			-- own drbg.new rather than quietly at a weaker one.
+			seed = rng and rng.bytes or nil,
 		})
 	elseif why and not why:match("^no ") then
 		-- a missing config is a machine with no services, which is

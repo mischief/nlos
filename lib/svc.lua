@@ -88,6 +88,19 @@ end
 -- opts.granted   sys.granted(), where declared caps are looked up
 -- opts.readfile  function(path) -> source
 -- opts.log       function(msg), optional
+-- opts.seed      function(n) -> n bytes of entropy, optional
+--
+-- opts.seed exists because entropy is DATA, not authority. There is
+-- nothing to attenuate about a random number and nothing a service could
+-- escalate with one, so it does not want a right and a right is not what
+-- it gets: every service is handed its own independent 32-byte seed in
+-- its spawn arg, and expands it itself (lib/crypto/drbg.lua). The raw
+-- draw stays where it has to be -- los.platform.rng exists in the boot
+-- proc alone, because there the C function IS the capability.
+--
+-- Each service gets a DIFFERENT seed, which is why this is a function
+-- rather than a string: one compromised service must not be able to
+-- predict another's keys.
 function M.start(list, opts)
 	local started, skipped = {}, {}
 	local log = opts.log or function() end
@@ -97,6 +110,10 @@ function M.start(list, opts)
 		    tostring(e.path):match("([^/]+)%.lua$") or "svc"
 		local src = e.path and opts.readfile(e.path)
 		local arg = { args = e.args or {} }
+
+		if opts.seed then
+			arg.seed = opts.seed(32)
+		end
 		local missing = nil
 
 		for _, cap in ipairs(e.caps or {}) do

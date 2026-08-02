@@ -20,4 +20,12 @@ return {
 	-- 7777, and two listeners on one port is EFI_INVALID_PARAMETER.
 	-- { path = "/svc/webterm.lua", caps = { "tcp" },
 	--   args = { port = 80 } },
+
+	-- an ssh server, putting a visitor at the same lua console the
+	-- serial port gives. same bargain as webterm -- an anonymous
+	-- visitor gets a shell -- and additionally it accepts ANY public
+	-- key so far, so it is on here only because this is a branch for
+	-- working on it.
+	{ path = "/svc/sshd.lua", caps = { "tcp" },
+	  args = { port = 2222, trace = true } },
 }

@@ -7,6 +7,7 @@
  */
 
 #include "efi.h"
+#include "rng.h"
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -105,14 +106,34 @@ luaopen_los_platform_power(lua_State *L)
 	return 1;
 }
 
-/* microvm's counterpart registers los.platform.rng when a virtio-rng
- * device is present (src/platform/microvm/virtio_rng.c); efi has no
- * such device class yet.
+/* los.platform.rng, from the firmware's EFI_RNG_PROTOCOL (rng.c) where
+ * it publishes one -- edk2 does wherever the CPU has RDRAND. microvm's
+ * counterpart does the same job from virtio-rng.
+ *
+ * Probed once and granted to the boot proc only, like cons and wire: a
+ * draw conveys no authority, but the raw C function IS the capability
+ * (there is no handle to check), so it follows the same rule as every
+ * other privileged raw primitive and exists in exactly one proc. What
+ * everything else gets is a seed, handed over at spawn as ordinary data.
  */
 void
 platform_boot_extra_modules(lua_State *L)
 {
-	(void)L;
+	static int tried, have_rng;
+
+	if (!tried) {
+		have_rng = efi_rng_probe();
+		tried = 1;
+	}
+
+	if (!have_rng)
+		return;
+
+	lua_getglobal(L, "package");
+	lua_getfield(L, -1, "preload");
+	lua_pushcfunction(L, luaopen_los_platform_rng);
+	lua_setfield(L, -2, "los.platform.rng");
+	lua_pop(L, 2);
 }
 
 int

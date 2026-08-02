@@ -40,20 +40,37 @@ local function basename(path)
 	return path:match("([^/]+)$") or path
 end
 
+-- keep whatever is below lib/ rather than flattening to the basename:
+-- lib/crypto/sha256.lua has to stay reachable as require("crypto.sha256")
+-- under LUA_PATH's /lib/?.lua, and flattening would break the name
+-- rather than the file.
+-- the four made by the mmd above already exist; only deeper ones need
+-- creating, and mmd on an existing directory is an error rather than a
+-- no-op.
+local made = { ["efi"] = true, ["efi/boot"] = true, ["lib"] = true,
+    ["bin"] = true, ["svc"] = true, ["etc"] = true }
+
+local function mkdirs(dest)
+	local dir = dest:match("^(.*)/[^/]+$")
+
+	if not dir or made[dir] then
+		return
+	end
+	made[dir] = true
+	run("mmd -i " .. qdrive .. " ::" .. dir)
+end
+
+local function under(f, top)
+	local rest = f:match("/" .. top .. "/(.*)$")
+
+	return rest and (top .. "/" .. rest) or nil
+end
+
 for i = 3, #arg do
 	local f = arg[i]
-	local dest
+	local dest = under(f, "lib") or under(f, "bin") or under(f, "svc") or
+	    under(f, "etc") or basename(f)
 
-	if f:find("/lib/", 1, true) then
-		dest = "lib/" .. basename(f)
-	elseif f:find("/bin/", 1, true) then
-		dest = "bin/" .. basename(f)
-	elseif f:find("/svc/", 1, true) then
-		dest = "svc/" .. basename(f)
-	elseif f:find("/etc/", 1, true) then
-		dest = "etc/" .. basename(f)
-	else
-		dest = basename(f)
-	end
+	mkdirs(dest)
 	run("mcopy -o -i " .. qdrive .. " " .. quote(f) .. " ::" .. dest)
 end

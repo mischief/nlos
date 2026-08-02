@@ -40,7 +40,7 @@ end
 
 local cmd = table.concat({
 	arch.QEMU, graphics, arch.MACHINE, arch.VIDEO, arch.RNG,
-	"-netdev user,id=n0,hostfwd=tcp::7777-:7777",
+	"-netdev user,id=n0,hostfwd=tcp::7777-:7777,hostfwd=tcp::2222-:2222",
 	"-device " .. arch.NIC .. ",netdev=n0",
 	"-serial mon:stdio",
 	arch.wire_args("socket", "9p.sock"),
