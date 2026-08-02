@@ -214,6 +214,9 @@ else
     'lib/p9tcp.lua',
     'task/p9srv.lua',
     'task/eth.lua',
+    'lib/ether.lua',
+    'lib/ip4.lua',
+    'lib/arp.lua',
     'lib/tap.lua',
     'lib/ps.lua',
   ]
@@ -680,6 +683,7 @@ microvm_tests = [
   ['p9bench', ['--9p']],
   ['p9par', ['--9p']],
   ['eth', ['--net']],
+  ['arp', ['--net']],
   ['idle', []],
 ]
 
