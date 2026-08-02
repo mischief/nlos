@@ -919,8 +919,67 @@ local function parksend(h)
 	sys.sendblock(h)
 end
 
+-- ---- request/reply ----
+--
+-- await() waits for one message on a REPLY port, and unlike recv() it
+-- gives up when the port hangs up instead of parking forever. the
+-- difference is not a policy choice, it is what the two ports can know:
+-- a quiet service port may simply be idle, but a reply port holds two
+-- rights while a request is in flight -- ours, and the one that
+-- travelled with the message -- so a drop back to one with nothing
+-- queued means the holder died without answering.
+--
+-- returns nil plus "hungup" in that case, matching what sys.call
+-- reports for the same condition.
+local function await(h)
+	while true do
+		local got, res = sys.tryrecv(h)
+
+		if got then
+			return res
+		end
+		if sys.hungup(h) then
+			return nil, "hungup"
+		end
+		park(h)
+	end
+end
+
+-- call(h, msg, replyh): send a request and wait for its reply.
+--
+-- one call site, two implementations, because the fused kernel entry is
+-- not available to a thread. sys.call marks the whole PROC blocked and
+-- takes it off the run queue, so a coroutine yielding out of that would
+-- strand every sibling thread -- the kernel refuses it outright rather
+-- than letting it happen quietly.
+--
+-- that costs a thread nothing, because the expensive half is already
+-- fused on its side: what a thread pays for is the block, and thread.run
+-- hands every parked port to sys.altrecv, which blocks and TAKES in one
+-- entry on behalf of all of them at once. what is left over here is a
+-- plain send, which does not block and never was the cost. a fused
+-- thread.call would only fold in the cheap half.
+--
+-- both paths report the same three failures as nil plus a reason:
+-- "dead", "full", "hungup". a full queue is the caller's policy (see
+-- sendwait), which is why it is reported rather than waited out.
+local function call(h, msg, replyh)
+	if not inthread() then
+		return sys.call(h, msg, replyh)
+	end
+
+	local ok, why = sys.send(h, msg)
+
+	if not ok then
+		return nil, why or "dead"
+	end
+	return await(replyh)
+end
+
 thread.parksend = parksend
 thread.recv = recv
+thread.await = await
+thread.call = call
 thread.replyport = replyport
 thread.readline = readline
 thread.sleep = sleep
