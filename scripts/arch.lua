@@ -136,6 +136,57 @@ if ARCH == uname_m() and rw("/dev/kvm") then
 	end
 end
 
+-- the -display argument for a run that should open a WINDOW, or nil
+-- plus a reason when there is nowhere to open one.
+--
+-- the framebuffer is the only output here a terminal cannot carry, so
+-- every launcher that wants to show it needs this same choice made the
+-- same way; it lives here for the reason everything else in this file
+-- does. `want` forces a backend (LUAOS_DISPLAY does the same from the
+-- environment) and is checked against qemu rather than assumed, since a
+-- qemu built without gtk fails obscurely otherwise.
+function M.display(want)
+	want = want or os.getenv("LUAOS_DISPLAY")
+
+	local function usable(kind)
+		return os.execute(M.QEMU .. " -display " .. kind ..
+		    " -version >/dev/null 2>&1")
+	end
+
+	-- no desktop at all is the common headless/ssh case and deserves a
+	-- sentence rather than qemu's "gtk initialization failed": the
+	-- screenshot target is what that machine wants. checked even when a
+	-- backend was named, because naming one does not conjure a display
+	-- -- and note that `usable` cannot catch this, since qemu accepts
+	-- `-display gtk` at the command line and only fails when it tries
+	-- to open the window.
+	--
+	-- backends that need no desktop are exempt: asking for `none` is a
+	-- reasonable thing to do headlessly, and refusing it would be
+	-- wrong.
+	local headless = { none = true, curses = true, ["egl-headless"] = true }
+
+	if not headless[want] and not os.getenv("DISPLAY") and
+	    not os.getenv("WAYLAND_DISPLAY") then
+		return nil, "no DISPLAY or WAYLAND_DISPLAY: nowhere to open " ..
+		    "a window (try the screenshot target, or set LUAOS_DISPLAY)"
+	end
+
+	if want then
+		if not usable(want) then
+			return nil, M.QEMU .. " has no " .. want .. " display"
+		end
+		return "-display " .. want
+	end
+
+	for _, kind in ipairs({ "gtk", "sdl" }) do
+		if usable(kind) then
+			return "-display " .. kind
+		end
+	end
+	return nil, M.QEMU .. " has neither a gtk nor an sdl display"
+end
+
 -- wire_args("null") | wire_args("socket", path)
 -- the second serial port, which carries 9p. on x86_64 the machine
 -- already has com2 and it is simply the second -serial; on the virt

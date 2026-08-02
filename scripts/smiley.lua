@@ -23,28 +23,12 @@ if not img then
 	os.exit(1)
 end
 
--- gtk first, sdl second, and say something useful rather than letting
--- qemu fail obscurely if this is a machine with no desktop at all --
--- over ssh with no X or wayland, the screenshot target is what you
--- want instead.
-local function have_display(kind)
-	return os.execute(arch.QEMU .. " -display " .. kind ..
-	    " -version >/dev/null 2>&1")
-end
-
-local display = os.getenv("DISPLAY_BACKEND")
+local display, why = arch.display()
 
 if not display then
-	if os.getenv("WAYLAND_DISPLAY") or os.getenv("DISPLAY") then
-		display = have_display("gtk") and "gtk" or "sdl"
-	else
-		io.stderr:write(
-		    "no DISPLAY or WAYLAND_DISPLAY: there is no desktop to " ..
-		    "open a window on.\n" ..
-		    "use `ninja screenshot` for a png instead, or set " ..
-		    "DISPLAY_BACKEND to force one.\n")
-		os.exit(1)
-	end
+	io.stderr:write(why .. "\n" ..
+	    "use the screenshot target for a png instead.\n")
+	os.exit(1)
 end
 
 if not io.open("OVMF_VARS.fd", "rb") then
@@ -52,7 +36,7 @@ if not io.open("OVMF_VARS.fd", "rb") then
 end
 
 local cmd = table.concat({
-	arch.QEMU, arch.MACHINE, "-display " .. display,
+	arch.QEMU, arch.MACHINE, display,
 	"-net none", arch.VIDEO, arch.RNG,
 	"-no-reboot -snapshot",
 	"-serial mon:stdio",

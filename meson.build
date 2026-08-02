@@ -445,6 +445,16 @@ run_target('qemu',
   env: archenv,
 )
 
+# the same interactive run, plus a window to see the framebuffer in.
+# the console stays on stdio, so you type at the dos prompt in this
+# terminal and watch the screen next to it -- which is what running a
+# graphical program from the shell needs. LUAOS_DISPLAY picks a backend
+# if the default (gtk, then sdl) is not what you want.
+run_target('qemu-gtk',
+  command: [lua_interp, files('scripts/qemu.lua'), luaos_img, 'gtk'],
+  env: archenv,
+)
+
 # boots test/boot/fetch_mcp.lua instead of init.lua (single-url mcp
 # fetch server), mcp reachable on host tcp/8090
 run_target('fetch-mcp',
