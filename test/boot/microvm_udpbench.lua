@@ -8,10 +8,18 @@
 --
 -- Four checksums per round trip is the number to keep in view: udp4
 -- computes one over the pseudo-header and payload when encoding and
--- verifies another when decoding, in each direction. ip4.checksum is a
--- Lua loop doing a string.unpack every two bytes, so it is linear in the
--- payload while everything else on the path is not, and the payload
+-- verifies another when decoding, in each direction. It is linear in
+-- the payload while everything else on the path is not, and the payload
 -- sweep below is what separates the two.
+--
+-- This is what moved ip4.checksum into src/inet.c. In Lua it was a loop
+-- reading a string.unpack per two bytes -- 700 of them for a full-sized
+-- datagram, four times over -- and the sweep read:
+--
+--	    1B    38.5us   checksum   6.3us   16.5%
+--	 1400B   444.6us   checksum 378.3us   85.1%
+--
+-- against 48.4us and 1.6% now, a 9.2x round trip at 1400B.
 --
 -- The floor is measured as well, because a udp round trip is also four
 -- requests to the ip task and those are four port round trips whatever
@@ -157,12 +165,19 @@ for _, sz in ipairs(SIZES) do
 	    sz, us(cyc, N), share[sz] * 100))
 end
 
--- the sweep is the finding, stated as an assertion so it cannot rot
--- into a diagnostic nobody reads: if the checksum ever stops growing
--- with the payload, it has been moved somewhere that does not care.
-tap.ok(share[1400] > share[1], string.format(
-    "the checksum's share grows with the payload (%.1f%% at 1B, %.1f%% at 1400B)",
-    share[1] * 100, share[1400] * 100))
+-- The share at a full payload is the finding, asserted so it cannot rot
+-- into a diagnostic nobody reads.
+--
+-- Stated as a bound and not as a direction. "Grows with the payload" was
+-- the obvious assertion and is worthless: the C checksum is linear too,
+-- just about 470 times faster, so that holds whichever implementation is
+-- in use and would not have noticed the change it was written to
+-- protect. This would -- in Lua the same figure was 85%.
+local SHARE_MAX = 0.10
+
+tap.ok(share[1400] < SHARE_MAX, string.format(
+    "the checksum is a small part of a full-payload round trip (%.1f%%, limit %.0f%%)",
+    share[1400] * 100, SHARE_MAX * 100))
 
 udp.close(a)
 udp.close(b)

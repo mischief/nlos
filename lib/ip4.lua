@@ -83,7 +83,13 @@ local VERSION_IHL = 0x45	-- version 4, 5 words of header
 -- An odd final byte is padded with a zero, which is the specification's
 -- rule and not an approximation -- the padding is for the sum only and
 -- never goes on the wire.
-function ip4.checksum(s, init)
+--
+-- Kept in Lua as well as in src/inet.c, and this one is used whenever
+-- that is absent: tools/arp-lan.lua drives these modules from the host
+-- under an ordinary lua5.4, where the kernel does not exist. The two
+-- are checked against each other by test/boot/test_checksum.lua, which
+-- is what makes keeping both safe rather than merely convenient.
+function ip4.luachecksum(s, init)
 	local sum = init or 0
 	local n = #s
 	local i = 1
@@ -100,6 +106,19 @@ function ip4.checksum(s, init)
 		sum = (sum & 0xffff) + (sum >> 16)
 	end
 	return (~sum) & 0xffff
+end
+
+-- the C one when this is a lua-os proc, the Lua one on the host.
+--
+-- Chosen once here rather than branched per call: this runs four times
+-- per udp round trip and was 85% of one at a full ethernet payload, so
+-- a per-call check would be measurable in the thing being fixed.
+local ok, cinet = pcall(require, "los.inet")
+
+if ok and type(cinet) == "table" and type(cinet.checksum) == "function" then
+	ip4.checksum = cinet.checksum
+else
+	ip4.checksum = ip4.luachecksum
 end
 
 -- id defaults to 0, which is allowed for anything that will not be

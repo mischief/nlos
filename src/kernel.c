@@ -3403,6 +3403,7 @@ static const luaL_Reg kapi[] = {
 
 extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
 extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
+extern int luaopen_los_inet(lua_State *L);		/* inet.c: checksum */
 extern int luaopen_crypto_chacha20(lua_State *L);	/* crypto.c */
 extern int luaopen_crypto_poly1305(lua_State *L);	/* crypto.c */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
@@ -3942,6 +3943,15 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 
 	lua_pushcfunction(p->L, luaopen_crypto_poly1305);
 	lua_setfield(p->L, -2, "crypto.poly1305");
+
+	/* los.inet (src/inet.c), ambient for the same reason as the two
+	 * above: the internet checksum is arithmetic on a string the
+	 * caller already has, and it reaches nothing. Withholding it would
+	 * not withhold anything -- lib/ip4.lua keeps the same function in
+	 * Lua and falls back to it, more slowly, with the same answer.
+	 */
+	lua_pushcfunction(p->L, luaopen_los_inet);
+	lua_setfield(p->L, -2, "los.inet");
 	/* los.fs is the whole of raw ESP access -- enumeration, metadata
 	 * and file data. it is registered for exactly two procs: the esp
 	 * server task, which serves the disk to everyone else over a port

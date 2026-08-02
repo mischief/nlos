@@ -164,6 +164,7 @@ kernel_src = files(
   'src/crypto.c',
   'src/debug.c',
   'src/dirs.c',
+  'src/inet.c',
   'src/kernel.c',
   'src/linit.c',
   'src/luaheap.c',
@@ -713,6 +714,7 @@ microvm_tests = [
   ['udpq', ['--net']],
   ['loopback', ['--net']],
   ['udpbench', ['--net']],
+  ['checksum', []],
   ['autoip', ['--net']],
   ['idle', []],
 ]
