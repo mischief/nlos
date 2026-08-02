@@ -291,6 +291,7 @@ struct kproc {
 	struct right rights[NRIGHTS_INLINE];
 	struct right *xrights;		/* MAXRIGHTS - NRIGHTS_INLINE, or null */
 	int rhint;			/* lowest slot that might be free */
+	int rhigh;			/* one past the highest slot ever used */
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	int reductions;		/* instruction budget per slice */
@@ -938,6 +939,8 @@ right_new(struct kproc *p, struct kport *port, int recv)
 			if (recv)
 				port->nrecv++;
 			p->rhint = i + 1;
+			if (i + 1 > p->rhigh)
+				p->rhigh = i + 1;
 			return i;
 		}
 	}
@@ -1941,6 +1944,38 @@ static int
 api_hangups(lua_State *L)
 {
 	lua_pushinteger(L, (lua_Integer)hangup_gen);
+	return 1;
+}
+
+/* sys.anyready() -> bool. does any port this proc can receive on have a
+ * message waiting?
+ *
+ * the question a RUNNABLE proc cannot otherwise ask. port_push wakes
+ * whoever is parked on the port, which does nothing for a proc that is
+ * in the middle of running -- so a lib/thread proc with one thread that
+ * never parks has no event telling it a message arrived for one of its
+ * parked siblings, and the message waits for the run queue to drain.
+ *
+ * this is deliberately coarser than sys.altpoll and much cheaper: no
+ * table to build or read, no port set, just a scan of this proc's own
+ * rights bounded by the highest it has ever held. it answers "is a
+ * sweep worth doing at all", so the scheduler can ask every round and
+ * pay for altpoll only when the answer is yes.
+ */
+static int
+api_anyready(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	for (int i = 0; i < p->rhigh; i++) {
+		struct right *r = right_slot(p, i);
+
+		if (r && r->used && r->recv && r->port->head) {
+			lua_pushboolean(L, 1);
+			return 1;
+		}
+	}
+	lua_pushboolean(L, 0);
 	return 1;
 }
 
@@ -3130,6 +3165,7 @@ static const luaL_Reg kapi[] = {
 	{ "sendblock", api_sendblock },
 	{ "altblock", api_altblock },
 	{ "altpoll", api_altpoll },
+	{ "anyready", api_anyready },
 	{ "hangups", api_hangups },
 	{ "altrecv", api_altrecv },
 	{ "altrecvnb", api_altrecvnb },
@@ -3477,11 +3513,42 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 			trace_line(p, L, ar);
 		return;
 	}
+	/* the forced trip below leaves p->co sampling every instruction.
+	 * put it back the moment it has done its job, which is the first
+	 * time the hook fires on p->co afterwards.
+	 */
+	if (p && L == p->co && lua_gethookcount(L) != p->reductions)
+		lua_sethook(p->co, preempt_hook, proc_hookmask(p),
+		    p->reductions);
 	if (!lua_isyieldable(L))
 		return;
 	if (p && p->resumed && quantum_cycles &&
 	    platform_ticks() - p->resumed < quantum_cycles)
 		return;		/* under quantum: let it keep the cpu */
+
+	/* yielding only ever reaches the resumer of the state the hook
+	 * fired in. for a thread that is the proc's own scheduler, one
+	 * level down from the kernel, so yielding here suspends the
+	 * thread and hands the cpu straight back to thread.run -- the
+	 * proc keeps the machine and the quantum means nothing. measured
+	 * with a spinner inside a thread, everything else on the machine
+	 * got 0.02 of its fair share.
+	 *
+	 * lua has no yield-across-levels to ask for, so the trip is
+	 * forced instead: arm the proc's outermost state to fire on its
+	 * very next instruction. the thread yields to thread.run,
+	 * thread.run runs one instruction, and the hook fires again with
+	 * L == p->co, where a yield does reach the kernel.
+	 *
+	 * that also lands the proc in the right place. resuming into the
+	 * interrupted coroutine would let one thread hold the cpu across
+	 * proc slices; resuming into thread.run leaves the choice of what
+	 * runs next where it belongs, with the scheduler that owns
+	 * threads. the kernel picks procs, thread.run picks threads, and
+	 * neither has to know how the other decides.
+	 */
+	if (p && L != p->co)
+		lua_sethook(p->co, preempt_hook, proc_hookmask(p), 1);
 	lua_yield(L, 0);
 }
 

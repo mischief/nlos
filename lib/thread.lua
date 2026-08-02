@@ -313,46 +313,50 @@ end
 
 -- run until all threads finish. this is the proc's event loop.
 function thread.run()
-	local rounds = 0
 	while thread._n > 0 do
-		rounds = rounds + 1
-		if rounds % 64 == 0 then
-			sys.yield()	-- let other procs breathe
 
-			-- and let parked threads re-check their ports.
-			--
-			-- Without this, one thread that stays runnable
-			-- starves every thread that parks: the altblock
-			-- branch below is the only other place a parked
-			-- thread is readied, and it runs only when the runq
-			-- is empty, which never happens while anything is
-			-- runnable. A message could sit in a port
-			-- indefinitely with its reader parked beside it.
-			--
-			-- This used to wake every parked thread so each
-			-- could find out for itself, which is O(threads)
-			-- coroutine resumes to deliver one message and was
-			-- most of what a parked thread cost. sys.altpoll
-			-- answers the same question in the kernel, in one
-			-- call, so only the threads actually owed something
-			-- are woken. The loop repeats because one poll
-			-- reports one port and several may have filled.
-			--
-			-- This does not keep an idle proc awake: rounds only
-			-- advances while the loop runs, and once everything
-			-- parks again the runq empties and altblock sleeps
-			-- as before.
-			if gatherports() > 0 then
-				local i = sys.altpoll(altset)
+		-- deliver to parked threads while a sibling is still
+		-- runnable.
+		--
+		-- one thread that never parks would otherwise starve every
+		-- thread that does: the altrecv/altblock branch below is the
+		-- only other place a parked thread is readied, and it runs
+		-- only when the runq is empty, which never happens while
+		-- anything is runnable. a message would sit in a port with
+		-- its reader parked beside it.
+		--
+		-- the wake cannot come from the kernel here. port_push wakes
+		-- whoever is parked ON THE PORT, and this proc is not parked
+		-- -- it is running. so the scheduler has to ask, and asking
+		-- every round is what keeps the delay to one round rather
+		-- than a poll interval.
+		--
+		-- affordable because the question is asked in two steps:
+		-- sys.anyready is a bounded scan of our own rights in C,
+		-- with no port set to build, and the sweep below -- which
+		-- costs a gatherports over every parked thread -- runs only
+		-- when it says yes. so an idle proc and a busy one that has
+		-- nothing waiting both pay one cheap call.
+		--
+		-- and skipped entirely when the run queue is empty, which
+		-- is the case this exists to exclude: with nothing runnable
+		-- the altrecv/altblock branch below is about to deliver
+		-- anyway, and it does it without polling.
+		--
+		-- the loop repeats because one poll reports one port and
+		-- several may have filled.
+		if thread._qhead <= thread._qtail
+		    and next(thread._parked) ~= nil and sys.anyready()
+		    and gatherports() > 0 then
+			local i = sys.altpoll(altset)
 
-				while i do
-					local h = altset[i]
+			while i do
+				local h = altset[i]
 
-					if not readyon(h) then
-						break
-					end
-					i = sys.altpoll(altset)
+				if not readyon(h) then
+					break
 				end
+				i = sys.altpoll(altset)
 			end
 		end
 		local co = pop()
@@ -367,7 +371,19 @@ function thread.run()
 					print("thread error: " .. tostring(err))
 				end
 			elseif not thread._parked[co] then
-				-- preempted by its count hook: still runnable
+				-- preempted by its count hook, or yielded to
+				-- stay runnable. either way it goes back on
+				-- the queue.
+				-- preempted by its count hook, or yielded to
+				-- stay runnable. either way it goes back on
+				-- the queue, and the proc keeps running.
+				--
+				-- no yield to the kernel here: when the
+				-- quantum is what ended the thread's turn,
+				-- preempt_hook has already armed this state
+				-- to trip on its next instruction, so the
+				-- proc is about to be descheduled from
+				-- inside this loop whether or not lua asks.
 				push(co)
 			end
 		else
