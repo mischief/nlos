@@ -139,6 +139,24 @@ struct kport {
 	int dead;	/* no receive right left; sends are dropped */
 	size_t qbytes;	/* queued payload, against MAXQUEUE */
 	struct kmsg *head, *tail;
+
+	/* counters, for sys.ports(). The kernel is where a send is refused,
+	 * so it is the only place that can count refusals for every port
+	 * rather than for the one task that thought to keep its own tally.
+	 *
+	 * full and dead are separate because they are different faults: a
+	 * full queue is a reader that fell behind, a dead one is a receive
+	 * right closed while someone was still sending to it.
+	 *
+	 * qpeak rather than only qbytes because a queue is almost never
+	 * sampled at its worst moment. One that touched MAXQUEUE and
+	 * drained reads as idle, which is exactly the port worth knowing
+	 * about.
+	 */
+	unsigned long long nsent;
+	unsigned long long ndrop_full;
+	unsigned long long ndrop_dead;
+	size_t qpeak;
 };
 
 struct right {
@@ -1369,12 +1387,14 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
     const unsigned short *refs, const unsigned char *refrecv, int nrefs)
 {
 	if (port->dead) {
+		port->ndrop_dead++;
 		release_inflight(refs, refrecv, nrefs);
 		free(data);
 		return 0;
 	}
 
 	if (port->qbytes + len > MAXQUEUE) {
+		port->ndrop_full++;
 		release_inflight(refs, refrecv, nrefs);
 		free(data);
 		return -2;		/* full, distinct from out of memory */
@@ -1400,6 +1420,9 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 		port->head = m;
 	port->tail = m;
 	port->qbytes += len;
+	if (port->qbytes > port->qpeak)
+		port->qpeak = port->qbytes;
+	port->nsent++;
 	wake_receivers(port);
 	return 0;
 }
@@ -1509,6 +1532,11 @@ port_send_from_lua(lua_State *L, struct kproc *p, struct right *r, int idx)
 		return SEND_UNSERIALIZABLE;
 	}
 	if (r->port->dead) {
+		/* counted here as well as in port_push_owned: this path
+		 * returns before reaching it, and it is the one every send
+		 * from lua takes.
+		 */
+		r->port->ndrop_dead++;
 		release_inflight(w.refs, w.refrecv, w.nrefs);
 		free(w.p);
 		return SEND_DEAD;
@@ -2498,6 +2526,73 @@ api_procs(lua_State *L)
 	return 1;
 }
 
+/* which proc holds the receive right to a port, or 0. Answered by
+ * looking rather than by a field on the port, because a receive right
+ * moves: the holder is wherever it was last sent, and a field would be
+ * one more thing to keep true on every transfer for the sake of a call
+ * nobody makes in a hot loop.
+ */
+static int
+port_owner(const struct kport *port)
+{
+	for (int i = 0; i < prochigh; i++) {
+		struct kproc *p = procv[i];
+
+		if (!p || p->status == DEAD)
+			continue;
+		for (int h = 0; h < MAXRIGHTS; h++) {
+			struct right *r = right_get(p, h);
+
+			if (r && r->recv && r->port == port)
+				return p->id;
+		}
+	}
+	return 0;
+}
+
+/* sys.ports(): one row per live port, for an ss-shaped view of where
+ * messages are going and what is being refused.
+ *
+ * Ungated, like sys.procs(): a port index grants nothing without a
+ * right to it, so this shows the shape of the system without handing
+ * over any part of it.
+ */
+static int
+api_ports(lua_State *L)
+{
+	lua_newtable(L);
+	for (int i = 0, n = 1; i < porthigh; i++) {
+		struct kport *port = portv[i];
+
+		if (!port)
+			continue;
+
+		lua_createtable(L, 0, 9);
+		lua_pushinteger(L, port->idx);
+		lua_setfield(L, -2, "port");
+		lua_pushinteger(L, port_owner(port));
+		lua_setfield(L, -2, "owner");
+		lua_pushinteger(L, port->nrights);
+		lua_setfield(L, -2, "rights");
+		lua_pushinteger(L, port->nrecv);
+		lua_setfield(L, -2, "recv");
+		lua_pushboolean(L, port->dead);
+		lua_setfield(L, -2, "dead");
+		lua_pushinteger(L, (lua_Integer)port->qbytes);
+		lua_setfield(L, -2, "qbytes");
+		lua_pushinteger(L, (lua_Integer)port->qpeak);
+		lua_setfield(L, -2, "qpeak");
+		lua_pushinteger(L, (lua_Integer)port->nsent);
+		lua_setfield(L, -2, "sent");
+		lua_pushinteger(L, (lua_Integer)port->ndrop_full);
+		lua_setfield(L, -2, "dropfull");
+		lua_pushinteger(L, (lua_Integer)port->ndrop_dead);
+		lua_setfield(L, -2, "dropdead");
+		lua_rawseti(L, -2, n++);
+	}
+	return 1;
+}
+
 static int
 api_procname(lua_State *L)
 {
@@ -2880,6 +2975,7 @@ static const luaL_Reg kapi[] = {
 	{ "meminfo", api_meminfo },
 	{ "self", api_self },
 	{ "procs", api_procs },
+	{ "ports", api_ports },
 	{ "granted", api_granted },
 	{ "name", api_procname },
 	{ "wchan", api_wchan },
