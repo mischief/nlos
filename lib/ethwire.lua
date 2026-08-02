@@ -5,16 +5,17 @@
 -- codec can run against a real nic, a test harness or another guest.
 -- This is the binding for the real thing.
 --
--- recv_wait is the one that matters. It parks the request inside the
--- eth task and returns when a frame arrives or the deadline passes,
--- which means the machine can halt in between instead of spinning
--- through a poll loop -- see kernel.c's pump_eth and lib/eth.lua.
+-- Frames arrive by themselves. new() hands the eth task a right to a
+-- port of its own, and from then on every frame is pushed into it;
+-- recv_wait is an ordinary receive on that port, so the machine still
+-- halts between frames -- see kernel.c's pump_eth and task/eth.lua.
 --
--- One outstanding wait, reused. A timed-out wait is still parked in the
--- eth task, so issuing a second would leave the first stranded there
--- forever, holding a reply right; instead the same request is waited on
--- again next time round. That is why the reply port is owned by this
--- object rather than made fresh per call.
+-- Registering in new(), before the caller can have sent anything, is
+-- the point rather than a detail. Doing it lazily on the first
+-- recv_wait would put the registration after the caller's first send,
+-- which is precisely the window that loses the reply to it: a ping
+-- goes out, the answer comes back in microseconds, and the listener
+-- does not exist yet.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -29,13 +30,9 @@ function ethwire.new(cap)
 	-- MAXRIGHTS partway through a DHCP exchange, and it is the third
 	-- time this tree has made that mistake; see thread.rpc.
 	--
-	-- The parked receive below cannot use it: rpc waits for its answer,
-	-- and the whole point of a park is to leave the request outstanding
-	-- and come back to it. So that one owns its right explicitly, and
-	-- has a port of its own so a reply to a send() cannot be mistaken
-	-- for the frame a wait is holding out for.
-	local waitport = sys.newport()
-	local parked = false
+	-- frames land here, and only frames: a port of its own so a reply
+	-- to a send() cannot be mistaken for an arriving frame.
+	local framePort = sys.newport()
 
 	local function rpc(msg)
 		return thread.rpc(cap, msg)
@@ -55,43 +52,39 @@ function ethwire.new(cap)
 		return r and r.ok
 	end
 
-	function w.recv()
-		local r = rpc({ op = "recv" })
-
-		return r and r.data
-	end
-
 	function w.irqs()
 		local r = rpc({ op = "irqs" })
 
 		return r and r.n
 	end
 
-	-- wait up to ms for a frame. nil if none came in that time, with
-	-- the request left parked for the next call to wait on again.
-	local waitright
-
+	-- wait up to ms for a frame, nil if none came in that time.
 	function w.recv_wait(ms)
-		if not parked then
-			waitright = sys.sendright(waitport)
-			sys.send(cap, { op = "recv", wait = true,
-			    reply = { __right = waitright } })
-			parked = true
-		end
+		local m = thread.recvtimeout(framePort, ms or 1000)
 
-		local m = thread.recvtimeout(waitport, ms or 1000)
-
-		if not m then
-			return nil		-- still parked; ask again later
-		end
-		parked = false
-		sys.close(waitright)
-		waitright = nil
-		return m.data
+		return m and m.data
 	end
+
+	-- the frame port itself, for a task that alts between the wire and
+	-- its own clients rather than blocking on the wire. Such a task
+	-- must not register a second listener of its own: that would cost
+	-- a copy of every frame to a port nobody drains.
+	w.port = framePort
 
 	w.now = sys.uptime_ms
 	w.yield = sys.yield
+
+	-- register before returning, so a caller cannot send anything
+	-- before the wire is listening. The right is copied into the
+	-- message rather than moved, so ours is closed straight after --
+	-- see thread.rpc for the count this tree has already run out of.
+	local right = sys.sendright(framePort)
+	local r = rpc({ op = "listen", port = { __right = right } })
+
+	sys.close(right)
+	if not (r and r.ok) then
+		return nil, "eth refused a listen"
+	end
 
 	return w
 end

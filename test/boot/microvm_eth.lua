@@ -12,7 +12,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(9)
+tap.plan(10)
 
 local caps = sys.granted()
 
@@ -61,22 +61,32 @@ local function arp_request()
 	    mac .. ME .. string.rep("\0", 6) .. GW
 end
 
+-- listen before sending, not after. slirp answers in microseconds, so
+-- a listener registered after the request would miss the reply to it.
+local frames = sys.newport()
+local lr = rpc({ op = "listen", port = { __right = sys.sendright(frames) } })
+
+tap.ok(lr and lr.ok, "the wire accepts a listener")
+
 local sent = rpc({ op = "send", data = arp_request() })
 
 tap.ok(sent and sent.ok, "an arp request goes out on the wire")
 
 -- ---- and the answer ----
--- polling, not blocking: frames arrive unasked and nothing here can
--- park on the device until there is interrupt routing to wake it.
-local reply, tries
+-- blocking, not polling: the frame is pushed into our own port, so the
+-- proc sleeps until one arrives instead of spinning to learn that none
+-- did.
+local reply, seen
 local deadline = sys.uptime_ms() + 3000
 
-tries = 0
+seen = 0
 while sys.uptime_ms() < deadline do
-	tries = tries + 1
+	local m = thread.recvtimeout(frames, 200)
+	local f = m and m.data
 
-	local got = rpc({ op = "recv" })
-	local f = got and got.data
+	if f then
+		seen = seen + 1
+	end
 
 	if f and #f >= 42 and string.unpack(">I2", f, 13) == 0x0806 then
 		local op = string.unpack(">I2", f, 21)
@@ -86,10 +96,9 @@ while sys.uptime_ms() < deadline do
 			break
 		end
 	end
-	sys.yield()
 end
 
-tap.diag("polled " .. tries .. " times")
+tap.diag("saw " .. seen .. " frames")
 
 if not tap.ok(reply ~= nil, "an arp reply came back") then
 	tap.diag("nothing answered for 10.0.2.2 within 3s")

@@ -4,9 +4,12 @@
 --
 --   {op="mac", reply={__right=}}              -> {mac=<6 bytes>}
 --   {op="send", data=<frame>, reply=}         -> {ok=<bool>}
---   {op="recv", reply=}                       -> {data=<frame>} | {data=nil}
---   {op="recv", wait=true, reply=}            -> {data=<frame>}, when one comes
+--   {op="listen", port={__right=}, reply=}    -> {ok=<bool>}
 --   {op="irqs", reply=}                       -> {n=<count>}
+--
+-- listen is how frames are received: hand over a send right to a port
+-- you own, and every frame from then on is pushed into it as
+-- {data=<frame>}. Nothing is asked for and nothing is replied to.
 --
 -- Same shape as lib/tcp.lua and lib/udp.lua, and for the same reason:
 -- one owner of the device, everyone else reaching it by right.
@@ -17,13 +20,26 @@
 -- and udp are written above it in Lua. That is the deliberate shape --
 -- C moves bytes between a queue and a string, and protocol is policy.
 --
--- recv comes in two kinds, and the difference is the whole reason this
--- task alts rather than just receiving. Without wait, it answers with
--- whatever is there, nil included: a caller polling on its own schedule
--- keeps that. With wait, the request is parked until the device says a
--- frame arrived -- and the machine can then halt in between, which is
--- what anything above this layer actually wants. A stack that has to
--- poll for its input burns a cpu to learn that nothing happened.
+-- Pushing rather than answering is what makes receiving correct, and
+-- the reason there is no recv op at all.
+--
+-- A request/reply recv can only deliver to a caller that is asking at
+-- that instant, and a client is not always asking: between sending a
+-- packet and waiting for the answer it is doing neither. slirp turns a
+-- ping around in about 2us, comfortably inside that gap, so the reply
+-- was handed to whichever other client happened to be parked and
+-- thrown away -- microvm-ping failed about half its runs on exactly
+-- that, with the reply plainly visible on the wire.
+--
+-- No amount of care in the client closes that window, because the
+-- window is between two of its own operations. The frame has to be
+-- queued somewhere the client is not required to be standing.
+--
+-- It is queued in a port, which is a queue the kernel already keeps,
+-- with a bound (MAXQUEUE) and a hangup it already reports. Building a
+-- second one here would be writing that again and worse. The machine
+-- still halts between frames: the client blocks on its own port
+-- instead of on a request parked in here.
 --
 -- Handle 1 is the wakeup, granted by the kernel at spawn: kernel.c's
 -- pump_eth pushes into it when a virtio interrupt has been taken since
@@ -36,10 +52,10 @@ local eth = require("los.platform.eth")
 
 local RAWETH = 1
 
--- requests parked on a frame that has not arrived, oldest first. Rights
--- held here are closed when answered, like every other reply right (see
--- lib/wire.lua on why one arrives fresh each time).
-local waiting = {}
+-- send rights to the ports of everyone who asked to see frames. Held
+-- for the life of the listener rather than closed after an answer, and
+-- dropped when the far end hangs up.
+local listeners = {}
 
 local function reply(m, msg)
 	local h = type(m.reply) == "table" and m.reply.__right or nil
@@ -68,22 +84,40 @@ end
 -- ethertype check in lib/inet.lua are already exactly that.
 --
 -- The cost is a copy per extra listener, and in an ordinary boot there
--- are none: only the stack is parked, and a broadcast to one receiver
--- is a send.
+-- is one: the stack.
+--
+-- A listener whose port is full loses the frame and keeps its place.
+-- That is what a nic does when a ring fills, and the alternative --
+-- blocking here -- would let one slow reader stop the wire for
+-- everyone. The drop is counted by the kernel against the port it was
+-- refused by, which is the only place that can see it: from in here a
+-- full queue and a fast reader look identical.
+--
+-- Nothing is drained while no one is listening. Frames stay in the
+-- device's own queue instead, so a listener that registers a moment
+-- after boot still finds what arrived before it -- and the device ring
+-- bounds that on its own.
 local function drain()
-	while #waiting > 0 do
+	while #listeners > 0 do
 		local frame = eth.recv()
 
 		if not frame then
 			return
 		end
 
-		local w = waiting
+		local msg = { data = frame }
+		local live = {}
 
-		waiting = {}
-		for _, m in ipairs(w) do
-			reply(m, { data = frame })
+		for _, h in ipairs(listeners) do
+			local ok, why = sys.send(h, msg)
+
+			if ok or why == "full" then
+				live[#live + 1] = h
+			else
+				sys.close(h)	-- hung up; stop copying to it
+			end
 		end
+		listeners = live
 	end
 end
 
@@ -103,16 +137,19 @@ while true do
 	elseif m.op == "send" then
 		reply(m, { ok = type(m.data) == "string" and
 		    eth.send(m.data) or false })
-	elseif m.op == "recv" then
-		local frame = eth.recv()
+	elseif m.op == "listen" then
+		local h = type(m.port) == "table" and m.port.__right or nil
 
-		if frame or not m.wait then
-			reply(m, { data = frame })
+		if h then
+			listeners[#listeners + 1] = h
+			reply(m, { ok = true })
+			-- whatever the device already holds is this
+			-- listener's too: nothing drained while the list was
+			-- empty, and there may be no further interrupt to
+			-- come back on.
+			drain()
 		else
-			-- nothing now, and the caller said it would wait.
-			-- Answered from drain() above, whenever the device
-			-- next has something.
-			waiting[#waiting + 1] = m
+			reply(m, { ok = false, err = "listen needs a port right" })
 		end
 	elseif m.op == "irqs" then
 		reply(m, { n = eth.irqs() })

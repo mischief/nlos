@@ -61,22 +61,12 @@ end
 local wire = ethwire.new(ethh)
 local host = inet.new(wire, { mac = wire.mac(), ip = ip4.ANY })
 
--- a receive parked in the eth task, permanently. Its reply port is in
--- the alt below, so this proc sleeps until either a client asks
--- something or a frame arrives -- and the machine sleeps with it.
-local framePort = sys.newport()
-local parked = false
-
-local function park()
-	if parked then
-		return
-	end
-	-- giveright, not a bare sendright: this runs forever, and one
-	-- right per frame never closed is a stack that stops receiving.
-	sys.send(ethh, { op = "recv", wait = true,
-	    reply = thread.giveright(framePort) })
-	parked = true
-end
+-- frames are pushed into the wire's own port by the eth task, and that
+-- port is in the alt below, so this proc sleeps until either a client
+-- asks something or a frame arrives -- and the machine sleeps with it.
+-- ethwire registered it in new(), above; a second listener here would
+-- only cost a copy of every frame.
+local framePort = wire.port
 
 -- ---- udp state ----
 
@@ -391,17 +381,15 @@ end
 
 -- ---- the loop ----
 
-while true do
-	park()
+local cases = {
+	{ port = sys.SELF },
+	{ port = framePort },
+}
 
-	local which, m = thread.alt({
-		{ port = sys.SELF },
-		{ port = framePort },
-	})
+while true do
+	local which, m = thread.alt(cases)
 
 	if which == 2 then
-		parked = false
-
 		if m and m.data then
 			stat.frames_in = stat.frames_in + 1
 		end
