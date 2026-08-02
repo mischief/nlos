@@ -116,7 +116,34 @@ tap.diag(string.format("10.0.2.2 is at %02x:%02x:%02x:%02x:%02x:%02x",
 -- a redirection entry -- and until anything did sti at all, which
 -- nothing on this platform used to -- the device raised its line into
 -- a machine that had masked it, and no driver could tell.
-local irqs = rpc({ op = "irqs" })
+-- Sampled until it moves rather than once. The eth task polls -- its
+-- own header says why, and says it is waiting for an interrupt to park
+-- on -- so the frame can come out of the used ring before the line is
+-- taken, leaving the count at zero at the instant the exchange
+-- finishes. The race is in the observation, not the routing.
+--
+-- A dead line never delivers, so the count stays zero for the whole
+-- window and this still fails, which is the case it was written for.
+-- What it no longer does is fail because the guest got faster.
+--
+-- One port for the whole loop, not rpc(): rpc mints a fresh port per
+-- call and never closes it, and MAXPORTS is 256 -- so a polling loop
+-- built on it runs the machine out of ports and hangs rather than
+-- failing. That is a property of rpc, which every other caller here
+-- uses a bounded number of times.
+local irqs
+local irqport = sys.newport()
+local irqright = sys.sendright(irqport)
+local irqdeadline = sys.uptime_ms() + 500
+
+while sys.uptime_ms() < irqdeadline do
+	sys.send(caps.eth, { op = "irqs", reply = { __right = irqright } })
+	irqs = thread.recv(irqport)
+	if irqs and irqs.n and irqs.n > 0 then
+		break
+	end
+	sys.yield()
+end
 
 tap.diag("virtio interrupts taken: " .. tostring(irqs and irqs.n))
 tap.ok(irqs and irqs.n and irqs.n > 0,
