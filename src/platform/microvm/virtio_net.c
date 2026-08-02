@@ -21,14 +21,30 @@
 
 /* the only feature asked for. Everything else the device offers --
  * checksum offload, segmentation, and above all MRG_RXBUF -- is
- * declined on purpose: accepting MRG_RXBUF changes the header to 12
- * bytes and lets one frame span several buffers, which is a real
- * receive path rather than this one.
+ * declined on purpose: accepting MRG_RXBUF lets one frame span several
+ * buffers, which is a real receive path rather than this one. On a
+ * modern device declining it no longer shortens the header; see below.
  */
 #define VIRTIO_NET_F_MAC (1u << 5)
 
-/* prepended to every frame in both directions. 10 bytes exactly,
- * because MRG_RXBUF was declined above; do not reorder or pad.
+/* prepended to every frame in both directions, and its length is not a
+ * constant: it depends on which interface the device speaks.
+ *
+ * A legacy device presents num_buffers only when MRG_RXBUF was
+ * negotiated, and it was declined above, so there the header is the
+ * first six fields -- 10 bytes. A virtio 1.0 device always presents it,
+ * negotiated or not (virtio 1.3, 5.1.6: "The legacy driver only
+ * presented num_buffers ... without that feature the structure was 2
+ * bytes shorter"), so there it is 12.
+ *
+ * That makes it a property of the negotiation rather than of this
+ * driver, which matters because the two machines differ: qemu's
+ * virtio-mmio is legacy, OpenBSD vmd's virtio-PCI is 1.0-only. Getting
+ * it wrong does not fail cleanly -- every frame is simply offset by two
+ * bytes, which looks like a wire full of garbage.
+ *
+ * The struct is the full modern layout; net_hdr_len is how much of it
+ * is on the wire.
  */
 struct virtio_net_hdr {
 	uint8_t flags;
@@ -37,9 +53,13 @@ struct virtio_net_hdr {
 	uint16_t gso_size;
 	uint16_t csum_start;
 	uint16_t csum_offset;
+	uint16_t num_buffers;	/* modern only; see net_hdr_len */
 };
 
-#define NET_HDR_LEN 10
+#define NET_HDR_LEN_LEGACY 10
+#define NET_HDR_LEN_MODERN 12
+
+static unsigned net_hdr_len = NET_HDR_LEN_LEGACY;
 
 /* 1514 is ethernet's payload-carrying maximum without tags; the header
  * rides in the same buffer, and the whole thing is rounded up so a
@@ -66,8 +86,8 @@ static char *txbuf[NTX];
 static uint16_t txdesc[NTX];
 static int txfree[NTX];		/* 1 = available to send with */
 
-_Static_assert(sizeof(struct virtio_net_hdr) == NET_HDR_LEN,
-    "virtio_net_hdr must be exactly 10 bytes with MRG_RXBUF declined");
+_Static_assert(sizeof(struct virtio_net_hdr) == NET_HDR_LEN_MODERN,
+    "virtio_net_hdr must be the 12-byte modern layout, unpadded");
 
 /* hand a receive descriptor back to the device. Called at init for
  * every buffer, and again each time one completes -- a receive queue
@@ -116,6 +136,13 @@ virtio_net_init(void)
 		txdesc[i] = (uint16_t)d;
 		txfree[i] = 1;
 	}
+
+	/* before any frame moves, and it is what makes the same driver work
+	 * on both machines. The device settled this in virtio_dev_begin;
+	 * all this does is read back what was agreed.
+	 */
+	net_hdr_len = (netdev.features & VIRTIO_F_VERSION_1) ?
+	    NET_HDR_LEN_MODERN : NET_HDR_LEN_LEGACY;
 
 	if (got & VIRTIO_NET_F_MAC) {
 		for (int i = 0; i < 6; i++)
@@ -184,12 +211,12 @@ virtio_net_send(const void *frame, size_t n)
 
 	struct virtio_net_hdr *h = (struct virtio_net_hdr *)txbuf[i];
 
-	memset(h, 0, NET_HDR_LEN);
-	memcpy(txbuf[i] + NET_HDR_LEN, frame, n);
+	memset(h, 0, net_hdr_len);
+	memcpy(txbuf[i] + net_hdr_len, frame, n);
 
 	txfree[i] = 0;
 	virtio_desc_set(&netdev, VIRTQ_TX, txdesc[i], txbuf[i],
-	    (uint32_t)(NET_HDR_LEN + n), 0, -1);
+	    (uint32_t)(net_hdr_len + n), 0, -1);
 	virtio_submit(&netdev, VIRTQ_TX, txdesc[i]);
 	return 0;
 }
@@ -217,13 +244,13 @@ virtio_net_recv(void *buf, size_t cap)
 	int rc = 0;
 
 	/* len counts the header the device prepended */
-	if (len > NET_HDR_LEN) {
-		size_t n = len - NET_HDR_LEN;
+	if (len > net_hdr_len) {
+		size_t n = len - net_hdr_len;
 
 		if (n > cap) {
 			rc = -1;
 		} else {
-			memcpy(buf, rxbuf[i] + NET_HDR_LEN, n);
+			memcpy(buf, rxbuf[i] + net_hdr_len, n);
 			rc = (int)n;
 		}
 	}
