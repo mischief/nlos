@@ -2,7 +2,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(13)
+tap.plan(18)
 
 tap.ok(sys.granted().sched ~= nil, "sched is in the grant table")
 
@@ -94,5 +94,37 @@ repeat
 until sm.exit == shortpid
 
 tap.ok(sm.normal, "a brief proc ran and exited normally")
+
+-- ---- sys.pidstat: one proc's row, and the resume count in it ----
+--
+-- resumes is the count next to the rate. cputime says how much of the
+-- machine a proc took, this says in how many pieces -- and a proc
+-- round-tripping on ipc has a small share spread over a large count,
+-- which is the shape neither number shows on its own.
+local st = sys.pidstat(sys.self())
+
+tap.ok(st.pid == sys.self() and st.name == sys.name() and
+    st.wchan == sys.wchan(),
+    "pidstat agrees with the accessors it replaces in ps")
+
+tap.ok(st.resumes > 0, "this proc has been resumed at least once")
+
+-- park, so the kernel has to pick us up again rather than us never
+-- having left. Sleeping is what guarantees a resume: a busy loop can be
+-- preempted, but nothing makes it certain within the test.
+thread.sleep(20)
+
+local r1 = sys.pidstat(sys.self()).resumes
+
+tap.ok(r1 > st.resumes,
+    string.format("and the count advances across a park (%d -> %d)",
+    st.resumes, r1))
+
+-- monotonic: it is a total, not a rate, so it can never fall
+thread.sleep(5)
+tap.ok(sys.pidstat(sys.self()).resumes >= r1,
+    "the count never goes backwards")
+
+tap.ok(not pcall(sys.pidstat, 99999), "pidstat on a dead pid is an error")
 
 tap.done()

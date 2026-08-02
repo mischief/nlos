@@ -334,6 +334,13 @@ struct kproc {
 	unsigned cpu;			/* per-mille of wall time, decayed */
 	int pri;			/* computed at ready time, see make_ready */
 	unsigned long long resumed;	/* tsc at the current resume, for the hook */
+	/* how many times this proc has been given the cpu. cputime says how
+	 * long it ran, this says how often it was picked up -- and the two
+	 * answer different questions: the same milliseconds spread over
+	 * thousands of resumes is a proc round-tripping on ipc, over a
+	 * handful is one doing its work in a block.
+	 */
+	unsigned long long nresume;
 	struct grant grants[MAXGRANTS];
 	int ngrants;
 	struct ktrace *trace;	/* line trace ring, or 0; see sys.set_trace */
@@ -2783,6 +2790,12 @@ api_procname(lua_State *L)
  * for the other two states; "alt[...]" lists every port a
  * thread.alt() is waiting across.
  */
+/* pushes the wchan string for p and returns 1, so api_wchan and
+ * api_pidstat report the same thing by construction rather than by two
+ * copies of this agreeing.
+ */
+static int push_wchan(lua_State *L, struct kproc *p);
+
 static int
 api_wchan(lua_State *L)
 {
@@ -2793,6 +2806,12 @@ api_wchan(lua_State *L)
 		if (!p)
 			return luaL_error(L, "no such proc");
 	}
+	return push_wchan(L, p);
+}
+
+static int
+push_wchan(lua_State *L, struct kproc *p)
+{
 	switch (p->status) {
 	case DEAD:
 		lua_pushliteral(L, "dead");
@@ -3129,6 +3148,53 @@ api_priority(lua_State *L)
 	return 3;
 }
 
+/* sys.pidstat(pid): everything ps wants about one proc, in one table
+ * and one call.
+ *
+ * The alternative was another single-value accessor beside name,
+ * meminfo, priority and wchan, and four is already the point at which
+ * rendering one row costs four kernel entries and adding a column means
+ * adding an entry point. A table has room to grow without either.
+ *
+ * The older accessors stay: they are what tests and /proc read, and
+ * they now share push_wchan with this rather than describing a proc
+ * twice.
+ */
+static int
+api_pidstat(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	if (!lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+
+	lua_createtable(L, 0, 9);
+	lua_pushinteger(L, p->id);
+	lua_setfield(L, -2, "pid");
+	lua_pushstring(L, p->name);
+	lua_setfield(L, -2, "name");
+	lua_pushinteger(L, (lua_Integer)p->mem_used);
+	lua_setfield(L, -2, "used");
+	lua_pushinteger(L, (lua_Integer)p->mem_peak);
+	lua_setfield(L, -2, "peak");
+	lua_pushinteger(L, (lua_Integer)p->mem_limit);
+	lua_setfield(L, -2, "limit");
+	lua_pushinteger(L, p->weight);
+	lua_setfield(L, -2, "weight");
+	lua_pushinteger(L, reprioritize(p, count_runnable()));
+	lua_setfield(L, -2, "pri");
+	lua_pushinteger(L, (lua_Integer)p->cpu);
+	lua_setfield(L, -2, "cpu");
+	lua_pushinteger(L, (lua_Integer)p->nresume);
+	lua_setfield(L, -2, "resumes");
+	push_wchan(L, p);
+	lua_setfield(L, -2, "wchan");
+	return 1;
+}
+
 /* sys.granted(): {name = handle} for every capability the kernel
  * handed this proc at spawn. empty for an ordinary sys.spawn child,
  * which is granted nothing; populated for the boot payload. absent key
@@ -3326,6 +3392,7 @@ static const luaL_Reg kapi[] = {
 	{ "trace", api_trace },
 	{ "set_priority", api_set_priority },
 	{ "priority", api_priority },
+	{ "pidstat", api_pidstat },
 	{ "ticks", api_ticks },
 	{ "uptime_ms", api_uptime_ms },
 	{ "timer", api_timer },
@@ -4881,6 +4948,7 @@ run_proc(struct kproc *p)
 	for (int w = 0; w < p->weight; w++) {
 		ran = 1;
 		ndispatch++;
+		p->nresume++;
 
 		int nres = 0;
 

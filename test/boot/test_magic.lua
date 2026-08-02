@@ -5,10 +5,11 @@ local sys = require("los.sys")
 local magic = require("ps")
 local tap = require("tap")
 
-tap.plan(11)
+tap.plan(12)
 
 -- ---- the reporting ones are pure and safe to traverse ----
 tap.ok(tostring(magic.ps):find("PID") ~= nil, "ps renders a table with a header")
+tap.ok(tostring(magic.ps):find("RESUMES") ~= nil, "and carries the resume count")
 tap.ok(tostring(magic.stats):find("procs=") ~= nil, "stats renders counters")
 tap.ok(tostring(magic.ports):find("DROPF") ~= nil,
     "ports renders a table with a header")

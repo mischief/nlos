@@ -8,17 +8,27 @@ local M = {}
 
 local ps_mt = {}
 ps_mt.__tostring = function()
-	local lines = { "  PID NAME                 USED      PEAK  WT PRI  CPU WCHAN" }
+	local lines = {
+	    "  PID NAME                 USED      PEAK  WT PRI  CPU   RESUMES WCHAN" }
 	for _, pid in ipairs(sys.procs()) do
-		local used, peak = sys.meminfo(pid)
-		local wt, pri, cpu = sys.priority(pid)
+		-- one call per proc rather than one per column: name,
+		-- meminfo, priority and wchan are still there, but a row
+		-- built from them cost four kernel entries and grew one
+		-- more every time a column was added.
+		local s = sys.pidstat(pid)
 
 		-- cpu is per-mille of wall time, decayed from the tsc.
 		-- nothing dispatches on pri yet.
+		--
+		-- resumes is the count next to that rate: cpu says how much
+		-- of the machine a proc is taking, resumes says in how many
+		-- pieces. A server round-tripping on ipc shows a small cpu
+		-- over a large count, and that ratio is what says whether a
+		-- proc is working or waiting.
 		lines[#lines + 1] = string.format(
-		    "%5d %-16s %9d %9d %3d %3d %4d %s",
-		    pid, sys.name(pid), used, peak, wt, pri, cpu,
-		    sys.wchan(pid))
+		    "%5d %-16s %9d %9d %3d %3d %4d %9d %s",
+		    s.pid, s.name, s.used, s.peak, s.weight, s.pri, s.cpu,
+		    s.resumes, s.wchan)
 	end
 	return table.concat(lines, "\n")
 end
