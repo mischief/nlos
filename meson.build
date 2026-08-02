@@ -218,6 +218,9 @@ else
     'lib/ip4.lua',
     'lib/arp.lua',
     'lib/ethwire.lua',
+    'lib/icmp.lua',
+    'lib/udp4.lua',
+    'lib/inet.lua',
     'lib/tap.lua',
     'lib/ps.lua',
   ]
@@ -685,6 +688,7 @@ microvm_tests = [
   ['p9par', ['--9p']],
   ['eth', ['--net']],
   ['arp', ['--net']],
+  ['ping', ['--net']],
   ['idle', []],
 ]
 
