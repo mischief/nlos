@@ -172,6 +172,33 @@ function Host:pump(ms)
 	return p
 end
 
+-- send a udp datagram and wait for a reply to the port it came from,
+-- discarding everything else. The shape every request/reply protocol
+-- above this layer wants, and the reason it is here rather than in each
+-- of them.
+function Host:udp_rpc(dst, sport, dport, data, timeout_ms)
+	local ok, why = self:udp_send(dst, sport, dport, data)
+
+	if not ok then
+		return nil, why
+	end
+
+	local deadline = self.wire.now() + (timeout_ms or 2000)
+
+	while self.wire.now() < deadline do
+		local p = self:pump(100)
+
+		if p and p.proto == ip4.PROTO_UDP and p.src == dst then
+			local d = udp4.decode(p.payload, p.src, p.dst)
+
+			if d and d.dport == sport then
+				return d.data, p
+			end
+		end
+	end
+	return nil, "no reply from " .. ip4.str(dst)
+end
+
 -- send one echo request and wait for its reply, ignoring whatever else
 -- turns up. Returns the round trip in ms, or nil and why.
 function Host:ping(dst, timeout_ms, seq)

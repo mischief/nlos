@@ -223,6 +223,7 @@ else
     'lib/inet.lua',
     'lib/dhcp.lua',
     'lib/dhcpc.lua',
+    'lib/ntp.lua',
     'lib/tap.lua',
     'lib/ps.lua',
   ]
