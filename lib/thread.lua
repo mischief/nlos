@@ -595,10 +595,58 @@ end
 -- for the producer to finish". a closed channel in a SEND case raises,
 -- same as Channel:send would. nil here is ambiguous with a sent nil for
 -- the reason nbrecv's comment gives; test c.closed if it matters.
+--
+-- ---- build the case table once, outside the loop ----
+--
+-- alt neither keeps nor mutates `cases`, so a caller whose cases do not
+-- change should hoist them rather than write the table literal at the
+-- call. `alt({{port=a},{port=b}})` inside a `while true` builds three
+-- tables per trip, and that measured as 34% of an alt that finds a
+-- message already waiting -- more than everything below costs.
+--
+-- this is not a micro-optimisation for hot paths only: the exclusive
+-- device tasks (wire, tcp, udp) sit in exactly this loop for the life of
+-- the machine, so it is where an idle system spends its time.
+--
+-- when one case's port genuinely varies, keep the table and assign the
+-- field (task/sshd.lua's pump does this, because a session reset
+-- replaces its console port). one store still beats three allocations.
+
+-- the scratch alt parks with, one set per coroutine and reused.
+--
+-- alt allocated a fresh plist, a fresh marks, and a waiter plus a mark
+-- pair per channel case EVERY time round its inner loop -- and that
+-- loop runs once per wakeup, not once per alt, so a thread woken for a
+-- message another case took paid it again. Same family as the three
+-- allocations 2e231e8 removed from park, and the last one left.
+--
+-- keyed by coroutine and weak, so a collected thread takes its scratch
+-- with it. Reuse is safe because alt never nests: nothing between
+-- entering alt and leaving it can call alt again on the same coroutine
+-- -- nbrecv and nbsend do not park, and parkon yields to the scheduler,
+-- which resumes this same coroutine back inside this same call.
+local altscratch = setmetatable({}, { __mode = "k" })
+
+local function scratchfor(co)
+	local s = altscratch[co]
+
+	if not s then
+		s = { plist = {}, marks = {}, waiters = {} }
+		altscratch[co] = s
+	end
+	return s
+end
 
 local function alt(cases)
+	local n = #cases
+
 	while true do
-		for i, cs in ipairs(cases) do
+		-- a counted loop rather than ipairs: this scan runs on every
+		-- alt whether or not anything parks, so the per-case iterator
+		-- call is pure overhead on the one path that is always taken.
+		for i = 1, n do
+			local cs = cases[i]
+
 			if cs.port then
 				local ok, m = sys.tryrecv(cs.port)
 				if ok then
@@ -616,24 +664,66 @@ local function alt(cases)
 			end
 		end
 		if inthread() then
-			local marks, plist = {}, {}
-			for _, cs in ipairs(cases) do
+			local co = coroutine.running()
+			local s = scratchfor(co)
+			local plist, marks, waiters =
+			    s.plist, s.marks, s.waiters
+			local np, nm = 0, 0
+
+			for i = 1, n do
+				local cs = cases[i]
+
 				if cs.port then
-					plist[#plist + 1] = cs.port
+					np = np + 1
+					plist[np] = cs.port
 				elseif cs.op == "recv" then
-					local w = { co = coroutine.running() }
-					cs.c.recvq[#cs.c.recvq + 1] = w
-					marks[#marks + 1] = { cs.c.recvq, w }
+					nm = nm + 1
+
+					-- one waiter table per channel case,
+					-- reused across parks rather than made
+					-- fresh: the queue it goes on drops it
+					-- again below, so it is free by the
+					-- time we need it next.
+					--
+					-- indexed by nm and not by the case
+					-- slot, so it pairs with marks. That
+					-- costs nothing because every waiter
+					-- is the same {co = co} -- which case
+					-- it stands for is carried by which
+					-- queue it was put on, not by the
+					-- table.
+					local w = waiters[nm]
+
+					if not w then
+						w = { co = co }
+						waiters[nm] = w
+					end
+
+					local q = cs.c.recvq
+
+					q[#q + 1] = w
+					marks[nm] = q
 				end
 			end
+			-- only the tail left over from a larger previous park
+			-- has to be cleared, since altblock reads plist with
+			-- luaL_len and marks is walked to nm. same trick as
+			-- gatherports' set.
+			for i = np + 1, #plist do
+				plist[i] = nil
+			end
 			parkon(false, plist, false)
-			for _, m in ipairs(marks) do
-				for i, q in ipairs(m[1]) do
-					if q == m[2] then
-						table.remove(m[1], i)
+			for i = 1, nm do
+				local q = marks[i]
+				local w = waiters[i]
+
+				for j = 1, #q do
+					if q[j] == w then
+						table.remove(q, j)
 						break
 					end
 				end
+				marks[i] = false
 			end
 		else
 			-- top-level caller (no thread.run() driving us, e.g.
