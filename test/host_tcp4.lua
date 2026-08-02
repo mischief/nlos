@@ -194,13 +194,36 @@ is(o.mss, 1460, "mss parses past padding")
 is(o.wscale, 7, "window scale is recognised")
 ok(o.sackok, "and so is sack-permitted")
 
--- Recognised but not offered: we parse 7323 and 2018 from the first
--- segment and advertise neither, so that turning them on later changes
--- what we send rather than adding a receive path that has never run.
+-- Recognised and not offered: window scale (7323) is still parsed from
+-- the peer's SYN and never sent, so turning it on later changes what we
+-- advertise rather than adding a receive path that has never run.
+--
+-- SACK is now offered, which is the difference between this and the
+-- version of this assertion that came before it: the receiver state it
+-- needs -- segments held behind a hole -- already existed, so the option
+-- costs two bytes on the SYN and tells a peer's loss recovery exactly
+-- what arrived.
 local offered = tcp4.encode_options({ mss = 1460, wscale = 7, sackok = true })
 
-is(#offered, 4, "we advertise the mss option and nothing else")
-is(hex(offered), "020405b4", "and it is the option we think it is")
+is(hex(offered), "020405b404020101",
+    "a SYN offers the mss and sack-permitted, and pads with NOPs")
+is(#offered % 4, 0, "in a whole number of words")
+ok(tcp4.decode_options(offered).wscale == nil,
+    "and says nothing about window scaling")
+
+-- the blocks themselves, which only ever ride on an acknowledgment.
+local sacked = tcp4.encode_options({
+	sack = { { left = 0x1000, right = 0x2000 },
+	         { left = 0x3000, right = 0x4000 } },
+})
+local backagain = tcp4.decode_options(sacked)
+
+is(#backagain.sack, 2, "two sack blocks survive the wire")
+is(backagain.sack[1].left, 0x1000, "with the first block's left edge")
+is(backagain.sack[1].right, 0x2000, "and its right")
+is(backagain.sack[2].left, 0x3000, "and the second block behind it")
+-- 2 bytes of kind and length, 8 per block, padded to a word.
+is(#sacked, 20, "in the space RFC 2018 says they take")
 
 is(#tcp4.encode_options({}) % 4, 0, "options pad to a word")
 is(tcp4.encode_options(nil), "", "and no options is no bytes")

@@ -191,10 +191,10 @@ local function pair(cfg)
 
 	local a = tcb.new({ laddr = A_IP, lport = 40000, raddr = B_IP,
 	    rport = 80, iss = 1000, mss = cfg.mss or 1460,
-	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf })
+	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf, sack = cfg.sack_a })
 	local b = tcb.new({ laddr = B_IP, lport = 80, raddr = A_IP,
 	    rport = 40000, iss = 500000, mss = cfg.mss or 1460,
-	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf })
+	    rcvbuf = cfg.rcvbuf, sndbuf = cfg.sndbuf, sack = cfg.sack_b })
 
 	return a, b
 end
@@ -724,6 +724,116 @@ do
 	is(a:status().dupacks, before,
 	    "an acknowledgment carrying data is not a duplicate")
 	ok(not a:status().recovery, "and does not trigger fast retransmit")
+end
+
+
+-- ---- selective acknowledgment, RFC 2018 ----
+--
+-- The receiving half only. What we send tells a peer exactly which
+-- segments arrived behind a hole, so its loss recovery can resend the
+-- one that did not rather than guessing from a cumulative number.
+-- Acting on the blocks a peer sends us is the other half and is not
+-- implemented, so nothing here asserts anything about our own sender.
+
+-- a segment addressed to b, built by hand so the holes are exact.
+local function tob(t, base)
+	return {
+		sport = 40000, dport = 80,
+		seq = t.seq, ack = t.ack or 0,
+		flags = t.flags or tcp4.ACK,
+		wnd = t.wnd or 4096,
+		data = t.data or "",
+	}
+end
+
+do
+	local a, b = pair()
+	local l = link(a, b, { rtt = 20 })
+
+	connect(l)
+	ok(a:status().sack_ok, "sack is agreed when both ends offer it")
+	ok(b:status().sack_ok, "on both ends")
+
+	local base = b.rcv_nxt
+
+	b:take()
+
+	-- one segment, ten bytes, twenty past the hole.
+	b:segment(tob({ seq = tcp4.add(base, 20), ack = b.snd_nxt,
+	    data = string.rep("c", 10) }), l.now)
+
+	local segs = b:take()
+	local blocks = segs[1] and segs[1].opt and segs[1].opt.sack
+
+	ok(blocks ~= nil, "an acknowledgment behind a hole carries sack blocks")
+	is(blocks and #blocks, 1, "one of them, for the one run held")
+	is(blocks and blocks[1].left, tcp4.add(base, 20),
+	    "starting where the held data starts")
+	is(blocks and blocks[1].right, tcp4.add(base, 30),
+	    "and ending just past where it ends")
+
+	-- a second, disjoint run. Two holes now, and both must be reported
+	-- or the sender resends data it already has.
+	b:segment(tob({ seq = tcp4.add(base, 50), ack = b.snd_nxt,
+	    data = string.rep("d", 10) }), l.now)
+
+	segs = b:take()
+	blocks = segs[1] and segs[1].opt and segs[1].opt.sack
+	is(blocks and #blocks, 2, "a second hole is reported as a second block")
+
+	-- 2018 section 4: the first block must be the one containing the
+	-- segment that triggered this acknowledgment. It is the only part
+	-- of the option guaranteed to describe what just arrived, and a
+	-- sender reading a stale first block resends what it need not.
+	is(blocks and blocks[1].left, tcp4.add(base, 50),
+	    "and the most recent arrival is reported first")
+
+	-- adjacent segments are one run, not two: reporting them
+	-- separately would be true and would waste the option space a
+	-- third hole could have used.
+	b:segment(tob({ seq = tcp4.add(base, 30), ack = b.snd_nxt,
+	    data = string.rep("e", 20) }), l.now)
+
+	segs = b:take()
+	blocks = segs[1] and segs[1].opt and segs[1].opt.sack
+	is(blocks and #blocks, 1, "abutting runs are merged into one block")
+	is(blocks and blocks[1].left, tcp4.add(base, 20), "spanning from the first")
+	is(blocks and blocks[1].right, tcp4.add(base, 60), "to the last")
+
+	-- and when the hole fills, the blocks stop: there is nothing left
+	-- out of order to report.
+	b:segment(tob({ seq = base, ack = b.snd_nxt,
+	    data = string.rep("f", 20) }), l.now)
+	segs = b:take()
+	ok(segs[1] and (segs[1].opt == nil or segs[1].opt.sack == nil),
+	    "and once the hole fills there is nothing left to report")
+	is(b:status().held, 0, "with nothing still held")
+end
+
+-- a peer that did not offer it gets none. 2018 is explicit: a receiver
+-- that has not seen SACK-permitted MUST NOT send blocks, and sending
+-- them anyway means putting bytes in an option field the peer will
+-- parse as something it does not understand.
+do
+	local a, b = pair({ sack_a = false })
+	local l = link(a, b, { rtt = 20 })
+
+	connect(l)
+	ok(not b:status().sack_ok,
+	    "a peer that did not offer sack does not get blocks")
+	ok(not a:status().sack_ok, "and neither end thinks it is agreed")
+
+	local base = b.rcv_nxt
+
+	b:take()
+	b:segment(tob({ seq = tcp4.add(base, 20), ack = b.snd_nxt,
+	    data = string.rep("c", 10) }), l.now)
+
+	local segs = b:take()
+
+	ok(segs[1] and (segs[1].opt == nil or segs[1].opt.sack == nil),
+	    "so a hole produces a bare duplicate acknowledgment")
+	is(b:status().held, 1, "though the data is still held for reassembly")
 end
 
 io.write(("1..%d\n"):format(count))

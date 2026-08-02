@@ -24,10 +24,15 @@
 -- the partial acknowledgment, which is what recovers a second loss in
 -- the same window without waiting out a timeout.
 --
--- What is deliberately not here: Nagle, delayed acknowledgments, the
--- sender's half of silly-window avoidance, and SACK. The first three
--- make an implementation politer rather than more correct; SACK is a
--- real improvement and a separate piece of work.
+-- SACK (RFC 2018) is offered and generated, but only on the receiving
+-- side: the blocks we send tell a peer exactly which segments arrived
+-- behind a hole, which is what its loss recovery wants. Acting on the
+-- blocks a peer sends US is the other half and is not here -- it needs a
+-- scoreboard and its own interaction with fast recovery.
+--
+-- What is deliberately not here: Nagle, delayed acknowledgments and the
+-- sender's half of silly-window avoidance, all of which make an
+-- implementation politer rather than more correct.
 --
 -- Names follow the RFC, in lower case: snd_una is SND.UNA. Keeping them
 -- recognisable matters more than keeping them pretty, because every
@@ -206,6 +211,14 @@ function tcb.new(cfg)
 		-- being fast-retransmitted over and over.
 		recover = cfg.iss,
 
+		-- RFC 2018. sack_ok is true only when BOTH ends offered it on
+		-- their SYN, which is what the option means: it is a
+		-- statement about what this end will send, and permission
+		-- rather than a request.
+		sack_offer = cfg.sack ~= false,
+		sack_ok = false,
+		sack_recent = nil,
+
 		msl = cfg.msl or MSL_DEFAULT,
 		timewait = nil,
 
@@ -288,7 +301,7 @@ end
 -- it is not already running (RFC 6298, 5.1) and is a candidate for an
 -- RTT sample. A pure acknowledgment does neither: it is never resent,
 -- so nothing would ever turn the timer off again.
-function T:_send(flags, data, seq)
+function T:_send(flags, data, seq, opt)
 	self.rcv_wnd = self:_window()
 
 	local s = {
@@ -298,6 +311,7 @@ function T:_send(flags, data, seq)
 		flags = flags,
 		wnd = self.rcv_wnd,
 		data = data,
+		opt = opt,
 	}
 
 	self.out[#self.out + 1] = s
@@ -345,6 +359,21 @@ end
 -- many places that it is worth a name. It is also the challenge ACK of
 -- RFC 5961, which is the same segment sent for a different reason.
 function T:_ack()
+	-- Every acknowledgment sent while data is held behind a hole
+	-- carries the blocks (2018 section 4: "SACK options SHOULD be
+	-- included in all ACKs which do not ACK the highest sequence
+	-- number in the data receiver's queue"). Those are exactly the
+	-- duplicate acknowledgments a sender uses to decide what to resend,
+	-- so leaving them bare is throwing away the information this option
+	-- exists to carry.
+	if self.sack_ok then
+		local blocks = self:_sack_blocks()
+
+		if blocks then
+			self:_send(tcp4.ACK, nil, nil, { sack = blocks })
+			return
+		end
+	end
 	self:_send(tcp4.ACK)
 end
 
@@ -389,8 +418,8 @@ function T:connect(now)
 	-- rcv_nxt is not known yet, so the ack field of this SYN is zero
 	-- and carries no ACK bit. _send fills it from rcv_nxt, which is
 	-- still 0 -- correct, and the flags are what make it meaningless.
-	self:_send(tcp4.SYN, nil, self.iss)
-	self.out[#self.out].opt = { mss = self.rcv_mss }
+	self:_send(tcp4.SYN, nil, self.iss,
+	    { mss = self.rcv_mss, sackok = self.sack_offer })
 	return true
 end
 
@@ -636,8 +665,14 @@ function T:_in_listen(seg)
 	self.snd_una = self.iss
 	self.snd_nxt = tcp4.add(self.iss, 1)
 	self.state = tcb.SYN_RECEIVED
-	self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss)
-	self.out[#self.out].opt = { mss = self.rcv_mss }
+
+	-- Only agreed when both said so. Answering SACK-permitted to a peer
+	-- that did not offer it would be promising blocks to something that
+	-- will not read them, and 2018 is explicit that a receiver which
+	-- has not seen the option MUST NOT send them.
+	self.sack_ok = self.sack_offer and (seg.opt and seg.opt.sackok) or false
+	self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss,
+	    { mss = self.rcv_mss, sackok = self.sack_ok })
 end
 
 -- 3.10.7.3, in the RFC's order: ACK, then RST, then SYN. The order is
@@ -677,6 +712,7 @@ function T:_in_syn_sent(seg)
 	self.irs = seg.seq
 	self.rcv_nxt = tcp4.add(seg.seq, 1)
 	self.snd_mss = seg.opt and seg.opt.mss or tcp4.MSS_DEFAULT
+	self.sack_ok = self.sack_offer and (seg.opt and seg.opt.sackok) or false
 	self:_init_cc()
 
 	if acked then
@@ -703,8 +739,8 @@ function T:_in_syn_sent(seg)
 	self.snd_wnd = seg.wnd
 	self.snd_wl1 = seg.seq
 	self.snd_wl2 = seg.ack
-	self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss)
-	self.out[#self.out].opt = { mss = self.rcv_mss }
+	self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss,
+	    { mss = self.rcv_mss, sackok = self.sack_ok })
 end
 
 -- Retransmit the first unacknowledged segment, and only that.
@@ -982,6 +1018,83 @@ function T:_hold(seg)
 
 	self.ooo[#self.ooo + 1] = { seq = seg.seq, data = data, fin = fin }
 	self.ooobytes = self.ooobytes + #data
+	self.sack_recent = seg.seq
+end
+
+-- The SACK blocks to report: the contiguous runs of data we are holding
+-- behind the hole (RFC 2018 section 4).
+--
+-- The ooo queue holds segments, which may overlap or abut, so they are
+-- merged into ranges first -- reporting two touching segments as two
+-- blocks would be true but would waste option space a sender could have
+-- used to learn about a third hole.
+--
+-- The block containing the most recently received segment goes first,
+-- which the RFC requires and is not decoration: it is the only part of
+-- the option guaranteed to reflect what just arrived, and a sender
+-- reading a stale first block retransmits something already delivered.
+local SACK_MAX_BLOCKS = 3
+
+function T:_sack_blocks()
+	if #self.ooo == 0 then
+		return nil
+	end
+
+	local ranges = {}
+
+	for _, h in ipairs(self.ooo) do
+		local len = #h.data + (h.fin and 1 or 0)
+
+		if len > 0 then
+			ranges[#ranges + 1] = {
+				left = h.seq,
+				right = tcp4.add(h.seq, len),
+				recent = h.seq == self.sack_recent,
+			}
+		end
+	end
+
+	if #ranges == 0 then
+		return nil
+	end
+
+	table.sort(ranges, function(x, y)
+		return tcp4.lt(x.left, y.left)
+	end)
+
+	local merged = { ranges[1] }
+
+	for i = 2, #ranges do
+		local last = merged[#merged]
+		local r = ranges[i]
+
+		if tcp4.le(r.left, last.right) then
+			if tcp4.gt(r.right, last.right) then
+				last.right = r.right
+			end
+			last.recent = last.recent or r.recent
+		else
+			merged[#merged + 1] = r
+		end
+	end
+
+	-- most recent first, the rest in the order they sit in the space.
+	local out = {}
+
+	for _, r in ipairs(merged) do
+		if r.recent then
+			out[#out + 1] = r
+		end
+	end
+	for _, r in ipairs(merged) do
+		if not r.recent then
+			out[#out + 1] = r
+		end
+	end
+	while #out > SACK_MAX_BLOCKS do
+		table.remove(out)
+	end
+	return out
 end
 
 -- take everything held that is now contiguous with rcv_nxt. Repeated
@@ -1218,11 +1331,15 @@ function T:_retransmit()
 	end
 
 	if self.state == tcb.SYN_SENT then
-		self:_send(tcp4.SYN, nil, self.iss)
-		self.out[#self.out].opt = { mss = self.rcv_mss }
+		-- a retransmitted SYN carries the same options as the first:
+		-- the peer may only ever see this one, and a SYN without the
+		-- mss option means the default of 536 for the rest of the
+		-- connection.
+		self:_send(tcp4.SYN, nil, self.iss,
+		    { mss = self.rcv_mss, sackok = self.sack_offer })
 	elseif self.state == tcb.SYN_RECEIVED then
-		self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss)
-		self.out[#self.out].opt = { mss = self.rcv_mss }
+		self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss,
+		    { mss = self.rcv_mss, sackok = self.sack_ok })
 	else
 		local n = math.min(#self.sndq, self.snd_mss)
 		local flags = tcp4.ACK
@@ -1332,6 +1449,7 @@ function T:status()
 		ssthresh = self.ssthresh,
 		dupacks = self.dupacks,
 		recovery = self.in_recovery,
+		sack_ok = self.sack_ok,
 		flight = self:_flight(),
 		retries = self.retries,
 	}

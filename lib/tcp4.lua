@@ -223,6 +223,10 @@ end
 -- Only what we are prepared to honour on the way back. Padded to a
 -- 4-byte boundary because the data offset field counts words and has
 -- nowhere to say "and three more bytes".
+--
+-- Window scale and timestamps are still parsed and not offered; see
+-- decode_options. SACK is offered, because the receiver state it needs
+-- -- a queue of segments held behind a hole -- already exists.
 function tcp4.encode_options(opt)
 	if not opt then
 		return ""
@@ -232,6 +236,23 @@ function tcp4.encode_options(opt)
 
 	if opt.mss then
 		out[#out + 1] = string.pack(">I1I1I2", tcp4.OPT_MSS, 4, opt.mss)
+	end
+	if opt.sackok then
+		out[#out + 1] = string.pack(">I1I1", tcp4.OPT_SACKOK, 2)
+	end
+	if opt.sack and #opt.sack > 0 then
+		-- 8 bytes a block plus the kind and length. Four blocks is
+		-- the most the 40 bytes of option space can hold, and three
+		-- is the most that leaves room for the timestamps this will
+		-- eventually also carry -- so callers are expected to have
+		-- already chosen which blocks matter.
+		local blocks = {}
+
+		for _, b in ipairs(opt.sack) do
+			blocks[#blocks + 1] = string.pack(">I4I4", b.left, b.right)
+		end
+		out[#out + 1] = string.pack(">I1I1", tcp4.OPT_SACK,
+		    2 + 8 * #blocks) .. table.concat(blocks)
 	end
 
 	local s = table.concat(out)
