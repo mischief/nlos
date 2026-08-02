@@ -32,13 +32,16 @@ local q = require("arch").quote
 
 local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
-local want9p, wantnet = false, false
+local want9p, wantnet, wantecho = false, false, false
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
 		want9p = true
 	elseif arg[i] == "--net" then
 		wantnet = true
+	elseif arg[i] == "--netecho" then
+		wantnet = true
+		wantecho = true
 	end
 end
 
@@ -119,9 +122,25 @@ local rngargs = "-device virtio-rng-device,bus=virtio-mmio-bus.1"
 -- needed for anything wanting a real segment.
 local netargs = ""
 
+-- --netecho adds a peer worth connecting to. slirp hosts no TCP service
+-- of its own -- it forwards outward, and a guest dialing its own address
+-- does not hairpin -- so until now nothing in the guest could complete a
+-- handshake without a host-driven harness on the far side.
+--
+-- guestfwd solves it without one: qemu runs the command and joins the
+-- guest's TCP stream to its stdin and stdout, so `cat` is an echo
+-- server, and the whole thing stays an ordinary boot test. Kept behind
+-- its own flag rather than folded into --net so that a syntax error
+-- here cannot stop every other network test from booting.
+local echoargs = ""
+
+if wantecho then
+	echoargs = ",guestfwd=tcp:10.0.2.100:7-cmd:cat"
+end
+
 if wantnet then
 	netargs = table.concat({
-		"-netdev user,id=n0",
+		"-netdev user,id=n0" .. echoargs,
 		"-device virtio-net-device,netdev=n0,bus=virtio-mmio-bus.2",
 	}, " ")
 end

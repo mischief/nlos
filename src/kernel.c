@@ -4542,6 +4542,20 @@ struct driver_desc {
 	 * simply a task with nothing under it, which it can say so about.
 	 */
 	const char *needs;
+
+	/* this task needs to draw random bytes (los.platform.rng).
+	 *
+	 * Only the boot proc gets that module by default, which is the
+	 * right default -- the raw draw IS the capability, as the comment
+	 * on luaopen_crypto_chacha20 puts it, so it goes to as few procs
+	 * as possible. But tcp cannot do without one: RFC 6528 requires an
+	 * initial sequence number that is neither a counter nor derivable
+	 * from another connection's, because an off-path attacker who can
+	 * guess it can inject into the stream. lib/tcb.lua deliberately
+	 * refuses to invent one -- it has no clock and no secret -- so the
+	 * task that owns the connections has to be able to.
+	 */
+	unsigned rng;
 };
 
 static int
@@ -4621,6 +4635,20 @@ spawn_init(const char *code, size_t len, int is_file)
 		 * instead -- see its header on why one right does here what
 		 * two do there.
 		 */
+		/* tcp in lua, over the ip task rather than over firmware.
+		 * Its capname is "tcp" -- the same one task/tcp.lua takes
+		 * above -- and that is the point rather than a collision:
+		 * the two are enabled by different platforms and never
+		 * both, so a client asking sys.granted() for "tcp" gets the
+		 * firmware's TCP4 on efi and this on a machine with nothing
+		 * but a NIC, and cannot tell which. lib/http.lua, lib/ssh,
+		 * task/sshd.lua and task/webterm.lua are written against
+		 * that protocol and run unchanged on both.
+		 */
+		{ .path = "/task/tcp4.lua", .chunkname = "=tcp4",
+		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
+		  .what = "networking (tcp)", .enabled = have_eth,
+		  .capname = "tcp", .needs = "ip", .rng = 1 },
 		{ .path = "/task/dhcpd.lua", .chunkname = "=dhcpd",
 		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
 		  .what = "dhcp", .enabled = have_eth,
@@ -4654,6 +4682,19 @@ spawn_init(const char *code, size_t len, int is_file)
 		pids[i] = spawn_driver(drivers[i].path, drivers[i].chunkname,
 		    drivers[i].priv, drivers[i].devport, drivers[i].devrecv,
 		    drivers[i].what);
+
+		/* the same grant the boot proc gets below, for the one task
+		 * that asked for it. Narrow on purpose: this hands over
+		 * los.platform.rng and nothing else -- virtio-9p is a
+		 * separate decision behind PRIV_P9 -- and it is a no-op on
+		 * efi, where the module does not exist.
+		 */
+		if (drivers[i].rng && pids[i] >= 0) {
+			struct kproc *rp = find_proc(pids[i]);
+
+			if (rp)
+				platform_boot_extra_modules(rp->L);
+		}
 	}
 
 	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_BOOT);

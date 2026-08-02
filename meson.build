@@ -234,7 +234,9 @@ else
     'lib/dns.lua',
     'lib/dnsc.lua',
     'lib/caps.lua',
+    'lib/tcb.lua',
     'task/ip.lua',
+    'task/tcp4.lua',
     'task/dhcpd.lua',
     'lib/dev.lua',
     'lib/srv.lua',
@@ -718,6 +720,7 @@ microvm_tests = [
   ['checksum', []],
   ['autoip', ['--net']],
   ['ipraw', ['--net']],
+  ['tcp', ['--netecho']],
   ['idle', []],
 ]
 
