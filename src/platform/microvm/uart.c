@@ -63,6 +63,27 @@
  * uart_init to this one. So the same programming works on qemu's pc
  * machine and not on microvm, which is what makes this stubborn.
  *
+ * Localised further with an instrumented qemu 10.2.3 build. Counting
+ * calls over a 20 second run with the host writing:
+ *
+ *   ours    serial_can_receive  2   serial_receive1  0
+ *   linux   serial_can_receive 46   serial_receive1  1
+ *
+ * Both of our two can_receive calls happen before the host writes
+ * anything, and both return 1 -- so the device is willing and the
+ * chardev's read watch does get armed. It is simply never polled again.
+ * qemu's main loop ran fewer than 101 iterations in those 20 seconds,
+ * while linux's kept waking; io_watch_poll_prepare, which is what calls
+ * can_receive, runs once per main loop iteration.
+ *
+ * So the failure is that qemu's main loop is asleep and our socket
+ * write does not wake it. Note this is not the guest hogging the BQL --
+ * an idle payload that touches no port behaves identically. A plausible
+ * reason it never wakes on a timer is that this platform arms no
+ * qemu-visible timer at all: pit, rtc and pic are off, and the LAPIC
+ * TSC-deadline timer is handled inside KVM. Linux's loop waking often
+ * enough to poll the fd anyway is then the only reason it receives.
+ *
  * The ring and handler are therefore written but untested against real
  * input, and uart_rx still polls the port as a fallback.
  */
