@@ -69,6 +69,45 @@ repl, reachable on host tcp/8090.
 
 On real hardware: `dd` `build/luaos.img` to a USB stick and UEFI-boot it.
 
+## SSH into it
+
+```sh
+meson setup build
+ninja -C build qemu          # boots it; this terminal is the serial console
+```
+
+and from another terminal:
+
+```sh
+ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    anyone@127.0.0.1
+```
+
+You land in the same `dos` shell the serial console gives, as an
+unprivileged proc of your own holding exactly one right: the console you
+are typing into. `exit` or ^D ends the session.
+
+Three things about it that are prototype, not design:
+
+- **The host key is generated per boot**, in memory, so every connection
+  is to a host your client has never seen. Hence the two `-o` flags. A
+  persistent key means either the ESP right (which the session
+  deliberately does without) or a key baked into the image.
+- **Any public key is accepted**, from any username. `authorized` in
+  `svc/sshd.lua` is one line so that this is obvious.
+- **You need an ed25519 key.** `ssh-ed25519` is the only host key and
+  user key algorithm offered; there is no RSA anywhere.
+
+`etc/services.lua` is what starts it, and `args.trace = true` there logs
+every packet's message number to the console -- which is on because this
+is a branch for working on it.
+
+The crypto is `lib/crypto` (Lua) and `src/crypto.c` (ChaCha20 and
+Poly1305), the protocol is `lib/ssh`, and both came from
+`~/code/lua/ssh`, where the RFC vectors run against them under busted.
+Entropy is `EFI_RNG_PROTOCOL` via `los.platform.rng`; no RNG means no
+sshd, rather than a weaker one.
+
 ## Test it
 
 ```sh
