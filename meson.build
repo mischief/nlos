@@ -235,6 +235,8 @@ else
     'lib/dnsc.lua',
     'lib/caps.lua',
     'lib/http.lua',
+    'lib/crypto/hashstate.lua',
+    'lib/crypto/sha256.lua',
     'lib/tcb.lua',
     'task/ip.lua',
     'task/tcp4.lua',
@@ -747,6 +749,23 @@ if have_hostutil
       files('test/boot/microvm_httpd.lua')],
     protocol: 'tap',
     timeout: 90,
+    env: {'HOSTUTIL_SO': hostutil.full_path()},
+    depends: hostutil,
+  )
+endif
+
+# bulk transfer, with the host as the server. No forwarding needed in
+# this direction: qemu proxies a guest's connection to 10.0.2.2 onto the
+# host's loopback, which is where test/hostserver.lua binds. Several
+# megabytes each way is thousands of segments, a receive window that
+# closes and reopens continuously, and a send buffer that fills -- none
+# of which a five-byte echo reaches.
+if have_hostutil
+  test('microvm-bulk', lua_interp,
+    args: [files('test/microvm_bulk.lua'), luaos_microvm_elf,
+      files('test/boot/microvm_bulk.lua')],
+    protocol: 'tap',
+    timeout: 120,
     env: {'HOSTUTIL_SO': hostutil.full_path()},
     depends: hostutil,
   )

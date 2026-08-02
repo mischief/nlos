@@ -5,10 +5,11 @@
  * every other place its own C floor has to stand in for something
  * Lua's stdlib doesn't reach.
  *
- * scope is deliberately narrow: exactly what test/test_9p.lua,
- * test_http.lua, test_mcp.lua and test_web.lua use. no listen/accept
- * (these are clients only), no HTTP (that's hand-rolled in Lua on top
- * of send/recv, in test/hosthttp.lua).
+ * scope is deliberately narrow: what test/test_9p.lua, test_http.lua,
+ * test_mcp.lua and test_web.lua use as clients, plus listen/accept for
+ * test/hostserver.lua, which is the other direction -- a guest dialling
+ * OUT needs something on the host to dial to. No HTTP (that's
+ * hand-rolled in Lua on top of send/recv, in test/hosthttp.lua).
  *
  * this is a HOST tool, built native (see meson.build's native: true)
  * regardless of what -Dplatform/cross-file the freestanding kernel
@@ -69,6 +70,94 @@ l_connect_tcp(lua_State *L)
 		return 2;
 	}
 	lua_pushinteger(L, fd);
+	return 1;
+}
+
+/* bind 127.0.0.1:0, listen, and report both the fd and the port the
+ * kernel picked. Loopback only and on purpose: everything this serves
+ * is reached by a guest through qemu's user networking, which proxies
+ * connections to 10.0.2.2 onto the host's loopback, so there is no
+ * reason for it to be reachable from anywhere else.
+ *
+ * Asking for port 0 and reading back what was assigned avoids the race
+ * in picking a free port and then binding it, which l_free_port below
+ * still has because its caller (hostfwd) needs a number before qemu
+ * exists.
+ */
+static int
+l_listen_tcp(lua_State *L)
+{
+	lua_Integer backlog = luaL_optinteger(L, 1, 8);
+	struct sockaddr_in addr;
+	socklen_t len = sizeof addr;
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	int one = 1;
+
+	if (fd < 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+
+	memset(&addr, 0, sizeof addr);
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	addr.sin_port = 0;
+
+	if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0 ||
+	    listen(fd, (int)backlog) != 0 ||
+	    getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+		int e = errno;
+
+		close(fd);
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(e));
+		return 2;
+	}
+	lua_pushinteger(L, fd);
+	lua_pushinteger(L, ntohs(addr.sin_port));
+	return 2;
+}
+
+/* accept with a timeout, so a caller driving a guest can give up rather
+ * than block forever on a guest that never got as far as dialling.
+ * Returns nil plus "timeout" in that case, which is a different answer
+ * from nil plus an error and is worth telling apart in a test.
+ */
+static int
+l_accept(lua_State *L)
+{
+	int fd = (int)luaL_checkinteger(L, 1);
+	double timeout = luaL_optnumber(L, 2, 10.0);
+	struct timeval tv;
+	fd_set r;
+	int n, c;
+
+	FD_ZERO(&r);
+	FD_SET(fd, &r);
+	tv.tv_sec = (time_t)timeout;
+	tv.tv_usec = (suseconds_t)((timeout - (double)tv.tv_sec) * 1e6);
+
+	n = select(fd + 1, &r, NULL, NULL, &tv);
+	if (n == 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, "timeout");
+		return 2;
+	}
+	if (n < 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+
+	c = accept(fd, NULL, NULL);
+	if (c < 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushinteger(L, c);
 	return 1;
 }
 
@@ -332,6 +421,8 @@ static const luaL_Reg hostutil[] = {
 	{ "kill", l_kill },
 	{ "wait", l_wait },
 	{ "poll", l_poll },
+	{ "listen_tcp", l_listen_tcp },
+	{ "accept", l_accept },
 	{ NULL, NULL }
 };
 
