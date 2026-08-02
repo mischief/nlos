@@ -7,85 +7,25 @@
  * byte arrives, the handler moves it into a ring, and uart_rx takes from
  * there, with a poll of the port as a fallback.
  *
- * Transmit works. Receive does not, on a microvm guest under qemu
- * 10.2.3, and the cause is still unknown. What is known, so the next
- * attempt starts further along:
+ * Receive works, and the long comment that used to live here claiming
+ * otherwise was chasing the wrong layer. A marker at the drain below
+ * shows bytes written by the host arriving and going into the ring:
+ * three writes of 'Z' produced <Z><Z><Z>. An instrumented qemu agrees --
+ * serial_can_receive reports used=1 lsr=61 when a byte lands, then
+ * used=0 once this drains it.
  *
- * The guest side is proven good. An MCR loopback self-test -- set
- * MCR_LOOP, write a byte to THR, read it back -- returns the byte, and
- * returns it out of the ring below rather than from the port, which
- * means the interrupt fired and the handler ran. So port addressing,
- * the receive path, the IOAPIC route and the ISR are all correct, with
- * no host involvement at all.
+ * What is still broken is above uart_rx: those bytes never reach the
+ * wire task, so nothing in Lua sees them. That is kernel plumbing
+ * (pump_serial, serport, lib/wire.lua), not this file.
  *
- * The host side works too, and this is the fact to start from: tracing
- * serial_read while a Linux kernel runs on identical machine arguments
- * shows LSR reading 0x61 -- DR set -- 3117 times, beginning exactly
- * when the host starts writing. DR is device state that only
- * serial_receive1 sets, so qemu genuinely delivers bytes into the
- * microvm ISA serial. (Linux never reads RBR there; console=ttyS0
- * earlycon is output-only. Its input piling up unread is why it looks
- * stuck, not evidence against delivery.)
- *
- * So the machine is not at fault and neither is qemu. Our guest reads
- * the same register on the same port and sees 0x60 every time.
- *
- * Between those, our guest never sees a byte from the host. Identical
- * with the fifo on and off, at divisor 1 and 12, under kvm and tcg, and
- * across four chardev backends (stdio, mon:stdio, unix socket, pipe).
- * Registers at the time read LSR=60 IER=01 IIR=c1 MCR=0b: correctly
- * programmed, receive enabled, DTR/RTS/OUT2 asserted, no data.
- *
- * One earlier reading was wrong and is worth not repeating: qemu
- * "refusing" writes after a few bytes is not a fault, it is
- * serial_can_receive advertising itl - fifo_used with our trigger level
- * of 1, so it buffers a single byte and waits for the guest to drain
- * it. That the guest never drains it is the symptom, not the cause.
- *
- * Further things ruled out: it is not the port, because com2 at 0x2f8
- * behaves identically (output fine, input absent); not how the machine
- * builds its serial, because isa-serial=off plus an explicit
- * -device isa-serial is no different; not the PIC, because pic=on
- * changes nothing; and not the interrupt work in this file, because
- * neutering uart_irq_enable back to pure polling fails exactly the
- * same way. That last one matters: receive was already broken before
- * any of this was written, rather than broken by it.
- *
- * The programming is not the cause either, which is the strongest
- * elimination so far. Linux's init was lifted straight out of the
- * trace -- IER=0x00, LCR=0x93, divisor 12, LCR=0x13, FCR=0x00,
- * MCR=0x01 -- and reproduced here byte for byte. Still nothing. So the
- * device is configured identically to a guest that demonstrably
- * receives, on the same machine, and ours still never sees DR.
- *
- * Also worth knowing: src/x86_64/uart.c, which does receive and is what
- * the 9p-protocol test drives over com2 every run, has a byte-identical
- * uart_init to this one. So the same programming works on qemu's pc
- * machine and not on microvm, which is what makes this stubborn.
- *
- * Localised further with an instrumented qemu 10.2.3 build. Counting
- * calls over a 20 second run with the host writing:
- *
- *   ours    serial_can_receive  2   serial_receive1  0
- *   linux   serial_can_receive 46   serial_receive1  1
- *
- * Both of our two can_receive calls happen before the host writes
- * anything, and both return 1 -- so the device is willing and the
- * chardev's read watch does get armed. It is simply never polled again.
- * qemu's main loop ran fewer than 101 iterations in those 20 seconds,
- * while linux's kept waking; io_watch_poll_prepare, which is what calls
- * can_receive, runs once per main loop iteration.
- *
- * So the failure is that qemu's main loop is asleep and our socket
- * write does not wake it. Note this is not the guest hogging the BQL --
- * an idle payload that touches no port behaves identically. A plausible
- * reason it never wakes on a timer is that this platform arms no
- * qemu-visible timer at all: pit, rtc and pic are off, and the LAPIC
- * TSC-deadline timer is handled inside KVM. Linux's loop waking often
- * enough to poll the fd anyway is then the only reason it receives.
- *
- * The ring and handler are therefore written but untested against real
- * input, and uart_rx still polls the port as a fallback.
+ * Two things about this platform are worth keeping even so. qemu's main
+ * loop sleeps here with nothing to wake it -- pit, rtc and pic are all
+ * off and the LAPIC timer lives inside KVM -- so input can sit
+ * undelivered until something else stirs the loop, which made every
+ * earlier measurement look like a total failure depending on timing.
+ * And uart_init is called twice, by microvm_main and again by
+ * kernel_init; the second call used to clear IER and switch receive
+ * interrupts back off, which is why rx_irq_on exists.
  */
 
 #include "microvm.h"
