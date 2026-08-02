@@ -18,6 +18,7 @@ local ether = require("ether")
 local ip4 = require("ip4")
 local arp = require("arp")
 local icmp = require("icmp")
+local udp4 = require("udp4")
 
 local inet = {}
 
@@ -53,13 +54,23 @@ function Host:nexthop(dst)
 end
 
 function Host:send(dst, proto, payload)
-	local hop = self:nexthop(dst)
-	local mac = arp.cached(hop)
+	local mac
 
-	if not mac then
-		mac = arp.resolve(self.wire, self.mac, self.ip, hop, 2000)
+	if dst == ip4.BROADCAST then
+		-- nobody to ask and nobody to ask for: a broadcast goes to
+		-- the ethernet broadcast address by definition. This is also
+		-- the only way to send anything before having an address at
+		-- all, which is how DHCP starts.
+		mac = ether.BROADCAST
+	else
+		local hop = self:nexthop(dst)
+
+		mac = arp.cached(hop)
 		if not mac then
-			return nil, "no route to " .. ip4.str(hop)
+			mac = arp.resolve(self.wire, self.mac, self.ip, hop, 2000)
+			if not mac then
+				return nil, "no route to " .. ip4.str(hop)
+			end
 		end
 	end
 
@@ -71,6 +82,14 @@ function Host:send(dst, proto, payload)
 	})
 
 	return self.wire.send(ether.encode(mac, self.mac, ether.IPV4, pkt))
+end
+
+-- a udp datagram, wrapped and sent. Separate from send() because udp's
+-- checksum covers the addresses it is about to be wrapped in, so the
+-- two layers cannot be composed blindly (see lib/udp4.lua).
+function Host:udp_send(dst, sport, dport, data)
+	return self:send(dst, ip4.PROTO_UDP,
+	    udp4.encode(sport, dport, data, self.ip, dst))
 end
 
 -- one frame's worth of work. Returns the decoded IP packet when one
