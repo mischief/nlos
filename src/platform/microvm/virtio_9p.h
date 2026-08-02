@@ -34,10 +34,16 @@ int	virtio_9p_tag(char *buf, size_t bufcap);
  * A caller is given a SLOT and holds it until it reaps the reply. That
  * slot is the whole routing mechanism: the device answers into that
  * slot's own buffer, so nothing above has to match replies to requests.
- * lib/p9fs.lua derives its 9P tag from the slot number for the same
- * reason -- a slot is owned for exactly as long as its request is
- * outstanding, so slot numbers are already unique among in-flight
- * requests, which is all a tag has to be.
+ * Nothing here reads a 9P tag, or any other byte of the message.
+ *
+ * Which is worth being explicit about, because it is a property of THIS
+ * transport and not of 9P. lib/p9fs.lua allocates tags from its own
+ * counter, unrelated to and ignorant of these slots, and checks them on
+ * arrival -- so here a tag is an assertion rather than a routing key,
+ * and a mismatch means this file has a bug. A transport over a byte
+ * stream has no slots and one channel, so for that one the tag IS the
+ * routing key and something has to demultiplex on it. Do not read the
+ * arrangement below as the shape a 9P transport has.
  *
  * Buffers belong to the transport, not the caller: the device reads the
  * request and writes the reply on its own schedule, so neither may live
