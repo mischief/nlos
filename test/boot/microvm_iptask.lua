@@ -25,7 +25,7 @@ local dns = require("dns")
 local ip4 = require("ip4")
 local ether = require("ether")
 
-tap.plan(6)
+tap.plan(8)
 
 local granted = sys.granted()
 
@@ -101,5 +101,45 @@ local reply = thread.rpc(iph, { op = "config" })
 tap.ok(reply and reply.mac and #reply.mac == 6,
     "and the task is still there, with a mac: " ..
     (reply and ether.mac_str(reply.mac) or "?"))
+
+-- ---- a malformed request is refused, not fatal ----
+--
+-- The stack is shared: every proc on the machine reaches the network
+-- through this one task, so a request that kills it takes everyone's
+-- network with it. That has happened once already -- a send with a
+-- missing octet reached string.char as a nil -- and the fix checked
+-- type(v) == "number", which is not the same question. A float has
+-- that type and no integer representation, so `1.5 & 0xff` raises,
+-- and so does string.pack on a port of 1.5 or of 70000.
+--
+-- Each of these used to be fatal. The reply value matters less than
+-- the config round trip after them: that is what proves the task is
+-- still alive to answer at all.
+local bad = {
+	{ op = "send", connid = conn, data = "x", port = 1.5,
+	    a = 10, b = 0, c = 0, d = 1 },
+	{ op = "send", connid = conn, data = "x", port = 70000,
+	    a = 10, b = 0, c = 0, d = 1 },
+	{ op = "send", connid = conn, data = "x", port = 53,
+	    a = 1.5, b = 0, c = 0, d = 1 },
+	{ op = "open", port = 1.5 },
+	{ op = "open", port = 70000 },
+	{ op = "config", rcvbuf = "enormous" },
+}
+
+for _, req in ipairs(bad) do
+	thread.rpc(iph, req)
+end
+
+local alive = thread.rpc(iph, { op = "config" })
+
+tap.ok(alive and alive.mac and #alive.mac == 6,
+    "the task survives malformed requests that used to kill it")
+
+-- and a well-formed send still works afterwards, so the checks refuse
+-- the bad ones rather than having wedged the conn on the way past
+tap.ok(thread.rpc(iph, { op = "send", connid = conn, data = "x",
+    port = 53, a = 10, b = 0, c = 0, d = 1 }) ~= nil,
+    "and still sends after refusing them")
 
 tap.done()

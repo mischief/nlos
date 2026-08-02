@@ -101,6 +101,9 @@ end
 -- overhead than its byte count admits.
 local RCVBUF_DEFAULT = 32 * 1024
 local RCVQ_MAX = 64
+-- a ceiling on what a client may ask for, since the queue it sizes is
+-- held in this proc's heap and every conn gets one.
+local RCVBUF_MAX = 1024 * 1024
 
 local conns = {}	-- connid -> {port=, queue=, waiting=, ...}
 local rcvbuf = RCVBUF_DEFAULT
@@ -132,6 +135,28 @@ local function reply_to(m, v)
 		sys.send(h, v)
 		sys.close(h)
 	end
+end
+
+-- a whole number in [0, max], or nil.
+--
+-- type(v) == "number" is not the check it looks like: a client can send
+-- a float, and 1.5 & 0xff raises "number has no integer representation"
+-- exactly as a nil reaching string.char did. So does string.pack with a
+-- port of 1.5, and an out-of-range one overflows. math.tointeger is the
+-- test that separates them, and it keeps 1.0 -- a client that computed
+-- an octet in floating point meant a whole number and should not be
+-- refused for how it stored it.
+local function whole(v, max)
+	if type(v) ~= "number" then
+		return nil
+	end
+
+	local n = math.tointeger(v)
+
+	if not n or n < 0 or n > max then
+		return nil
+	end
+	return n
 end
 
 local function bound(port)
@@ -202,6 +227,17 @@ local function on_request(m)
 	if m.op == "open" then
 		local port = m.port
 
+		-- checked HERE, not where it is used. an unchecked port is
+		-- stored on the conn and only reaches string.pack on the
+		-- first send, so a bad open plants the failure and some
+		-- later, innocent send is what dies of it.
+		if port ~= nil and port ~= 0 then
+			port = whole(port, 0xffff)
+			if not port then
+				reply_to(m, nil)
+				return
+			end
+		end
 		if not port or port == 0 then
 			port = nextephem
 			nextephem = 32768 + ((nextephem - 32767) % 28000)
@@ -226,18 +262,25 @@ local function on_request(m)
 		-- a missing octet reached string.char as a nil and took the
 		-- whole task down, and with it the network for every other
 		-- proc on the machine. A bad request is answered false.
-		if not c or type(m.data) ~= "string" or
-		    type(m.port) ~= "number" or
-		    type(m.a) ~= "number" or type(m.b) ~= "number" or
-		    type(m.c) ~= "number" or type(m.d) ~= "number" then
+		--
+		-- whole() rather than type(): the value has to be an INTEGER
+		-- in range, not merely a number, since the arithmetic below
+		-- and string.pack inside udp4.encode both raise on a float
+		-- with no integer representation. Checking the type alone
+		-- left the same hole this comment is about, one field over.
+		local port = whole(m.port, 0xffff)
+		local a, b = whole(m.a, 0xff), whole(m.b, 0xff)
+		local cc, d = whole(m.c, 0xff), whole(m.d, 0xff)
+
+		if not c or type(m.data) ~= "string" or not port or
+		    not a or not b or not cc or not d then
 			reply_to(m, false)
 			return
 		end
 
-		local dst = string.char(m.a & 0xff, m.b & 0xff, m.c & 0xff,
-		    m.d & 0xff)
+		local dst = string.char(a, b, cc, d)
 		local ok, why = host:output(dst, ip4.PROTO_UDP,
-		    udp4.encode(c.port, m.port, m.data, host.ip, dst))
+		    udp4.encode(c.port, port, m.data, host.ip, dst))
 
 		if not ok then
 			stat.frames_out_fail = stat.frames_out_fail + 1
@@ -300,8 +343,19 @@ local function on_request(m)
 		-- what SO_RCVBUF is on a unix. Existing conns keep theirs:
 		-- changing a buffer under a client that is using it is a
 		-- surprise nobody asked for.
-		if m.rcvbuf then
-			rcvbuf = m.rcvbuf
+		-- and checked, for the same reason as open's port: this is
+		-- stored and only used later, in `c.qbytes + n > c.rcvbuf`,
+		-- where a string or a table raises inside the RECEIVE path
+		-- -- so a bad config would kill the stack on the next frame
+		-- to arrive rather than on the request that caused it.
+		if m.rcvbuf ~= nil then
+			local n = whole(m.rcvbuf, RCVBUF_MAX)
+
+			if not n then
+				reply_to(m, false)
+				return
+			end
+			rcvbuf = n
 		end
 		reply_to(m, true)
 
