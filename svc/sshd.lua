@@ -179,7 +179,8 @@ local function session(connid)
 
 	local srv			-- set below; read() closes over it
 	local chan = nil		-- the session channel, once open
-	local toshell = {}		-- lines typed by the client
+	local toshell = {}		-- completed lines typed by the client
+	local partial = ""		-- the line being typed, so far
 	local waiting = nil		-- a readline the shell is parked on
 
 	-- Answer a parked readline as soon as there is a line for it.
@@ -343,28 +344,47 @@ local function session(connid)
 				break
 
 			elseif ev.type == "data" then
-				-- ^D ends the session. There is no tty in
-				-- this system to turn it into an EOF, so the
-				-- byte arrives as data and this is the only
-				-- layer that can mean anything by it --
-				-- without which the way out is ssh's ~.
-				-- escape.
-				if ev.data:find("\4", 1, true) then
-					srv:data(ev.chan, "\r\n")
-					srv:exit(ev.chan, 0)
-					srv:close(ev.chan)
-					break
-				end
+				-- The line discipline, byte by byte, because
+				-- there is no tty anywhere in this system to
+				-- provide one and dos wants whole lines.
+				--
+				-- Byte by byte is not fastidiousness. A real
+				-- terminal in raw mode sends ONE KEYSTROKE
+				-- PER PACKET, so a handler that looks for a
+				-- newline within a single packet sees "h",
+				-- "e", "l", "p" and then a bare "\r" -- no
+				-- line, then an empty one. The shell dutifully
+				-- runs nothing and prints a fresh prompt, and
+				-- the session looks alive and completely
+				-- deaf. Feeding ssh from a pipe hides this
+				-- perfectly: the whole line arrives at once
+				-- and every test passes.
+				--
+				-- lib/cons.lua does the same job for com1,
+				-- down to the "\8 \8" erase.
+				for i = 1, #ev.data do
+					local c = ev.data:sub(i, i)
 
-				-- A terminal sends CR for the return key and
-				-- expects an echo; dos wants lines. Both are
-				-- this layer's job, because there is no tty
-				-- anywhere in this system to do either.
-				local s = ev.data:gsub("\r", "\n")
-
-				srv:data(ev.chan, (s:gsub("\n", "\r\n")))
-				for line in s:gmatch("[^\n]*\n") do
-					toshell[#toshell + 1] = line:sub(1, -2)
+					if c == "\4" and partial == "" then
+						-- ^D on an empty line ends the
+						-- session, as a shell would.
+						srv:data(ev.chan, "\r\n")
+						srv:exit(ev.chan, 0)
+						srv:close(ev.chan)
+						goto closed
+					elseif c == "\r" or c == "\n" then
+						srv:data(ev.chan, "\r\n")
+						toshell[#toshell + 1] = partial
+						partial = ""
+					elseif c == "\127" or c == "\8" then
+						if #partial > 0 then
+							partial = partial:sub(1, -2)
+							srv:data(ev.chan, "\8 \8")
+						end
+					elseif c >= " " then
+						partial = partial .. c
+						srv:data(ev.chan, c)
+					end
 				end
 				feed_shell()
 
@@ -380,6 +400,7 @@ local function session(connid)
 				break
 			end
 		end
+		::closed::
 		if srv.error then
 			print("sshd: " .. tostring(srv.error))
 		end
