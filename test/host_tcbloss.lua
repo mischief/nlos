@@ -69,6 +69,10 @@ Link.__index = Link
 --   jitter   function(side, seg, n) -> extra ms of delay, which is how
 --            reordering happens: a delayed segment arrives behind one
 --            sent after it
+--   tap      function(side, seg) called for every segment as it is
+--            collected. The only way to see what an endpoint sent: the
+--            link takes segments out of it, so a test calling take()
+--            afterwards finds nothing left.
 local function link(a, b, opts)
 	opts = opts or {}
 	return setmetatable({
@@ -78,6 +82,7 @@ local function link(a, b, opts)
 		dropf = opts.drop,
 		dupf = opts.dup,
 		jitterf = opts.jitter,
+		tapf = opts.tap,
 		flight = {},
 		sent = { a = 0, b = 0 },
 		dropped = { a = 0, b = 0 },
@@ -94,6 +99,9 @@ function Link:collect()
 			local n = self.sent[side] + 1
 
 			self.sent[side] = n
+			if self.tapf then
+				self.tapf(side, s)
+			end
 
 			if self.dropf and self.dropf(side, s, n) then
 				self.dropped[side] = self.dropped[side] + 1
@@ -209,6 +217,15 @@ local function connect(l)
 	end)
 	l.a:events()
 	l.b:events()
+end
+
+local function kinds(t)
+	local out = {}
+
+	for _, e in ipairs(t:events()) do
+		out[#out + 1] = e.kind
+	end
+	return table.concat(out, ",")
 end
 
 local function readall(t)
@@ -834,6 +851,154 @@ do
 	ok(segs[1] and (segs[1].opt == nil or segs[1].opt.sack == nil),
 	    "so a hole produces a bare duplicate acknowledgment")
 	is(b:status().held, 1, "though the data is still held for reassembly")
+end
+
+
+-- ---- the zero window, and the probe that unsticks it ----
+--
+-- A receiver whose buffer fills advertises zero. The segment that later
+-- reopens the window is a bare acknowledgment, and bare acknowledgments
+-- are not retransmitted by anyone: lose that one and both ends wait
+-- forever, the sender for room and the receiver for data the sender has
+-- but will not send. RFC 9293 3.8.6.1 makes probing mandatory for
+-- exactly this, and it is the last case in this stack that can deadlock
+-- rather than merely go slowly.
+
+do
+	local a, b = pair({ rcvbuf = 4096, sndbuf = 128 * 1024 })
+	local sawzero = false
+	local killed = false
+	local l = link(a, b, {
+		rtt = 20,
+		drop = function(side, sg, _)
+			if side ~= "b" or tcp4.seglen(sg) ~= 0 then
+				return false
+			end
+			if sg.wnd == 0 then
+				sawzero = true
+				return false
+			end
+			-- the first window update after the window had shut:
+			-- the one segment whose loss hangs the connection.
+			if sawzero and not killed then
+				killed = true
+				return true
+			end
+			return false
+		end,
+	})
+
+	connect(l)
+
+	local payload = string.rep("p", 40000)
+
+	a:write(payload, l.now)
+
+	-- Phase one: let it fill without reading, so the window really
+	-- does close rather than merely getting small.
+	l:run(l.now + 5000, function()
+		return a.snd_wnd == 0 and a:status().persist ~= nil
+	end)
+
+	is(a.snd_wnd, 0, "a receiver that stops reading closes its window")
+	ok(a:status().persist ~= nil, "and the sender arms a persist timer")
+	ok(a:status().unsent > 0, "with data it is holding back")
+
+	-- and while the window is shut it sends nothing, however long it
+	-- waits: this is the state a probe has to break, not fill.
+	local before = l.sent.a
+
+	l:run(l.now + 900)
+	is(l.sent.a, before, "which sends nothing while the window stays shut")
+
+	-- Phase two: start reading. The window reopens, b announces it,
+	-- and that announcement is dropped -- so the only thing that can
+	-- restart the transfer is a probe.
+	local got = {}
+	local total = 0
+
+	local complete = l:run(l.now + 200000, function()
+		local d = b:read()
+
+		while d ~= nil and d ~= "" do
+			got[#got + 1] = d
+			total = total + #d
+			d = b:read()
+		end
+		return total >= #payload
+	end)
+
+	ok(killed, "the window update that reopens it was lost")
+	ok(a:status().probes >= 0, "the sender probed rather than waiting")
+	ok(complete, "and the transfer completes anyway")
+	is(total, #payload, "with every byte delivered")
+	ok(table.concat(got) == payload, "in order")
+end
+
+-- a probe must be answered even when the window is still shut: that
+-- answer is what tells the sender the connection is alive and the
+-- window is genuinely closed rather than the update having been lost
+-- again.
+do
+	local a, b = pair({ rcvbuf = 4096, sndbuf = 128 * 1024 })
+	local probed, answered = 0, 0
+	local l = link(a, b, {
+		rtt = 20,
+		tap = function(side, sg)
+			if side == "a" and #(sg.data or "") > 0 and a.snd_wnd == 0 then
+				probed = probed + 1
+			elseif side == "b" and (sg.flags & tcp4.ACK) ~= 0 and
+			    sg.wnd == 0 and tcp4.seglen(sg) == 0 then
+				answered = answered + 1
+			end
+		end,
+	})
+
+	connect(l)
+	a:write(string.rep("q", 40000), l.now)
+	l:run(l.now + 5000, function()
+		return a.snd_wnd == 0 and a:status().persist ~= nil
+	end)
+
+	local before = answered
+
+	-- let the persist timer fire and the answer come back.
+	l:run(a:status().persist + 100)
+
+	ok(probed > 0, "the persist timer sends an octet into a closed window")
+	ok(answered > before,
+	    "and the receiver answers it, still advertising zero")
+	is(a:status().probes, 0,
+	    "an answer means the peer is alive, so the count starts again")
+end
+
+-- A peer that answers nothing at all is a dead peer wearing a closed
+-- window, and must not keep a connection open forever. The RFC's
+-- requirement is that the connection stay open as long as the peer
+-- KEEPS ANSWERING -- silence is the other case.
+do
+	local a, b = pair({ rcvbuf = 4096, sndbuf = 128 * 1024 })
+	local mute = false
+	local l = link(a, b, {
+		rtt = 20,
+		drop = function(side, _, _)
+			return mute and side == "b"
+		end,
+	})
+
+	connect(l)
+	a:write(string.rep("r", 40000), l.now)
+	l:run(l.now + 5000, function()
+		return a.snd_wnd == 0 and a:status().persist ~= nil
+	end)
+
+	mute = true
+	l:run(l.now + 3600000, function()
+		return a.state == tcb.CLOSED
+	end)
+
+	is(a.state, tcb.CLOSED, "a peer that answers no probe is given up on")
+	is(kinds(a), "reset", "and the user is told")
 end
 
 io.write(("1..%d\n"):format(count))

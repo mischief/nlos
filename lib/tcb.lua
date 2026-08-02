@@ -211,6 +211,14 @@ function tcb.new(cfg)
 		-- being fast-retransmitted over and over.
 		recover = cfg.iss,
 
+		-- The persist timer (RFC 9293 3.8.6.1). Separate from the
+		-- retransmission timer because it is not retransmitting
+		-- anything: it is asking a question of a peer that has gone
+		-- quiet on purpose.
+		persist = nil,
+		persist_rto = RTO_INIT,
+		probes = 0,
+
 		-- RFC 2018. sack_ok is true only when BOTH ends offered it on
 		-- their SYN, which is what the option means: it is a
 		-- statement about what this end will send, and permission
@@ -566,6 +574,71 @@ function T:read(max)
 	return out
 end
 
+-- Whether to be probing, decided after anything that could have changed
+-- the window or the queue.
+--
+-- The condition is "the peer says zero and we have something to send",
+-- and deliberately not "and nothing is outstanding". The probe octet
+-- itself counts as outstanding and will never be acknowledged while the
+-- window stays shut, so a rule that stopped probing once something was
+-- in flight would send exactly one probe and then wait forever -- which
+-- is the deadlock this whole mechanism exists to prevent, reintroduced
+-- one level up.
+function T:_update_persist()
+	if self.snd_wnd == 0 and #self.sndq > 0 and
+	    self.state == tcb.ESTABLISHED then
+		if not self.persist then
+			self.persist_rto = self.rto
+			self.persist = self.now + self.persist_rto
+		end
+	else
+		self.persist = nil
+		self.probes = 0
+	end
+end
+
+-- One octet, into a window that has no room for it.
+--
+-- That is the point: an acknowledgment carrying a window update is a
+-- bare acknowledgment, and bare acknowledgments are not retransmitted by
+-- anybody. If the update that reopens the window is lost, both ends wait
+-- forever -- the sender for room, the receiver for data that the sender
+-- is not going to send. The probe is the only thing that breaks it, and
+-- the peer must answer it even with a zero window (3.8.6.1).
+function T:_probe()
+	local sent = self:_flight()
+	local octet = self.sndq:sub(sent + 1, sent + 1)
+
+	-- Only new data is worth probing with. If everything queued has
+	-- already been sent, the previous probe is still unacknowledged and
+	-- resending it is what the backoff below is for.
+	if octet == "" then
+		octet = self.sndq:sub(1, 1)
+		if octet == "" then
+			self.persist = nil
+			return
+		end
+		self:_send(tcp4.ACK, octet, self.snd_una)
+	else
+		self:_send(tcp4.ACK, octet)
+		self.snd_nxt = tcp4.add(self.snd_nxt, 1)
+	end
+
+	-- The probe carries its own timer and must not also be driven by
+	-- the retransmission one. If it were, a peer legitimately holding
+	-- its window shut -- the printer that ran out of paper, in RFC
+	-- 1122's example -- would be declared dead after MAX_RETX attempts,
+	-- and 3.8.6.1 says the connection MUST be allowed to stay open for
+	-- as long as that peer keeps answering.
+	self.retx = nil
+	self.rtt_seq = nil
+	self.rtt_at = nil
+
+	self.probes = self.probes + 1
+	self.persist_rto = math.min(self.persist_rto * 2, RTO_MAX)
+	self.persist = self.now + self.persist_rto
+end
+
 -- as much of the send buffer as the window and the mss allow.
 function T:_transmit()
 	if self.state ~= tcb.ESTABLISHED and self.state ~= tcb.CLOSE_WAIT then
@@ -592,6 +665,7 @@ function T:_transmit()
 		local room = win - sent
 
 		if unsent <= 0 or room <= 0 then
+			self:_update_persist()
 			return
 		end
 
@@ -910,6 +984,11 @@ function T:_check_ack(seg)
 		self:_ack()
 		return false
 	end
+
+	-- The peer answered, whatever it said. That is what the probe was
+	-- asking, so the count of unanswered ones starts again -- a window
+	-- held shut by a peer that is still talking is not a failure.
+	self.probes = 0
 
 	if self:_is_dupack(seg) then
 		self.dupacks = self.dupacks + 1
@@ -1394,11 +1473,24 @@ end
 -- when this connection next wants attention, or nil if it is content to
 -- wait forever. The caller arms one timer for the earliest across all of
 -- its connections -- see task/tcp4.lua on why there is only one.
+-- The earliest of the three timers, or nil if none is armed.
+--
+-- Written out rather than looped over a table, because the obvious
+-- `for _, d in ipairs{self.timewait, self.retx, self.persist}` is wrong
+-- in a way that looks right: a table constructor holding a nil has a
+-- hole, and ipairs stops at the first one. With timewait unset -- which
+-- is almost always -- that loop returned nothing at all, and the
+-- retransmission timer became invisible to the caller.
 function T:deadline()
-	if self.timewait and self.retx then
-		return math.min(self.timewait, self.retx)
+	local t = self.timewait
+
+	if self.retx and (not t or self.retx < t) then
+		t = self.retx
 	end
-	return self.timewait or self.retx
+	if self.persist and (not t or self.persist < t) then
+		t = self.persist
+	end
+	return t
 end
 
 function T:tick(now)
@@ -1411,6 +1503,18 @@ function T:tick(now)
 	end
 	if self.retx and self.now >= self.retx then
 		self:_retransmit()
+	end
+	if self.persist and self.now >= self.persist then
+		-- A peer that answers its probes may keep the window shut
+		-- for as long as it likes (MAY-8), so the probes themselves
+		-- are not counted against the connection. One that answers
+		-- nothing at all is a dead peer wearing a closed window, and
+		-- gets the same bound as any other silence.
+		if self.probes >= MAX_RETX then
+			self:_dead("reset", "no response to window probes")
+			return
+		end
+		self:_probe()
 	end
 end
 
@@ -1450,6 +1554,8 @@ function T:status()
 		dupacks = self.dupacks,
 		recovery = self.in_recovery,
 		sack_ok = self.sack_ok,
+		persist = self.persist,
+		probes = self.probes,
 		flight = self:_flight(),
 		retries = self.retries,
 	}
