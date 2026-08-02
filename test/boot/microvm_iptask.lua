@@ -79,10 +79,9 @@ until sys.uptime_ms() > deadline
 tap.ok(cfg and cfg.ip and cfg.ip ~= ip4.ANY,
     "the machine is configured, by its own dhcp client")
 
--- warm the arp cache: the first datagram to a peer we have no mac for
--- is dropped while the request goes out (see lib/inet.lua's output).
-udp.send(conn, 10, 0, 2, 3, dns.PORT, dns.build_query("example.com", 1))
-thread.sleep(400)
+-- one query, cold. No warm-up: lib/inet.lua holds a packet while it
+-- arps and sends it when the answer comes, so the first datagram to a
+-- peer we have never spoken to arrives like any other.
 udp.send(conn, 10, 0, 2, 3, dns.PORT, dns.build_query("example.com", 0x2a))
 
 local r = udp.recv(conn, 4096)

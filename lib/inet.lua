@@ -53,33 +53,8 @@ function Host:nexthop(dst)
 	return self.gw
 end
 
--- put a packet on the wire, or say why not. Never waits.
---
--- An address this has no mac for is not an error and not a stall: the
--- request goes out and the packet is dropped, which is what a real
--- stack does with the first packet to an unresolved host. Everything
--- above here retries -- udp is lossy by nature and every client already
--- copes -- and the alternative is a stack that stops serving everyone
--- else while it waits for one arp reply.
-function Host:output(dst, proto, payload)
-	local mac
-
-	if dst == ip4.BROADCAST then
-		-- nobody to ask and nobody to ask for: a broadcast goes to
-		-- the ethernet broadcast address by definition. This is also
-		-- the only way to send anything before having an address at
-		-- all, which is how DHCP starts.
-		mac = ether.BROADCAST
-	else
-		local hop = self:nexthop(dst)
-
-		mac = arp.cached(hop, self.wire.now())
-		if not mac then
-			self.wire.send(arp.request_frame(self.mac, self.ip, hop))
-			return nil, "resolving " .. ip4.str(hop)
-		end
-	end
-
+-- lay a frame on the wire for a packet whose mac we already have.
+local function emit(self, mac, dst, proto, payload)
 	self.id = (self.id + 1) & 0xffff
 
 	local pkt = ip4.encode({
@@ -88,6 +63,74 @@ function Host:output(dst, proto, payload)
 	})
 
 	return self.wire.send(ether.encode(mac, self.mac, ether.IPV4, pkt))
+end
+
+-- put a packet on the wire, or hold it while we ask who to send it to.
+-- Never waits.
+--
+-- One packet per unresolved destination is kept, and sent when the
+-- reply arrives. Without that the first packet to any new peer was
+-- always lost, and a burst was entirely lost, since every packet in it
+-- is "first" until the task returns to its loop and sees the answer.
+-- That is not a theoretical cost: dhcp renewal unicasts to a server
+-- only ever reached by broadcast before, so the first renewal always
+-- failed and fell back to reacquiring the lease from scratch.
+--
+-- One and not a queue, because the point is to cover the resolution,
+-- not to buffer for a peer that may not exist. A second packet to the
+-- same unresolved destination displaces the first, which is what most
+-- stacks do and bounds this at one packet per address being resolved.
+--
+-- Still never waits: arp.resolve reads the wire, and a task that owns
+-- the wire cannot read it from inside a send without fighting its own
+-- receive path.
+function Host:output(dst, proto, payload)
+	if dst == ip4.BROADCAST then
+		-- nobody to ask and nobody to ask for: a broadcast goes to
+		-- the ethernet broadcast address by definition. This is also
+		-- the only way to send anything before having an address at
+		-- all, which is how DHCP starts.
+		return emit(self, ether.BROADCAST, dst, proto, payload)
+	end
+
+	local hop = self:nexthop(dst)
+	local mac = arp.cached(hop, self.wire.now())
+
+	if mac then
+		return emit(self, mac, dst, proto, payload)
+	end
+
+	self.pending = self.pending or {}
+	self.pending[hop] = { dst = dst, proto = proto, payload = payload }
+	self.wire.send(arp.request_frame(self.mac, self.ip, hop))
+
+	-- accepted, not failed. The packet is held and goes out when the
+	-- answer arrives, so reporting failure here would be a lie that
+	-- costs something real: lib/dhcp.lua's renew unicasts to a server
+	-- previously only reached by broadcast, saw a failed send on the
+	-- very first attempt, and abandoned the lease to reacquire from
+	-- scratch. sendto() on a unix returns success once the datagram is
+	-- accepted; whether an arp was needed is not the sender's business.
+	--
+	-- The second return says which happened, for a caller that keeps
+	-- counters.
+	return true, "held"
+end
+
+-- send whatever was waiting on this address, now that we know it.
+function Host:flush_pending(hop)
+	local held = self.pending and self.pending[hop]
+
+	if not held then
+		return
+	end
+	self.pending[hop] = nil
+
+	local mac = arp.cached(hop, self.wire.now())
+
+	if mac then
+		emit(self, mac, held.dst, held.proto, held.payload)
+	end
 end
 
 -- output, but resolve first if we have to.
@@ -139,6 +182,13 @@ function Host:input(frame)
 		local a = arp.observe(frame, self.mac, self.wire.now())
 
 		if a then
+			-- whatever we were holding for that address can go
+			-- now. observe() learns from replies and from
+			-- requests alike, so this covers a peer that arped us
+			-- first as well as one that answered.
+			if a.spa then
+				self:flush_pending(a.spa)
+			end
 			-- answering is not optional: a peer that cannot
 			-- resolve us cannot send us anything, so a host that
 			-- only asks and never answers is reachable in one

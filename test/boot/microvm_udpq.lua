@@ -84,21 +84,25 @@ if not tap.ok(a ~= nil, "we have a gateway to ask: " .. tostring(resolver)) then
 	return
 end
 
--- warm the arp cache before the burst.
+-- resolve the destination before the burst, and note WHY -- it is no
+-- longer the reason it was.
 --
--- Host:output drops a packet whose destination it has no mac for and
--- sends an arp request instead, so the FIRST datagram to a new peer is
--- always lost -- and a burst issued back to back is all first, since
--- the task cannot process the arp reply until it returns to its loop.
--- A real client rediscovers this as "the first request always times
--- out"; here it would have meant testing the queue with nothing in it.
+-- lib/inet.lua now holds a packet while it arps, so the first datagram
+-- to a stranger is not lost. It holds ONE, though: a burst to an
+-- unresolved peer still collapses to whichever was last, since each
+-- displaces the one before. Filling a receive queue needs several
+-- replies actually in flight, so the destination has to be known
+-- before the burst starts.
+--
+-- That is a limitation of one-packet hold rather than a bug. Holding a
+-- queue per destination would cover it and would also let a peer that
+-- never answers cost us memory, which is the trade most stacks decline.
 udp.send(conn, tonumber(a), tonumber(b), tonumber(c), tonumber(d),
     dns.PORT, dns.build_query("example.com", 0x99))
 thread.sleep(400)
 
--- and drain whatever the warm-up put there, so the queue is empty when
--- the burst starts and the survivor below is unambiguously the burst's
--- first and not this one's.
+-- drain what that produced, so the queue is empty when the burst starts
+-- and the survivor below is unambiguously the burst's first.
 local warm = thread.rpc(iph, { op = "stats" })
 
 for _ = 1, warm.queued do

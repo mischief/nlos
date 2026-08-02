@@ -241,15 +241,13 @@ local function on_request(m)
 
 		if not ok then
 			stat.frames_out_fail = stat.frames_out_fail + 1
-			if why and why:find("resolving", 1, true) then
-				stat.unresolved = stat.unresolved + 1
-			end
+		elseif why == "held" then
+			-- accepted, waiting on an arp reply. Counted because
+			-- a machine doing this constantly is one whose
+			-- neighbours keep expiring.
+			stat.unresolved = stat.unresolved + 1
 		end
 
-		-- a send that had to resolve first is reported as failed and
-		-- the arp request is on its way, so the caller's own retry
-		-- succeeds. Every client above udp already retries, because
-		-- udp loses datagrams for less interesting reasons than this.
 		reply_to(m, ok and true or false)
 
 	elseif m.op == "recv" then
