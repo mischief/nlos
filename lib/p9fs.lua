@@ -270,12 +270,13 @@ function M.new(transport, opts)
 		end
 
 		local late
+		local cases = {
+			{ c = oldch, op = "recv" },
+			{ c = fch, op = "recv" },
+		}
 
 		while true do
-			local which, v, alive = thread.alt({
-				{ c = oldch, op = "recv" },
-				{ c = fch, op = "recv" },
-			})
+			local which, v, alive = thread.alt(cases)
 
 			if which == 1 then
 				if alive == false then

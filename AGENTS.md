@@ -357,6 +357,16 @@ fused: `thread.run` hands every parked port to `sys.altrecv`, which
 blocks and takes a message in one entry on behalf of all of them at
 once. What is left over is a plain send, which never blocks.
 
+**Build an `alt` case table once, outside the loop.** `alt` neither
+keeps nor mutates `cases`, so writing the literal at the call site —
+`thread.alt({{port=a},{port=b}})` inside a `while true` — builds three
+tables every trip for nothing. That measured as 34% of an `alt` that
+finds a message already waiting, which is more than everything inside
+`alt` costs put together. The exclusive device tasks sit in exactly this
+loop for the life of the machine, so it is where an idle system spends
+its time. When one case's port genuinely varies, keep the table and
+assign the field; one store still beats three allocations.
+
 **`thread.await(h)` is the receive half**, and the one blocking receive
 that can report an ending: a *reply* port holds two rights while a
 request is in flight, so a drop back to one with nothing queued means

@@ -19,11 +19,13 @@ local RAWSERIAL = 1
 local pending = nil	-- a reply right waiting for the next chunk
 local buffered = {}	-- chunks that arrived before anyone asked
 
+local cases = {
+	{ port = sys.SELF },
+	{ port = RAWSERIAL },
+}
+
 while true do
-	local which, msg = thread.alt({
-		{ port = sys.SELF },
-		{ port = RAWSERIAL },
-	})
+	local which, msg = thread.alt(cases)
 
 	if which == 1 then
 		if msg.op == "write" then

@@ -217,9 +217,17 @@ local function session(connid)
 
 	-- Wait for whichever speaks first. The only place the protocol
 	-- thread blocks, and it blocks on both things at once.
+	--
+	-- Refreshed rather than frozen, unlike the other hoisted alt case
+	-- tables: a session reset closes consport and makes a new one (see
+	-- below), so a captured handle would go stale and pump would wait
+	-- on a dead port.
+	local pumpcases = { { c = inchan, op = "recv" }, { port = false } }
+
 	local function pump()
-		local i, v = thread.alt({ { c = inchan, op = "recv" },
-		    { port = consport } })
+		pumpcases[2].port = consport
+
+		local i, v = thread.alt(pumpcases)
 
 		if i == 1 then
 			if v == nil then

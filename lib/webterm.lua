@@ -231,6 +231,8 @@ local function pump(s, ms)
 		return how
 	end
 
+	local cases = { { port = s.port }, { port = t } }
+
 	while not s.waiting do
 		local ok, m = sys.tryrecv(s.port)
 
@@ -249,8 +251,7 @@ local function pump(s, ms)
 			-- park until a message arrives, a right is dropped
 			-- (port_unref wakes receivers precisely so the hangup
 			-- test above re-runs), or the deadline passes.
-			local which, am =
-			    thread.alt({ { port = s.port }, { port = t } })
+			local which, am = thread.alt(cases)
 
 			if which == 2 then
 				return done("timeout")

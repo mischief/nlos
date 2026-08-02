@@ -85,11 +85,13 @@ local function checkpending()
 	end
 end
 
+local cases = {
+	{ port = sys.SELF },
+	{ port = RAWNET },
+}
+
 while true do
-	local which, m = thread.alt({
-		{ port = sys.SELF },
-		{ port = RAWNET },
-	})
+	local which, m = thread.alt(cases)
 
 	if which == 1 then
 		local reply = m.reply and m.reply.__right
