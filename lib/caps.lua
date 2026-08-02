@@ -149,28 +149,94 @@ end
 -- and nothing else, and a client redrawing a screen should not pay a
 -- round trip per rectangle. pass wait=true when you need to know
 -- whether one worked, or call sync() once at the end.
-function M.fb(handle)
-	local req = requester(handle)
+-- chunk is the largest payload one message may carry, and exists as an
+-- argument only so a test can force the splitting paths below. no real
+-- mode on any machine here has a row wide enough to need the horizontal
+-- split, so without this that branch would ship having never run --
+-- which for splitting code means it is wrong.
+function M.fb(handle, chunk)
 	local f = { handle = handle }	-- for re-granting to a spawned child: {__right = f.handle}
 
-	local function ask(m)
-		local r = req(m)
+	-- send, applying backpressure. sys.send reports a full queue
+	-- (false, "full") rather than raising, because the kernel refuses
+	-- to decide between a pipe writer that should wait and a server
+	-- reply that must not -- so deciding is the caller's job, and for
+	-- pixels the answer is always "wait".
+	--
+	-- ignoring that return silently DROPS the message, and pixels are
+	-- where it bites first: MAXQUEUE is 64KiB, the same as MAXMSG, so
+	-- at most one band of a banded load is ever in flight. a 320x320
+	-- smiley went out as seven bands, six of which vanished, and what
+	-- came back was a tidy yellow arc -- a picture wrong in a way no
+	-- readback assertion catches, since every pixel that did arrive was
+	-- correct.
+	--
+	-- this cannot use caps.lua's own requester() above, which sends
+	-- without checking: on a full queue that loses the request and then
+	-- blocks forever on the reply it will never get. every other user
+	-- of requester() sends messages far too small to fill a queue,
+	-- which is why they have never met this.
+	-- sys.sendblock's size argument is what makes this park instead of
+	-- spin. it must be told roughly how big the message is: without it
+	-- sendblock only asks "is the queue non-full", which stays true
+	-- while a 63KiB band is still refused by a 64KiB queue holding
+	-- another one -- so it returns at once, the send fails again, and
+	-- this loop eats the whole slice. that measured as 33ms per band.
+	--
+	-- the payload length is the size that matters; the table around it
+	-- is small and the estimate only has to be close enough not to
+	-- under-ask.
+	local function put(m)
+		local need = m.data and (#m.data + 256) or 0
 
+		while true do
+			local ok, why = sys.send(handle, m)
+
+			if ok then
+				return true
+			end
+			if why ~= "full" then
+				return nil, why
+			end
+			-- park until the fb task drains enough. the send-side
+			-- of the same tryrecv/block split the receive side
+			-- uses.
+			sys.sendblock(handle, need)
+		end
+	end
+
+	-- one reply port per call, for the reason requester() gives above.
+	local function ask(m)
+		local replyport = sys.newport()
+
+		m.reply = { __right = replyport }
+
+		local ok, why = put(m)
+
+		if not ok then
+			sys.close(replyport)
+			return nil, why
+		end
+
+		local r = thread.recv(replyport)
+
+		sys.close(replyport)
 		if r.err then
 			return nil, r.err
 		end
 		return r.ok
 	end
 
-	-- send with no reply port, so nothing blocks. errors are not lost,
-	-- only deferred: the next call that does wait reports its own
-	-- failure, and sync() exists to ask on purpose.
+	-- no reply port, so we do not pay a round trip per rectangle -- but
+	-- still put(), so a full queue waits rather than losing the
+	-- message. errors are deferred, not lost: the next call that does
+	-- wait reports its own failure, and sync() exists to ask on
+	-- purpose.
 	local function tell(m, wait)
 		if wait then
 			return ask(m)
 		end
-		sys.send(handle, m)
-		return true
+		return put(m)
 	end
 
 	function f.mode()
@@ -192,27 +258,73 @@ function M.fb(handle)
 	-- exist, and pretending otherwise just moves the failure to
 	-- whichever caller first draws something large.
 	--
-	-- so split, here, once, into bands of whole rows. rows rather than
-	-- tiles because a band is a contiguous slice of the data string --
-	-- no repacking -- and because a damaged region is usually wider
-	-- than it is tall anyway.
+	-- so split, here, once, into bands of whole rows -- and split a row
+	-- horizontally if even one will not fit.
+	--
+	-- this is plan 9's answer to the same problem, arrived at the same
+	-- way. libdraw's loadimage takes `chunk = display->bufsize - 64`,
+	-- sends `dy = chunk/bpl` whole rows at a time, and when dy comes
+	-- out zero splits the row and recurses on the remainder;
+	-- unloadimage is the mirror of it. their bufsize is `iounit(datafd)`
+	-- -- asked for, not assumed, which is why sys.MAXMSG is reported to
+	-- lua rather than being a constant every caller copies. the 64 (our
+	-- 512) is room for the header the payload travels inside; splitting
+	-- to exactly the limit fails on the message around the pixels.
 	--
 	-- this is also the honest argument for keeping pixels behind a port
 	-- rather than reaching for shared memory: the copy is real, and the
 	-- design that survives it is the one that only ever ships the
-	-- rectangle that changed.
+	-- rectangle that changed. plan 9 pays it too, down a 9P pipe.
+	local CHUNK = chunk or (sys.MAXMSG - 512)
 	local function loadband(r, data, wait)
 		local stride = r.w * 4
-		local perband = stride > 0 and (sys.MAXMSG - 512) // stride or 0
+		local perband = stride > 0 and (CHUNK // stride) or 0
 
-		if perband < 1 then
-			-- a single row already exceeds a message. nothing here
-			-- can fix that; the caller has to draw narrower.
-			return nil, ("row of %d bytes exceeds the %d byte " ..
-			    "message limit"):format(stride, sys.MAXMSG)
-		end
 		if perband >= r.h then
 			return tell({ op = "load", r = r, data = data }, wait)
+		end
+
+		-- not even one row fits, so split the ROW and recurse on what
+		-- is left of it -- plan 9's loadimage does exactly this, and
+		-- it is the case a first draft gets wrong by returning an
+		-- error and telling the caller to draw narrower. a screen
+		-- wider than a message is not the caller's mistake.
+		--
+		-- their `& ~7` on the split point is pixel alignment for
+		-- sub-byte depths; every pixel here is four whole bytes, so
+		-- there is nothing to align.
+		if perband < 1 then
+			local half = CHUNK // 4
+
+			if half < 1 then
+				return nil, "message limit below one pixel"
+			end
+			for y = 0, r.h - 1 do
+				local row = data:sub(y * stride + 1,
+				    (y + 1) * stride)
+				local x = 0
+
+				while x < r.w do
+					local n = r.w - x
+
+					if n > half then
+						n = half
+					end
+					local last = wait and
+					    y == r.h - 1 and x + n >= r.w
+					local ok, err = tell({ op = "load",
+					    r = { x = r.x + x, y = r.y + y,
+					        w = n, h = 1 },
+					    data = row:sub(x * 4 + 1,
+					        (x + n) * 4) }, last)
+
+					if not ok then
+						return nil, err
+					end
+					x = x + n
+				end
+			end
+			return true
 		end
 
 		local y = 0
@@ -244,20 +356,50 @@ function M.fb(handle)
 		return loadband(r, data, wait)
 	end
 	-- the reply is a message too, so readback needs the same banding as
-	-- load above -- the limit is on messages, not on direction.
+	-- load above -- the limit is on messages, not on direction. plan 9
+	-- splits unloadimage identically, for identically this reason.
 	function f.unload(r)
 		local stride = r.w * 4
-		local perband = stride > 0 and (sys.MAXMSG - 512) // stride or 0
+		local perband = stride > 0 and (CHUNK // stride) or 0
 
-		if perband < 1 then
-			return nil, ("row of %d bytes exceeds the %d byte " ..
-			    "message limit"):format(stride, sys.MAXMSG)
-		end
 		if perband >= r.h then
 			return ask({ op = "unload", r = r })
 		end
 
 		local out = {}
+
+		-- a row wider than a message: read it in pieces and rejoin.
+		-- the pieces have to be concatenated PER ROW, since the
+		-- result is one contiguous run of rows.
+		if perband < 1 then
+			local half = CHUNK // 4
+
+			if half < 1 then
+				return nil, "message limit below one pixel"
+			end
+			for y = 0, r.h - 1 do
+				local x = 0
+
+				while x < r.w do
+					local n = r.w - x
+
+					if n > half then
+						n = half
+					end
+					local piece, err = ask({ op = "unload",
+					    r = { x = r.x + x, y = r.y + y,
+					        w = n, h = 1 } })
+
+					if not piece then
+						return nil, err
+					end
+					out[#out + 1] = piece
+					x = x + n
+				end
+			end
+			return table.concat(out)
+		end
+
 		local y = 0
 
 		while y < r.h do

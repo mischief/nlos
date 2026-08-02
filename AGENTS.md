@@ -380,6 +380,22 @@ at thousands of timers, and `MAXPROCS` is 32.
   `docs/uefi-notes.md`; `test/tcp4echo/` exists to answer this class of
   question from outside the kernel, which is the only place it can be
   answered.
+- **`sys.sendblock` must be told how big the message is**, or a large
+  sender spins instead of parking. `port_push_owned` admits a message
+  only if `qbytes + len <= MAXQUEUE`, so a message that is a large
+  fraction of the queue can be refused while `qbytes < MAXQUEUE` is
+  still true — the old size-blind `sendblock` then returned "there is
+  room" at once, the send failed again, and the retry loop burned the
+  whole slice. Measured as 33ms per 63KiB band, 146x, and it presented
+  as "the framebuffer is slow". Small messages never trigger it, which
+  is why nothing before pixels had met it.
+- **A `sys.send` that returns `false, "full"` and is ignored silently
+  drops the message.** The kernel reports rather than blocking on
+  purpose (it cannot tell a pipe writer from a server reply), so
+  applying backpressure is the caller's job. `lib/caps.lua`'s
+  `requester()` does *not* do this — fine for the small messages every
+  other user sends, fatal for pixels, and on the reply path it loses the
+  request and then blocks forever on an answer that will never come.
 - **Pixels do not fit in a message.** `sys.MAXMSG` is 64KiB, which is
   16384 BGRx pixels — a 128x128 tile — so "load the whole screen in one
   call" cannot exist, in either direction (a reply is a message too).

@@ -463,6 +463,15 @@ run_target('screenshot',
   env: archenv,
 )
 
+# the same framebuffer, in a window on your desktop instead of a png:
+# boots test/boot/fbsmiley.lua and leaves qemu up to look at. needs a
+# DISPLAY or WAYLAND_DISPLAY; on a headless box use screenshot above.
+run_target('smiley',
+  command: [lua_interp, files('scripts/smiley.lua'), luaos_img,
+    files('test/boot/fbsmiley.lua')],
+  env: archenv,
+)
+
 # boots test/boot/srvweb.lua instead of init.lua: the browser shell,
 # reachable at http://localhost:8080/ (WEB_PORT to change it)
 run_target('website',
@@ -568,6 +577,13 @@ endif
 # not run by `meson test`; run with `meson test --benchmark` or
 # `ninja benchmark`. meson runs benchmarks serially rather than in
 # parallel, which is what makes the numbers worth reading.
+benchmark('fb', boottest,
+  args: [luaos_img, files('test/bench_fb.lua')],
+  protocol: 'tap',
+  timeout: 120,
+  env: archenv,
+)
+
 benchmark('ipc', boottest,
   args: [luaos_img, files('test/bench_ipc.lua')],
   protocol: 'tap',

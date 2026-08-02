@@ -1385,22 +1385,46 @@ api_send(lua_State *L)
 	return 1;
 }
 
-/* block until this port might have room, the send-side api_block.
+/* block until this port might have room for a message of `need` bytes,
+ * the send-side api_block. `need` is optional and defaults to zero,
+ * which asks the old question: "is there any room at all".
  *
  * needs only a SEND right: a writer waiting for its reader to catch up
  * has no business holding the receive end.
+ *
+ * the size argument is not a refinement, it is the difference between
+ * parking and spinning. port_push_owned admits a message only if
+ * qbytes + len <= MAXQUEUE, so a caller whose message is a large
+ * fraction of the queue can be refused while qbytes < MAXQUEUE is still
+ * true -- and then this function says "there is room" and returns
+ * immediately, the send fails again, and the loop between them burns
+ * the proc's whole slice instead of sleeping.
+ *
+ * that is not hypothetical: two 63KiB pixel bands against a 64KiB
+ * MAXQUEUE spun for 33ms per band, which measured as the framebuffer
+ * being slow and was really this. small messages never notice, which is
+ * why nothing else here had.
+ *
+ * a `need` larger than MAXQUEUE could never be satisfied, so it returns
+ * rather than sleeping forever and lets the send report the failure --
+ * the same reason the dead-port case above returns.
  */
 static int
 api_sendblock(lua_State *L)
 {
 	struct kproc *p = self(L);
 	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+	lua_Integer need = luaL_optinteger(L, 2, 0);
 
 	if (!r)
 		return luaL_error(L, "bad right");
+	if (need < 0)
+		return luaL_error(L, "negative size");
 	if (r->port->dead)
 		return 0;	/* never going to drain; let the send report it */
-	if (r->port->qbytes < MAXQUEUE)
+	if ((size_t)need > MAXQUEUE)
+		return 0;	/* can never fit; let the send report it */
+	if (r->port->qbytes + (size_t)need <= MAXQUEUE)
 		return 0;	/* room already, don't sleep */
 	if (!wait_add(p, r->port, 1))
 		return luaL_error(L, "out of waiters");
