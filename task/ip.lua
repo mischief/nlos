@@ -33,6 +33,31 @@
 --   {op="config", reply=}                       -> {ip=,mask=,gw=,mac=}
 --   {op="stats", reply=}                        -> counters, below
 --
+-- and two for a protocol that lives in another proc:
+--
+--   {op="raw", proto=, port={__right=}, reply=} -> true | false
+--   {op="output", proto=, dst=, data=, reply=}  -> true | false
+--
+-- which is how TCP gets here without being here. This proc keeps arp,
+-- ip, icmp and udp together because they sit on one packet's path; tcp
+-- is the one that does not, having timers, per-connection state, and
+-- enough size that a fault in it should not take the machine off the
+-- network -- if it did, the address, the lease and the ability to
+-- answer a ping would go with it.
+--
+-- The cost is honest: an inbound segment crosses eth -> ip -> tcp
+-- rather than stopping here, and an outbound one crosses back. That is
+-- a per-segment tax on throughput, paid to keep the crash domains
+-- apart, and it is reversible -- lib/tcp4.lua and lib/tcb.lua do not
+-- care which proc requires them.
+--
+-- Unlike the udp ops above, these two take an address as the 4-byte
+-- wire form rather than four octets. Octets are what lib/caps.lua shows
+-- a client, and the udp protocol matches it because lib/dhcp.lua speaks
+-- it; raw is not a client interface but a seam between two tasks, and
+-- on this side of it an address has been a 4-byte string since
+-- lib/ip4.lua. One length check also beats four range checks.
+--
 -- It starts with no address. That is not a degenerate case to be got
 -- through quickly: DHCP runs over this, so the stack has to serve a
 -- client before it knows who it is, and lib/inet.lua's receive path
@@ -107,6 +132,13 @@ local nextephem = 32768
 -- are, and the split between "not for us" and "nothing bound" is the
 -- difference between a switch flooding us and a client that has not
 -- opened the port it thinks it has.
+-- ---- protocols served elsewhere ----
+--
+-- proto number -> a send right to the proc that owns it. One owner per
+-- protocol: two procs both claiming to be TCP is not a configuration to
+-- arbitrate between, it is a mistake, and the second one is told so.
+local raw = {}
+
 local stat = {
 	frames_in = 0,
 	frames_out_fail = 0,
@@ -115,6 +147,9 @@ local stat = {
 	udp_queued = 0,
 	udp_dropped = 0,
 	unresolved = 0,
+	raw_in = 0,
+	raw_unbound = 0,
+	raw_dropped = 0,
 }
 
 
@@ -209,6 +244,39 @@ local function on_udp(p)
 
 	deliver(conns[id], { data = d.data, a = a, b = b, c = c4, d = d4,
 	    port = d.sport })
+end
+
+-- hand a packet to the proc that owns its protocol.
+--
+-- A failed delivery is a dropped packet and never a stalled receive
+-- path. If the owner's queue is full we lose the packet exactly as a
+-- wire would, and above tcp that is a retransmission -- whereas waiting
+-- here would stop this proc reading frames for arp, icmp, dhcp and
+-- every udp client at once, to buy one connection a segment it is
+-- perfectly able to ask for again.
+local function on_raw(p)
+	local h = raw[p.proto]
+
+	if not h then
+		stat.raw_unbound = stat.raw_unbound + 1
+		return
+	end
+
+	local ok, why = sys.send(h, { src = p.src, dst = p.dst,
+	    proto = p.proto, data = p.payload })
+
+	if ok then
+		stat.raw_in = stat.raw_in + 1
+	elseif why == "full" then
+		stat.raw_dropped = stat.raw_dropped + 1
+	else
+		-- dead or hungup: the owner is gone for good, so the
+		-- registration goes with it rather than being retried on
+		-- every packet forever. Closing our right is what lets the
+		-- port actually go away.
+		sys.close(h)
+		raw[p.proto] = nil
+	end
 end
 
 -- ---- client requests ----
@@ -327,6 +395,73 @@ local function on_request(m)
 			c.waiting = {}
 		end
 
+	elseif m.op == "raw" then
+		-- claim a protocol. The right in m.port is kept, not replied
+		-- to and not closed: it is where packets go from here on.
+		-- Every path that does not keep it closes it, because a right
+		-- that arrives in this proc's table and is neither kept nor
+		-- closed is one slot of MAXRIGHTS gone until reboot -- which
+		-- is the leak this branch has already found in three separate
+		-- files.
+		local proto = whole(m.proto, 0xff)
+		local h = type(m.port) == "table" and m.port.__right or nil
+
+		if not proto or not h then
+			if h then
+				sys.close(h)
+			end
+			reply_to(m, false)
+			return
+		end
+
+		-- icmp and udp are answered here and are not on offer. Letting
+		-- a client take udp would not move it, it would silently stop
+		-- every udp conn this task is already serving.
+		if proto == ip4.PROTO_UDP or proto == ip4.PROTO_ICMP then
+			sys.close(h)
+			reply_to(m, false)
+			return
+		end
+
+		if raw[proto] then
+			-- a re-registration replaces, which is what a restarted
+			-- tcp task needs; the previous owner's right is closed
+			-- rather than left behind.
+			sys.close(raw[proto])
+		end
+		raw[proto] = h
+		reply_to(m, true)
+
+	elseif m.op == "output" then
+		-- one packet, from the proc that owns a protocol. Everything
+		-- checked before use, for the reason send's comment gives: a
+		-- bad field here would kill the stack, and with it the
+		-- network for every other proc on the machine.
+		local proto = whole(m.proto, 0xff)
+
+		if not proto or type(m.dst) ~= "string" or #m.dst ~= ip4.LEN or
+		    type(m.data) ~= "string" then
+			reply_to(m, false)
+			return
+		end
+
+		local ok, why = host:output(m.dst, proto, m.data)
+
+		if not ok then
+			stat.frames_out_fail = stat.frames_out_fail + 1
+		elseif why == "held" then
+			stat.unresolved = stat.unresolved + 1
+		end
+
+		-- the reply is optional here, unlike every op above: reply_to
+		-- does nothing when the message carried no reply right, so a
+		-- sender that cannot afford a round trip per segment simply
+		-- omits it. What it gives up is backpressure, so a task doing
+		-- that owes itself a sendwait -- see lib/caps.lua's requester
+		-- for why a full queue is worth parking on rather than
+		-- spinning through.
+		reply_to(m, ok and true or false)
+
 	elseif m.op == "configure" then
 		-- only what was named. Assigning m.mask and m.gw
 		-- unconditionally meant a caller setting one field silently
@@ -374,6 +509,15 @@ local function on_request(m)
 			s.conn_dropped = s.conn_dropped + c.dropped
 		end
 		s.rcvbuf = rcvbuf
+		-- protocols claimed by another proc. Zero on a machine with
+		-- no tcp task, one on a machine with it -- which is the first
+		-- thing to check when tcp is silent, since a registration
+		-- that never happened and a registration that was dropped
+		-- look identical from outside.
+		s.raw = 0
+		for _ in pairs(raw) do
+			s.raw = s.raw + 1
+		end
 		-- live arp entries: a number that should sit still on a
 		-- quiet link and climb on a busy one, and which says
 		-- whether expiry is doing anything at all.
@@ -403,9 +547,13 @@ while true do
 		local p = m and m.data and host:input(m.data)
 
 		-- input() answers arp and icmp itself; what comes back is a
-		-- packet for something above.
+		-- packet for something above. udp is served in this proc,
+		-- everything else is somebody's registered protocol or
+		-- nothing at all.
 		if p and p.proto == ip4.PROTO_UDP then
 			on_udp(p)
+		elseif p then
+			on_raw(p)
 		end
 	else
 		on_request(m)

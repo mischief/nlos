@@ -226,6 +226,7 @@ else
     'lib/ethwire.lua',
     'lib/icmp.lua',
     'lib/udp4.lua',
+    'lib/tcp4.lua',
     'lib/inet.lua',
     'lib/dhcp.lua',
     'lib/dhcpc.lua',
@@ -716,6 +717,7 @@ microvm_tests = [
   ['udpbench', ['--net']],
   ['checksum', []],
   ['autoip', ['--net']],
+  ['ipraw', ['--net']],
   ['idle', []],
 ]
 
