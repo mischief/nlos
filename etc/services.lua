@@ -26,6 +26,10 @@ return {
 	-- visitor gets a shell -- and additionally it accepts ANY public
 	-- key so far, so it is on here only because this is a branch for
 	-- working on it.
+	-- trace = true logs every packet's message number to the console.
+	-- It found two of this branch's bugs and is worth turning back on
+	-- to find the next one, but it is debug output and does not belong
+	-- in a default boot.
 	{ path = "/task/sshd.lua", caps = { "tcp" },
-	  args = { port = 2222, trace = true } },
+	  args = { port = 2222 } },
 }
