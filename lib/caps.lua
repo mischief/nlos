@@ -29,13 +29,63 @@ local M = {}
 -- recv's string was expected). fresh port per call avoids that
 -- cross-delivery entirely; close it right after use so it doesn't
 -- leak (same close-both-sides pattern net.lua's server side uses).
+-- send, applying backpressure. sys.send reports a full queue
+-- (false, "full") rather than raising, because the kernel refuses to
+-- decide between a pipe writer that should wait and a server reply that
+-- must not -- so deciding is the caller's job, and for a request whose
+-- reply you are about to wait for, the answer is always "wait".
+--
+-- Ignoring that return silently DROPS the message. For a requester that
+-- is worse than a lost write: the request is gone and the caller then
+-- blocks forever on a reply that nothing will send.
+--
+-- sys.sendblock's size argument is what makes this park instead of
+-- spin. Without it sendblock only asks "is the queue non-full", which
+-- stays true while a large message is still refused by a queue holding
+-- another one -- so it returns at once, the send fails again, and the
+-- loop eats the whole slice. That measured as 33ms per band on the
+-- framebuffer path. The payload length is the size that matters; the
+-- table around it is small, and the estimate only has to avoid
+-- under-asking.
+local function sendwait(handle, m)
+	local need = 0
+
+	if type(m) == "table" and type(m.data) == "string" then
+		need = #m.data + 256
+	end
+
+	while true do
+		local ok, why = sys.send(handle, m)
+
+		if ok then
+			return true
+		end
+		if why ~= "full" then
+			return nil, why
+		end
+		sys.sendblock(handle, need)
+	end
+end
+
+M.sendwait = sendwait
+
 local function requester(target)
 	return function(extra)
 		local replyport = sys.newport()
 
 		extra.reply = { __right = replyport }
-		sys.send(target, extra)
+
+		local ok, why = sendwait(target, extra)
+
+		if not ok then
+			-- never wait for a reply to a request that did not go:
+			-- thread.recv here would block forever.
+			sys.close(replyport)
+			return nil, why
+		end
+
 		local result = thread.recv(replyport)
+
 		sys.close(replyport)
 		return result
 	end
@@ -157,52 +207,15 @@ end
 function M.fb(handle, chunk)
 	local f = { handle = handle }	-- for re-granting to a spawned child: {__right = f.handle}
 
-	-- send, applying backpressure. sys.send reports a full queue
-	-- (false, "full") rather than raising, because the kernel refuses
-	-- to decide between a pipe writer that should wait and a server
-	-- reply that must not -- so deciding is the caller's job, and for
-	-- pixels the answer is always "wait".
-	--
-	-- ignoring that return silently DROPS the message, and pixels are
-	-- where it bites first: MAXQUEUE is 64KiB, the same as MAXMSG, so
-	-- at most one band of a banded load is ever in flight. a 320x320
-	-- smiley went out as seven bands, six of which vanished, and what
-	-- came back was a tidy yellow arc -- a picture wrong in a way no
-	-- readback assertion catches, since every pixel that did arrive was
-	-- correct.
-	--
-	-- this cannot use caps.lua's own requester() above, which sends
-	-- without checking: on a full queue that loses the request and then
-	-- blocks forever on the reply it will never get. every other user
-	-- of requester() sends messages far too small to fill a queue,
-	-- which is why they have never met this.
-	-- sys.sendblock's size argument is what makes this park instead of
-	-- spin. it must be told roughly how big the message is: without it
-	-- sendblock only asks "is the queue non-full", which stays true
-	-- while a 63KiB band is still refused by a 64KiB queue holding
-	-- another one -- so it returns at once, the send fails again, and
-	-- this loop eats the whole slice. that measured as 33ms per band.
-	--
-	-- the payload length is the size that matters; the table around it
-	-- is small and the estimate only has to be close enough not to
-	-- under-ask.
+	-- pixels are where a dropped message bites first: MAXQUEUE is
+	-- 64KiB, the same as MAXMSG, so at most one band of a banded load
+	-- is ever in flight. A 320x320 smiley went out as seven bands, six
+	-- of which vanished, and what came back was a tidy yellow arc -- a
+	-- picture wrong in a way no readback assertion catches, since every
+	-- pixel that did arrive was correct. sendwait above is why that
+	-- cannot happen here or in requester(); see its comment.
 	local function put(m)
-		local need = m.data and (#m.data + 256) or 0
-
-		while true do
-			local ok, why = sys.send(handle, m)
-
-			if ok then
-				return true
-			end
-			if why ~= "full" then
-				return nil, why
-			end
-			-- park until the fb task drains enough. the send-side
-			-- of the same tryrecv/block split the receive side
-			-- uses.
-			sys.sendblock(handle, need)
-		end
+		return sendwait(handle, m)
 	end
 
 	-- one reply port per call, for the reason requester() gives above.
