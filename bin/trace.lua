@@ -5,11 +5,12 @@
 -- the route to it -- the call that returned just before everything went
 -- wrong is precisely what it cannot show.
 --
--- With -n this ARMS a trace and returns; the lines accumulate as the
--- proc runs and are read by a later plain `trace pid`. That is a real
--- effect on the target and not a report about it: a line hook fires per
--- line rather than every REDUCTIONS instructions, measured 4.7x slower.
--- Hence two steps rather than one flag that quietly does both.
+-- With -n this arms a trace and returns; the lines accumulate as the
+-- proc runs and are read by a later plain `trace pid`. Arming is a real
+-- effect on the target rather than a report about it -- a line hook
+-- fires per line instead of every REDUCTIONS instructions, costing the
+-- traced proc about 4.7x -- so it is a separate invocation from the
+-- dump rather than a flag that quietly does both.
 --
 -- Most useful on a broke proc, whose ring is held with its state until
 -- it is reaped, so the trace and the stack answer for the same instant.

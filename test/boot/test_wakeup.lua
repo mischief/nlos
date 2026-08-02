@@ -1,26 +1,18 @@
 -- one message must wake one thread, not all of them.
 --
--- thread.run has a directed wakeup: sys.altblock returns a hint naming
--- the port that has something, and readyon wakes only the threads
--- parked on it. readyall -- wake everyone and let each find out for
--- itself -- is the fallback for a wake no port can account for.
+-- thread.run wakes in the narrowest way it can: sys.altblock returns a
+-- hint naming the port that has something and readyon wakes only the
+-- threads parked on it, wakehungup covers the hangup a hint can never
+-- name, and readyall -- wake everyone and let each find out for itself
+-- -- is the last resort for a wake no port of ours accounts for.
 --
--- that was the design. what the code did was
+-- the failure mode this guards against is readyall becoming the normal
+-- path. it costs one coroutine resume per parked thread per delivery,
+-- so it does not break anything and does not show up as a failing
+-- assertion anywhere; a server just quietly does O(threads) work to
+-- deliver one message. the ratio is the only thing that reports it.
 --
---     if hungupsince() or not (i and readyon(altset[i])) then
---
--- and `or` short-circuits, so whenever hungupsince() was true readyon
--- was never called at all. hungupsince() compares sys.hangups(), which
--- counts every port on the MACHINE losing a reference -- and a client
--- doing request/reply creates and drops a reply port per request, so on
--- any system with other procs doing ipc the counter had always moved.
--- the fallback was the only path that ever ran.
---
--- measured on the esp server before the fix, serving one file read:
--- readyon 0 calls, readyall 4, 32 coroutine resumes to deliver 4
--- messages, 1883 lines executed where 880 were needed.
---
--- the ports are made HERE and handed to the child in its spawn arg,
+-- the ports are made here and handed to the child in its spawn arg,
 -- because the parent has to be able to poke one specific thread. a
 -- right is a reference to the same port, so a send here is a delivery
 -- to the thread parked there.

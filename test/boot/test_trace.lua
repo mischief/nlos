@@ -202,11 +202,9 @@ sys.close(h3)
 
 -- ---- the payoff: a trace on a corpse ----
 --
--- armed at spawn rather than after it. a proc that faults immediately
--- is both the one most worth tracing and the one sys.set_trace cannot
--- reach: spawning and then arming is a race the proc wins, and by the
--- time it is broke the lines are already gone. tried at the console
--- three times before believing it.
+-- armed at spawn, which is the only way to reach a proc that faults
+-- immediately: spawning and then arming is a race the proc wins, and by
+-- the time it is broke the lines are already gone.
 local _, h4 = sys.spawn([[
 	local function inner() error("boom") end
 	local function outer() inner() end
@@ -258,8 +256,9 @@ local pf = N:readfile("/proc/" .. dpid .. "/trace")
 
 tap.ok(pf and pf:find("dier:"), "/proc/<pid>/trace serves it too")
 
--- arming a corpse used to return true and record nothing, which reads
--- as "this proc ran no lines" rather than "you are too late"
+-- arming a corpse can only ever produce an empty ring, which reads as
+-- "this proc ran no lines" rather than "you are too late", so it is
+-- refused rather than quietly accepted
 local late, lerr = pcall(sys.set_trace, dpid, 32)
 
 tap.ok(not late, "arming a corpse fails instead of quietly doing nothing")

@@ -2771,18 +2771,15 @@ trace_arm(struct kproc *p, int n)
  * fault, which a stack cannot give because a stack shows only the calls
  * still open.
  *
- * a worked case, because it is what convinced: a proc recursing
- * through outer -> inner until it raises reports
- * "dier:8: in function <dier:7> | (...tail calls...) | dier:11: in main
- * chunk" as its traceback -- the recursion is gone, collapsed into one
- * tail-call marker, because those frames are exactly the ones no longer
- * open. the ring holds all three iterations and the line the last one
+ * concretely: a proc recursing through outer -> inner until it raises
+ * has a traceback of "dier:8: in function <dier:7> | (...tail calls...)
+ * | dier:11: in main chunk". the recursion is not in it, collapsed into
+ * one tail-call marker, because those frames are exactly the ones no
+ * longer open. the ring holds every iteration and the line the last one
  * diverged on.
  *
- * turning it off costs nothing afterwards (the same loop measured
- * 1.00x once the mask was restored), which is worth stating as a
- * measurement rather than an intention: it is the evidence that
- * proc_rearm puts every coroutine back exactly as it found it.
+ * an untraced proc pays nothing: the mask carries LUA_MASKLINE only
+ * while a ring exists, so the line hook is absent rather than idle.
  *
  * ambient, like sys.stack and sys.reap, and this is the weakest of the
  * three claims: slowing a proc down is a real effect on it, unlike
@@ -2812,11 +2809,11 @@ api_set_trace(lua_State *L)
 		n = TRACEMAX;
 	if (!p->L)
 		return luaL_error(L, "proc %d has no state", p->id);
-	/* arming a corpse is always a mistake and used to succeed
-	 * quietly, leaving an empty ring and the impression that the
-	 * proc simply ran no lines. a trace has to be armed before the
-	 * death it is meant to explain -- for a proc too short-lived to
-	 * catch, that means spawn's opts.trace.
+	/* a trace has to be armed before the death it is meant to
+	 * explain. arming a corpse can only ever produce an empty ring,
+	 * which reads as "this proc ran no lines" rather than "you are
+	 * too late", so it is refused. for a proc too short-lived to
+	 * catch, spawn's opts.trace is the way in.
 	 */
 	if (p->status == BROKE && n > 0)
 		return luaL_error(L,
@@ -3828,11 +3825,11 @@ fail:
  * and wedge every client instead of failing them.
  *
  * the deferred half is only lua_close, and only the __gc finalizers care
- * that the rights are already gone. they turn out to be written for it:
+ * that the rights are already gone. they are written to tolerate it:
  * lib/mnt.lua's fid and session finalizers wrap the send and the close
  * in pcall, and src/dirs.c's is idempotent by construction. a finalizer
- * running against a released right fails and is swallowed, which is the
- * behaviour it already had for a handle closed by hand.
+ * running against a released right fails and is swallowed, exactly as it
+ * does for a handle closed by hand.
  */
 static void
 proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
@@ -4560,11 +4557,11 @@ run_proc(struct kproc *p)
 			 * proc being already at its limit, fail again -- skip
 			 * it here, same plain message as before.
 			 *
-			 * it still breaks rather than dies: an out-of-memory
-			 * corpse is both the one most worth looking at and
-			 * the one a traceback could not describe, and
-			 * sys.stack can read it precisely because src/debug.c
-			 * allocates nothing in the target.
+			 * it breaks rather than dies all the same: an
+			 * out-of-memory corpse is both the one most worth
+			 * looking at and the one no traceback can describe,
+			 * and sys.stack reads it precisely because
+			 * src/debug.c allocates nothing in the target.
 			 */
 			proc_break(p, lua_tostring(p->co, -1));
 		else {
@@ -4578,11 +4575,11 @@ run_proc(struct kproc *p)
 			 * error object is on the stack; read it before the
 			 * traceback replaces the top.
 			 *
-			 * the traceback is still built here even though the
-			 * state now survives, because it is the line that
-			 * reaches the console log: the corpse answers a
-			 * question someone thought to ask, the log answers
-			 * the one nobody was there for.
+			 * the traceback is built here as well as held in
+			 * the corpse, because it is what reaches the console
+			 * log: the corpse answers a question someone thought
+			 * to ask, the log answers the one nobody was there
+			 * for.
 			 */
 			const char *errmsg = lua_tostring(p->co, -1);
 

@@ -72,9 +72,9 @@ end
 
 -- the last lines the proc ran, oldest first, empty unless something has
 -- called sys.set_trace on it. read-only like everything else here: this
--- file reports a trace, it does not turn one on, because arming one
--- slows the target down (measured 4.7x) and that is an effect on
--- another proc rather than a report about it.
+-- file reports a trace, it does not turn one on. arming costs the
+-- target about 4.7x, which is an effect on another proc rather than a
+-- report about it.
 local function fmt_trace(pid)
 	local tr = sys.trace(pid)
 	local out = {}
