@@ -343,6 +343,19 @@ local function session(connid)
 				break
 
 			elseif ev.type == "data" then
+				-- ^D ends the session. There is no tty in
+				-- this system to turn it into an EOF, so the
+				-- byte arrives as data and this is the only
+				-- layer that can mean anything by it --
+				-- without which the way out is ssh's ~.
+				-- escape.
+				if ev.data:find("\4", 1, true) then
+					srv:data(ev.chan, "\r\n")
+					srv:exit(ev.chan, 0)
+					srv:close(ev.chan)
+					break
+				end
+
 				-- A terminal sends CR for the return key and
 				-- expects an echo; dos wants lines. Both are
 				-- this layer's job, because there is no tty
@@ -379,7 +392,15 @@ local function session(connid)
 		sys.close(consport)
 		consport = sys.newport()
 	end
-	netreq({ op = "close", connid = connid })
+
+	-- Fire and forget, and this is NOT a style choice: tcp.lua's
+	-- "close" handler never replies (see its own header). Sending it
+	-- through netreq() parks this thread forever on an answer that is
+	-- never coming -- so the session never returns, main() never gets
+	-- back to accept(), and every connection after the first is
+	-- greeted with silence. lib/caps.lua warns about exactly this and
+	-- it still took a second connection to notice.
+	sys.send(NET, { op = "close", connid = connid })
 end
 
 -- ---- accept ----
