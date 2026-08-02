@@ -24,10 +24,16 @@ local M = {}
 
 local srep, sconcat = string.rep, table.concat
 
+-- `spec.blocks(h, s, from, nblocks)` is optional and is what the C
+-- module plugs into: a whole run of blocks in one call, so the cost of
+-- crossing into C is paid once per update rather than once per 64 bytes.
+-- Without it the per-block `spec.compress` runs, which is the Lua path
+-- and the reference.
 function M.define(spec)
   local block_len = spec.block_len
   local len_bytes = spec.len_bytes
   local compress = spec.compress
+  local blocks = spec.blocks
   local encode = spec.encode
 
   local H = {}
@@ -60,7 +66,11 @@ function M.define(spec)
     local buf = sconcat(self.pend)
     local n = #buf
     local full = n - (n % block_len)
-    for off = 1, full, block_len do compress(self.h, buf, off) end
+    if blocks then
+      blocks(self.h, buf, 1, full // block_len)
+    else
+      for off = 1, full, block_len do compress(self.h, buf, off) end
+    end
 
     if full == n then
       self.pend, self.npend = {}, 0
@@ -84,7 +94,11 @@ function M.define(spec)
     local s = tail .. "\128" .. srep("\0", zeros)
              .. srep("\0", len_bytes - 8) .. spec.enclen(self.len * 8)
 
-    for off = 1, #s, block_len do compress(h, s, off) end
+    if blocks then
+      blocks(h, s, 1, #s // block_len)
+    else
+      for off = 1, #s, block_len do compress(h, s, off) end
+    end
 
     return encode(h)
   end

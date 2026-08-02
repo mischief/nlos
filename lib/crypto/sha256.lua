@@ -64,7 +64,7 @@ local function block(h, s, off)
   h[8] = (h[8] + hh) & MASK
 end
 
-return hashstate.define {
+local spec = {
   block_len = 64,
   digest_len = 32,
   len_bytes = 8,
@@ -82,3 +82,37 @@ return hashstate.define {
                  h[5], h[6], h[7], h[8])
   end,
 }
+
+--------------------------------------------------------------------------
+
+-- The C compression function, when it is there. Unlike ChaCha20, this is
+-- not for the protocols -- hashing is handshake-rate in both SSH and
+-- QUIC, and invisible beside a Montgomery ladder. It is for hashing
+-- files, where the Lua version's few megabytes a second is half a minute
+-- of CPU on a large transfer.
+--
+-- The whole run of blocks goes over in one call, with the state carried
+-- as its encoding rather than as a table: padding and buffering stay in
+-- hashstate, which is where the off-by-one lives and where it is tested.
+local M = hashstate.define(spec)
+M.pure = M
+
+local ok, native = pcall(require, "crypto.native")
+if ok and type(native) == "table" and native.sha256_blocks then
+  local sha256_blocks = native.sha256_blocks
+  local encode = spec.encode
+
+  local fast = {}
+  for k, v in pairs(spec) do fast[k] = v end
+  fast.blocks = function(h, s, from, nblocks)
+    local st = sha256_blocks(encode(h),
+                             s:sub(from, from + nblocks * 64 - 1))
+    h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8] = sunpack(">I4I4I4I4I4I4I4I4", st)
+  end
+
+  M = hashstate.define(fast)
+  M.pure = hashstate.define(spec)
+  M.native = M
+end
+
+return M

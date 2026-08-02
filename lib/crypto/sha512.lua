@@ -73,7 +73,7 @@ local function block(h, s, off)
   h[8] = h[8] + hh
 end
 
-return hashstate.define {
+local spec = {
   block_len = 128,
   digest_len = 64,
   -- SHA-512's length field is 128 bits wide; hashstate zero-fills the top
@@ -94,3 +94,33 @@ return hashstate.define {
                  h[5], h[6], h[7], h[8])
   end,
 }
+
+--------------------------------------------------------------------------
+
+-- The C compression function, when it is there; see the note in
+-- ssh/crypto/sha256.lua. SHA-512 gets it too because Ed25519 hashes with
+-- it twice per signature, and because a 64-bit hash is where a 64-bit
+-- host is furthest ahead of an interpreter.
+local M = hashstate.define(spec)
+M.pure = M
+
+local ok, native = pcall(require, "crypto.native")
+if ok and type(native) == "table" and native.sha512_blocks then
+  local sha512_blocks = native.sha512_blocks
+  local encode = spec.encode
+
+  local fast = {}
+  for k, v in pairs(spec) do fast[k] = v end
+  fast.blocks = function(h, s, from, nblocks)
+    local st = sha512_blocks(encode(h),
+                             s:sub(from, from + nblocks * 128 - 1))
+    h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8] =
+      sunpack(">i8i8i8i8i8i8i8i8", st)
+  end
+
+  M = hashstate.define(fast)
+  M.pure = hashstate.define(spec)
+  M.native = M
+end
+
+return M
