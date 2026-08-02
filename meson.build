@@ -186,7 +186,13 @@ else
   # lib/*.lua, los.thread, and the 9p client that turns virtio-9p into a
   # mount. Anything you want to edit without rebuilding belongs on that
   # mount, not in this list -- every entry here is frozen at build time.
+  #
+  # boot/microvm.lua is the exception in kind: not a lib but the payload
+  # main.c falls back to when no fw_cfg one was injected, which is the
+  # only way this image boots on a loader whose fw_cfg cannot serve
+  # arbitrary files (OpenBSD vmd).
   embed_files = [
+    'boot/microvm.lua',
     'lib/thread.lua',
     'task/cons.lua',
     'task/wire.lua',
@@ -678,6 +684,17 @@ foreach t : microvm_tests
     is_parallel: true,
   )
 endforeach
+
+# the no-fw_cfg path: nothing injected, so the guest runs the payload
+# embedded in its own image. Tested under qemu because that is where a
+# test can run, but it exists for vmd, which has no other way in --
+# separate from the loop above because it has no payload file to name.
+test('microvm-embedded-boot', microvm_boottest,
+  args: [luaos_microvm_elf, '-'],
+  protocol: 'tap',
+  timeout: 90,
+  is_parallel: true,
+)
 
 # serial receive needs the port in BOTH directions, which the boottest
 # harness cannot do -- it points the guest's serial at a file. This one

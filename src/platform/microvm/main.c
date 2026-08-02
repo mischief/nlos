@@ -3,11 +3,16 @@
  * long_mode_entry once paging/long mode/GDT are live.
  *
  * The boot payload comes in over fw_cfg, the same mechanism
- * src/platform/efi/main.c uses for its test harness, but here it is the
- * only way to start code rather than just the test path: there is no
- * disk and no /init.lua to fall back on. What a payload then mounts is
+ * src/platform/efi/main.c uses for its test harness, but here it is how
+ * code starts rather than just the test path: there is no disk and no
+ * /init.lua on an ESP to fall back on. What a payload then mounts is
  * its own business -- virtio-9p is available to it (see fs.c) -- but
  * something has to run first to do the mounting.
+ *
+ * When fw_cfg has nothing, that something is BOOT_PAYLOAD out of the
+ * embedded set. Not a convenience: OpenBSD vmd's fw_cfg serves a fixed
+ * list and cannot be handed a host file at all, so on that loader the
+ * injected path does not exist and this is the only one left.
  *
  * fs_init() cannot fail: the embedded set it serves is built in.
  */
@@ -26,11 +31,16 @@ int	fwcfg_load(const char *name, char **buf, size_t *len);
 
 extern char __image_end[];	/* microvm.ld */
 
+#define BOOT_PAYLOAD "/boot/microvm.lua"	/* see meson.build embed_files */
+
 /* what to fall back on when the map cannot be read: 16MB-128MB, above
  * our own image (linked at 1MB, well under 16MB even with Lua linked
- * in) and inside the smallest -m worth booting. Only reachable on a
- * loader that is not qemu's microvm, since that one always supplies a
- * version 1 start_info.
+ * in) and inside the smallest -m worth booting. Unreachable under
+ * qemu's microvm, which always supplies a version 1 start_info; it is
+ * the whole memory story on a loader that enters at e_entry with no
+ * start_info at all (boot.S's entry_elf, OpenBSD vmd), where it also
+ * has to stay clear of the PCI hole vmd opens at 0xf0000000 -- 128MB
+ * is nowhere near it.
  */
 #define FALLBACK_BASE 0x1000000UL
 #define FALLBACK_LEN  0x7000000UL
@@ -107,7 +117,19 @@ claim_memory(unsigned long start_info)
 void
 microvm_main(unsigned long start_info)
 {
+	static const char entered[] = "luaos: entered\n";
+
 	uart_init();
+
+	/* the earliest thing that can speak, and it exists for bring-up on
+	 * a loader nobody has booted this on before: everything below --
+	 * the memory map, the idt, the apic -- can die with no output at
+	 * all, and without this line a dead guest cannot be told apart
+	 * from one that was never entered. Raw PIO, before any allocator
+	 * or clock, so it depends on nothing but uart_init.
+	 */
+	console_write(entered, sizeof entered - 1);
+
 	tsc_calibrate();
 	if (claim_memory(start_info) == 0)
 		pmm_add(FALLBACK_BASE, FALLBACK_LEN);
@@ -170,8 +192,15 @@ microvm_main(unsigned long start_info)
 			machine_reset();
 		}
 		free(testbuf);
+	} else if (embed_load(BOOT_PAYLOAD, &testbuf, &testlen) == 0) {
+		kernel_log("boot: no fw_cfg payload; running " BOOT_PAYLOAD);
+		if (kernel_spawn_buffer(testbuf, testlen) < 0) {
+			kernel_log("boot: FAILED to spawn boot payload");
+			machine_reset();
+		}
+		free(testbuf);
 	} else {
-		kernel_log("boot: no fw_cfg payload and no filesystem -- nothing to run");
+		kernel_log("boot: no fw_cfg payload and no embedded one -- nothing to run");
 		machine_reset();
 	}
 

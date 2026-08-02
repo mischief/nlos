@@ -45,6 +45,30 @@ find_embed(const char *path)
 	return NULL;
 }
 
+/* the whole of an embedded file in one malloc'd buffer, for a caller
+ * that wants the bytes rather than a handle -- kernel_spawn_buffer
+ * takes a chunk, not a stream. NUL-terminated for anything that treats
+ * it as a string; the length excludes that byte.
+ */
+int
+embed_load(const char *path, char **buf, size_t *len)
+{
+	const struct embedfile *e = find_embed(path);
+
+	if (!e)
+		return -1;
+
+	char *b = malloc(e->len + 1);
+
+	if (!b)
+		return -1;
+	memcpy(b, e->data, e->len);
+	b[e->len] = '\0';
+	*buf = b;
+	*len = e->len;
+	return 0;
+}
+
 void *
 fs_open(const char *path, int write)
 {

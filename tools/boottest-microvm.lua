@@ -3,6 +3,12 @@
 -- under qemu's microvm machine with the test payload injected via
 -- fw_cfg, and emit the TAP the guest printed on com1.
 --
+-- TEST.lua of "-" injects nothing, so the guest falls back to the
+-- payload embedded in the image (src/platform/microvm/main.c's
+-- BOOT_PAYLOAD). That is the only path OpenBSD vmd can take, since its
+-- fw_cfg serves a fixed list and cannot be given a host file, and
+-- qemu is where it can be tested.
+--
 -- the efi harness's counterpart, tools/boottest.lua, and deliberately
 -- separate rather than a branch inside it: there is no firmware, no
 -- pflash varstore and no disk here, the payload is the whole guest, and
@@ -133,7 +139,8 @@ local cmd = table.concat({
 	"-M microvm,pit=off,pic=off,rtc=off,ioapic2=off",
 	"-enable-kvm -cpu host -m 256",
 	"-kernel " .. q(elf),
-	"-fw_cfg name=opt/org.luaos.test,file=" .. q(payload),
+	payload ~= "-" and
+	    ("-fw_cfg name=opt/org.luaos.test,file=" .. q(payload)) or "",
 	p9args, rngargs, netargs,
 	"-nodefaults -no-user-config -no-reboot -nographic",
 	"-serial file:" .. q(tmp .. "/serial.log"),

@@ -7,6 +7,8 @@
  * this is not the whole filesystem: what a proc opens through its
  * namespace, virtio-9p included, never reaches this interface.
  */
+#include <stddef.h>
+
 struct fs_dirent {
 	char name[256];
 	unsigned long long size;
@@ -14,6 +16,9 @@ struct fs_dirent {
 };
 
 int	fs_init(void);
+
+/* the embedded set as bytes rather than as a handle; see fs.c. */
+int	embed_load(const char *path, char **buf, size_t *len);
 void	*fs_open(const char *path, int write);
 long	fs_read(void *f, void *buf, long n);
 long	fs_write(void *f, const void *buf, long n);

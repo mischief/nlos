@@ -67,6 +67,28 @@ gdt64_ptr:
 
 	.code32
 	.section .text
+
+/* the ELF header's e_entry, which is what a loader that does not read
+ * the PVH note uses: OpenBSD vmd (usr.sbin/vmd/loadfile_elf.c) loads
+ * PT_LOAD by p_paddr, zeroes bss, and jumps to e_entry in 32-bit
+ * protected mode with paging off -- the same machine state PVH
+ * specifies, minus the one thing PVH adds. There is no start_info and
+ * ebx means nothing, so say so explicitly rather than let whatever the
+ * loader left in it be dereferenced as a struct pointer; main.c's
+ * claim_memory takes 0 as "no map" and falls back.
+ *
+ * Both entries can coexist because the two loaders look in different
+ * places: qemu's microvm reads XEN_ELFNOTE_PHYS32_ENTRY and ignores
+ * e_entry, vmd reads e_entry and ignores the note. One image boots
+ * under both.
+ */
+	.globl	entry_elf
+entry_elf:
+	cli
+	cld
+	xorl	%ebx, %ebx
+	jmp	entry_common
+
 	.globl	entry32
 entry32:
 	cli
@@ -75,6 +97,7 @@ entry32:
 	/* ebx = hvm_start_info physaddr, per the PVH ABI -- stash it
 	 * before it's clobbered; microvm_main gets it as its argument.
 	 */
+entry_common:
 	movl	%ebx, pvh_start_info_ptr
 
 	lgdt	gdt32_ptr

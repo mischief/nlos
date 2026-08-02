@@ -3,8 +3,11 @@
  * src/platform/efi/pe.ld. qemu's -kernel loader for microvm reads
  * PT_LOAD segments for content and the PT_NOTE segment for the
  * XEN_ELFNOTE_PHYS32_ENTRY entry point (boot.S).
+ *
+ * e_entry is the other entry, entry_elf, for loaders that read the ELF
+ * header instead of the note (OpenBSD vmd). qemu never looks at it.
  */
-ENTRY(entry32)
+ENTRY(entry_elf)
 
 PHDRS
 {
