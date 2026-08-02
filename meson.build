@@ -802,3 +802,18 @@ test('tcp4-codec', lua_interp,
   protocol: 'tap',
   timeout: 20,
 )
+
+# lib/tcb.lua is one connection's state machine, and sans-io for the
+# same reason: it takes segments as tables and hands them back, so two
+# of them can be wired to each other here and driven through a handshake
+# with no network involved. Two agreeing with each other proves only
+# that they are consistent -- they share every misreading of the RFC --
+# which is what the boot tests against a real peer are for. What this
+# reaches instead is everything a real peer will not do on request: a
+# simultaneous open, a reset acknowledging nothing, an acknowledgment of
+# a segment never sent, a SYN arriving inside an open connection.
+test('tcb-statemachine', lua_interp,
+  args: [files('test/host_tcb.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
