@@ -39,10 +39,29 @@ static const struct { const char *name; lua_CFunction f; } lazylibs[] = {
  * a given name once loaded (luaL_requiref with glb=1 both registers
  * package.loaded[name] and does the equivalent of _G[name] = module,
  * a plain rawset since we install no __newindex).
+ *
+ * Because it is only reached on a miss, it is also the one place that
+ * knows a global was never bound -- so it raises rather than handing
+ * back nil. `prit("x")` is a typo, and the error naming `prit` at the
+ * line that read it beats "attempt to call a nil value" and beats a
+ * silent nil propagating somewhere else entirely. It costs nothing on
+ * the hit path: a bound global never reaches a metamethod at all.
+ *
+ * The escape, for a name that is legitimately maybe-absent, is
+ * rawget(_G, "name") -- metamethods do not run for a raw access, so it
+ * still answers nil. Assignment is deliberately NOT guarded: there is
+ * no __newindex here, so `x = 1` still binds a fresh global. Read
+ * checking already catches the mistake that matters, since
+ * `total = total + 1` on an undeclared `total` reads it first.
  */
 static int
 lazylib_index(lua_State *L)
 {
+	/* before lua_tostring, which converts a number key to a string in
+	 * place -- ask afterwards and every numeric key looks like a
+	 * string.
+	 */
+	int isname = lua_type(L, 2) == LUA_TSTRING;
 	const char *key = lua_tostring(L, 2);
 	size_t i;
 
@@ -78,8 +97,16 @@ lazylib_index(lua_State *L)
 					kernel_strip_debug(L);
 				return 1;
 			}
-	lua_pushnil(L);
-	return 1;
+	/* only a string key is a variable name. _G[1] and _G[t] are table
+	 * accesses that happen to land on the globals table, and no
+	 * compiler emitted them for an identifier, so they keep the old
+	 * nil rather than being called undeclared.
+	 */
+	if (!isname) {
+		lua_pushnil(L);
+		return 1;
+	}
+	return luaL_error(L, "undefined global '%s'", key);
 }
 
 LUALIB_API void

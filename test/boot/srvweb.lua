@@ -99,9 +99,13 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 			-- coroutines in the shell's proc rather than procs
 			out[#out + 1] = "pid=" .. tostring(sys.self())
 			out[#out + 1] = "io.open=" .. tostring(io.open ~= nil)
+			-- rawget: reading an unbound global raises rather
+			-- than answering nil (src/linit.c), and being
+			-- unbound is exactly what this probe reports.
 			out[#out + 1] = "loadfile=" ..
-			    tostring(loadfile ~= nil)
-			out[#out + 1] = "dofile=" .. tostring(dofile ~= nil)
+			    tostring(rawget(_G, "loadfile") ~= nil)
+			out[#out + 1] = "dofile=" ..
+			    tostring(rawget(_G, "dofile") ~= nil)
 			unistd.write(1, table.concat(out, " ") .. "\n")
 		]==],
 

@@ -144,8 +144,13 @@ require("proc").spawn([[
 	sys.send((...).__right, {
 		open = io.open == nil,
 		lines = io.lines == nil,
-		loadfile = loadfile == nil,
-		dofile = dofile == nil,
+		-- rawget, because reading an unbound global raises rather
+		-- than answering nil (src/linit.c). io.open above is a
+		-- field on a table that exists, so it needs no such care;
+		-- these two are globals that are genuinely not there,
+		-- which is the thing being asserted.
+		loadfile = rawget(_G, "loadfile") == nil,
+		dofile = rawget(_G, "dofile") == nil,
 		write = type(io.write) == "function",
 	})
 ]], { name = "nonamespace", arg = { __right = np } })

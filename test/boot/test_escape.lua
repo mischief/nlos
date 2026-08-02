@@ -169,9 +169,10 @@ tap.ok(tostring(r.loadfile):find("ERR"),
     "loadfile is gone: " .. tostring(r.loadfile))
 tap.ok(tostring(r.dofile):find("ERR"),
     "dofile is gone: " .. tostring(r.dofile))
--- os is never opened at all (see src/linit.c), so INDEXING it raises
--- rather than returning nil -- which is the stronger result
-tap.ok(tostring(r.os):find("attempt to index a nil value") ~= nil,
+-- os is never opened at all (see src/linit.c), and reading an unbound
+-- global raises there, so naming it is already the error -- earlier
+-- than the index that used to produce it, and saying which name.
+tap.ok(tostring(r.os):find("undefined global 'os'") ~= nil,
     "os library absent entirely: " .. tostring(r.os))
 tap.ok(tostring(r.handle_guess):find("^sendable handles 1 ") ~= nil,
     "only its own port is sendable: " .. tostring(r.handle_guess))

@@ -186,6 +186,18 @@ in-memory tree. The lazy loader therefore re-strips
 (`kernel_strip_io`). **Any future removal from a lazily-loaded library
 must do the same**, and `test/boot/test_escape.lua` is where to prove it.
 
+**Reading an unbound global raises.** The same `_G` metatable runs only
+on a miss, so it is also the one place that knows a name was never bound
+— and it errors rather than answering nil. `prit("x")` names `prit` at
+the line that read it, instead of "attempt to call a nil value" a frame
+later. Costs nothing on the hit path: a bound global never reaches a
+metamethod. Assignment is *not* guarded — there is no `__newindex`, so
+`x = 1` still binds — because read checking already catches the mistake
+that matters (`total = total + 1` on an undeclared `total` reads first).
+**To ask whether a name is present, use `rawget(_G, "name")`**, which
+runs no metamethod and still answers nil; the absence checks in
+`test_drivers.lua`, `test_nsio.lua` and `srvweb.lua` all do.
+
 **Diagnostics are a different stream from output.** `print`/`io.write`
 are a proc's output and stay verbatim — `seq 5` emits `1\n2\n…` and
 nothing else. `lib/log.lua` is the machine's transcript: stamped, tagged,

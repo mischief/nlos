@@ -42,8 +42,10 @@ local pid, w = sys.spawn([[
 	-- there is no check to get wrong.
 	assert(io.open == nil, "a spawned child has no io.open")
 	assert(io.lines == nil, "nor io.lines")
-	assert(loadfile == nil, "nor loadfile")
-	assert(dofile == nil, "nor dofile")
+	-- rawget: an unbound global raises rather than answering nil
+	-- (src/linit.c), and these two are unbound rather than nil.
+	assert(rawget(_G, "loadfile") == nil, "nor loadfile")
+	assert(rawget(_G, "dofile") == nil, "nor dofile")
 	-- the console half stays: it is a device, not a file
 	assert(type(io.write) == "function", "io.write survives")
 ]])
