@@ -1878,6 +1878,66 @@ altblock_k(lua_State *L, int status, lua_KContext ctx)
 	return 1;
 }
 
+/* take the first available message from a set of receive rights,
+ * without ever having merely looked at one.
+ *
+ * this is what altready/altpoll should become. peeking answers a level
+ * question that goes stale the instant a second cpu exists, and the fix
+ * is not a better peek -- it is holding the port across the check and
+ * the dequeue, which is just this: block, then take. go's chansend
+ * takes c.lock, dequeues a sudog from recvq, copies the value into it
+ * and readies that one goroutine; 9front libthread's altexec dequeues a
+ * specific waiting Alt and _threadready's its thread. neither ever wakes
+ * a waiter to let it look for itself.
+ *
+ * the two passes below (find, then take) are one critical section: this
+ * kernel is cooperative and cannot yield between them. when a lock
+ * arrives it goes around both, and nothing else about this changes.
+ *
+ * returns index, message -- the index into the caller's own table, so
+ * it can tell which port answered.
+ */
+static int
+altrecv_take(lua_State *L, struct kproc *p)
+{
+	int i = altready(L, p);
+
+	if (!i)
+		return 0;
+	lua_rawgeti(L, 1, i);
+
+	struct right *r = right_get(p, (int)lua_tointeger(L, -1));
+
+	lua_pop(L, 1);
+	if (!r || !r->recv || !r->port->head)
+		return 0;	/* cannot happen today; see the note above */
+	lua_pushinteger(L, i);
+	if (port_pop_to_lua(L, p, r->port))
+		return luaL_error(L, "corrupt message");
+	return 2;
+}
+
+/* sys.altrecvnb(set) -> index, msg | nothing. the non-blocking form, for
+ * a proc that is still runnable and only wants what is already there.
+ */
+static int
+api_altrecvnb(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TTABLE);
+	return altrecv_take(L, self(L));
+}
+
+static int
+altrecv_k(lua_State *L, int status, lua_KContext ctx)
+{
+	(void)status;
+	(void)ctx;
+	/* nothing for us after all -- a hangup wake, or another proc took
+	 * it. returning nothing is legal and means "go round again".
+	 */
+	return altrecv_take(L, self(L));
+}
+
 /* block until any of a set of receive rights has a message (port set) */
 static int
 api_altblock(lua_State *L)
@@ -1927,6 +1987,53 @@ api_altblock(lua_State *L)
 	p->status = BLOCKED;
 	rq_del(p);
 	return lua_yieldk(L, 0, 0, altblock_k);
+}
+
+/* sys.altrecv(set) -> index, msg. blocks, then takes. */
+static int
+api_altrecv(lua_State *L)
+{
+	struct kproc *p = self(L);
+	int n;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	n = (int)luaL_len(L, 1);
+	if (n < 1)
+		return luaL_error(L, "altrecv: need at least one port");
+
+	int got = altrecv_take(L, p);
+
+	if (got)
+		return got;
+
+	wait_clear(p);
+	for (int i = 1; i <= n; i++) {
+		lua_rawgeti(L, 1, i);
+
+		struct right *r = right_get(p, (int)luaL_checkinteger(L, -1));
+
+		lua_pop(L, 1);
+		if (!r || !r->recv) {
+			wait_clear(p);
+			return luaL_error(L, "altrecv: bad receive right");
+		}
+
+		int seen = 0;
+		struct waiter *w;
+
+		SLIST_FOREACH(w, &p->waiters, pw)
+			if (w->port == r->port) {
+				seen = 1;
+				break;
+			}
+		if (!seen && !wait_add(p, r->port, 0)) {
+			wait_clear(p);
+			return luaL_error(L, "altrecv: out of waiters");
+		}
+	}
+	p->status = BLOCKED;
+	rq_del(p);
+	return lua_yieldk(L, 0, 0, altrecv_k);
 }
 
 static int
@@ -2709,6 +2816,8 @@ static const luaL_Reg kapi[] = {
 	{ "altblock", api_altblock },
 	{ "altpoll", api_altpoll },
 	{ "hangups", api_hangups },
+	{ "altrecv", api_altrecv },
+	{ "altrecvnb", api_altrecvnb },
 	{ "yield", api_yield },
 	{ "newport", api_newport },
 	{ "sendright", api_sendright },

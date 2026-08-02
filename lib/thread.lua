@@ -52,9 +52,76 @@ local function pop()
 	return co
 end
 
+-- portq[h] is the coroutine waiting in recv() on that port, or a list
+-- of them. a scalar in the common case on purpose: thread.replyport()
+-- gives every thread its own port, so one waiter is overwhelmingly
+-- normal, and making that case an append-and-remove on a list cost more
+-- than the direct handoff saved.
+local portq = {}
+local pending = {}	-- port handle -> messages taken with no taker
+
+-- a handed-over message lives on the coroutine's own park record
+-- rather than in a table keyed by coroutine. that record is already being looked up
+-- on both sides -- deliver holds it to check the thread is still parked
+-- where it said, and recv fetches it to park again -- so carrying the
+-- message there costs no lookup at all, where two side tables cost four.
+--
+-- this is what go and libthread do: the value is written into the
+-- waiter itself (sudog.elem, the Alt's value slot), never into a
+-- registry the waker has to consult. doing it the other way made the
+-- whole direct-handoff path a net loss at small thread counts.
+--
+--   r.mail    the message
+--   r.hasmail true; separate, because nil is a legal message
+
+-- port-parked threads that are not a plain recv(): a bare park(), or an
+-- alt() over several ports. the scheduler can only do the receive
+-- itself when this is empty, since those two want to do their own.
+--
+-- a set rather than a count, so releasing costs one unconditional store
+-- and needs no read-modify-write on the hot path. it is normally empty,
+-- so it stays small and next() on it is cheap.
+local nonrecv = {}
+
 function thread._ready(co)
+	nonrecv[co] = nil
 	thread._parked[co] = nil
 	push(co)
+end
+
+-- hand `msg`, taken from port `h`, to a thread waiting in recv() on it.
+-- stale queue entries (a thread readied for some other reason) are
+-- dropped as they are found, which is why the queue is never pruned
+-- anywhere else. returns false if nobody was waiting after all.
+local function handover(co, h, msg)
+	local r = thread._parked[co]
+
+	if not (r and r.recv and r.port == h) then
+		return false	-- readied for some other reason; stale
+	end
+	r.mail, r.hasmail = msg, true
+	thread._ready(co)
+	return true
+end
+
+local function deliver(h, msg)
+	local q = portq[h]
+
+	if q == nil then
+		return false
+	end
+	if type(q) == "thread" then
+		portq[h] = nil
+		return handover(q, h, msg)
+	end
+	while #q > 0 do
+		local co = table.remove(q, 1)
+
+		if handover(co, h, msg) then
+			return true
+		end
+	end
+	return false
 end
 
 -- one park record per coroutine, reused for the life of that coroutine.
@@ -69,15 +136,47 @@ end
 -- weak-keyed, so a collected coroutine takes its record with it.
 local parkrec = setmetatable({}, { __mode = "k" })
 
-local function parkon(port, ports, chan)
+-- ---- direct handoff ----
+--
+-- when every parked thread is an ordinary recv() on one port, the
+-- scheduler can do the receive itself -- sys.altrecv takes a message
+-- from whichever port has one, in the same breath as finding it -- and
+-- hand the value to the thread that wanted it. that is go's model
+-- (chansend copies into a dequeued sudog and readies that goroutine)
+-- and libthread's (altexec hands the value to a specific waiting Alt),
+-- and unlike a ready-port hint there is no moment where anything is
+-- merely observed.
+--
+-- the scheduler taking the message means a failed delivery would lose
+-- it, so this path runs only when every port-parked thread is a
+-- recv() registered in portq below. a bare park(), or an alt() waiting
+-- on several ports, puts the proc back on the hint path -- which is
+-- correct, just slower. `pending` is the belt-and-braces: a message
+-- taken for a port whose waiter has vanished is held there for whoever
+-- calls recv() next, rather than dropped.
+local function parkon(port, ports, chan, isrecv)
 	local co = coroutine.running()
 	local r = parkrec[co]
 
 	if not r then
-		r = { port = false, ports = false, chan = false }
+		r = { port = false, ports = false, chan = false,
+		    recv = false, mail = false, hasmail = false }
 		parkrec[co] = r
 	end
-	r.port, r.ports, r.chan = port, ports, chan
+	r.port, r.ports, r.chan, r.recv = port, ports, chan, isrecv or false
+	if isrecv then
+		local q = portq[port]
+
+		if q == nil then
+			portq[port] = co
+		elseif type(q) == "thread" then
+			portq[port] = { q, co }
+		else
+			q[#q + 1] = co
+		end
+	elseif port or ports then
+		nonrecv[co] = true
+	end
 	thread._parked[co] = r
 	coroutine.yield()
 end
@@ -280,14 +379,40 @@ function thread.run()
 			if gatherports() == 0 then
 				error("deadlock: all threads parked on channels")
 			end
-			local i = sys.altblock(altset)
+			if next(nonrecv) == nil then
+				-- every waiter is a plain recv(): take the
+				-- message here and hand it over, no wake
+				-- to go and look for it.
+				local i, msg = sys.altrecv(altset)
 
-			-- the hint names the port that has something; only
-			-- its threads need to run. no hint (a wake with
-			-- nothing ready, or a hangup) falls back to waking
-			-- everyone, which is what this always did.
-			if hungupsince() or not (i and readyon(altset[i])) then
-				readyall()
+				if i then
+					local h = altset[i]
+
+					if not deliver(h, msg) then
+						local q = pending[h]
+
+						if not q then
+							q = {}
+							pending[h] = q
+						end
+						q[#q + 1] = msg
+						readyall()
+					end
+				end
+				if hungupsince() then
+					readyall()
+				end
+			else
+				local i = sys.altblock(altset)
+
+				-- the hint names the port that has
+				-- something; only its threads need to run.
+				-- no hint (a wake with nothing ready, or a
+				-- hangup) falls back to waking everyone.
+				if hungupsince() or
+				    not (i and readyon(altset[i])) then
+					readyall()
+				end
 			end
 		end
 	end
@@ -564,14 +689,40 @@ end
 -- ---- port sugar ----
 
 -- blocking recv on a port right; thread-aware.
+-- a threaded recv takes its value from the mailbox when the scheduler
+-- already dequeued it (see deliver), and falls back to doing the
+-- receive itself otherwise -- which is what a top-level caller, or one
+-- on the hint path, always does.
 local function recv(h)
 	while true do
+		local co = inthread() and coroutine.running()
+
+		local r = co and parkrec[co]
+
+		if r and r.hasmail then
+			local m = r.mail
+
+			r.hasmail, r.mail = false, false
+			return m
+		end
+		if co then
+			-- checked even when this coroutine has never parked
+			-- and so has no record yet: a message may have been
+			-- taken for this port with no taker at the time.
+			local q = pending[h]
+
+			if q and #q > 0 then
+				return table.remove(q, 1)
+			end
+		end
+
 		local ok, msg = sys.tryrecv(h)
+
 		if ok then
 			return msg
 		end
-		if inthread() then
-			parkon(h, false, false)
+		if co then
+			parkon(h, false, false, true)
 		else
 			sys.block(h)
 		end
