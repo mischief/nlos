@@ -136,7 +136,25 @@ function Host:pump(ms)
 
 	local p = ip4.decode(f.payload)
 
-	if not p or (p.dst ~= self.ip and p.dst ~= ip4.BROADCAST) then
+	if not p then
+		return nil
+	end
+
+	-- addressed to us at one layer or the other, and the second one is
+	-- not optional.
+	--
+	-- Matching on the IP destination is the usual test, and it is what
+	-- a configured host wants. But a frame unicast to our own mac was
+	-- deliberately sent to us by something that already knows who we
+	-- are, and the packet inside may be about an address we do not
+	-- hold yet. DHCP is exactly that case: OpenBSD vmd ignores the
+	-- broadcast flag in a request and unicasts its offer to the
+	-- address it is about to assign (usr.sbin/vmd/dhcp.c sets
+	-- pc_dst to client_addr), so a client that insists on the IP
+	-- destination being its own can never hear the offer that would
+	-- give it one. It is why real clients read this off BPF rather
+	-- than a socket.
+	if p.dst ~= self.ip and p.dst ~= ip4.BROADCAST and f.dst ~= self.mac then
 		return nil
 	end
 
