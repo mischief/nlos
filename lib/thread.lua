@@ -54,6 +54,34 @@ function thread.run()
 		rounds = rounds + 1
 		if rounds % 64 == 0 then
 			sys.yield()	-- let other procs breathe
+
+			-- and let PARKED threads re-check their ports.
+			--
+			-- Without this, one thread that stays runnable
+			-- starves every thread that parks: the altblock
+			-- branch below is the only other place a parked
+			-- thread is readied, and it runs only when the runq
+			-- is empty, which never happens while anything is
+			-- runnable. A message could sit in a port
+			-- indefinitely with its reader parked beside it.
+			--
+			-- Waking them to retry is exactly what that branch
+			-- does and costs the same: recv() is a
+			-- tryrecv/park loop, so a thread with nothing
+			-- waiting simply parks again. Peeking instead would
+			-- need a non-destructive port check the kernel does
+			-- not have, and tryrecv here would consume the
+			-- message the parked thread is owed.
+			--
+			-- This does not keep an idle proc awake: rounds only
+			-- advances while the loop runs, and once everything
+			-- parks again the runq empties and altblock sleeps
+			-- as before.
+			for co2, r in pairs(thread._parked) do
+				if r.port or r.ports then
+					thread._ready(co2)
+				end
+			end
 		end
 		local co = table.remove(thread._runq, 1)
 		if co then
