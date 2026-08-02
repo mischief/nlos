@@ -318,6 +318,14 @@ static struct kproc *current_proc;
  */
 static unsigned long long nidle;
 
+/* dispatch accounting, for answering "where does a round trip go?"
+ * without guessing -- laps per round trip is what showed the ping-pong
+ * never reaches the top of a lap, and so that pump_serial is no bound on
+ * how long the uart fifo goes undrained. plain increments; anything
+ * needing a timestamp belongs in a temporary probe, not here.
+ */
+static unsigned long long nlaps, ndispatch;
+
 /* disk gates write/append only -- read is deliberately ambient (see
  * stdio.c's fopen): the threat model is buggy lua, not hostile users
  * (AGENTS.md non-goals), nothing on the esp is confidentiality-
@@ -432,6 +440,14 @@ static unsigned long long boot_tsc;
  * logged before then is stamped 0 rather than dividing by zero.
  */
 static int clock_ready;
+
+/* how long the rx fifo may go undrained inside the dispatch loop. 16
+ * bytes at 115200 baud is ~1.39ms; a quarter of that leaves margin for a
+ * proc that overruns its slice without making the check itself frequent.
+ */
+#define UART_DRAIN_MS 1
+static unsigned long long uart_drain_cycles = 1;
+static unsigned long long last_uart_drain;
 
 /* QUANTUM_MS in cycles, set once cyc_per_ms is known */
 static unsigned long long quantum_cycles;
@@ -548,6 +564,9 @@ kernel_clock_init(void)
 	if (cyc_per_ms == 0)
 		cyc_per_ms = 1;	/* refuse to divide by zero later */
 	quantum_cycles = cyc_per_ms * QUANTUM_MS;
+	uart_drain_cycles = cyc_per_ms * UART_DRAIN_MS / 4;
+	if (uart_drain_cycles == 0)
+		uart_drain_cycles = 1;
 	clock_ready = 1;
 }
 
@@ -1604,7 +1623,7 @@ api_sendblock(lua_State *L)
 	return lua_yield(L, 0);
 }
 
-/* take the head message off `port` and push it as a single lua value. the
+/* take the head message off `port` and push it as ONE lua value. the
  * caller must have established that port->head is non-null; "nothing
  * there" is the one thing this cannot express, and it is exactly what
  * the two callers disagree about (tryrecv reports it, api_call sleeps
@@ -1682,16 +1701,16 @@ api_block(lua_State *L)
  * loop, sys.tryrecv, park: four transitions where this is one.
  *
  * it is also what makes handoff possible at all. the kernel can only
- * switch straight to the receiver if it knows, at send time, that the
+ * switch straight to the receiver if it knows, AT SEND TIME, that the
  * sender is about to sleep on a particular port -- and with the send and
  * the block as separate calls there is no moment at which it knows that.
  * the scheduling change is not here yet; this is the call shape it needs.
  *
- * a failure to send is reported (nil plus "dead" or "full") rather than
+ * failures to SEND are reported (nil plus "dead" or "full") rather than
  * raised, exactly as sys.send reports them, because the caller's policy
  * for a full queue is its own. a send that succeeds always waits.
  *
- * this waits forever for a reply that never comes, which is what
+ * NOTE this waits forever for a reply that never comes, which is what
  * thread.recv already does and for the same reason: a right that can
  * send is not distinguishable from one that will (see api_hungup). a
  * caller that needs a deadline still composes sys.timer with alt().
@@ -2137,6 +2156,11 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "idles");
 	lua_pushinteger(L, rights_high);
 	lua_setfield(L, -2, "rightshigh");
+	lua_pushinteger(L, (lua_Integer)nlaps);
+	lua_setfield(L, -2, "laps");
+	lua_pushinteger(L, (lua_Integer)ndispatch);
+	lua_setfield(L, -2, "dispatches");
+
 
 	/* the firmware's view: what the machine has, and what is left. this
 	 * is the ceiling the other figures sit under, since a proc is a
@@ -3744,6 +3768,7 @@ run_proc(struct kproc *p)
 	 */
 	for (int w = 0; w < p->weight; w++) {
 		ran = 1;
+		ndispatch++;
 
 		int nres = 0;
 
@@ -3765,7 +3790,29 @@ run_proc(struct kproc *p)
 		 * yielding; drain the 16-byte fifo now so it can't overflow
 		 * between serial pumps.
 		 */
-		uart_poll();
+		/* drain the 16-byte rx fifo, but on a deadline rather than
+		 * after every resume.
+		 *
+		 * the hazard is real: a proc can run a full hook window
+		 * before yielding, and the dispatch loop below can ping-pong
+		 * two procs indefinitely without ever reaching the top of a
+		 * lap, so pump_serial is not a bound on how long the fifo
+		 * goes undrained. that is why this is here and not only up
+		 * there.
+		 *
+		 * but the drain costs an inb on COM2's LSR, which is a port
+		 * i/o trap, and doing it per resume made it 74% of a
+		 * cross-proc round trip -- measured, not guessed. at 115200
+		 * baud the fifo takes ~1.39ms to fill 16 bytes, so draining
+		 * on a deadline a good margin inside that keeps the same
+		 * guarantee for two rdtsc and a compare.
+		 */
+		unsigned long long now = platform_ticks();
+
+		if (now - last_uart_drain >= uart_drain_cycles) {
+			uart_poll();
+			last_uart_drain = platform_ticks();
+		}
 		if (rc == LUA_YIELD) {
 			lua_pop(p->co, nres);
 			if (p->status != READY)
@@ -3851,6 +3898,8 @@ kernel_run(void)
 
 	while (nlive > 0) {
 		int ran = 0;
+
+		nlaps++;
 
 		/* CheckEvent consumes the signal, so this is also what
 		 * re-arms tick_fired for the periodic timer.
