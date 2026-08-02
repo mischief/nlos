@@ -7,25 +7,24 @@
  * byte arrives, the handler moves it into a ring, and uart_rx takes from
  * there, with a poll of the port as a fallback.
  *
- * Receive works, and the long comment that used to live here claiming
- * otherwise was chasing the wrong layer. A marker at the drain below
- * shows bytes written by the host arriving and going into the ring:
- * three writes of 'Z' produced <Z><Z><Z>. An instrumented qemu agrees --
- * serial_can_receive reports used=1 lsr=61 when a byte lands, then
- * used=0 once this drains it.
+ * Receive works, end to end. A host write reaches the port, the handler
+ * drains it into the ring, uart_rx pops it, pump_serial pushes it to
+ * serport and lib/wire.lua hands it to whoever asked: a payload reading
+ * the wire gets back the string "hello" for a host write of "hello".
  *
- * What is still broken is above uart_rx: those bytes never reach the
- * wire task, so nothing in Lua sees them. That is kernel plumbing
- * (pump_serial, serport, lib/wire.lua), not this file.
+ * It worked all along. What did not was the test payload used to check
+ * it, which looked for msg.data on a message that lib/wire.lua delivers
+ * as a bare string. Worth knowing before concluding this is broken
+ * again.
  *
- * Two things about this platform are worth keeping even so. qemu's main
- * loop sleeps here with nothing to wake it -- pit, rtc and pic are all
- * off and the LAPIC timer lives inside KVM -- so input can sit
- * undelivered until something else stirs the loop, which made every
- * earlier measurement look like a total failure depending on timing.
- * And uart_init is called twice, by microvm_main and again by
- * kernel_init; the second call used to clear IER and switch receive
- * interrupts back off, which is why rx_irq_on exists.
+ * Two real things did come out of the search. uart_init is called
+ * twice, by microvm_main and again by kernel_init, and the second call
+ * cleared IER and switched receive interrupts back off -- rx_irq_on
+ * exists for that. And qemu's main loop sleeps on this machine with
+ * nothing to wake it, since pit, rtc and pic are off and the LAPIC
+ * timer lives inside KVM, so host input can sit undelivered until
+ * something else stirs the loop. That is why identical experiments gave
+ * different answers depending on timing.
  */
 
 #include "microvm.h"
