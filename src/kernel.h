@@ -40,6 +40,11 @@ int	kernel_current_has_disk(void);
  */
 struct lua_State;
 void	kernel_strip_io(struct lua_State *L);
+
+/* kernel_strip_debug expects the debug table on top of the stack and
+ * leaves it there. Same contract, same reason, same re-strip hazard.
+ */
+void	kernel_strip_debug(struct lua_State *L);
 int	kernel_current_is_boot(void);
 
 /* dynamic wait-set for token/Event-based device completions (net.c's

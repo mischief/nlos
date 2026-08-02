@@ -540,7 +540,8 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'math',
               'srv', 'mountcmd', 'sendwait', 'drivers', 'sched', 'json', 'timer', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
               'procfs', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount', 'p9stream', 'p9flush',
-              'fb', 'fbprog']
+              'fb', 'fbprog',
+              'nohook', 'rng', 'sshcrypto']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

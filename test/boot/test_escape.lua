@@ -4,6 +4,9 @@
 -- tree and nothing else. it should not be able to read the ESP, reach a
 -- driver, or recover any C function that would let it.
 
+-- The preempt hook is the other thing a proc must not be able to take
+-- off; that is test/boot/test_nohook.lua, same re-strip hazard.
+
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")

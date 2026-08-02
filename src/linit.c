@@ -68,6 +68,14 @@ lazylib_index(lua_State *L)
 				if (strcmp(key, LUA_IOLIBNAME) == 0 &&
 				    !kernel_current_is_boot())
 					kernel_strip_io(L);
+				/* same trick, same answer: clearing
+				 * package.loaded.debug and touching debug
+				 * again lands here and would otherwise hand
+				 * back a whole one, sethook included.
+				 */
+				if (strcmp(key, LUA_DBLIBNAME) == 0 &&
+				    !kernel_current_is_boot())
+					kernel_strip_debug(L);
 				return 1;
 			}
 	lua_pushnil(L);

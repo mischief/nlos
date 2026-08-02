@@ -1394,6 +1394,40 @@ kernel_strip_io(lua_State *L)
 	}
 }
 
+/* debug.sethook is a preemption escape, and the only member of the debug
+ * library that is one.
+ *
+ * The kernel's instruction budget is a count hook armed once, in
+ * proc_new -- it is never re-armed on resume. So debug.sethook(), with
+ * no arguments, clears it on the running coroutine and the proc can then
+ * spin forever with nothing left to interrupt it.
+ *
+ * Coroutines are not a way in: lua_newthread copies hook, mask and count
+ * from its parent, so a bare coroutine.create() spinner is preempted and
+ * contained. Checked, not assumed -- debug.gethook() on a fresh
+ * coroutine reports the same external hook and the same count. That is not a
+ * contained failure, it is the machine: measured, a proc doing
+ * `debug.sethook() while true do end` takes the console, the network and
+ * every other proc down with it.
+ *
+ * The rest of the library stays, and deliberately. debug.traceback is
+ * what init.lua's repl reports errors with, and it is the only way to
+ * see inside a parked lib/thread coroutine -- sys.stack walks the proc's
+ * main coroutine and cannot descend into one. Removing the diagnostics
+ * to close a hole in the scheduler would be a bad trade. Everything else
+ * in debug (setlocal, setupvalue, setmetatable, getregistry) reaches
+ * only the proc's own lua_State, which is the blast radius a proc
+ * already has; this repo's threat model is buggy lua, not hostile users.
+ */
+void
+kernel_strip_debug(lua_State *L)
+{
+	if (!lua_istable(L, -1))
+		return;
+	lua_pushnil(L);
+	lua_setfield(L, -2, "sethook");
+}
+
 int
 kernel_current_is_boot(void)
 {
@@ -1938,6 +1972,18 @@ api_preempt(lua_State *L)
 
 	if (!co)
 		return luaL_error(L, "preempt: not a coroutine");
+
+	/* Clamped, because this arms the kernel's own budget and an
+	 * unclamped count is the same escape debug.sethook was: zero means
+	 * "no count hook" to lua_sethook, and a large enough one means the
+	 * same thing in practice. A caller may ask to be interrupted more
+	 * often than the kernel would, never less.
+	 */
+	if (count < 1)
+		count = 1;
+	if (count > default_reductions)
+		count = default_reductions;
+
 	lua_sethook(co, preempt_hook, LUA_MASKCOUNT, (int)count);
 	return 0;
 }
@@ -2880,6 +2926,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		 */
 		lua_getglobal(p->L, "io");
 		kernel_strip_io(p->L);
+		lua_pop(p->L, 1);
+
+		lua_getglobal(p->L, "debug");
+		kernel_strip_debug(p->L);
 		lua_pop(p->L, 1);
 
 		/* both load a chunk straight off the disk, which is the same
