@@ -138,6 +138,8 @@ do
 			["ls.lua"] = slurp("/bin/ls.lua"),
 			["cat.lua"] = slurp("/bin/cat.lua"),
 			["seq.lua"] = slurp("/bin/seq.lua"),
+			["ps.lua"] = slurp("/bin/ps.lua"),
+			["stack.lua"] = slurp("/bin/stack.lua"),
 		},
 		["tmp"] = {},
 	}
@@ -408,8 +410,25 @@ local function session(connid)
 
 	done = true
 	if shellpid then
-		-- the shell is parked on a console nobody will answer
-		-- again; dropping our end is what tells it so.
+		-- Ending a session is two things, and doing only the second
+		-- leaks the shell proc until reboot.
+		--
+		-- Closing our end of the console is what thread.readline
+		-- calls EOF: its sendwait fails on a dead port and it
+		-- returns nil, which dos's repl treats as "session over".
+		-- But that only catches a shell BETWEEN readlines. A shell
+		-- that has already asked is parked in recv() on its own
+		-- reply port -- which we still hold a right to, and which is
+		-- perfectly alive -- so closing the console tells it
+		-- nothing at all and it waits forever.
+		--
+		-- So answer the outstanding readline with nil first. That is
+		-- the same EOF by the same route: readline returns what recv
+		-- gave it, dos sees nil, and the proc ends on its own.
+		if waiting then
+			sys.send(waiting, nil)
+			waiting = nil
+		end
 		sys.close(consport)
 		consport = sys.newport()
 	end

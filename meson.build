@@ -381,6 +381,8 @@ lua_payload = files(
   'svc/sshd.lua',
   # programs, at /bin/<name> -- see lib/prog.lua for the ABI they run under
   'bin/cat.lua',
+  'bin/ps.lua',
+  'bin/stack.lua',
   'bin/ls.lua',
   'bin/seq.lua',
   'bin/smiley.lua',
