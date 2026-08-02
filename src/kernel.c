@@ -292,6 +292,8 @@ struct kproc {
 	struct right *xrights;		/* MAXRIGHTS - NRIGHTS_INLINE, or null */
 	int rhint;			/* lowest slot that might be free */
 	int rhigh;			/* one past the highest slot ever used */
+	TAILQ_HEAD(, kextra) coros;	/* every lua_State of this proc */
+	int hookforced;			/* 0 none, 1 p->co armed, 2 all armed */
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	int reductions;		/* instruction budget per slice */
@@ -1535,6 +1537,15 @@ kernel_current_is_boot(void)
 }
 
 /* ---- lua api (proc pointer lives in the state's extra space) ---- */
+
+/* the state a per-state record belongs to: the record sits immediately
+ * before it, which is what lua_getextraspace computes in reverse.
+ */
+static lua_State *
+kx_state(struct kextra *kx)
+{
+	return (lua_State *)((char *)kx + LUA_EXTRASPACE);
+}
 
 static struct kproc *
 self(lua_State *L)
@@ -3364,6 +3375,12 @@ proc_freestate(struct kproc *p)
 		lua_close(p->L);
 	p->L = 0;
 	p->co = 0;
+	/* lua_close frees every coroutine through kernel_cofree, so the
+	 * list is already empty; re-init rather than trust that, since a
+	 * reused slot would inherit whatever is left
+	 */
+	TAILQ_INIT(&p->coros);
+	p->hookforced = 0;
 	/* the trace outlives the death and not the state: it is freed
 	 * here, with the heap it describes, so a corpse still answers
 	 * "how did it get there" for as long as it answers "where"
@@ -3373,6 +3390,43 @@ proc_freestate(struct kproc *p)
 		free(p->trace);
 		p->trace = 0;
 	}
+}
+
+/* lua's per-state creation and teardown hooks (src/coreg.h).
+ *
+ * costart runs after lua has copied the new state's extra space from
+ * the main thread, so the kproc pointer is already right and only the
+ * links need setting. cofree runs before the state's memory goes back,
+ * which is the last moment the link is still valid -- and it is reached
+ * for every coroutine, including on lua_close, since that frees them
+ * through the same path.
+ *
+ * a state created before the proc's own pointer is in place (the main
+ * state itself) has no proc to be listed under and is simply not
+ * listed; the kernel never needs to arm it, because the chunk runs in
+ * p->co and every coroutine descends from there.
+ */
+void
+kernel_costart(lua_State *from, lua_State *nw)
+{
+	struct kextra *kx = (struct kextra *)lua_getextraspace(nw);
+	struct kproc *p = ((struct kextra *)lua_getextraspace(from))->p;
+
+	kx->p = p;
+	memset(&kx->link, 0, sizeof kx->link);
+	if (p && p->coros.tqh_last)
+		TAILQ_INSERT_TAIL(&p->coros, kx, link);
+}
+
+void
+kernel_cofree(lua_State *from, lua_State *dead)
+{
+	struct kextra *kx = (struct kextra *)lua_getextraspace(dead);
+
+	(void)from;
+	if (kx->p && kx->link.tqe_prev)
+		TAILQ_REMOVE(&kx->p->coros, kx, link);
+	memset(&kx->link, 0, sizeof kx->link);
 }
 
 /* the closest thing we have to plan 9's hzsched.
@@ -3420,21 +3474,31 @@ proc_hookmask(struct kproc *p)
 	return LUA_MASKCOUNT | (p->trace ? LUA_MASKLINE : 0);
 }
 
-/* re-arm the whole proc after a mask change.
+/* arm every coroutine of a proc at `count`.
  *
- * every coroutine, not just p->co, because lua_newthread copies the
- * hook when it is created and never looks again -- so a proc on
- * lib/thread would otherwise have its scheduler traced and none of its
- * threads, which is the reverse of what anyone wants. see
- * debug_sethook_all.
+ * every one, not just p->co: lua_newthread copies the hook when it is
+ * created and never looks again, so a mask or count set on one
+ * coroutine reaches no other. the list is exact (src/coreg.h) rather
+ * than inferred from reachability, which matters both for a coroutine
+ * held only from a C closure's upvalue and for being able to do this
+ * from inside the hook without allocating.
  */
+static void
+proc_armall(struct kproc *p, int count)
+{
+	struct kextra *kx;
+
+	if (!p->L || !p->co)
+		return;
+	TAILQ_FOREACH(kx, &p->coros, link)
+		lua_sethook(kx_state(kx), preempt_hook, proc_hookmask(p),
+		    count);
+}
+
 static void
 proc_rearm(struct kproc *p)
 {
-	if (!p->L || !p->co)
-		return;
-	debug_sethook_all(p->L, p->co, preempt_hook, proc_hookmask(p),
-	    p->reductions);
+	proc_armall(p, p->reductions);
 }
 
 /* record one line. only ever called from a line event, where lua has
@@ -3513,13 +3577,18 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 			trace_line(p, L, ar);
 		return;
 	}
-	/* the forced trip below leaves p->co sampling every instruction.
-	 * put it back the moment it has done its job, which is the first
-	 * time the hook fires on p->co afterwards.
+	/* the forced trip below leaves states sampling every instruction.
+	 * put them back the moment it has done its job, which is the
+	 * first time the hook fires on p->co afterwards.
 	 */
-	if (p && L == p->co && lua_gethookcount(L) != p->reductions)
-		lua_sethook(p->co, preempt_hook, proc_hookmask(p),
-		    p->reductions);
+	if (p && L == p->co && p->hookforced) {
+		if (p->hookforced == 2)
+			proc_armall(p, p->reductions);
+		else
+			lua_sethook(p->co, preempt_hook, proc_hookmask(p),
+			    p->reductions);
+		p->hookforced = 0;
+	}
 	if (!lua_isyieldable(L))
 		return;
 	if (p && p->resumed && quantum_cycles &&
@@ -3547,8 +3616,23 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 	 * threads. the kernel picks procs, thread.run picks threads, and
 	 * neither has to know how the other decides.
 	 */
-	if (p && L != p->co)
-		lua_sethook(p->co, preempt_hook, proc_hookmask(p), 1);
+	if (p && L != p->co) {
+		if (p->hookforced) {
+			/* p->co was already armed and still has not been
+			 * reached, so the chain is deeper than one level:
+			 * a thread running a scheduler of its own never
+			 * returns to p->co on its own. arm every
+			 * coroutine instead, and the yield walks out one
+			 * instruction per level.
+			 */
+			proc_armall(p, 1);
+			p->hookforced = 2;
+		} else {
+			lua_sethook(p->co, preempt_hook, proc_hookmask(p),
+			    1);
+			p->hookforced = 1;
+		}
+	}
 	lua_yield(L, 0);
 }
 
@@ -3591,6 +3675,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * inside the protected resume (clean LUA_ERRMEM death).
 	 */
 	p->mem_limit = 0;
+	/* before any lua_State exists: kernel_costart consults this to
+	 * decide whether the proc is ready to own coroutines
+	 */
+	TAILQ_INIT(&p->coros);
+	p->hookforced = 0;
 	p->L = lua_newstate(kalloc, p);
 	if (!p->L)
 		return -1;
@@ -3598,7 +3687,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * set before the thread is created so lua_newthread copies it into
 	 * the coroutine's extra space too.
 	 */
-	*(struct kproc **)lua_getextraspace(p->L) = p;
+	/* the whole record, not just the pointer: the links are copied
+	 * into every coroutine from here, so they have to start empty
+	 */
+	memset(lua_getextraspace(p->L), 0, LUA_EXTRASPACE);
+	((struct kextra *)lua_getextraspace(p->L))->p = p;
 	p->id = nextpid++;	/* unique forever; slots recycle, pids don't */
 	{
 		/* lua chunknames conventionally lead with '=' (shown as-is)

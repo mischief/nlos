@@ -67,25 +67,34 @@ share of the machine's throughput:
 | a proc's main coroutine | 0.52x — fair |
 | a thread, with the forced trip | 0.51x |
 | a thread, without it | 0.02x |
+| a coroutine two schedulers down | 0.49x |
 
-### Known gap: nested coroutines
+### Deeper nesting
 
 Arming `p->co` only helps if control returns to `p->co`. A thread that
 runs a scheduler of its own — resuming a coroutine in a loop — never
-returns, so the armed trip never fires, and the proc escapes again
-(measured 0.01x) until the middle level's own countdown expires after
-`REDUCTIONS` instructions *of its own code*, which is a very long time.
+returns, so that trip never fires. The kernel detects this: if the hook
+fires in a nested state while `p->co` is *already* armed, the trip
+demonstrably did not land, so it arms **every** coroutine of the proc
+instead, and the yield then walks out one instruction per level. Depth
+one never escalates, so the common case pays nothing.
 
-The fix is for the kernel to know every coroutine of a proc rather than
-infer it, and arm all of them. `src/debug.c`'s reachability walk is not
-sufficient: it misses coroutines held only from a C closure's upvalue
-or a live local. Doing it properly wants a registry maintained at
-creation, which `lua/llimits.h`'s `luai_userstatethread` /
-`luai_userstatefree` hooks are placed for — but the list has to live
-somewhere that is neither the proc's registry (reachable through
-`debug.getregistry`, which non-boot procs keep) nor the per-state extra
-space (enlarging `LUA_EXTRASPACE` means patching `lua/luaconf.h`, and
-`lua/` is a submodule of upstream Lua, not a fork).
+That needs an exact list of a proc's coroutines. `src/debug.c`'s
+reachability walk will not do: it misses any coroutine held only from a
+C closure's upvalue or a live local, and it allocates, which is not
+allowed on a path that runs inside the hook and may run while the proc
+is at its memory limit. `src/coreg.h` keeps the list instead, linked
+through each state's extra space and maintained by lua's
+`luai_userstatethread` / `luai_userstatefree` hooks, so every
+`lua_State` is on it from creation to free — including ones created
+from C. It is injected through `LUA_USER_H`, which is what that hook
+exists for and what lua's own `ltests.h` uses; `lua/` is a submodule of
+upstream and is not patched.
+
+The links live there rather than in a table in the proc's registry for
+two reasons: nothing on this path allocates, and a registry table is
+reachable through `debug.getregistry`, which non-boot procs keep — so a
+proc could clear the mechanism meant to contain it.
 
 ## Where a preempted proc resumes
 

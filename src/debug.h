@@ -14,12 +14,4 @@
 void	debug_push_stacks(lua_State *to, lua_State *target_main,
 	    lua_State *target_co);
 
-/* Arm `f`/`mask`/`count` on every coroutine of that proc, not just its
- * own -- lua_newthread copies the hook at creation time only, so a mask
- * set afterwards on one coroutine reaches none of the others. Uses the
- * same reachability walk, and the same rules.
- */
-void	debug_sethook_all(lua_State *target_main, lua_State *target_co,
-	    lua_Hook f, int mask, int count);
-
 #endif
