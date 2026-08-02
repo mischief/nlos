@@ -46,13 +46,20 @@
 -- do through a message (see api_spawn's comment, and
 -- test_spawnarg.lua), so the coupling simply does not exist.
 --
--- it needs TWO rights, which is unusual here:
+-- it needs TWO rights on efi, which is unusual here:
 --
 --	udp   to speak the protocol, on a socket with no address
 --	      (udp.open(port, true) -- see udp_open's raw case in net.c)
 --	tcp   for hwaddr() and setaddr(), which is where the privileged
 --	      Ip4Config2 access lives. the authority to ask is holding a
 --	      right to that task, exactly as it is for listen and dial.
+--
+-- and ONE on microvm, where task/ip.lua is both: it serves lib/udp.lua's
+-- protocol, so it is the udp capability unchanged, and its own configure
+-- and config ops are where the address is installed and the hardware
+-- address read. That right is granted by name, so it is taken from
+-- sys.granted() when there is one and from the spawn arg otherwise --
+-- which is also what lets this file be spawned either way.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -63,14 +70,34 @@ local dhcp = require("dhcp")
 
 local a = ...
 
-if not (type(a) == "table" and a.udp and a.tcp) then
-	return
+if type(a) ~= "table" then
+	a = {}
 end
 
-local tcp = caps.tcp(a.tcp.__right)
-local udp = caps.udp(a.udp.__right)
-local udph = a.udp.__right
-local mac = tcp.hwaddr()
+-- microvm: one right, granted by kernel.c beside the ip task it names.
+-- efi: two, arriving in the spawn arg.
+local iph = sys.granted().ip or (a.ip and a.ip.__right)
+local tcp = a.tcp and caps.tcp(a.tcp.__right) or nil
+local udph = iph or (a.udp and a.udp.__right)
+
+if not udph then
+	return		-- nothing to speak the protocol over
+end
+
+local udp = caps.udp(udph)
+
+-- the hardware address, from whichever knows it. On efi that is the
+-- firmware's Ip4Config2 behind the tcp task; here the stack itself is
+-- the only thing that has seen the nic.
+local mac
+
+if tcp then
+	mac = tcp.hwaddr()
+elseif iph then
+	local cfg = thread.rpc(iph, { op = "config" })
+
+	mac = cfg and cfg.mac and require("ether").mac_str(cfg.mac)
+end
 
 -- ---- state ----
 
@@ -275,8 +302,33 @@ local function wait(secs)
 	return false
 end
 
+-- put the lease where this machine keeps its address.
+--
+-- Two different places, and the difference is the whole of what is
+-- platform specific here: on efi the firmware owns the stack and
+-- dhcp.install calls setaddr through the tcp task, while on microvm the
+-- stack is ours and takes a message.
+local function apply(l)
+	if tcp then
+		return dhcp.install(tcp, l)
+	end
+
+	-- required here and not at the top: the efi image carries neither
+	-- lib/ip4.lua nor anything else of the Lua stack, and a top-level
+	-- require would kill this task there before it reached the branch
+	-- it belongs to.
+	local ip4 = require("ip4")
+
+	return thread.rpc(iph, {
+		op = "configure",
+		ip = ip4.parse(l.ip),
+		mask = l.mask and ip4.parse(l.mask) or nil,
+		gw = l.router and ip4.parse(l.router) or nil,
+	}) and true or false
+end
+
 local function install(l, how)
-	if not dhcp.install(tcp, l) then
+	if not apply(l) then
 		print("dhcp: could not install " .. tostring(l.ip))
 		return false
 	end
@@ -292,6 +344,24 @@ end
 -- RFC 2131's T1: renew at half the lease. earlier than strictly needed,
 -- which is the point -- it leaves the whole second half to keep trying
 -- before the address actually goes away.
+--
+-- Capped, optionally. A server may hand out a lease so long that T1 is
+-- half a day away -- slirp says 86400 seconds and vmd says infinity --
+-- and a client that then goes twelve hours without speaking to it has
+-- an untested timer and no way to find out. renew_s is an upper bound
+-- on how long to go without checking, which is ordinary client policy
+-- and is also the only way to watch this path work in less than a
+-- shift.
+local renew_s = tonumber(a.renew_s)
+
+local function renew_after()
+	local half = (lease and lease.lease_time or 3600) // 2
+
+	if renew_s and renew_s < half then
+		return renew_s
+	end
+	return half
+end
 local function maintain()
 	while true do
 		if not lease then
@@ -306,7 +376,7 @@ local function maintain()
 		end
 
 		if lease then
-			wait((lease.lease_time or 3600) // 2)
+			wait(renew_after())
 
 			local l, err = dhcp.renew(udp, udph, lease, mac)
 

@@ -33,25 +33,28 @@ if not tap.ok(iph ~= nil, "the ip task is running") then
 end
 
 local udp = caps.udp(iph)
-local cfg = thread.rpc(iph, { op = "config" })
 
--- an address first: the resolver is off-link as far as we are
--- concerned, so nothing is answerable until dhcp has run.
-local lease = dhcp.acquire(udp, iph, { hostname = "luaos",
-    mac = cfg and ether.mac_str(cfg.mac) })
+-- wait for the machine's own dhcp client rather than running a second
+-- one. Only one thing may hold port 68, and task/dhcpd.lua is already
+-- holding it -- which is the correct arrangement and not an obstacle:
+-- a client wanting the network waits for the address, it does not go
+-- and get its own.
+local cfg
+local deadline = sys.uptime_ms() + 8000
 
-if not tap.ok(lease ~= nil, "dhcp gave us an address") then
+repeat
+	cfg = thread.rpc(iph, { op = "config" })
+	if cfg and cfg.ip and cfg.ip ~= ip4.ANY then
+		break
+	end
+	thread.sleep(200)
+until sys.uptime_ms() > deadline
+
+if not tap.ok(cfg and cfg.ip and cfg.ip ~= ip4.ANY,
+    "the machine configured itself") then
 	tap.done()
 	return
 end
-
--- install it: acquire() hands back a lease, it does not apply one, and
--- until the stack has the address the resolver's replies come back to
--- 0.0.0.0 and are never seen.
-thread.rpc(iph, { op = "configure",
-    ip = ip4.parse(lease.ip),
-    mask = lease.mask and ip4.parse(lease.mask) or nil,
-    gw = lease.router and ip4.parse(lease.router) or nil })
 
 -- ---- shrink the receive budget, then overrun it ----
 --
@@ -67,14 +70,16 @@ local conn = udp.open(0)
 
 tap.ok(conn ~= nil, "opened a conn with a small receive buffer")
 
--- lib/dhcp.lua reports dns as a LIST of dotted quads, since a server
--- may name several; lib/dhcpc.lua's lease flattens it and this one does
--- not. Two lease shapes for one protocol is a wart worth remembering.
-local resolver = type(lease.dns) == "table" and lease.dns[1] or lease.dns
+-- slirp's resolver, by its documented address. The ip task's config
+-- carries the address and the route and not this: what a lease said
+-- about dns belongs in /net, which task/dhcpd.lua serves and nothing
+-- mounts here yet. A literal is honest in a test that already asserts
+-- slirp's own 10.0.2.15.
+local resolver = "10.0.2.3"
 local NQUERIES = 4
 local a, b, c, d = tostring(resolver):match("(%d+)%.(%d+)%.(%d+)%.(%d+)")
 
-if not tap.ok(a ~= nil, "the lease named a resolver: " .. tostring(resolver)) then
+if not tap.ok(a ~= nil, "we have a gateway to ask: " .. tostring(resolver)) then
 	tap.done()
 	return
 end

@@ -1,21 +1,27 @@
 -- the ip task, and the claim that makes it worth having: a client that
 -- has never heard of this platform works against it unchanged.
 --
--- lib/dhcp.lua's acquire() was written against the UEFI firmware's
--- udp4, reached through lib/caps.lua's wrapper, and is what the efi
--- platform boots with today. Nothing in it knows about ethernet frames,
--- virtio, or Lua checksums. Here it runs against task/ip.lua, and the
--- only thing that changed is which handle caps.udp was given.
+-- lib/caps.lua's udp wrapper is what every existing client uses to
+-- reach the firmware's udp4 on efi. Pointed at task/ip.lua it should
+-- work unchanged, and that is the entire argument for the task boundary
+-- being where it is: a client cannot tell which it is talking to.
 --
--- That is the entire argument for the task boundary being where it is.
--- If this passes, task/dns.lua works here too, and the two platforms
--- stop having separate answers to the same question.
+-- The strongest evidence for that is no longer here. task/dhcpd.lua --
+-- lib/dhcp.lua's acquire, written against the firmware -- now runs
+-- against this stack at every boot and configures the machine before
+-- any payload starts, which microvm-autoip asserts. This test used to
+-- run a second copy of that client, and stopped being able to the
+-- moment the real one existed: only one thing may hold port 68, which
+-- is the correct arrangement.
+--
+-- So what is left here is the wrapper itself, exercised over a
+-- conversation the machine is not already having.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 local caps = require("caps")
-local dhcp = require("dhcp")
+local dns = require("dns")
 local ip4 = require("ip4")
 local ether = require("ether")
 
@@ -51,27 +57,40 @@ local conn = udp.open(0)
 
 tap.ok(conn ~= nil, "caps.udp opened a port on it")
 
--- ---- and the firmware's own dhcp client drives it ----
+-- ---- send and receive through the wrapper ----
 --
--- It wants the mac as a hex string, which on efi comes from the nic
--- driver; here the stack itself is the only thing that knows it, so ask
--- it. That question is this task's own protocol rather than udp's --
--- the one place the client does have to know what it is talking to.
-local cfg = thread.rpc(iph, { op = "config" })
-local lease, err = dhcp.acquire(udp, iph, { hostname = "luaos",
-    mac = cfg and ether.mac_str(cfg.mac) })
+-- A dns query, because it answers promptly and proves both directions:
+-- caps.udp.send reached the wire and caps.udp.recv got the answer back.
+-- give the machine's own client a moment: a payload starts while dhcp
+-- is still in flight, so this waits for the address rather than racing
+-- the boot.
+local ip4 = require("ip4")
+local cfg
+local deadline = sys.uptime_ms() + 8000
 
-if not tap.ok(lease ~= nil, "lib/dhcp.lua got a lease through it") then
-	tap.diag(tostring(err))
-	tap.done()
-	return
-end
+repeat
+	cfg = thread.rpc(iph, { op = "config" })
+	if cfg and cfg.ip and cfg.ip ~= ip4.ANY then
+		break
+	end
+	thread.sleep(200)
+until sys.uptime_ms() > deadline
 
-tap.diag("leased " .. tostring(lease.ip) .. " mask " ..
-    tostring(lease.mask) .. " router " .. tostring(lease.router))
+tap.ok(cfg and cfg.ip and cfg.ip ~= ip4.ANY,
+    "the machine is configured, by its own dhcp client")
 
-tap.ok(tostring(lease.ip) == "10.0.2.15",
-    "and it is the address slirp leases")
+-- warm the arp cache: the first datagram to a peer we have no mac for
+-- is dropped while the request goes out (see lib/inet.lua's output).
+udp.send(conn, 10, 0, 2, 3, dns.PORT, dns.build_query("example.com", 1))
+thread.sleep(400)
+udp.send(conn, 10, 0, 2, 3, dns.PORT, dns.build_query("example.com", 0x2a))
+
+local r = udp.recv(conn, 4096)
+local addr = r and dns.parse(r.data, 0x2a)
+
+tap.ok(addr ~= nil,
+    "a query and its answer crossed caps.udp: example.com is " ..
+    tostring(addr))
 
 -- ---- the stack is still serving afterwards ----
 --

@@ -89,16 +89,21 @@ local irqs = wire.irqs()
 tap.diag("virtio interrupts taken: " .. tostring(irqs))
 tap.ok(irqs and irqs > 0, "the frame arrived on an interrupt")
 
--- a parked receive answers when a frame turns up rather than
--- immediately, and returns nil rather than hanging when none does.
--- Nothing is talking to us now, so this is the quiet case.
+-- a parked receive comes back when a frame turns up, and at its
+-- deadline when none does -- never instantly, and never not at all.
+--
+-- It used to assert the wire was silent for 300ms, which stopped being
+-- true the moment the kernel started an ip stack and a dhcp client:
+-- this machine now talks to its network unprompted, so a frame
+-- arriving here is the system working rather than the test failing.
 local t0 = sys.uptime_ms()
-local none = wire.recv_wait(300)
+local got = wire.recv_wait(300)
 local waited = sys.uptime_ms() - t0
 
-tap.diag("an unanswered wait returned after " .. waited .. " ms")
-tap.ok(none == nil and waited >= 250,
-    "a parked receive waits for its deadline rather than spinning")
+tap.diag("a parked wait returned after " .. waited .. " ms, " ..
+    (got and (#got .. " bytes") or "empty"))
+tap.ok(waited < 2000 and (got ~= nil or waited >= 250),
+    "a parked receive returns at its deadline, or sooner with a frame")
 
 -- ---- and entries do not live forever ----
 --

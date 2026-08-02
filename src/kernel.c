@@ -3783,6 +3783,16 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
 		  .what = "the ipv4 stack", .enabled = have_eth,
 		  .capname = "ip", .needs = "eth" },
+		/* the dhcp client, which is what gives the stack above an
+		 * address and then keeps it. Same file the efi platform
+		 * runs from init.lua, where it is handed tcp and udp
+		 * instead -- see its header on why one right does here what
+		 * two do there.
+		 */
+		{ .path = "/task/dhcpd.lua", .chunkname = "=dhcpd",
+		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
+		  .what = "dhcp", .enabled = have_eth,
+		  .capname = "dhcpd", .needs = "ip" },
 		/* the framebuffer. no devport: unlike the console or the
 		 * wire there is nothing to poll -- a screen produces no
 		 * events, and the input devices that go with one are
