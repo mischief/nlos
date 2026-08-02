@@ -1716,10 +1716,20 @@ api_block(lua_State *L)
  * raised, exactly as sys.send reports them, because the caller's policy
  * for a full queue is its own. a send that succeeds always waits.
  *
- * NOTE this waits forever for a reply that never comes, which is what
- * thread.recv already does and for the same reason: a right that can
- * send is not distinguishable from one that will (see api_hungup). a
- * caller that needs a deadline still composes sys.timer with alt().
+ * a reply port that has hung up reports nil plus "hungup" rather than
+ * waiting. this is where thread.recv's rule does not apply: recv cannot
+ * treat a quiet port as an ending, because a right that can send is not
+ * distinguishable from one that will (see api_hungup). but the port
+ * here is a REPLY port, and while a request is in flight it has two
+ * rights -- ours and the one that travelled with the message. so a drop
+ * back to one with nothing queued says the message was consumed and
+ * whoever held the other right is gone, and no answer can ever arrive.
+ * lib/mnt.lua has always made that test by hand after each wake; doing
+ * it here is what lets it stop.
+ *
+ * it is not a timeout, and deliberately: a slow server is not a broken
+ * one and no deadline tells them apart, but the refcount does. a caller
+ * that wants a deadline anyway still composes sys.timer with alt().
  */
 static int
 call_k(lua_State *L, int status, lua_KContext ctx)
@@ -1736,10 +1746,22 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 	if (!rr || !rr->recv)
 		return luaL_error(L, "call: reply right went away");
 	if (!rr->port->head) {
-		/* woken with nothing for us -- a hangup wake, or another
-		 * thread in this proc took the message first. park again.
-		 * wake_receivers already dropped our waiter, so this adds a
-		 * fresh one rather than leaking the old.
+		/* nobody left who could answer: our right is the last one, so
+		 * the one that rode out with the request is gone. checked
+		 * before parking again, since the wake that brought us here is
+		 * usually the very drop being tested for (port_unref wakes
+		 * receivers), and after the queue test so a reply that did
+		 * arrive is delivered even when the server answered and died.
+		 */
+		if (rr->port->nrights <= 1) {
+			lua_pushnil(L);
+			lua_pushliteral(L, "hungup");
+			return 2;
+		}
+		/* woken with nothing for us -- another thread in this proc
+		 * took the message first. park again. wake_receivers already
+		 * dropped our waiter, so this adds a fresh one rather than
+		 * leaking the old.
 		 */
 		if (!wait_add(p, rr->port, 0))
 			return luaL_error(L, "out of waiters");
@@ -1765,6 +1787,16 @@ api_call(lua_State *L)
 	if (!rr || !rr->recv)
 		return luaL_error(L, "call: bad reply right");
 	luaL_checkany(L, 2);
+	/* before the send, not after: refusing a call we cannot finish is
+	 * better than delivering a request whose answer nobody will collect.
+	 *
+	 * checked even though call_k takes an already-queued reply without
+	 * yielding at all -- a call that happens to work from a coroutine
+	 * when the server is same-proc and corrupts the waiter list when it
+	 * is not is worse than one that always refuses. los.thread's call()
+	 * is the shape for a thread, and picks this only at the top level.
+	 */
+	blocking_twice(L, p);
 
 	int rc = port_send_from_lua(L, p, r, 2);
 
