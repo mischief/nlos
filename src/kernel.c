@@ -356,6 +356,11 @@ extern unsigned long long platform_ticks(void);
 extern void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
 static void port_unref(struct kport *port);
+/* bumped whenever a port loses a reference, which is the only way
+ * sys.hungup's answer can change. see api_hangups.
+ */
+static unsigned long long hangup_gen;
+
 static void wake_receivers(struct kport *port);
 static void proc_kill(struct kproc *p, const char *why);
 static void wake_senders(struct kport *port);
@@ -791,6 +796,7 @@ port_unref(struct kport *port)
 	 * a pipe reader blocked for data would sleep through its writer's
 	 * exit and never see eof.
 	 */
+	hangup_gen++;
 	wake_receivers(port);
 	/* the same for writers: a reader going away means a full port will
 	 * never drain, so anyone parked for room has to wake and learn
@@ -1783,6 +1789,95 @@ api_call(lua_State *L)
 	return call_k(L, LUA_OK, (lua_KContext)rh);
 }
 
+/* which entry of the handle table at stack index 1 has a message
+ * waiting, or 0 for none. the INDEX rather than the handle, so the
+ * caller can find it again in the table it passed.
+ *
+ * this is advisory and must stay that way. it answers a level question
+ * -- "is there something there" -- which is exactly the kind that goes
+ * stale the moment a second cpu exists. every caller re-checks with a
+ * real sys.tryrecv and parks again if it lost the race, so a wrong
+ * answer here costs a wasted wake or a late one and can never lose a
+ * message. the mp-clean version of this is an atomic take-from-any (a
+ * port set), which replaces it rather than building on it.
+ */
+static int
+altready(lua_State *L, struct kproc *p)
+{
+	if (!lua_istable(L, 1))
+		return 0;
+
+	int n = (int)luaL_len(L, 1);
+
+	for (int i = 1; i <= n; i++) {
+		lua_rawgeti(L, 1, i);
+
+		struct right *r = right_get(p, (int)lua_tointeger(L, -1));
+
+		lua_pop(L, 1);
+		if (r && r->recv && r->port->head)
+			return i;
+	}
+	return 0;
+}
+
+/* sys.hangups() -> a counter that changes whenever any port anywhere
+ * loses a reference.
+ *
+ * a ready-port hint can never name a hangup: the thread that needs to
+ * notice its peer is gone has nothing queued, which is the whole point.
+ * so los.thread cannot use the hint alone -- it would leave such a
+ * thread parked forever. watching this instead costs one integer
+ * compare per scheduler pass and wakes everyone only on the rare pass
+ * where the answer to sys.hungup could actually have changed.
+ *
+ * deliberately global rather than per-port: it is a "something may have
+ * changed, go look" edge, and the going-and-looking is sys.hungup.
+ */
+static int
+api_hangups(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)hangup_gen);
+	return 1;
+}
+
+/* sys.altpoll(set) -> index | nil. altblock's non-blocking half, for a
+ * proc that is still runnable and only wants to know whether any of its
+ * parked threads could make progress. without it los.thread has to wake
+ * every parked thread to have each one find out for itself, which is
+ * O(threads) coroutine resumes to deliver one message.
+ */
+static int
+api_altpoll(lua_State *L)
+{
+	struct kproc *p = self(L);
+	int i;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	i = altready(L, p);
+	if (!i)
+		return 0;
+	lua_pushinteger(L, i);
+	return 1;
+}
+
+/* the tail of api_altblock, after the proc has been woken. returns the
+ * ready index if there is one; returning nothing is legal and means
+ * "could not say", which is what the caller assumed before this existed.
+ */
+static int
+altblock_k(lua_State *L, int status, lua_KContext ctx)
+{
+	int i = altready(L, self(L));
+
+	(void)status;
+	(void)ctx;
+	if (!i)
+		return 0;
+	lua_pushinteger(L, i);
+	return 1;
+}
+
 /* block until any of a set of receive rights has a message (port set) */
 static int
 api_altblock(lua_State *L)
@@ -1808,7 +1903,8 @@ api_altblock(lua_State *L)
 		}
 		if (r->port->head) {
 			wait_clear(p);
-			return 0;	/* already ready, don't sleep */
+			lua_pushinteger(L, i);
+			return 1;	/* already ready, don't sleep */
 		}
 		/* dedup: the caller may list the same handle more than once,
 		 * since alt cases share ports. two waits on one port would
@@ -1830,7 +1926,7 @@ api_altblock(lua_State *L)
 	}
 	p->status = BLOCKED;
 	rq_del(p);
-	return lua_yield(L, 0);
+	return lua_yieldk(L, 0, 0, altblock_k);
 }
 
 static int
@@ -2611,6 +2707,8 @@ static const luaL_Reg kapi[] = {
 	{ "block", api_block },
 	{ "sendblock", api_sendblock },
 	{ "altblock", api_altblock },
+	{ "altpoll", api_altpoll },
+	{ "hangups", api_hangups },
 	{ "yield", api_yield },
 	{ "newport", api_newport },
 	{ "sendright", api_sendright },

@@ -151,6 +151,69 @@ local function gatherports()
 	return n
 end
 
+-- ready the threads parked on ONE port, rather than all of them.
+--
+-- the hint from sys.altblock/altpoll is advisory: it says a port had a
+-- message a moment ago, not that this thread will get it. recv() is
+-- still a tryrecv/park loop, so a thread woken for a message someone
+-- else took simply parks again. that is what keeps this safe to build
+-- on a level check -- see altready() in the kernel.
+--
+-- returns false when the hint named a port nobody is parked on, which
+-- can happen if the thread that wanted it was readied for another
+-- reason first. the caller falls back to waking everyone.
+local function readyon(h)
+	local woke = false
+
+	for co, r in pairs(thread._parked) do
+		if r.port == h then
+			thread._ready(co)
+			woke = true
+		elseif r.ports then
+			local ps = r.ports
+
+			for i = 1, #ps do
+				if ps[i] == h then
+					thread._ready(co)
+					woke = true
+					break
+				end
+			end
+		end
+	end
+	return woke
+end
+
+-- wake every port-parked thread and let each find out for itself. the
+-- fallback, and before the hint existed it was the only path.
+local function readyall()
+	for co, r in pairs(thread._parked) do
+		if r.port or r.ports then
+			thread._ready(co)
+		end
+	end
+end
+
+-- a hangup is the one wake a ready-port hint can never describe: the
+-- thread that has to notice its peer is gone is precisely the one with
+-- nothing queued. sys.hangups() changes whenever any port loses a
+-- reference, so one integer compare tells us whether waking everyone
+-- could possibly be worth it. without this a thread parked on a port
+-- whose last writer left sleeps forever, which is what test_mnt's
+-- "the file server exited once its last client dropped the right"
+-- caught.
+local lasthangup = -1
+
+local function hungupsince()
+	local g = sys.hangups()
+
+	if g == lasthangup then
+		return false
+	end
+	lasthangup = g
+	return true
+end
+
 -- run until all threads finish. this is the proc's event loop.
 function thread.run()
 	local rounds = 0
@@ -159,7 +222,7 @@ function thread.run()
 		if rounds % 64 == 0 then
 			sys.yield()	-- let other procs breathe
 
-			-- and let PARKED threads re-check their ports.
+			-- and let parked threads re-check their ports.
 			--
 			-- Without this, one thread that stays runnable
 			-- starves every thread that parks: the altblock
@@ -169,21 +232,31 @@ function thread.run()
 			-- runnable. A message could sit in a port
 			-- indefinitely with its reader parked beside it.
 			--
-			-- Waking them to retry is exactly what that branch
-			-- does and costs the same: recv() is a
-			-- tryrecv/park loop, so a thread with nothing
-			-- waiting simply parks again. Peeking instead would
-			-- need a non-destructive port check the kernel does
-			-- not have, and tryrecv here would consume the
-			-- message the parked thread is owed.
+			-- This used to wake every parked thread so each
+			-- could find out for itself, which is O(threads)
+			-- coroutine resumes to deliver one message and was
+			-- most of what a parked thread cost. sys.altpoll
+			-- answers the same question in the kernel, in one
+			-- call, so only the threads actually owed something
+			-- are woken. The loop repeats because one poll
+			-- reports one port and several may have filled.
 			--
 			-- This does not keep an idle proc awake: rounds only
 			-- advances while the loop runs, and once everything
 			-- parks again the runq empties and altblock sleeps
 			-- as before.
-			for co2, r in pairs(thread._parked) do
-				if r.port or r.ports then
-					thread._ready(co2)
+			if hungupsince() then
+				readyall()
+			elseif gatherports() > 0 then
+				local i = sys.altpoll(altset)
+
+				while i do
+					local h = altset[i]
+
+					if not readyon(h) then
+						break
+					end
+					i = sys.altpoll(altset)
 				end
 			end
 		end
@@ -207,12 +280,14 @@ function thread.run()
 			if gatherports() == 0 then
 				error("deadlock: all threads parked on channels")
 			end
-			sys.altblock(altset)
-			-- wake every port-parked thread; they retry
-			for co2, r in pairs(thread._parked) do
-				if r.port or r.ports then
-					thread._ready(co2)
-				end
+			local i = sys.altblock(altset)
+
+			-- the hint names the port that has something; only
+			-- its threads need to run. no hint (a wake with
+			-- nothing ready, or a hangup) falls back to waking
+			-- everyone, which is what this always did.
+			if hungupsince() or not (i and readyon(altset[i])) then
+				readyall()
 			end
 		end
 	end
