@@ -4,7 +4,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(13)
+tap.plan(18)
 
 -- echo child reflects whatever it gets back through a reply right
 local _, w = sys.spawn([[
@@ -102,6 +102,50 @@ local bok, berr = coroutine.resume(again)
 
 tap.ok(not bok and tostring(berr):find("already blocked") ~= nil,
     "a second block from the same proc is refused: " .. tostring(berr))
+
+-- ---- sys.call: the send and the wait as one entry ----
+--
+-- the point of these is that call delivers exactly what send plus recv
+-- delivers. it differs only in how many times the proc crosses into the
+-- kernel, which is not something a test can see, so what is pinned here
+-- is that nothing else changed.
+
+local function call(v)
+	return sys.call(w, { value = v, reply = { __right = rp } }, rp)
+end
+
+tap.is(call("via call"), "via call", "sys.call round trip")
+
+local ct = call({ a = 1, nested = { b = "two" } })
+tap.ok(ct.a == 1 and ct.nested.b == "two", "sys.call carries tables")
+
+-- the reply may be waiting before we ever park -- and must be taken,
+-- not slept through. hard to force deliberately; what is checked is
+-- that repeated calls in a tight loop all land, since that is the shape
+-- that hits both the already-queued and the must-park paths.
+local n = 0
+
+for i = 1, 50 do
+	if call(i) == i then
+		n = n + 1
+	end
+end
+tap.is(n, 50, "50 consecutive calls all delivered in order")
+
+-- a send failure is REPORTED, not raised, exactly as sys.send reports
+-- it: nil plus a reason, so the caller keeps its own policy.
+local dead = sys.newport()
+
+sys.close(dead)
+local dok, derr = pcall(sys.call, dead, "x", rp)
+
+tap.ok(not dok and derr:find("bad right") ~= nil,
+    "sys.call on a closed right raises rather than parking forever")
+
+-- an unserializable message raises rather than half-sending
+local uok = pcall(sys.call, w, { f = function() end }, rp)
+
+tap.ok(not uok, "sys.call refuses a function like sys.send does")
 
 sys.send(w, { stop = true })
 tap.done()

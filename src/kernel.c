@@ -1443,34 +1443,60 @@ self(lua_State *L)
 	return *(struct kproc **)lua_getextraspace(L);
 }
 
+/* serialize the value at `idx` and queue it on r's port. shared by
+ * api_send and api_call, which differ only in what they do afterwards.
+ * the wbuf is disposed of on every path, success or not.
+ */
+enum { SEND_OK = 0, SEND_UNSERIALIZABLE, SEND_DEAD, SEND_FULL, SEND_NOMEM };
+
 static int
-api_send(lua_State *L)
+port_send_from_lua(lua_State *L, struct kproc *p, struct right *r, int idx)
 {
-	struct kproc *p = self(L);
-	struct right *r = right_get(p, luaL_checkinteger(L, 1));
 	struct wbuf w = { 0 };
 
-	if (!r)
-		return luaL_error(L, "bad right");
-	luaL_checkany(L, 2);
-	wreserve(&w, sizehint(L, 2));
-	if (serialize(L, 2, &w, p, 0)) {
+	wreserve(&w, sizehint(L, idx));
+	if (serialize(L, idx, &w, p, 0)) {
 		/* release refs taken for rights serialized before the
 		 * failure point
 		 */
 		release_inflight(w.refs, w.refrecv, w.nrefs);
 		free(w.p);
-		return luaL_error(L, "unserializable message");
+		return SEND_UNSERIALIZABLE;
 	}
 	if (r->port->dead) {
 		release_inflight(w.refs, w.refrecv, w.nrefs);
 		free(w.p);
+		return SEND_DEAD;
+	}
+	int rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv,
+	    w.nrefs);
+
+	if (rc == -2)		/* w.p already freed by port_push_owned */
+		return SEND_FULL;
+	if (rc)
+		return SEND_NOMEM;
+	return SEND_OK;
+}
+
+static int
+api_send(lua_State *L)
+{
+	struct kproc *p = self(L);
+	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+
+	if (!r)
+		return luaL_error(L, "bad right");
+	luaL_checkany(L, 2);
+
+	int rc = port_send_from_lua(L, p, r, 2);
+
+	if (rc == SEND_UNSERIALIZABLE)
+		return luaL_error(L, "unserializable message");
+	if (rc == SEND_DEAD) {
 		lua_pushboolean(L, 0);
 		lua_pushliteral(L, "dead");
 		return 2;
 	}
-	int rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv,
-	    w.nrefs);
 
 	/* a full queue RETURNS rather than raising, so it is an ordinary
 	 * outcome the caller chooses a policy for, distinguishable from
@@ -1486,12 +1512,12 @@ api_send(lua_State *L)
 	 * the same split the receive side already makes -- sys.tryrecv
 	 * plus sys.block, with the blocking loop living in lua.
 	 */
-	if (rc == -2) {	/* w.p already freed by port_push_owned */
+	if (rc == SEND_FULL) {
 		lua_pushboolean(L, 0);
 		lua_pushliteral(L, "full");
 		return 2;
 	}
-	if (rc)
+	if (rc == SEND_NOMEM)
 		return luaL_error(L, "out of memory queueing message");
 	lua_pushboolean(L, 1);
 	return 1;
@@ -1578,6 +1604,37 @@ api_sendblock(lua_State *L)
 	return lua_yield(L, 0);
 }
 
+/* take the head message off `port` and push it as a single lua value. the
+ * caller must have established that port->head is non-null; "nothing
+ * there" is the one thing this cannot express, and it is exactly what
+ * the two callers disagree about (tryrecv reports it, api_call sleeps
+ * on it), which is why the emptiness test stays outside.
+ *
+ * returns -1 on a corrupt message, having pushed nothing.
+ */
+static int
+port_pop_to_lua(lua_State *L, struct kproc *p, struct kport *port)
+{
+	struct kmsg *m = port->head;
+
+	port->head = m->next;
+	if (!port->head)
+		port->tail = 0;
+	port->qbytes -= m->len;
+	/* room freed: this is the ordinary backpressure wakeup */
+	wake_senders(port);
+
+	size_t off = 0;
+
+	if (deserialize(L, m->data, m->len, &off, p, 0)) {
+		msg_free(m);
+		return -1;
+	}
+	/* receiver now holds its own refs (right_new); drop in-flight */
+	msg_free(m);
+	return 0;
+}
+
 static int
 api_tryrecv(lua_State *L)
 {
@@ -1590,24 +1647,9 @@ api_tryrecv(lua_State *L)
 		lua_pushboolean(L, 0);
 		return 1;
 	}
-	struct kmsg *m = r->port->head;
-
-	r->port->head = m->next;
-	if (!r->port->head)
-		r->port->tail = 0;
-	r->port->qbytes -= m->len;
-	/* room freed: this is the ordinary backpressure wakeup */
-	wake_senders(r->port);
-
-	size_t off = 0;
-
 	lua_pushboolean(L, 1);
-	if (deserialize(L, m->data, m->len, &off, p, 0)) {
-		msg_free(m);
+	if (port_pop_to_lua(L, p, r->port))
 		return luaL_error(L, "corrupt message");
-	}
-	/* receiver now holds its own refs (right_new); drop in-flight */
-	msg_free(m);
 	return 2;
 }
 
@@ -1627,6 +1669,99 @@ api_block(lua_State *L)
 	p->status = BLOCKED;
 	rq_del(p);
 	return lua_yield(L, 0);
+}
+
+/* sys.call(h, msg, replyh) -> reply | nil, why
+ *
+ * one kernel entry for the client half of an rpc: send msg on h, then
+ * block on replyh for the answer. this is mach_msg's
+ * MACH_SEND_MSG|MACH_RCV_MSG, and it exists for the reason mach's does
+ * -- a caller making a synchronous call has nothing to do between the
+ * two halves, so making it come back out to say so buys nothing and
+ * costs a scheduler pass. today that shape is sys.send, return to lua,
+ * loop, sys.tryrecv, park: four transitions where this is one.
+ *
+ * it is also what makes handoff possible at all. the kernel can only
+ * switch straight to the receiver if it knows, at send time, that the
+ * sender is about to sleep on a particular port -- and with the send and
+ * the block as separate calls there is no moment at which it knows that.
+ * the scheduling change is not here yet; this is the call shape it needs.
+ *
+ * a failure to send is reported (nil plus "dead" or "full") rather than
+ * raised, exactly as sys.send reports them, because the caller's policy
+ * for a full queue is its own. a send that succeeds always waits.
+ *
+ * this waits forever for a reply that never comes, which is what
+ * thread.recv already does and for the same reason: a right that can
+ * send is not distinguishable from one that will (see api_hungup). a
+ * caller that needs a deadline still composes sys.timer with alt().
+ */
+static int
+call_k(lua_State *L, int status, lua_KContext ctx)
+{
+	struct kproc *p = self(L);
+	struct right *rr = right_get(p, (int)ctx);
+
+	(void)status;
+	/* re-resolved rather than carried across the yield: a handle is an
+	 * index into a table this proc can rearrange, and the struct right
+	 * behind it may have moved. the proc cannot have closed it while
+	 * parked here, so failing to find it is a bug rather than a race.
+	 */
+	if (!rr || !rr->recv)
+		return luaL_error(L, "call: reply right went away");
+	if (!rr->port->head) {
+		/* woken with nothing for us -- a hangup wake, or another
+		 * thread in this proc took the message first. park again.
+		 * wake_receivers already dropped our waiter, so this adds a
+		 * fresh one rather than leaking the old.
+		 */
+		if (!wait_add(p, rr->port, 0))
+			return luaL_error(L, "out of waiters");
+		p->status = BLOCKED;
+		rq_del(p);
+		return lua_yieldk(L, 0, ctx, call_k);
+	}
+	if (port_pop_to_lua(L, p, rr->port))
+		return luaL_error(L, "corrupt message");
+	return 1;
+}
+
+static int
+api_call(lua_State *L)
+{
+	struct kproc *p = self(L);
+	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+	lua_Integer rh = luaL_checkinteger(L, 3);
+	struct right *rr = right_get(p, rh);
+
+	if (!r)
+		return luaL_error(L, "call: bad right");
+	if (!rr || !rr->recv)
+		return luaL_error(L, "call: bad reply right");
+	luaL_checkany(L, 2);
+
+	int rc = port_send_from_lua(L, p, r, 2);
+
+	if (rc == SEND_UNSERIALIZABLE)
+		return luaL_error(L, "unserializable message");
+	if (rc == SEND_NOMEM)
+		return luaL_error(L, "out of memory queueing message");
+	if (rc == SEND_DEAD) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "dead");
+		return 2;
+	}
+	if (rc == SEND_FULL) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "full");
+		return 2;
+	}
+	/* the reply may already be queued -- a same-proc service, or one
+	 * that ran between our send and here -- in which case call_k takes
+	 * it without yielding at all.
+	 */
+	return call_k(L, LUA_OK, (lua_KContext)rh);
 }
 
 /* block until any of a set of receive rights has a message (port set) */
@@ -2447,6 +2582,7 @@ api_uptime_ms(lua_State *L)
 
 static const luaL_Reg kapi[] = {
 	{ "send", api_send },
+	{ "call", api_call },
 	{ "tryrecv", api_tryrecv },
 	{ "block", api_block },
 	{ "sendblock", api_sendblock },

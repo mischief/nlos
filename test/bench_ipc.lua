@@ -107,15 +107,29 @@ local function crossproc(sz, iters)
 	sys.close(rp)
 end
 
--- the SAME ping-pong, but with the replier at a LOWER slot index than
--- the driver. our dispatch scans slots in order, so a reply travelling
--- "backwards" has already been passed this lap and waits for the next
--- one. that is precisely the case a handoff hint is supposed to fix, and
--- the case above (boot payload drives a proc spawned after it) is the
--- favourable ordering where it cannot help.
-local function crossproc_rev(sz, iters)
-	local _, eh = sys.spawn(echo, { name = "echo" })
-	local dpid, dh = sys.spawn([[
+-- the same ping-pong through sys.call: one kernel entry for the client
+-- half of the round trip instead of send, return, loop, tryrecv, park.
+-- the difference against crossproc above is what the combined call is
+-- worth on its own, before any scheduling change -- so run both.
+local function crossproc_call(sz, iters)
+	local _, h = sys.spawn(echo, { name = "echo" })
+	local rp = sys.newport()
+
+	sys.send(h, { reply = { __right = rp } })
+
+	local payload = string.rep("x", sz)
+
+	for _ = 1, iters do
+		sys.call(h, payload, rp)
+	end
+	sys.send(h, "done")
+	sys.close(rp)
+end
+
+-- `loop` is the inner round trip, so the send+recv and the sys.call
+-- forms differ in exactly one line and nothing else.
+local function revdriver(loop)
+	return [[
 		local sys = require("los.sys")
 		local thread = require("los.thread")
 		local m = thread.recv(sys.SELF)
@@ -128,12 +142,26 @@ local function crossproc_rev(sz, iters)
 		local payload = string.rep("x", sz)
 
 		for _ = 1, iters do
-			sys.send(eh, payload)
-			thread.recv(rp)
+			]] .. loop .. [[
 		end
 		sys.send(eh, "done")
 		sys.send(done, true)
-	]], { name = "driver" })
+	]]
+end
+
+local revsend = revdriver("sys.send(eh, payload) thread.recv(rp)")
+local revcall = revdriver("sys.call(eh, payload, rp)")
+
+-- the same ping-pong, but with the replier at a lower slot index than
+-- the driver, which was expected to be the unfavourable ordering: a
+-- reply travelling "backwards" past a lap that had already gone by.
+-- it is worth about 8%, not the factor it was thought to be, because
+-- make_ready puts a woken proc on the current lap and dispatch phase 2
+-- picks up anything woken during phase 1. kept because it is still the
+-- worst ordering, so it bounds what ordering can cost.
+local function crossproc_rev(sz, iters, src)
+	local _, eh = sys.spawn(echo, { name = "echo" })
+	local _, dh = sys.spawn(src or revsend, { name = "driver" })
 	local donep = sys.newport()
 
 	sys.send(dh, { eh = { __right = eh }, done = { __right = donep },
@@ -150,9 +178,19 @@ bench("xproc string", 64, 2000, crossproc)
 bench("xproc string", 4096, 2000, crossproc)
 bench("xproc string", 60000, 500, crossproc)
 
+print("# --- cross-proc via sys.call (one kernel entry per round trip) ---")
+bench("call empty", 1, 2000, function(_, n) crossproc_call(1, n) end)
+bench("call string", 64, 2000, crossproc_call)
+bench("call string", 4096, 2000, crossproc_call)
+bench("call string", 60000, 500, crossproc_call)
+
 print("# --- reversed slot order: replier BELOW the driver ---")
 bench("rev empty", 1, 2000, function(_, n) crossproc_rev(1, n) end)
 bench("rev string", 4096, 1000, crossproc_rev)
+bench("rev call empty", 1, 2000,
+    function(_, n) crossproc_rev(1, n, revcall) end)
+bench("rev call string", 4096, 1000,
+    function(sz, n) crossproc_rev(sz, n, revcall) end)
 
 print("ok 1 - benchmarked")
 sys.send(sys.granted().power, { op = "reset", mode = "shutdown" })
