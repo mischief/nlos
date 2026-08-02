@@ -90,6 +90,17 @@ function S:transport_msg(payload)
   local t = payload:byte(1)
   if t == msg.IGNORE or t == msg.DEBUG or t == msg.UNIMPLEMENTED
      or t == msg.EXT_INFO then
+    -- Not during the initial exchange. Strict kex requires that anything
+    -- unexpected there ends the connection, and these are precisely the
+    -- messages a peer is otherwise free to insert at any point -- which
+    -- is what Terrapin used to move the sequence number. Resetting the
+    -- counters at NEWKEYS is the half of the countermeasure that does
+    -- the work, and it is done; refusing the injection outright is the
+    -- other half, and without it the two ends can still be made to
+    -- disagree about how many packets went by.
+    if self.inkex then
+      return true, "unexpected " .. (msg.name[t] or t) .. " during key exchange"
+    end
     return true
   end
   if t == msg.GLOBAL_REQUEST then
@@ -114,7 +125,10 @@ function S:recv()
   while true do
     local payload, err = self.pkt:recvpkt()
     if not payload then return fail(err) end
-    if not self:transport_msg(payload) then return payload end
+
+    local handled, reject = self:transport_msg(payload)
+    if reject then return fail(reject) end
+    if not handled then return payload end
     if self.closed then return fail(self.closed) end
   end
 end
@@ -123,6 +137,11 @@ end
 -- key exchange
 
 function S:kex()
+  -- Set for the whole of the initial exchange, and cleared once NEWKEYS
+  -- has been seen in both directions: see transport_msg for what it
+  -- changes and why the window is exactly this one.
+  self.inkex = true
+
   -- The hybrid is on unless the embedder turns it off. A server can do
   -- ML-KEM with encapsulation alone, which is the cheap half.
   local opts = { hybrid = self.conf.hybrid ~= false }
@@ -168,6 +187,7 @@ function S:kex()
   self.pkt:setkeys(res.keys.s2c, res.keys.c2s)
   self.pkt:resetseq()
   self.session_id = self.session_id or res.session_id
+  self.inkex = false
 
   return true
 end
@@ -333,6 +353,17 @@ function S:step()
 
   local r = wire.reader(payload)
   local t = r:byte()
+
+  -- A peer asking to rekey. Not implemented, and saying so beats the
+  -- alternative: falling through to the channel dispatch below treats
+  -- this as a message for channel 0x14, finds no such channel, ignores
+  -- it, and leaves the client waiting for a KEXINIT that never comes.
+  -- OpenSSH asks after an hour or a gigabyte, so a long session reaches
+  -- this rather than a test.
+  if t == msg.KEXINIT then
+    self:disconnect("rekeying is not implemented")
+    return fail("client asked to rekey")
+  end
 
   if t == msg.CHANNEL_OPEN then
     local kind = r:string()

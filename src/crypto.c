@@ -265,9 +265,16 @@ poly1305_update(struct poly1305 *restrict st, const uint8_t *restrict m,
 		len -= 16;
 	}
 
+	/* append, rather than overwrite from zero. An update whose bytes
+	 * all land inside a partial buffer without filling it leaves
+	 * buflen > 0 and len == 0 here, and starting the copy at index 0
+	 * would set buflen back to 0 and discard what was already
+	 * buffered. Either buflen is 0 or len is, so this stays within
+	 * the 16-byte buffer.
+	 */
 	for (i = 0; i < len; i++)
-		st->buf[i] = m[i];
-	st->buflen = len;
+		st->buf[st->buflen + i] = m[i];
+	st->buflen += len;
 }
 
 static void

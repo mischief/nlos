@@ -228,9 +228,13 @@ function M.client(t)
   k, err = x25519.shared(priv, q_s)
   if not k then return nil, err end
 
+  -- `hybrid` passed even though this half cannot negotiate one yet: the
+  -- derivation below reads t.hybrid, and the two encodings of K must
+  -- agree. Leaving it out here is the disagreement the comment on
+  -- encode_k describes, waiting for the day the client learns ML-KEM.
   local h = exchange_hash {
     v_c = t.v_c, v_s = t.v_s, i_c = t.i_c, i_s = t.i_s,
-    k_s = k_s, q_c = q_c, q_s = q_s, k = k,
+    k_s = k_s, q_c = q_c, q_s = q_s, k = k, hybrid = t.hybrid,
   }
 
   -- Verify the signature BEFORE trusting the host key, then decide

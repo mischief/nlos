@@ -111,7 +111,17 @@ function P:recvpkt()
   -- Bound the length before reading it, not after. The padded region
   -- includes the 4-byte length field when there is no cipher and excludes
   -- it when the cipher is this AEAD, so the two cases round differently.
-  local aligned = self.in_k2 and (len % BLOCK == 0) or ((len + 4) % BLOCK == 0)
+  -- Written as an if rather than `a and b or c`: with the cipher
+  -- installed and the length misaligned, that idiom falls through to the
+  -- third arm and applies the unencrypted rule, so len % 8 == 4 was
+  -- accepted too. The AEAD tag still had to verify, so nothing could be
+  -- forged through it, but the check was not the one described.
+  local aligned
+  if self.in_k2 then
+    aligned = len % BLOCK == 0
+  else
+    aligned = (len + 4) % BLOCK == 0
+  end
   if len < 8 or len > MAX_PACKET or not aligned then
     return nil, ("bad packet length %d"):format(len)
   end
