@@ -12,21 +12,80 @@ local sys = require("los.sys")
 
 -- ---- thread scheduler ----
 
+-- the run queue is a ring, not an array shifted from the front.
+--
+-- it was table.remove(_runq, 1), which moves every remaining element
+-- down a slot: O(threads) per dispatch, so O(threads squared) to get
+-- once around a proc holding many of them. head and tail indices make
+-- that O(1), and the pair resets to 1/0 whenever the queue drains --
+-- which it does constantly -- so they never grow without bound.
 local thread = {
 	_runq = {},
-	_parked = {},	-- co -> reason: {port=h} | {ports={...}} | {chan=c}
+	_qhead = 1,
+	_qtail = 0,
+	_parked = {},	-- co -> reason record, see parkrec below
 	_n = 0,
 }
 
-function thread._ready(co)
-	thread._parked[co] = nil
-	thread._runq[#thread._runq + 1] = co
+local function push(co)
+	local t = thread._qtail + 1
+
+	thread._qtail = t
+	thread._runq[t] = co
 end
 
-function thread._park(reason)
+local function pop()
+	local h = thread._qhead
+
+	if h > thread._qtail then
+		return nil
+	end
+
+	local co = thread._runq[h]
+
+	thread._runq[h] = nil
+	if h == thread._qtail then
+		thread._qhead, thread._qtail = 1, 0	-- drained; reset
+	else
+		thread._qhead = h + 1
+	end
+	return co
+end
+
+function thread._ready(co)
+	thread._parked[co] = nil
+	push(co)
+end
+
+-- one park record per coroutine, reused for the life of that coroutine.
+--
+-- parking allocated a fresh {port=h} every time, and a thread parks once
+-- for every message it waits for -- so a proc holding n parked threads
+-- produced n garbage tables for each message delivered to any one of
+-- them. unused fields are set to false rather than nil: both are falsy
+-- to the readers below, and a table whose shape never changes stays off
+-- lua's rehash path.
+--
+-- weak-keyed, so a collected coroutine takes its record with it.
+local parkrec = setmetatable({}, { __mode = "k" })
+
+local function parkon(port, ports, chan)
 	local co = coroutine.running()
-	thread._parked[co] = reason
+	local r = parkrec[co]
+
+	if not r then
+		r = { port = false, ports = false, chan = false }
+		parkrec[co] = r
+	end
+	r.port, r.ports, r.chan = port, ports, chan
+	thread._parked[co] = r
 	coroutine.yield()
+end
+
+-- the table form, for any caller outside this file.
+function thread._park(reason)
+	parkon(reason.port or false, reason.ports or false,
+	    reason.chan or false)
 end
 
 function thread.spawn(fn, ...)
@@ -43,8 +102,53 @@ function thread.spawn(fn, ...)
 	-- -- the very constant 4e5a1c2 removed for being unknowable ahead
 	-- of time. test/boot/test_preempt.lua pins the property.
 	thread._n = thread._n + 1
-	thread._runq[#thread._runq + 1] = co
+	push(co)
 	return co
+end
+
+-- the port set handed to sys.altblock, refilled rather than rebuilt.
+--
+-- this was two fresh tables per full park, sized by how many threads
+-- were parked, plus a { r.port } wrapper table for each single-port
+-- waiter. `seen` is stamped with a generation instead of being cleared,
+-- so dedup costs a compare; `set` is filled in place, and only the tail
+-- left over from a larger previous park has to be nil'd, since
+-- sys.altblock reads it with luaL_len.
+local altset, altseen, altgen, altn = {}, {}, 0, 0
+
+local function gatherports()
+	altgen = altgen + 1
+
+	local n = 0
+
+	for _, r in pairs(thread._parked) do
+		local ps = r.ports
+
+		if ps then
+			for i = 1, #ps do
+				local h = ps[i]
+
+				if altseen[h] ~= altgen then
+					altseen[h] = altgen
+					n = n + 1
+					altset[n] = h
+				end
+			end
+		elseif r.port then
+			local h = r.port
+
+			if altseen[h] ~= altgen then
+				altseen[h] = altgen
+				n = n + 1
+				altset[n] = h
+			end
+		end
+	end
+	for i = n + 1, altn do
+		altset[i] = nil
+	end
+	altn = n
+	return n
 end
 
 -- run until all threads finish. this is the proc's event loop.
@@ -83,7 +187,7 @@ function thread.run()
 				end
 			end
 		end
-		local co = table.remove(thread._runq, 1)
+		local co = pop()
 		if co then
 			thread._current = co
 			local ok, err = coroutine.resume(co)
@@ -96,24 +200,14 @@ function thread.run()
 				end
 			elseif not thread._parked[co] then
 				-- preempted by its count hook: still runnable
-				thread._runq[#thread._runq + 1] = co
+				push(co)
 			end
 		else
 			-- everyone parked. gather ports, sleep in kernel.
-			local set, seen = {}, {}
-			for _, r in pairs(thread._parked) do
-				for _, h in ipairs(r.ports or
-				    (r.port and { r.port }) or {}) do
-					if not seen[h] then
-						seen[h] = true
-						set[#set + 1] = h
-					end
-				end
-			end
-			if #set == 0 then
+			if gatherports() == 0 then
 				error("deadlock: all threads parked on channels")
 			end
-			sys.altblock(set)
+			sys.altblock(altset)
 			-- wake every port-parked thread; they retry
 			for co2, r in pairs(thread._parked) do
 				if r.port or r.ports then
@@ -233,7 +327,7 @@ function Channel:send(v)
 	self.sendq[#self.sendq + 1] = r
 	self:_wakercv()
 	repeat
-		thread._park({ chan = self })
+		parkon(false, false, self)
 		-- close() dropped us from sendq and woke us; the value was
 		-- never taken. no need to unlink, only to fail.
 		if not r.done and self.closed then
@@ -281,7 +375,7 @@ function Channel:recv()
 		end
 		local w = { co = coroutine.running() }
 		self.recvq[#self.recvq + 1] = w
-		thread._park({ chan = self })
+		parkon(false, false, self)
 		for i, q in ipairs(self.recvq) do
 			if q == w then
 				table.remove(self.recvq, i)
@@ -332,7 +426,7 @@ local function alt(cases)
 					marks[#marks + 1] = { cs.c.recvq, w }
 				end
 			end
-			thread._park({ ports = plist })
+			parkon(false, plist, false)
 			for _, m in ipairs(marks) do
 				for i, q in ipairs(m[1]) do
 					if q == m[2] then
@@ -402,7 +496,7 @@ local function recv(h)
 			return msg
 		end
 		if inthread() then
-			thread._park({ port = h })
+			parkon(h, false, false)
 		else
 			sys.block(h)
 		end
@@ -569,7 +663,7 @@ thread.qlockcreate = qlockcreate
 -- after waking rather than just taking the next message.
 local function park(h)
 	if inthread() then
-		thread._park({ port = h })
+		parkon(h, false, false)
 	else
 		sys.block(h)
 	end
