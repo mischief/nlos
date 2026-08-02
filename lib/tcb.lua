@@ -19,10 +19,15 @@
 -- retransmission timer of RFC 6298 including Karn's algorithm, and the
 -- full four-way close with TIME-WAIT.
 --
--- What is deliberately not here: congestion control (RFC 5681), Nagle,
--- delayed acknowledgments, and the sender's half of silly-window
--- avoidance. All four make an implementation politer and none make it
--- more correct, which is why they are last.
+-- Congestion control is RFC 5681 -- slow start, congestion avoidance,
+-- fast retransmit and fast recovery -- with RFC 6582's NewReno rule for
+-- the partial acknowledgment, which is what recovers a second loss in
+-- the same window without waiting out a timeout.
+--
+-- What is deliberately not here: Nagle, delayed acknowledgments, the
+-- sender's half of silly-window avoidance, and SACK. The first three
+-- make an implementation politer rather than more correct; SACK is a
+-- real improvement and a separate piece of work.
 --
 -- Names follow the RFC, in lower case: snd_una is SND.UNA. Keeping them
 -- recognisable matters more than keeping them pretty, because every
@@ -79,6 +84,31 @@ local RTT_K = 4			-- RTO = SRTT + K * RTTVAR
 -- over four minutes of trying, which comfortably clears RFC 1122's R2
 -- of 100 seconds.
 local MAX_RETX = 8
+
+-- ---- congestion control, RFC 5681 ----
+--
+-- The initial window, from 3.1's table. It is expressed in segments
+-- rather than the older 4380-byte formula because that is what the RFC
+-- now says, and for the 1460-byte mss on an ethernet the two agree at
+-- three segments anyway.
+local function initial_cwnd(smss)
+	if smss > 2190 then
+		return 2 * smss
+	elseif smss > 1095 then
+		return 3 * smss
+	end
+	return 4 * smss
+end
+
+-- ssthresh starts "arbitrarily high" (3.1) so that the network rather
+-- than a number in this file decides the sending rate. It comes down
+-- the first time congestion is seen and never goes back up on its own.
+local SSTHRESH_INIT = 0xffffffff
+
+-- three duplicate acknowledgments mean a segment is gone rather than
+-- merely reordered. Two is not enough -- ordinary reordering produces
+-- two routinely -- and waiting for more costs a round trip per loss.
+local DUPACK_THRESH = 3
 
 -- 2*MSL in TIME-WAIT. The RFC's MSL is two minutes, making the wait
 -- four; nothing in practice waits that long, and 30 seconds is what the
@@ -164,6 +194,18 @@ function tcb.new(cfg)
 		rtt_seq = nil,
 		rtt_at = nil,
 
+		-- congestion control (RFC 5681) and fast recovery (RFC 6582).
+		-- cwnd waits until the peer's mss is known, since every
+		-- quantity here is a multiple of it.
+		cwnd = nil,
+		ssthresh = SSTHRESH_INIT,
+		dupacks = 0,
+		in_recovery = false,
+		-- RFC 6582 step 1: recover starts at the initial send
+		-- sequence number, and is what stops one lost window from
+		-- being fast-retransmitted over and over.
+		recover = cfg.iss,
+
 		msl = cfg.msl or MSL_DEFAULT,
 		timewait = nil,
 
@@ -180,6 +222,19 @@ function tcb.new(cfg)
 
 	t.rcv_wnd = t:_window()
 	return t
+end
+
+-- The amount of data outstanding in the network. Not cwnd, which the
+-- RFC warns against confusing it with (3.1): cwnd is what we are
+-- allowed to have outstanding, FlightSize is what we actually do.
+function T:_flight()
+	return tcp4.diff(self.snd_nxt, self.snd_una)
+end
+
+-- called once the peer's mss is known, which is the earliest the
+-- initial window means anything.
+function T:_init_cc()
+	self.cwnd = initial_cwnd(self.snd_mss)
 end
 
 -- ---- what the caller collects ----
@@ -494,7 +549,18 @@ function T:_transmit()
 		-- exactly the one nobody tests.
 		local sent = tcp4.diff(self.snd_nxt, self.snd_una)
 		local unsent = #self.sndq - sent
-		local room = self.snd_wnd - sent
+		-- "The minimum of cwnd and rwnd governs data transmission"
+		-- (5681 3.1). Before this, the receiver's window was the only
+		-- limit, so a connection opened by sending the peer's whole
+		-- advertised window as fast as segments could be built -- some
+		-- forty of them back to back, into a path nothing had measured.
+		local win = self.snd_wnd
+
+		if self.cwnd and self.cwnd < win then
+			win = self.cwnd
+		end
+
+		local room = win - sent
 
 		if unsent <= 0 or room <= 0 then
 			return
@@ -562,6 +628,7 @@ function T:_in_listen(seg)
 	self.rcv_nxt = tcp4.add(seg.seq, 1)
 	self.rport = seg.sport
 	self.snd_mss = seg.opt and seg.opt.mss or tcp4.MSS_DEFAULT
+	self:_init_cc()
 	self.snd_wnd = seg.wnd
 	self.snd_wl1 = seg.seq
 	self.snd_wl2 = seg.ack
@@ -610,6 +677,7 @@ function T:_in_syn_sent(seg)
 	self.irs = seg.seq
 	self.rcv_nxt = tcp4.add(seg.seq, 1)
 	self.snd_mss = seg.opt and seg.opt.mss or tcp4.MSS_DEFAULT
+	self:_init_cc()
 
 	if acked then
 		self.snd_una = seg.ack
@@ -639,13 +707,125 @@ function T:_in_syn_sent(seg)
 	self.out[#self.out].opt = { mss = self.rcv_mss }
 end
 
+-- Retransmit the first unacknowledged segment, and only that.
+--
+-- Shared by fast retransmit and by NewReno's partial-acknowledgment
+-- rule. Unlike the timeout path it does not back the timer off or count
+-- against MAX_RETX: this is a segment we have good evidence was lost,
+-- not a peer that has gone quiet.
+function T:_resend_first()
+	local n = math.min(#self.sndq, self.snd_mss)
+	local flags = tcp4.ACK
+	local data = n > 0 and self.sndq:sub(1, n) or nil
+
+	if self.fin_sent and n == #self.sndq then
+		flags = flags | tcp4.FIN
+	end
+	if not data and (flags & tcp4.FIN) == 0 then
+		return false
+	end
+	self:_send(flags, data, self.snd_una)
+
+	-- Karn again, and for the same reason as in _retransmit: _send has
+	-- just started timing a segment that is going out for the second
+	-- time, and an acknowledgment of it cannot say which copy it is for.
+	self.rtt_seq = nil
+	self.rtt_at = nil
+	return true
+end
+
+-- Is this the duplicate acknowledgment fast retransmit counts?
+--
+-- RFC 5681 section 2 is precise about it, and the precision is the
+-- point: an acknowledgment that carries data, or moves the window, or
+-- arrives with nothing outstanding, is not evidence of a lost segment
+-- and counting it as one retransmits perfectly good data.
+function T:_is_dupack(seg)
+	return seg.ack == self.snd_una and
+	    tcp4.seglen(seg) == 0 and
+	    (seg.flags & (tcp4.SYN | tcp4.FIN)) == 0 and
+	    seg.wnd == self.snd_wnd and
+	    self:_flight() > 0
+end
+
+-- 5681 3.2 steps 2 and 3, with 6582's guard in front of them.
+function T:_fast_retransmit()
+	-- RFC 6582 step 2: only if the acknowledgment covers more than
+	-- recover. Without this check a single lost window is fast
+	-- retransmitted once per duplicate burst, halving ssthresh each
+	-- time until the connection is crawling for no reason.
+	if not tcp4.gt(self.snd_una, self.recover) then
+		return
+	end
+
+	self.recover = self.snd_nxt
+	self.in_recovery = true
+	self.ssthresh = math.max(self:_flight() // 2, 2 * self.snd_mss)
+	self:_resend_first()
+	-- inflated by the three segments that have left the network and
+	-- which the receiver is holding: that is what the duplicates were
+	-- telling us.
+	self.cwnd = self.ssthresh + DUPACK_THRESH * self.snd_mss
+end
+
 -- the bookkeeping every acknowledgment of new data owes, wherever it
 -- was processed. SYN-SENT does its own ack handling rather than going
 -- through _check_ack, and forgetting this there left the timer armed
 -- from the SYN for the life of the connection -- so an established
 -- connection with nothing outstanding would eventually retransmit into
 -- a peer that had said everything it had to say.
-function T:_acked(seg)
+function T:_acked(seg, acked)
+	acked = acked or 0
+
+	-- ---- congestion window (5681 3.1, 6582 3.2 step 3) ----
+	if self.cwnd then
+		if self.in_recovery then
+			if tcp4.ge(seg.ack, self.recover) then
+				-- a full acknowledgment: everything outstanding
+				-- when we entered recovery is gone from the
+				-- network. Deflate to ssthresh and leave.
+				self.cwnd = self.ssthresh
+				self.in_recovery = false
+			else
+				-- a partial acknowledgment. Something else in the
+				-- same window was lost, so resend the next one
+				-- rather than waiting a whole RTO to discover it
+				-- -- which is the entire difference between
+				-- NewReno and Reno.
+				self:_resend_first()
+				self.cwnd = self.cwnd - acked
+				if acked >= self.snd_mss then
+					self.cwnd = self.cwnd + self.snd_mss
+				end
+				if self.cwnd < self.snd_mss then
+					self.cwnd = self.snd_mss
+				end
+				-- 6582 step 3: the first partial ack also
+				-- restarts the retransmission timer, so a second
+				-- loss in the window does not inherit the
+				-- deadline set for the first.
+				self.retx = self.now + self.rto
+			end
+		elseif self.cwnd < self.ssthresh then
+			-- slow start, by appropriate byte counting (equation
+			-- 2) rather than a flat segment per ack: a receiver
+			-- that acknowledged one segment in several pieces
+			-- could otherwise inflate the window several times
+			-- over for data it only received once.
+			self.cwnd = self.cwnd + math.min(acked, self.snd_mss)
+		else
+			-- congestion avoidance, equation 3, rounded up to a
+			-- byte so integer arithmetic cannot stall the window
+			-- entirely once cwnd exceeds SMSS squared.
+			local inc = (self.snd_mss * self.snd_mss) // self.cwnd
+
+			self.cwnd = self.cwnd + (inc > 0 and inc or 1)
+		end
+	end
+
+	-- an acknowledgment of new data ends any run of duplicates.
+	self.dupacks = 0
+
 	-- an RTT sample, unless Karn forbids it. rtt_seq is cleared by
 	-- every retransmission precisely so this cannot fire for a segment
 	-- that was sent twice.
@@ -695,6 +875,21 @@ function T:_check_ack(seg)
 		return false
 	end
 
+	if self:_is_dupack(seg) then
+		self.dupacks = self.dupacks + 1
+
+		if self.dupacks == DUPACK_THRESH then
+			self:_fast_retransmit()
+		elseif self.dupacks > DUPACK_THRESH and self.in_recovery then
+			-- step 4: each further duplicate is another segment
+			-- that has left the network, so the window may open
+			-- by one more.
+			self.cwnd = self.cwnd + self.snd_mss
+			self:_transmit()
+		end
+		return true
+	end
+
 	if tcp4.lt(self.snd_una, seg.ack) then
 		local n = tcp4.diff(seg.ack, self.snd_una)
 
@@ -718,7 +913,7 @@ function T:_check_ack(seg)
 		end
 		self.snd_una = seg.ack
 
-		self:_acked(seg)
+		self:_acked(seg, n)
 	end
 
 	-- the window update, guarded so that a reordered segment cannot
@@ -1011,6 +1206,7 @@ end
 -- window. Sending everything again is how a stack turns a single loss
 -- into a burst on a link that was already struggling.
 function T:_retransmit()
+	self:_timeout_cc()
 	self.retries = self.retries + 1
 
 	if self.retries > MAX_RETX then
@@ -1055,6 +1251,27 @@ function T:_retransmit()
 	-- of new data.
 	self.rto = math.min(self.rto * 2, RTO_MAX)
 	self.retx = self.now + self.rto
+end
+
+-- What a timeout costs the congestion window (5681 3.1). Separate from
+-- _retransmit because the ssthresh reduction happens once per loss, not
+-- once per attempt: a segment already resent by the timer holds ssthresh
+-- constant, or a peer that has gone away would ratchet it to the floor
+-- on the way to being declared dead.
+function T:_timeout_cc()
+	if not self.cwnd then
+		return
+	end
+	if self.retries == 0 then
+		self.ssthresh = math.max(self:_flight() // 2, 2 * self.snd_mss)
+	end
+	-- the loss window: one segment, whatever the initial window was.
+	self.cwnd = self.snd_mss
+	-- 6582 step 4: record the highest sequence number sent, and leave
+	-- fast recovery. What follows is slow start, not recovery.
+	self.recover = self.snd_nxt
+	self.in_recovery = false
+	self.dupacks = 0
 end
 
 -- when this connection next wants attention, or nil if it is content to
@@ -1111,6 +1328,11 @@ function T:status()
 		held = #self.ooo,
 		rto = self.rto,
 		srtt = self.srtt,
+		cwnd = self.cwnd,
+		ssthresh = self.ssthresh,
+		dupacks = self.dupacks,
+		recovery = self.in_recovery,
+		flight = self:_flight(),
 		retries = self.retries,
 	}
 end

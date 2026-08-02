@@ -286,16 +286,18 @@ do
 
 	diag("recovery took " .. cost .. "ms with an RTO floor of 1000ms")
 
-	-- This is the behaviour being pinned, not endorsed. There is no
-	-- fast retransmit yet, so the only thing that can recover the loss
-	-- is the retransmission timer, and RFC 6298's floor makes that a
-	-- whole second -- fifty times the round trip.
+	-- This assertion was written the other way round, and changing it
+	-- is the point of RFC 5681. Before fast retransmit the only thing
+	-- that could recover a loss was the retransmission timer, and RFC
+	-- 6298's floor makes that a whole second -- fifty times the round
+	-- trip. It measured 1030ms.
 	--
-	-- When RFC 5681 lands this assertion is the one that must change:
-	-- three duplicate acknowledgments should recover it in about one
-	-- round trip instead. Until then, asserting the slow path is what
-	-- makes the improvement measurable rather than assumed.
-	ok(cost >= 1000, "and today it costs a full RTO: " .. cost .. "ms")
+	-- Three duplicate acknowledgments now recover it in a couple of
+	-- round trips instead. The bound is deliberately well under the RTO
+	-- floor: anything at or above a second means the timer did the work
+	-- and fast retransmit did not fire at all, which is exactly the
+	-- regression worth catching.
+	ok(cost < 500, "and it now costs round trips, not an RTO: " .. cost .. "ms")
 end
 
 -- ---- the signal fast retransmit will use ----
@@ -492,6 +494,236 @@ do
 	ok(l.dropped.a > 0, "having actually lost something")
 	is(total, #payload, "with the right number of bytes")
 	ok(table.concat(got) == payload, "and every one of them in order")
+end
+
+
+-- ---- the congestion window itself ----
+--
+-- The tests above say loss recovery got faster. These say the window is
+-- actually being managed, which is the half that protects everyone else
+-- on the path rather than us.
+
+do
+	local a, b = pair()
+	local l = link(a, b, { rtt = 20 })
+
+	connect(l)
+
+	-- RFC 5681 3.1's table: an mss between 1096 and 2190 gets three
+	-- segments. Not four, and not the peer's whole advertised window,
+	-- which is what this sent before.
+	is(a:status().cwnd, 3 * 1460, "a connection opens with a three-segment window")
+	is(a:status().ssthresh, 0xffffffff,
+	    "and a threshold high enough to let the network decide")
+
+	-- the first flight is limited by cwnd, not by the receiver: the
+	-- peer advertised 32KB, which is twenty-two segments.
+	local payload = string.rep("x", 1460 * 20)
+
+	a:write(payload, l.now)
+	l:collect()
+
+	local first = #l.flight
+
+	is(first, 3, "so the first burst is three segments, not twenty")
+
+	-- and slow start opens it: each acknowledgment of new data adds a
+	-- segment, so a round trip roughly doubles the window.
+	l:run(l.now + 2000, function()
+		return b:status().readable >= #payload
+	end)
+	ok(a:status().cwnd > 3 * 1460,
+	    "slow start opens the window: " .. a:status().cwnd .. " bytes")
+end
+
+-- ---- what a loss costs the window ----
+
+do
+	local a, b = pair({ sndbuf = 256 * 1024 })
+	local ndata = 0
+	local l = link(a, b, {
+		rtt = 20,
+		drop = function(side, sg, _)
+			if side == "a" and sg.data and #sg.data > 0 then
+				ndata = ndata + 1
+				return ndata == 6
+			end
+			return false
+		end,
+	})
+
+	connect(l)
+
+	local payload = string.rep("x", 1460 * 30)
+
+	a:write(payload, l.now)
+
+	-- stop the moment recovery begins, to look at the window then
+	-- rather than after it has been deflated again.
+	l:run(l.now + 5000, function()
+		return a:status().recovery
+	end)
+
+	ok(a:status().recovery, "three duplicates put the sender into fast recovery")
+
+	local ss = a:status().ssthresh
+
+	ok(ss < 0xffffffff, "which brings the threshold down: " .. ss)
+	is(a:status().cwnd, ss + 3 * 1460,
+	    "and inflates the window by the three segments that left the network")
+
+	-- Drained as it goes, because the payload is larger than the
+	-- receive buffer: a condition waiting for `readable` to reach the
+	-- payload size can never come true, since readable is capped at
+	-- rcvbuf. That is what the first version of this did, and it sat
+	-- there until the deadline.
+	local got = {}
+	local total = 0
+
+	local function drain()
+		local d = b:read()
+
+		while d ~= nil and d ~= "" do
+			got[#got + 1] = d
+			total = total + #d
+			d = b:read()
+		end
+	end
+
+	-- stop the instant recovery ends, and look at the window THEN.
+	-- Checked after the transfer finished, it reads whatever congestion
+	-- avoidance has since grown it to -- which is how the first version
+	-- of this assertion managed to want 5840 and find 9514.
+	l:run(l.now + 10000, function()
+		drain()
+		return not a:status().recovery
+	end)
+
+	ok(not a:status().recovery, "a full acknowledgment ends recovery")
+	is(a:status().cwnd, ss, "deflating the window to the threshold")
+
+	l:run(l.now + 20000, function()
+		drain()
+		return total >= #payload
+	end)
+	is(total, #payload, "with the whole transfer delivered")
+end
+
+-- ---- two losses in one window ----
+--
+-- The case NewReno exists for. Reno recovers the first loss by fast
+-- retransmit, then has nothing to say about the second and waits out a
+-- retransmission timeout -- a whole second here. The partial
+-- acknowledgment rule of RFC 6582 resends the second immediately.
+do
+	local a, b = pair({ sndbuf = 256 * 1024 })
+	local ndata = 0
+	local l = link(a, b, {
+		rtt = 20,
+		drop = function(side, sg, _)
+			if side == "a" and sg.data and #sg.data > 0 then
+				ndata = ndata + 1
+				return ndata == 4 or ndata == 6
+			end
+			return false
+		end,
+	})
+
+	connect(l)
+
+	local payload = string.rep("q", 1460 * 20)
+	local t0 = l.now
+
+	a:write(payload, l.now)
+
+	local complete = l:run(l.now + 30000, function()
+		return b:status().readable >= #payload
+	end)
+
+	local cost = l.now - t0
+
+	diag("two losses in one window recovered in " .. cost .. "ms")
+	ok(complete, "two losses in one window still complete")
+	is(#readall(b), #payload, "with every byte delivered")
+	is(l.dropped.a, 2, "having lost exactly two")
+	ok(cost < 1000,
+	    "and without waiting out a timeout for the second: " .. cost .. "ms")
+end
+
+-- ---- a timeout collapses the window ----
+
+do
+	local a, b = pair()
+	local blackout = true
+	local l = link(a, b, {
+		rtt = 20,
+		drop = function(side, sg, _)
+			-- lose everything with data for a while, so nothing
+			-- can recover except the timer.
+			return blackout and side == "a" and sg.data and
+			    #sg.data > 0
+		end,
+	})
+
+	connect(l)
+	a:write(string.rep("t", 1460 * 10), l.now)
+
+	l:run(l.now + 5000, function()
+		return a:status().retries > 0
+	end)
+
+	ok(a:status().retries > 0, "a black hole eventually times out")
+	is(a:status().cwnd, 1460,
+	    "and the window collapses to one segment, whatever it was")
+	ok(a:status().ssthresh < 0xffffffff, "with the threshold brought down too")
+
+	-- and it recovers once the link comes back, by slow start rather
+	-- than by resuming where it left off.
+	blackout = false
+
+	local payload_len = 1460 * 10
+
+	l:run(l.now + 60000, function()
+		return b:status().readable >= payload_len
+	end)
+	is(b:status().readable, payload_len, "and the transfer completes when it clears")
+end
+
+-- ---- what is not a duplicate acknowledgment ----
+--
+-- RFC 5681 section 2 is precise about this, and the precision matters:
+-- counting the wrong thing retransmits data that was never lost. A
+-- segment carrying data is not a duplicate acknowledgment even if its
+-- ack field repeats, and neither is one that moves the window.
+do
+	local a, b = pair()
+	local l = link(a, b, { rtt = 20 })
+
+	connect(l)
+	a:write(string.rep("d", 1460 * 4), l.now)
+	l:run(l.now + 2000, function()
+		return b:status().readable >= 1460 * 4
+	end)
+	readall(b)
+
+	local before = a:status().dupacks
+
+	-- three acknowledgments repeating snd_una, but each carrying data:
+	-- these are ordinary data segments that happen to acknowledge
+	-- nothing new, which is the commonest thing on a duplex connection.
+	for i = 1, 3 do
+		a:segment({
+			sport = 80, dport = 40000,
+			seq = tcp4.add(b.snd_nxt, (i - 1) * 3),
+			ack = a.snd_una,
+			flags = tcp4.ACK,
+			wnd = a.snd_wnd,
+			data = "abc",
+		}, l.now)
+	end
+	is(a:status().dupacks, before,
+	    "an acknowledgment carrying data is not a duplicate")
+	ok(not a:status().recovery, "and does not trigger fast retransmit")
 end
 
 io.write(("1..%d\n"):format(count))
