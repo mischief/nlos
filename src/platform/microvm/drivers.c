@@ -174,25 +174,27 @@ p9_rpc_k(lua_State *L, int status, lua_KContext ctx)
 {
 	(void)status;
 
-	/* ctx 0: the request has not been accepted yet -- either this is
-	 * the first attempt, or another thread of this task had the device.
+	/* ctx carries the slot across the yields, biased by one so that
+	 * zero can mean "not started yet" -- either this is the first
+	 * attempt, or every slot was busy when we last tried.
 	 */
 	if (ctx == 0) {
 		size_t reqlen;
 		const char *req = luaL_checklstring(L, 1, &reqlen);
+		int slot;
 
-		if (virtio_9p_start(req, reqlen) != 0) {
-			if (reqlen > 8192)	/* P9_MSIZE, see virtio_9p.c */
-				return luaL_error(L,
-				    "p9.rpc: message too large");
-			/* busy: let whoever holds the device finish */
+		if (reqlen > 8192)	/* P9_MSIZE, see virtio_9p.c */
+			return luaL_error(L, "p9.rpc: message too large");
+
+		slot = virtio_9p_start(req, reqlen);
+		if (slot < 0)
+			/* window full: let the outstanding ones drain */
 			return lua_yieldk(L, 0, 0, p9_rpc_k);
-		}
-		ctx = 1;
+		ctx = (lua_KContext)(slot + 1);
 	}
 
 	const void *rep;
-	int got = virtio_9p_poll(&rep);
+	int got = virtio_9p_poll((int)ctx - 1, &rep);
 
 	if (got < 0)
 		return lua_yieldk(L, 0, ctx, p9_rpc_k);

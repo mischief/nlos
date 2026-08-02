@@ -16,31 +16,49 @@ int	virtio_9p_init(void);
  */
 int	virtio_9p_tag(char *buf, size_t bufcap);
 
-/* one 9P2000 round trip, split so the caller can do something else
- * while the device works.
+/* 9P2000 round trips, split so the caller can do something else while
+ * the device works, and several at once so that waiting for one does
+ * not stop the rest.
  *
- * It has to be split. Scheduling here is cooperative and single
+ * The split is not optional. Scheduling here is cooperative and single
  * threaded, so busy-waiting for a reply stops the whole machine, not
  * just the proc that asked -- and a mounted filesystem does this on
  * every walk, read and clunk. The Lua binding yields between polls
- * instead, which is the same shape the efi platform's net driver uses
+ * instead, the same shape the efi platform's net driver uses
  * (net_dial_start / net_dial_poll).
  *
- * Both buffers are owned by the transport rather than the caller: the
- * device reads the request and writes the reply on its own schedule,
- * so neither may live on a Lua stack that moves across a yield.
+ * The depth is what makes a fan-out worth doing. One request in flight
+ * meant N concurrent readers took N times as long as one, since each
+ * waited for the last; with a window they overlap.
+ *
+ * A caller is given a SLOT and holds it until it reaps the reply. That
+ * slot is the whole routing mechanism: the device answers into that
+ * slot's own buffer, so nothing above has to match replies to requests.
+ * lib/p9fs.lua derives its 9P tag from the slot number for the same
+ * reason -- a slot is owned for exactly as long as its request is
+ * outstanding, so slot numbers are already unique among in-flight
+ * requests, which is all a tag has to be.
+ *
+ * Buffers belong to the transport, not the caller: the device reads the
+ * request and writes the reply on its own schedule, so neither may live
+ * on a Lua stack that moves across a yield.
  *
  * start: req[0,reqlen) is a complete T-message, size prefix included
- * (see lib/ninep.lua's frame()). 0 on success, -1 if a request is
- * already in flight or the message does not fit.
+ * (see lib/ninep.lua's frame()). Returns a slot, or -1 if every slot is
+ * busy or the message does not fit. A full window is an ordinary
+ * outcome the caller retries, not an error.
  *
- * poll: -1 while the device has not answered. Otherwise the R-message
- * length, with *rep pointed at it -- valid only until the next start.
+ * poll: -1 while that slot's reply has not arrived. Otherwise the
+ * R-message length with *rep pointed at it, valid until the slot is
+ * used again -- which cannot happen before the caller starts another
+ * request, since reaping is what frees the slot.
  *
- * This is pure transport; framing and decoding are Lua's job (see
+ * This is pure transport; framing, tags and decoding are Lua's job (see
  * AGENTS.md, "C is mechanism, Lua is policy").
  */
+#define VIRTIO_9P_SLOTS 8
+
 int	virtio_9p_start(const void *req, size_t reqlen);
-int	virtio_9p_poll(const void **rep);
+int	virtio_9p_poll(int slot, const void **rep);
 
 #endif

@@ -283,9 +283,16 @@ for i = 0, NBLOCK - 1 do
 	handles[i]:close()
 end
 
--- the numbers above are the point; this only keeps the phase from being
--- silently skipped. When the transport pipelines, the assertion to add
--- here is that concurrent beats sequential.
-tap.ok(parcyc >= 0, "the concurrent phase completed")
+-- the property the window bought, and the one worth defending: the
+-- same reads issued together finish sooner than issued in a row.
+--
+-- Stated as "not slower" rather than as a speedup figure. What is
+-- available to win here is the device latency a second request can
+-- overlap, and on a local virtio-9p device serving a host directory
+-- that is small -- most of a read is guest-side work that stays serial
+-- however deep the window is. A ratio tuned to today's margin would be
+-- a machine-speed assertion wearing a correctness costume.
+tap.ok(parcyc <= seqcyc, string.format(
+    "64 reads at once beat 64 in a row (%.2fx)", parcyc / seqcyc))
 
 tap.done()

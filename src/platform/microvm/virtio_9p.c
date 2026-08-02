@@ -30,7 +30,7 @@ virtio_9p_init(void)
 {
 	if (virtio_find(VIRTIO_ID_9P, &p9dev) != 0)
 		return -1;
-	if (virtio_dev_init(&p9dev, 8) != 0)
+	if (virtio_dev_init(&p9dev, 2 * VIRTIO_9P_SLOTS) != 0)
 		return -1;
 	p9_ready = 1;
 	return 0;
@@ -53,25 +53,79 @@ virtio_9p_tag(char *buf, size_t bufcap)
 	return len;
 }
 
-/* the transport owns both buffers, because the device reads one and
+/* the transport owns the buffers, because the device reads one and
  * writes the other while the calling proc is descheduled -- neither can
  * be a pointer into a Lua state that may have moved or collected by
  * then.
  *
- * One request in flight. The 9p capability belongs to a single task
- * (PRIV_P9, lib/p9srv.lua), so contention means two of its threads, and
- * the binding yields and retries rather than failing.
+ * One set per slot, so slots are independent: that is what lets a
+ * second request start before the first has answered. The cost is
+ * static and paid whether or not the depth is used -- 8 slots at two
+ * 8K buffers is 128K, against a machine with 256M.
+ *
+ * The queue is sized to match. Each slot holds two descriptors for as
+ * long as it is busy, so a queue shorter than 2 * VIRTIO_9P_SLOTS would
+ * make virtio_desc_alloc the real limit and the slot table a lie about
+ * the depth. virtio_queue_init clamps to what the device offers, and
+ * the code below copes with a smaller queue by simply failing to start
+ * -- which start's contract already allows for.
  */
-static char p9req[P9_MSIZE];
-static char p9rep[P9_MSIZE];
-static int p9_inflight;
-static uint16_t p9_dreq, p9_drep;
+static char p9req[VIRTIO_9P_SLOTS][P9_MSIZE];
+static char p9rep[VIRTIO_9P_SLOTS][P9_MSIZE];
+
+static struct {
+	int busy;		/* started, not yet reaped */
+	int done;		/* the device has answered; len is valid */
+	uint32_t len;
+	uint16_t dreq, drep;
+} p9slot[VIRTIO_9P_SLOTS];
+
+/* drain the used ring into the slots it belongs to.
+ *
+ * Completions are per device, not per slot: the ring says which
+ * descriptor chain finished, in whatever order the device chose, and
+ * any poll may be the one that sees a reply meant for another slot.
+ * So every poll drains everything and files each result under its own
+ * slot, rather than looking only for its own and dropping the rest --
+ * which would lose completions outright, since virtio_poll_used
+ * consumes the entry it reports.
+ */
+static void
+reap(void)
+{
+	uint16_t id;
+	uint32_t len;
+
+	while (virtio_poll_used(&p9dev, 0, &id, &len)) {
+		for (int i = 0; i < VIRTIO_9P_SLOTS; i++) {
+			if (!p9slot[i].busy || p9slot[i].done)
+				continue;
+			if (p9slot[i].dreq != id)
+				continue;
+
+			p9slot[i].len = len > P9_MSIZE ? P9_MSIZE : len;
+			p9slot[i].done = 1;
+			break;
+		}
+	}
+}
 
 int
 virtio_9p_start(const void *req, size_t reqlen)
 {
-	if (!p9_ready || p9_inflight || reqlen > P9_MSIZE)
+	int slot = -1;
+
+	if (!p9_ready || reqlen > P9_MSIZE)
 		return -1;
+
+	for (int i = 0; i < VIRTIO_9P_SLOTS; i++) {
+		if (!p9slot[i].busy) {
+			slot = i;
+			break;
+		}
+	}
+	if (slot < 0)
+		return -1;		/* window full; the caller retries */
 
 	int a = virtio_desc_alloc(&p9dev, 0);
 	int b = virtio_desc_alloc(&p9dev, 0);
@@ -84,38 +138,40 @@ virtio_9p_start(const void *req, size_t reqlen)
 		return -1;
 	}
 
-	memcpy(p9req, req, reqlen);
+	memcpy(p9req[slot], req, reqlen);
 
 	/* a readable (the T-message) chained to b writable (the R-message) */
-	virtio_desc_set(&p9dev, 0, (uint16_t)a, p9req, (uint32_t)reqlen, 0, b);
-	virtio_desc_set(&p9dev, 0, (uint16_t)b, p9rep, P9_MSIZE, 1, -1);
+	virtio_desc_set(&p9dev, 0, (uint16_t)a, p9req[slot], (uint32_t)reqlen, 0, b);
+	virtio_desc_set(&p9dev, 0, (uint16_t)b, p9rep[slot], P9_MSIZE, 1, -1);
 
-	p9_dreq = (uint16_t)a;
-	p9_drep = (uint16_t)b;
-	p9_inflight = 1;
+	p9slot[slot].dreq = (uint16_t)a;
+	p9slot[slot].drep = (uint16_t)b;
+	p9slot[slot].busy = 1;
+	p9slot[slot].done = 0;
+	p9slot[slot].len = 0;
 
 	virtio_submit(&p9dev, 0, (uint16_t)a);
-	return 0;
+	return slot;
 }
 
 int
-virtio_9p_poll(const void **rep)
+virtio_9p_poll(int slot, const void **rep)
 {
-	uint16_t id;
-	uint32_t len;
-
-	if (!p9_inflight)
-		return -1;
-	if (!virtio_poll_used(&p9dev, 0, &id, &len))
+	if (slot < 0 || slot >= VIRTIO_9P_SLOTS || !p9slot[slot].busy)
 		return -1;
 
-	virtio_desc_free(&p9dev, 0, p9_drep);
-	virtio_desc_free(&p9dev, 0, p9_dreq);
-	p9_inflight = 0;
+	if (!p9slot[slot].done) {
+		reap();
+		if (!p9slot[slot].done)
+			return -1;
+	}
 
-	if (len > P9_MSIZE)
-		len = P9_MSIZE;
+	virtio_desc_free(&p9dev, 0, p9slot[slot].drep);
+	virtio_desc_free(&p9dev, 0, p9slot[slot].dreq);
+	p9slot[slot].busy = 0;
+	p9slot[slot].done = 0;
+
 	if (rep)
-		*rep = p9rep;
-	return (int)len;
+		*rep = p9rep[slot];
+	return (int)p9slot[slot].len;
 }

@@ -173,9 +173,13 @@ function ops.session(S)
 	local recv = sys.newport()
 	local port = sys.sendright(recv)
 
+	-- the session inherits the window, and this is the serve that
+	-- actually needs it: the establishment port answers session and
+	-- readonly, which do not block, while every read and walk a client
+	-- makes arrives here.
 	thread.spawn(function()
 		M.serve(ro and dev.readonly(S.B) or S.B, recv,
-		    { establish = false })
+		    { establish = false, workers = S.workers })
 	end)
 
 	-- the second return is closed once the reply has been sent. the
@@ -214,7 +218,7 @@ function ops.readonly(S)
 			-- this loop never sees a hangup: we hold two rights to
 			-- the port ourselves, so nrights never falls to one.
 			-- it lives as long as the server proc.
-			M.serve(S.B, recv, { ro = true })
+			M.serve(S.B, recv, { ro = true, workers = S.workers })
 		end)
 	end
 	return { port = { __right = S.roport } }
@@ -232,6 +236,9 @@ local function newstate(backend, opts)
 	local S = {
 		B = backend, fids = {}, next = 1,
 		ro = opts and opts.ro or false,
+		-- carried so a session serve started from ops.session gets
+		-- the same window the establishment serve was given
+		workers = opts and opts.workers or 0,
 		-- establishment unless told otherwise, so a plain
 		-- serve(backend, port) is what a server wants and only srv
 		-- itself makes the other kind
@@ -323,18 +330,97 @@ M.dispatch = dispatch
 -- nothing else, and the sessions it hands out carry the fid spaces.
 -- opts.establish = false is srv's own use, for a session port.
 -- opts.ro makes the sessions it hands out read-only views.
+--
+-- opts.workers = N dispatches each message in its own thread, up to N
+-- at once, instead of one at a time. Off by default, and it should stay
+-- off for a backend whose calls do not block: a local one answers
+-- inside dispatch without ever yielding, so a thread per message would
+-- buy nothing and cost a coroutine.
+--
+-- It is for a backend that waits on something. lib/p9fs.lua does -- its
+-- every call is a round trip to the device -- and serially that meant a
+-- client's Nth concurrent read waited for the N-1 before it, however
+-- many the transport could actually have had in flight (see
+-- VIRTIO_9P_SLOTS). The reply port travels in the message, so a worker
+-- needs nothing from the loop to answer.
+--
+-- Bounded because the alternative is a coroutine per queued message and
+-- no limit on how many that is. N is a window, not a thread count worth
+-- tuning: past the transport's own depth the extra workers only queue.
 function M.serve(backend, port, opts)
 	dev.check(backend, "srv backend")
 
 	local S = newstate(backend, opts)
+	local workers = opts and opts.workers or 0
+
+	if workers < 2 then
+		while true do
+			local ok, m = sys.tryrecv(port)
+
+			if ok then
+				dispatch(S, m)
+			elseif sys.hungup(port) then
+				return
+			else
+				thread.park(port)
+			end
+		end
+	end
+
+	-- buffered to the worker count so a finishing worker never blocks
+	-- handing its slot back, which would deadlock it against a loop
+	-- that is itself waiting for a slot.
+	local done = thread.chancreate(workers)
+	local inflight = 0
+
+	local function reap(block)
+		if block and inflight > 0 then
+			done:recv()
+			inflight = inflight - 1
+		end
+		while inflight > 0 do
+			local got = done:nbrecv()
+
+			if not got then
+				break
+			end
+			inflight = inflight - 1
+		end
+	end
 
 	while true do
+		reap(false)
+
 		local ok, m = sys.tryrecv(port)
 
 		if ok then
-			dispatch(S, m)
+			-- at capacity: wait for a worker rather than spawning
+			-- past the window
+			if inflight >= workers then
+				reap(true)
+			end
+			inflight = inflight + 1
+			thread.spawn(function()
+				-- dispatch already answers errors to the
+				-- client; this only keeps one failed request
+				-- from taking the slot with it
+				pcall(dispatch, S, m)
+				done:send(true)
+			end)
 		elseif sys.hungup(port) then
+			-- clients are gone, but requests already taken off
+			-- the port still have replies owed to them
+			while inflight > 0 do
+				reap(true)
+			end
 			return
+		elseif inflight > 0 then
+			-- workers are runnable, so parking the whole proc on
+			-- the port would stop them. A bare yield is what
+			-- thread.run treats as "still runnable" -- the same
+			-- path a preempted thread takes -- so this goes back
+			-- on the run queue rather than into _parked.
+			coroutine.yield()
 		else
 			thread.park(port)
 		end
@@ -350,9 +436,11 @@ end
 -- under the thread scheduler rather than at the top level is what lets
 -- a server proc do anything else at the same time; serve() itself parks
 -- through thread.park, which works either way.
-function M.main(build)
+-- opts is passed through to M.serve; opts.workers is the one a driver
+-- task is likely to want (see the note there).
+function M.main(build, opts)
 	thread.spawn(function()
-		M.serve(build(), sys.SELF)
+		M.serve(build(), sys.SELF, opts)
 	end)
 	thread.run()
 end

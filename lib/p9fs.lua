@@ -21,12 +21,17 @@ local dev = require("dev")
 
 local M = {}
 
-local TAG = 1
 local err = dev.error
 
-local function checkreply(rep, wanttype, what)
+-- `tag` is the one the request went out under; nil skips the check,
+-- which is what the version handshake does since it uses NOTAG.
+local function checkreply(rep, wanttype, what, tag)
 	local m = ninep.decode(rep)
 
+	if tag and m.tag ~= tag then
+		err(what .. ": reply tagged " .. tostring(m.tag) ..
+		    ", wanted " .. tostring(tag))
+	end
 	if m.type == ninep.Rerror then
 		err(m.ename)
 	end
@@ -47,6 +52,48 @@ function M.new(transport)
 	local B = {}
 	local next_fid = 1
 
+	-- a 9P tag has to be unique among OUTSTANDING requests, and no
+	-- more than that -- it exists so a reply can be matched to its
+	-- request. This used to be the constant 1, which was true enough
+	-- when the transport held one request at a time and every rpc was
+	-- therefore the only one in flight.
+	--
+	-- It no longer is: los.platform.p9 keeps a window of them (see
+	-- VIRTIO_9P_SLOTS), so two threads of this task can be waiting on
+	-- the device at once and a shared tag would make their replies
+	-- indistinguishable to any server that looked.
+	--
+	-- Held only for the duration of the call, so the table never grows
+	-- past the window. Note that nothing here routes on the tag: the
+	-- transport answers into the slot the request was started in, so
+	-- rpc() below verifies the tag rather than dispatching on it, and
+	-- a mismatch is a transport bug rather than a race to recover
+	-- from.
+	local intag = {}
+	local nexttag = 0
+
+	-- build(tag) -> request bytes; returns the decoded reply, already
+	-- checked. The check lives in here rather than at the call sites
+	-- so that the tag never has to be threaded back out to them --
+	-- which is what makes it impossible for a call site to forget it.
+	local function rpc(build, wanttype, what)
+		local t = nexttag
+
+		repeat
+			t = (t % 0xfffe) + 1
+		until not intag[t]
+		nexttag = t
+		intag[t] = true
+
+		local ok, rep = pcall(p9.rpc, build(t))
+
+		intag[t] = nil
+		if not ok then
+			error(rep, 0)
+		end
+		return checkreply(rep, wanttype, what, t)
+	end
+
 	-- propose .u (what qemu's virtio-9p always negotiates down to
 	-- anyway); a server that only speaks base 9P2000 -- this module's
 	-- own M.serve, or any generic 9P2000 fileserver -- replies
@@ -64,8 +111,10 @@ function M.new(transport)
 
 	local dotu = (vm.version == "9P2000.u")
 
-	checkreply(p9.rpc(ninep.tattach(TAG, 0, ninep.NOFID, "root", "",
-	    dotu and ninep.NONUNAME or nil)), ninep.Rattach, "attach")
+	rpc(function(t)
+		return ninep.tattach(t, 0, ninep.NOFID, "root", "",
+		    dotu and ninep.NONUNAME or nil)
+	end, ninep.Rattach, "attach")
 
 	local function newfid()
 		local f = next_fid
@@ -79,7 +128,8 @@ function M.new(transport)
 	local function clone(fid)
 		local nfid = newfid()
 
-		checkreply(p9.rpc(ninep.tclone(TAG, fid, nfid)), ninep.Rwalk, "clone")
+		rpc(function(t) return ninep.tclone(t, fid, nfid) end,
+		    ninep.Rwalk, "clone")
 		return nfid
 	end
 
@@ -97,7 +147,8 @@ function M.new(transport)
 		end
 
 		local nfid = newfid()
-		local m = checkreply(p9.rpc(ninep.twalk(TAG, h.fid, nfid, { name })),
+		local m = rpc(
+		    function(t) return ninep.twalk(t, h.fid, nfid, { name }) end,
 		    ninep.Rwalk, "walk")
 
 		if #m.wqid ~= 1 then
@@ -107,7 +158,7 @@ function M.new(transport)
 	end
 
 	function B.stat(h)
-		local m = checkreply(p9.rpc(ninep.tstat(TAG, h.fid)),
+		local m = rpc(function(t) return ninep.tstat(t, h.fid) end,
 		    ninep.Rstat, "stat")
 		local st = ninep.unpackstat(m.statbytes)
 
@@ -133,11 +184,13 @@ function M.new(transport)
 		end
 
 		local m9mode = (mode == "r") and 0 or 1
-		local ok = pcall(checkreply, p9.rpc(ninep.topen(TAG, nfid, m9mode)),
+		local ok = pcall(rpc,
+		    function(t) return ninep.topen(t, nfid, m9mode) end,
 		    ninep.Ropen, "open")
 
 		if not ok then
-			pcall(p9.rpc, ninep.tclunk(TAG, nfid))
+			pcall(rpc, function(t) return ninep.tclunk(t, nfid) end,
+			    ninep.Rclunk, "clunk")
 			err(mode == "r" and dev.Enonexist or dev.Eperm)
 		end
 		return dev.closable(B, h_of(nfid, false, h.name))
@@ -157,13 +210,16 @@ function M.new(transport)
 
 		local nfid = clone(h.fid)
 		local m9mode = (mode == "r") and 0 or 1
-		local ok = pcall(checkreply,
-		    p9.rpc(ninep.tcreate(TAG, nfid, name, PERM_0644, m9mode,
-		        dotu and "" or nil)),
+		local ok = pcall(rpc,
+		    function(t)
+		        return ninep.tcreate(t, nfid, name, PERM_0644, m9mode,
+		            dotu and "" or nil)
+		    end,
 		    ninep.Rcreate, "create")
 
 		if not ok then
-			pcall(p9.rpc, ninep.tclunk(TAG, nfid))
+			pcall(rpc, function(t) return ninep.tclunk(t, nfid) end,
+			    ninep.Rclunk, "clunk")
 			err(dev.Eperm)
 		end
 		return dev.closable(B, h_of(nfid, false, name))
@@ -173,7 +229,7 @@ function M.new(transport)
 		if h.isdir then
 			err(dev.Eisdir)
 		end
-		local m = checkreply(p9.rpc(ninep.tread(TAG, h.fid, off, n)),
+		local m = rpc(function(t) return ninep.tread(t, h.fid, off, n) end,
 		    ninep.Rread, "read")
 		return m.data
 	end
@@ -182,7 +238,7 @@ function M.new(transport)
 		if h.isdir then
 			err(dev.Eisdir)
 		end
-		local m = checkreply(p9.rpc(ninep.twrite(TAG, h.fid, off, data)),
+		local m = rpc(function(t) return ninep.twrite(t, h.fid, off, data) end,
 		    ninep.Rwrite, "write")
 		return m.count
 	end
@@ -197,18 +253,21 @@ function M.new(transport)
 		end
 
 		local fid = clone(h.fid)
-		local ok = pcall(checkreply, p9.rpc(ninep.topen(TAG, fid, 0)),
+		local ok = pcall(rpc,
+		    function(t) return ninep.topen(t, fid, 0) end,
 		    ninep.Ropen, "readdir")
 
 		if not ok then
-			pcall(p9.rpc, ninep.tclunk(TAG, fid))
+			pcall(rpc, function(t) return ninep.tclunk(t, fid) end,
+			    ninep.Rclunk, "clunk")
 			err(dev.Eio)
 		end
 
 		local out, off = {}, 0
 
 		while true do
-			local m = checkreply(p9.rpc(ninep.tread(TAG, fid, off, 4096)),
+			local m = rpc(
+			    function(t) return ninep.tread(t, fid, off, 4096) end,
 			    ninep.Rread, "readdir")
 
 			if #m.data == 0 then
@@ -236,13 +295,15 @@ function M.new(transport)
 			end
 			off = off + #m.data
 		end
-		p9.rpc(ninep.tclunk(TAG, fid))
+		rpc(function(t) return ninep.tclunk(t, fid) end,
+		    ninep.Rclunk, "clunk")
 		table.sort(out, function(a, b) return a.name < b.name end)
 		return out
 	end
 
 	function B.clunk(h)
-		pcall(p9.rpc, ninep.tclunk(TAG, h.fid))
+		pcall(rpc, function(t) return ninep.tclunk(t, h.fid) end,
+		    ninep.Rclunk, "clunk")
 	end
 
 	return B
