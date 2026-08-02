@@ -213,6 +213,7 @@ else
     'task/p9srv.lua',
     'task/eth.lua',
     'lib/tap.lua',
+    'lib/ps.lua',
   ]
   embed_args = []
   foreach f : embed_files
@@ -689,21 +690,24 @@ foreach t : microvm_tests
   )
 endforeach
 
-# the no-fw_cfg path: nothing injected, so the guest runs the payload
-# embedded in its own image. Tested under qemu because that is where a
-# test can run, but it exists for vmd, which has no other way in --
-# separate from the loop above because it has no payload file to name.
-test('microvm-embedded-boot', microvm_boottest,
-  args: [luaos_microvm_elf, '-'],
-  protocol: 'tap',
-  timeout: 90,
-  is_parallel: true,
-)
-
 # serial receive needs the port in BOTH directions, which the boottest
 # harness cannot do -- it points the guest's serial at a file. This one
 # drives a unix socket instead, so it is host-driven like the efi
 # platform's 9p test and needs hostutil for the same reason.
+# the no-fw_cfg path: nothing injected, so the guest runs the console
+# repl embedded in its own image, and this types at it. Needs the port
+# in both directions, so it is here with the other socket-driven test
+# rather than in the boottest loop. Tested under qemu because that is
+# where a test can run; it exists for vmd, which has no other way in.
+if have_hostutil
+  test('microvm-embedded-boot', lua_interp,
+    args: [files('test/microvm_repl.lua'), luaos_microvm_elf],
+    protocol: 'tap',
+    timeout: 120,
+    env: {'HOSTUTIL_SO': hostutil.full_path()},
+  )
+endif
+
 if have_hostutil
   test('microvm-serialrx', lua_interp,
     args: [files('test/microvm_serial.lua'), luaos_microvm_elf,

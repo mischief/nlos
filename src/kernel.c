@@ -3461,6 +3461,13 @@ pump_serial(void)
 	unsigned int n = 0;
 	int c;
 
+	/* the console claimed these bytes; pump_keyboard takes them
+	 * instead. One uart cannot feed two readers, and taking them here
+	 * first is exactly how the console got no input at all.
+	 */
+	if (platform_console_input())
+		return 0;
+
 	while (n < 256 && (c = uart_rx()) >= 0)
 		buf[5 + n++] = (unsigned char)c;
 	if (n == 0)

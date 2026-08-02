@@ -68,6 +68,16 @@ while true do
 		-- log lines arrive already stamped and tagged (lib/log.lua);
 		-- cons is the console, not the formatter.
 		platform.write(m.data)
+	elseif m.op == "claim_input" then
+		-- microvm only: com1 is the keyboard and the 9p wire both,
+		-- and until someone chooses, the wire has the bytes. The
+		-- boot payload chooses by sending this, rather than cons
+		-- claiming unasked -- a machine whose serial line is
+		-- carrying 9p wants that to keep working. Absent on efi,
+		-- where ConIn and com2 are different devices.
+		if platform.claim_input then
+			platform.claim_input()
+		end
 	elseif m.op == "readline" then
 		sys.send(m.reply.__right, readline())
 	elseif m.op == "read" then

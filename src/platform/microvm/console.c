@@ -7,10 +7,32 @@
 
 #include "platform.h"
 
+/* bare \n becomes \r\n on the way out.
+ *
+ * A terminal on the far end of a serial line does not move the carriage
+ * for a line feed, so text written with unix line endings walks off to
+ * the right one line at a time -- unmissable on a vmd console, and
+ * invisible under the test harness, which strips \r before comparing.
+ *
+ * Here and not in uart_tx: com1 also carries the 9p wire (lib/wire.lua),
+ * and rewriting bytes in a protocol stream would corrupt it. This is the
+ * console, where the convention belongs.
+ */
 void
 console_write(const char *s, size_t n)
 {
-	uart_tx(s, n);
+	size_t start = 0;
+
+	for (size_t i = 0; i < n; i++) {
+		if (s[i] != '\n')
+			continue;
+		if (i > start)
+			uart_tx(s + start, i - start);
+		uart_tx("\r\n", 2);
+		start = i + 1;
+	}
+	if (n > start)
+		uart_tx(s + start, n - start);
 }
 
 int

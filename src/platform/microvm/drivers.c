@@ -23,6 +23,30 @@ void platform_stall_us(unsigned long us);
 
 /* ---- los.platform.cons ---- */
 
+/* com1 is the console's keyboard and the 9p wire both, and a byte can
+ * only be delivered once. Until the console claims it, kernel.c's
+ * pump_serial drains it to the wire exactly as before -- which is what
+ * test/boot/microvm_serialrx.lua measures, and why this is not simply
+ * switched on. The console driver claims it when the boot payload tells
+ * it to (lib/cons.lua's claim_input op), and from then on the bytes
+ * reach efi_shim's ReadKeyStroke and so the cons task's line editor.
+ */
+static int console_owns_input;
+
+int
+platform_console_input(void)
+{
+	return console_owns_input;
+}
+
+static int
+cons_claim_input(lua_State *L)
+{
+	console_owns_input = 1;
+	(void)L;
+	return 0;
+}
+
 static int
 cons_write(lua_State *L)
 {
@@ -35,6 +59,7 @@ cons_write(lua_State *L)
 
 static const luaL_Reg conslib[] = {
 	{ "write", cons_write },
+	{ "claim_input", cons_claim_input },
 	{ NULL, NULL }
 };
 

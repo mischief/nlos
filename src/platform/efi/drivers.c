@@ -162,6 +162,15 @@ luaopen_los_platform_p9(lua_State *L)
  * no virtio-mmio driver to produce them with. Same empty-symbol
  * arrangement as p9 above.
  */
+/* two devices here: the firmware's ConIn is the keyboard and com2 is
+ * the wire, so nothing has to choose between them. See platform.h.
+ */
+int
+platform_console_input(void)
+{
+	return 0;
+}
+
 int
 platform_have_eth(void)
 {

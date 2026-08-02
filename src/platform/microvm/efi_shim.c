@@ -9,7 +9,12 @@
 
 #include <stdlib.h>
 
+#include <stdint.h>
+
 #include "efi.h"
+#include "platform.h"
+
+int	uart_rx(void);
 
 void	timer_arm_periodic(unsigned long long period_100ns);
 unsigned long long timer_ticks(void);
@@ -81,8 +86,23 @@ static EFI_STATUS
 shim_read_key(EFI_SIMPLE_TEXT_INPUT_PROTOCOL *self, EFI_INPUT_KEY *key)
 {
 	(void)self;
-	(void)key;
-	return EFI_NOT_READY;	/* no keyboard on microvm */
+
+	/* the keyboard on microvm is com1, once the console has claimed
+	 * it -- before that the wire owns those bytes and this must not
+	 * take them. kernel.c's pump_keyboard is the only caller, and it
+	 * turns what comes back into the cons task's input.
+	 */
+	if (!platform_console_input())
+		return EFI_NOT_READY;
+
+	int c = uart_rx();
+
+	if (c < 0)
+		return EFI_NOT_READY;
+
+	key->ScanCode = 0;
+	key->UnicodeChar = (uint16_t)c;
+	return EFI_SUCCESS;
 }
 
 static EFI_SIMPLE_TEXT_INPUT_PROTOCOL conin_impl = {

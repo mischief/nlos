@@ -55,6 +55,17 @@ int	platform_have_fb(void);
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);
+
+/* does the console own the serial input, rather than the wire?
+ *
+ * On efi these are two devices -- the firmware's ConIn is the keyboard
+ * and com2 is the wire -- so the question does not arise and the answer
+ * is always no. microvm has exactly one uart and both want it, so it is
+ * a boot-time policy: whoever the payload hands the console to claims
+ * it, and until something does, the bytes go to the wire as before.
+ * kernel.c's pump_serial asks before draining.
+ */
+int	platform_console_input(void);
 _Noreturn void platform_abort(const char *why);
 
 /* <arch>/machine.c */
