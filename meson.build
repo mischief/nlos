@@ -224,6 +224,8 @@ else
     'lib/dhcp.lua',
     'lib/dhcpc.lua',
     'lib/ntp.lua',
+    'lib/dns.lua',
+    'lib/dnsc.lua',
     'lib/tap.lua',
     'lib/ps.lua',
   ]
@@ -438,6 +440,7 @@ lua_payload = files(
   'lib/ssh/server.lua',
   'lib/dhcp.lua',
   'task/dhcpd.lua',
+  'lib/dns.lua',
   'task/dns.lua',
   'lib/espfs.lua',
   'task/espsrv.lua',
@@ -693,6 +696,7 @@ microvm_tests = [
   ['arp', ['--net']],
   ['ping', ['--net']],
   ['dhcp', ['--net']],
+  ['dns', ['--net']],
   ['idle', []],
 ]
 

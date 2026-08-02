@@ -1,6 +1,8 @@
--- dns: resolves hostnames to IPv4 addresses via a plain-lua dns codec
--- (query building + response parsing, same string.pack/unpack style
--- ninep.lua uses) riding on top of the udp task's capability. NOT a
+-- dns: resolves hostnames to IPv4 addresses, riding the udp task's
+-- capability. The wire format is lib/dns.lua, which this requires --
+-- the same codec lib/dnsc.lua drives over the Lua stack, so a fix to
+-- either transport cannot quietly disagree with the other about the
+-- protocol. NOT a
 -- kernel-level exclusive task -- it has no raw efi access of its own,
 -- just an ordinary spawned proc holding a udp right, same shape as
 -- the 9p-over-tcp/wire servers in init.lua. protocol:
@@ -18,9 +20,9 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local caps = require("caps")
+local dnsmsg = require("dns")
 local ns = require("ns")
 
-local spack, sunpack = string.pack, string.unpack
 
 -- the resolver comes from the LEASE, by reading a file: lib/dhcpd.lua
 -- serves /net/dns, one address per line, and this proc has /net in the
@@ -33,7 +35,7 @@ local spack, sunpack = string.pack, string.unpack
 -- it is a fallback rather than the default, which is the difference from
 -- how this used to work.
 local FALLBACK = { 10, 0, 2, 3 }
-local RESOLVER_PORT = 53
+local RESOLVER_PORT = dnsmsg.PORT
 
 -- re-read rather than cached, because a renewal can change it and
 -- because /net may not have a lease yet when the first query arrives.
@@ -67,91 +69,6 @@ local ATTEMPT_MS = 1000
 local OPEN_RETRY_MS = 250
 
 -- ---- codec ----
-
-local function encode_qname(name)
-	local parts = {}
-	for label in name:gmatch("[^.]+") do
-		parts[#parts + 1] = spack("s1", label)
-	end
-	parts[#parts + 1] = "\0"
-	return table.concat(parts)
-end
-
-local function build_query(name, id)
-	-- header: ID, flags (0x0100 = standard query, recursion desired),
-	-- QDCOUNT=1, ANCOUNT/NSCOUNT/ARCOUNT=0
-	local header = spack(">I2I2I2I2I2I2", id, 0x0100, 1, 0, 0, 0)
-	-- question: QNAME, QTYPE=1 (A), QCLASS=1 (IN)
-	local question = encode_qname(name) .. spack(">I2I2", 1, 1)
-	return header .. question
-end
-
--- a NAME field in the question section is always literal labels (we
--- wrote it ourselves); in the answer section it may instead be a
--- compression pointer (top two bits of the length byte set) pointing
--- back at the question -- we only need to skip past it, never
--- resolve what it points to.
-local function skip_qname(buf, off)
-	while true do
-		local len = buf:byte(off)
-		if not len or len == 0 then
-			return off + 1
-		end
-		off = off + 1 + len
-	end
-end
-
-local function skip_name(buf, off)
-	local len = buf:byte(off)
-	if len and (len & 0xC0) == 0xC0 then
-		return off + 2
-	end
-	return skip_qname(buf, off)
-end
-
--- returns "a.b.c.d" on success, or nil + a reason on failure.
---
--- called only through safe_parse below: every sunpack here can throw
--- on a truncated buffer, and the source of these bytes is a udp
--- datagram from the network, which anything on the wire can forge and
--- truncate. an uncaught throw would take the whole dns task down --
--- permanently, for every client -- on one malformed packet.
-local function parse_response(buf, expect_id)
-	if #buf < 12 then
-		return nil, "short reply"
-	end
-	local id, flags, qdcount, ancount = sunpack(">I2I2I2I2", buf)
-	if id ~= expect_id then
-		return nil, "id mismatch"
-	end
-	if (flags & 0xF) ~= 0 then
-		return nil, "rcode " .. (flags & 0xF)
-	end
-	local off = 13	-- 1-based, right after the 12-byte header
-	for _ = 1, qdcount do
-		off = skip_qname(buf, off) + 4	-- +2 QTYPE, +2 QCLASS
-	end
-	for _ = 1, ancount do
-		off = skip_name(buf, off)
-		local rtype, rclass, ttl, rdlen
-		rtype, rclass, ttl, rdlen, off = sunpack(">I2I2I4I2", buf, off)
-		if rtype == 1 and rclass == 1 and rdlen == 4 then
-			local a, b, c, d = buf:byte(off, off + 3)
-			return string.format("%d.%d.%d.%d", a, b, c, d)
-		end
-		off = off + rdlen
-	end
-	return nil, "no A record"
-end
-
-local function safe_parse(buf, expect_id)
-	local ok, ip, why = pcall(parse_response, buf, expect_id)
-
-	if not ok then
-		return nil, "malformed reply"
-	end
-	return ip, why
-end
 
 -- ---- transport: manual send + poll-with-deadline (see header) ----
 
@@ -191,7 +108,7 @@ local function try_once(query, id, ms)
 	if why == nil then
 		sys.close(replyport)
 		if r then
-			return safe_parse(r.data, id)
+			return dnsmsg.parse(r.data, id)
 		end
 		return nil
 	end
@@ -211,7 +128,7 @@ local function resolve(name)
 	for _ = 1, ATTEMPTS do
 		local id = nextid
 		nextid = (nextid % 0xFFFF) + 1
-		local ip = try_once(build_query(name, id), id, ATTEMPT_MS)
+		local ip = try_once(dnsmsg.build_query(name, id), id, ATTEMPT_MS)
 		if ip then
 			return ip
 		end
