@@ -712,6 +712,7 @@ microvm_tests = [
   ['iptask', ['--net']],
   ['udpq', ['--net']],
   ['loopback', ['--net']],
+  ['udpbench', ['--net']],
   ['autoip', ['--net']],
   ['idle', []],
 ]
