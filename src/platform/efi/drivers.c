@@ -162,6 +162,17 @@ luaopen_los_platform_p9(lua_State *L)
  * no virtio-mmio driver to produce them with. Same empty-symbol
  * arrangement as p9 above.
  */
+/* no device here raises anything a driver could sleep on: tcp4 and udp4
+ * completions are Events that net.c polls itself, deliberately outside
+ * kernel_run's wait set (see kernel_new_net_event). So this never
+ * changes, and the pump that watches it never fires.
+ */
+unsigned long
+platform_dev_irqs(void)
+{
+	return 0;
+}
+
 /* two devices here: the firmware's ConIn is the keyboard and com2 is
  * the wire, so nothing has to choose between them. See platform.h.
  */

@@ -217,6 +217,7 @@ else
     'lib/ether.lua',
     'lib/ip4.lua',
     'lib/arp.lua',
+    'lib/ethwire.lua',
     'lib/tap.lua',
     'lib/ps.lua',
   ]

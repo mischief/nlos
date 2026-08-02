@@ -157,7 +157,18 @@ function arp.resolve(wire, mymac, myip, target, timeout_ms, retry_ms)
 			next_ask = wire.now() + retry_ms
 		end
 
-		local frame = wire.recv()
+		-- park if the wire can, poll if it cannot. Parking is what
+		-- lets the machine halt between frames rather than spin
+		-- asking a device that has nothing; a wire without it (a
+		-- test harness, a platform with no line routed) still works,
+		-- just awake.
+		local frame
+
+		if wire.recv_wait then
+			frame = wire.recv_wait(retry_ms)
+		else
+			frame = wire.recv()
+		end
 
 		if frame then
 			-- learn from everything, not just the reply we want:
@@ -167,7 +178,7 @@ function arp.resolve(wire, mymac, myip, target, timeout_ms, retry_ms)
 			if cache[target] then
 				return cache[target]
 			end
-		else
+		elseif not wire.recv_wait then
 			wire.yield()
 		end
 	end

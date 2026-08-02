@@ -18,8 +18,9 @@ local tap = require("tap")
 local ether = require("ether")
 local ip4 = require("ip4")
 local arp = require("arp")
+local ethwire = require("ethwire")
 
-tap.plan(7)
+tap.plan(9)
 
 local caps = sys.granted()
 
@@ -29,15 +30,8 @@ if not tap.ok(caps.eth ~= nil, "an eth capability was granted") then
 	return
 end
 
-local function rpc(msg)
-	local reply = sys.newport()
-
-	msg.reply = { __right = sys.sendright(reply) }
-	sys.send(caps.eth, msg)
-	return thread.recv(reply)
-end
-
-local mac = rpc({ op = "mac" }).mac
+local wire = ethwire.new(caps.eth)
+local mac = wire.mac()
 
 tap.ok(type(mac) == "string" and #mac == 6, "the device has a mac")
 tap.diag("mac " .. ether.mac_str(mac))
@@ -65,23 +59,9 @@ tap.ok(rt and rt.op == arp.REQUEST and rt.sha == mac and rt.spa == ME and
 
 -- ---- and now the part with a stranger on the other end ----
 --
--- polling, not blocking: frames arrive unasked and nothing here can
--- park on the device (see lib/eth.lua).
-local wire = {
-	send = function(frame)
-		local r = rpc({ op = "send", data = frame })
-
-		return r and r.ok
-	end,
-	recv = function()
-		local r = rpc({ op = "recv" })
-
-		return r and r.data
-	end,
-	now = sys.uptime_ms,
-	yield = sys.yield,
-}
-
+-- Parked, not polled: ethwire's recv_wait blocks inside the eth task
+-- until the device's interrupt says a frame arrived, so this proc is
+-- off the run queue in between and the machine can halt.
 local gwmac, why = arp.resolve(wire, mac, ME, GW, 3000)
 
 if not tap.ok(gwmac ~= nil, "arp.resolve got an answer for the gateway") then
@@ -96,5 +76,28 @@ tap.diag(ip4.str(GW) .. " is at " .. ether.mac_str(gwmac))
 -- unicast like any host's.
 tap.ok(#gwmac == 6 and gwmac ~= ether.BROADCAST and gwmac ~= ether.ZERO and
     (gwmac:byte(1) & 1) == 0, "and it is a real unicast address")
+
+-- ---- and it got there by being woken, not by asking ----
+--
+-- The resolve above used recv_wait throughout, so a frame reached this
+-- proc only because the device raised its line, kernel.c's pump_eth
+-- pushed the wakeup, and the eth task's alt answered a parked request.
+-- A nonzero interrupt count is the evidence that path ran at all; until
+-- the gsi was fixed it was zero on every boot.
+local irqs = wire.irqs()
+
+tap.diag("virtio interrupts taken: " .. tostring(irqs))
+tap.ok(irqs and irqs > 0, "the frame arrived on an interrupt")
+
+-- a parked receive answers when a frame turns up rather than
+-- immediately, and returns nil rather than hanging when none does.
+-- Nothing is talking to us now, so this is the quiet case.
+local t0 = sys.uptime_ms()
+local none = wire.recv_wait(300)
+local waited = sys.uptime_ms() - t0
+
+tap.diag("an unanswered wait returned after " .. waited .. " ms")
+tap.ok(none == nil and waited >= 250,
+    "a parked receive waits for its deadline rather than spinning")
 
 tap.done()

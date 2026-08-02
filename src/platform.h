@@ -66,6 +66,21 @@ int	console_getchar(void);
  * kernel.c's pump_serial asks before draining.
  */
 int	platform_console_input(void);
+
+/* a count of device interrupts taken, rising whenever a device has
+ * signalled. Not which device and not how many frames: only "something
+ * happened since you last asked", which is all a pump needs to decide
+ * whether to wake the driver holding that device's port.
+ *
+ * A counter rather than a callback because the handler that increments
+ * it runs with a proc interrupted and must not touch the scheduler --
+ * the same reason virtio.h gives for virtio_irq_count.
+ *
+ * Zero and unchanging on a platform whose devices raise nothing a
+ * driver could sleep on, which is what efi returns: its network
+ * completions are Events, polled by net.c itself.
+ */
+unsigned long platform_dev_irqs(void);
 _Noreturn void platform_abort(const char *why);
 
 /* <arch>/machine.c */

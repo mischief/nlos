@@ -68,8 +68,18 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 	(void)evs;
 
 	unsigned long long before = timer_ticks();
+	unsigned long irqs = platform_dev_irqs();
 
-	while (timer_ticks() == before)
+	/* woken by the tick, or by a device.
+	 *
+	 * hlt already ends on any interrupt, so before this the machine
+	 * did wake when a frame arrived -- and then went straight back to
+	 * sleep, because the only thing this loop looked at was the tick.
+	 * A frame's latency was therefore a tick, however early the
+	 * interrupt came. Watching the device count too is what turns the
+	 * interrupt into a wakeup rather than merely a twitch.
+	 */
+	while (timer_ticks() == before && platform_dev_irqs() == irqs)
 		__asm__ volatile ("hlt");
 	if (index)
 		*index = 0;

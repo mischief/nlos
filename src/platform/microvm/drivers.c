@@ -21,6 +21,17 @@ extern void uart_tx(const char *s, unsigned long n);
 _Noreturn void machine_reset(void);
 void platform_stall_us(unsigned long us);
 
+/* every device interrupt this platform can take is a virtio one: the
+ * uart's own line feeds the console through a different path entirely
+ * (pump_keyboard, via efi_shim's ReadKeyStroke), and the timer is not
+ * a device anyone sleeps on.
+ */
+unsigned long
+platform_dev_irqs(void)
+{
+	return virtio_irq_count();
+}
+
 /* ---- los.platform.cons ---- */
 
 /* com1 is the console's keyboard and the 9p wire both, and a byte can

@@ -409,6 +409,18 @@ static int right_new(struct kproc *p, struct kport *port, int recv);
 static struct kport *netport;
 static struct kport *udpport;
 
+/* the eth task's wakeup, and the only one here that is driven by a real
+ * interrupt rather than by a poll.
+ *
+ * netport above is pinged on a tick because efi's completions cannot be
+ * waited on; this one is pushed only when a device has actually
+ * signalled, so a machine with a quiet wire sleeps instead of asking.
+ * That is the whole point of it: everything above the frame wants to
+ * block until a frame arrives, and until there was something to park
+ * on, every layer had to poll.
+ */
+static struct kport *ethport;
+
 /* true once net_init() has located tcp4 and the net task has been (or
  * will be) spawned; guards pump_net so it doesn't push into netport
  * forever with no reader when there's no NIC -- netport would never
@@ -3517,6 +3529,35 @@ pump_net(void)
 		port_push(udpport, (const unsigned char *)"N", 1, 0, 0);
 }
 
+/* the eth wakeup: push only when a device interrupt has been taken
+ * since the last look.
+ *
+ * Coalesced by the emptiness check, like pump_net, so a burst of frames
+ * is one wakeup rather than one per frame -- the task drains what is
+ * there when it runs, and a second ping while the first is unread would
+ * tell it nothing new.
+ */
+static void
+pump_eth(void)
+{
+	static unsigned long seen;
+	unsigned long now = platform_dev_irqs();
+
+	if (now == seen)
+		return;
+	seen = now;
+	/* "N" is a serialized nil, which is what pump_net pushes too and
+	 * what this has to be: a port carries serialized values, and the
+	 * receiving task deserializes whatever arrives. A byte chosen to
+	 * be mnemonic instead of valid ("E", the first try) reaches the
+	 * task as a corrupt message and kills it. The wakeup carries no
+	 * information anyway -- the frames are still in the device's
+	 * queue, and this says only "ask again".
+	 */
+	if (have_eth && ethport && !ethport->head)
+		port_push(ethport, (const unsigned char *)"N", 1, 0, 0);
+}
+
 /* ---- keyboard pump ---- */
 
 static void
@@ -3561,9 +3602,10 @@ kernel_init(void)
 	diskport = port_new();
 	netport = port_new();
 	udpport = port_new();
+	ethport = port_new();
 	schedport = port_new();
 	if (!kbdport || !serport || !diskport || !netport || !udpport ||
-	    !schedport)
+	    !schedport || !ethport)
 		return -1;
 	/* kernel refs: the pumps (and, for diskport/netport/schedport,
 	 * the kernel itself) hold these ports forever
@@ -3573,6 +3615,7 @@ kernel_init(void)
 	diskport->nrights++;
 	netport->nrights++;
 	udpport->nrights++;
+	ethport->nrights++;
 	schedport->nrights++;
 
 	/* soft-fail: no NIC (real hardware, or qemu -net none) just means
@@ -3704,7 +3747,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		 * port (lib/eth.lua).
 		 */
 		{ .path = "/task/eth.lua", .chunkname = "=eth",
-		  .priv = PRIV_ETH, .devport = 0, .devrecv = 0,
+		  .priv = PRIV_ETH, .devport = ethport, .devrecv = 1,
 		  .what = "networking (raw ethernet)", .enabled = have_eth,
 		  .capname = "eth" },
 		/* the framebuffer. no devport: unlike the console or the
@@ -4154,6 +4197,7 @@ kernel_run(void)
 			tick_fired = 1;
 
 		expire_timers();
+		pump_eth();
 		pump_keyboard();
 		if (pump_serial()) {
 			idle_polls = 0;
