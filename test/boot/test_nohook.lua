@@ -7,8 +7,13 @@
 -- promises about a proc being a containment unit, so the two ways found
 -- to do it are pinned here.
 --
--- Both are checked from proc 0, which is PRIV_BOOT and keeps the whole
--- debug library; what matters is what a spawned proc gets.
+-- Checked from proc 0, which is PRIV_BOOT and keeps the whole debug
+-- library; what matters is what a spawned proc gets.
+--
+-- sys.preempt was the second way and is simply gone: it installed a hook
+-- lua_newthread already copies, and its count was unclamped, so it was
+-- an escape that bought nothing. See test/boot/test_preempt.lua for the
+-- property it was supposed to provide.
 
 local tap = require("tap")
 local sys = require("los.sys")
@@ -45,17 +50,11 @@ local got = require("los.thread").recv(reply)
 tap.ok(not got.sethook, "a spawned proc has no debug.sethook, even after a reload")
 tap.ok(got.traceback, "it keeps debug.traceback, which is the diagnostic")
 
--- sys.preempt arms the kernel's own hook, so an unclamped count is the
--- same escape wearing a different name: 0 means "no count hook" to
--- lua_sethook.
-local ok = pcall(sys.preempt, coroutine.running(), 0)
+-- The other escape is gone rather than guarded: sys.preempt let a proc
+-- arm the kernel's own hook with any count it liked, and 0 means "no
+-- count hook" to lua_sethook.
+tap.ok(sys.preempt == nil, "sys.preempt is gone")
 
-tap.ok(ok, "sys.preempt accepts a silly count rather than erroring")
-
--- If the clamp works this proc is still interruptible, so the machine
--- is still alive to run the next line. A spinner is not spawned here on
--- purpose: if the clamp were broken this test would hang rather than
--- fail, which is worse than useless in CI.
 tap.ok(sys.uptime_ms() > 0, "the machine is still scheduling")
 
 tap.done()

@@ -1959,35 +1959,6 @@ api_close(lua_State *L)
 
 static void preempt_hook(lua_State *L, lua_Debug *ar);
 
-/* install the kernel's count hook on a coroutine. lua-side hook
- * functions cannot yield ("attempt to yield across a C-call
- * boundary"), so in-state schedulers (los.thread) must use this to
- * preempt busy threads.
- */
-static int
-api_preempt(lua_State *L)
-{
-	lua_State *co = lua_tothread(L, 1);
-	lua_Integer count = luaL_optinteger(L, 2, default_reductions);
-
-	if (!co)
-		return luaL_error(L, "preempt: not a coroutine");
-
-	/* Clamped, because this arms the kernel's own budget and an
-	 * unclamped count is the same escape debug.sethook was: zero means
-	 * "no count hook" to lua_sethook, and a large enough one means the
-	 * same thing in practice. A caller may ask to be interrupted more
-	 * often than the kernel would, never less.
-	 */
-	if (count < 1)
-		count = 1;
-	if (count > default_reductions)
-		count = default_reductions;
-
-	lua_sethook(co, preempt_hook, LUA_MASKCOUNT, (int)count);
-	return 0;
-}
-
 /* memory accounting: meminfo([pid]) -> used, peak, limit */
 static int
 api_meminfo(lua_State *L)
@@ -2503,7 +2474,6 @@ static const luaL_Reg kapi[] = {
 	{ "close", api_close },
 	{ "stats", api_stats },
 	{ "meminfo", api_meminfo },
-	{ "preempt", api_preempt },
 	{ "self", api_self },
 	{ "procs", api_procs },
 	{ "granted", api_granted },

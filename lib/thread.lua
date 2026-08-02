@@ -34,10 +34,14 @@ function thread.spawn(fn, ...)
 	local co = coroutine.create(function()
 		fn(table.unpack(args, 1, args.n))
 	end)
-	-- kernel count hook: busy threads yield back to the scheduler.
-	-- (a lua-function hook can't yield across the C hook boundary,
-	-- so the kernel installs its own C hook for us.)
-	sys.preempt(co, 25000)
+	-- No hook to install: lua_newthread copies hook, mask and count
+	-- from the parent (lua/lstate.c), so this coroutine already
+	-- carries the kernel's count hook and busy threads yield back to
+	-- the scheduler on their own. sys.preempt used to be called here
+	-- to do it by hand, which did nothing Lua had not already done and
+	-- overrode the kernel's calibrated period with a hardcoded 25000
+	-- -- the very constant 4e5a1c2 removed for being unknowable ahead
+	-- of time. test/boot/test_preempt.lua pins the property.
 	thread._n = thread._n + 1
 	thread._runq[#thread._runq + 1] = co
 	return co
