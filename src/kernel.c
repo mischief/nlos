@@ -432,6 +432,7 @@ static void proc_kill(struct kproc *p, const char *why);
 static void proc_break(struct kproc *p, const char *why);
 static void proc_reap(struct kproc *p);
 static void proc_rearm(struct kproc *p);
+static int trace_arm(struct kproc *p, int n);
 static unsigned int brokeseq;
 static void wake_senders(struct kport *port);
 static int reprioritize(struct kproc *p, int nrunnable);
@@ -2258,11 +2259,25 @@ api_spawn(lua_State *L)
 		code = luaL_checklstring(L, 1, &n);
 	}
 	int reductions = 0;
+	int trace = 0;
 	size_t mem_limit = 0;
 	char chunkname[32] = "=spawn";
 
 	if (!lua_isnoneornil(L, 2)) {
 		luaL_checktype(L, 2, LUA_TTABLE);
+		/* opts.trace: arm the ring before the chunk runs.
+		 *
+		 * sys.set_trace cannot cover a proc that dies quickly --
+		 * spawning and then arming is a race the proc usually
+		 * wins, and arming a corpse is too late by definition.
+		 * a short-lived proc that faults is exactly the one
+		 * worth tracing, so the only place to start is before
+		 * its first line.
+		 */
+		lua_getfield(L, 2, "trace");
+		if (!lua_isnil(L, -1))
+			trace = (int)luaL_checkinteger(L, -1);
+		lua_pop(L, 1);
 		lua_getfield(L, 2, "reductions");
 		if (!lua_isnil(L, -1))
 			reductions = (int)luaL_checkinteger(L, -1);
@@ -2333,6 +2348,15 @@ api_spawn(lua_State *L)
 		release_inflight(argw.refs, argw.refrecv, argw.nrefs);
 		free(argw.p);
 		return luaL_error(L, "spawn: child vanished");
+	}
+	/* before the child has run a line, which is the whole point of
+	 * asking for it here. a failure to allocate the ring is not a
+	 * failure to spawn: the proc is fine, it is only untraced.
+	 */
+	if (trace > 0) {
+		if (trace > TRACEMAX)
+			trace = TRACEMAX;
+		trace_arm(child, trace);
 	}
 
 	/* push the arg onto the child's stack, above the loaded chunk, so
@@ -2703,6 +2727,40 @@ api_stack(lua_State *L)
 	return 1;
 }
 
+/* (re)size a proc's ring and make the mask match. n == 0 frees it.
+ *
+ * shared by sys.set_trace and spawn's opts.trace, so there is one place
+ * that knows the flag has to be set BEFORE proc_rearm -- proc_hookmask
+ * reads it, and proc_rearm is what makes the mask real on every
+ * coroutine of the proc.
+ */
+static int
+trace_arm(struct kproc *p, int n)
+{
+	if (p->trace) {
+		free(p->trace->ent);
+		free(p->trace);
+		p->trace = 0;
+	}
+	if (n > 0) {
+		struct ktrace *t = malloc(sizeof *t);
+
+		if (!t)
+			return -1;
+		memset(t, 0, sizeof *t);
+		t->ent = malloc((size_t)n * sizeof *t->ent);
+		if (!t->ent) {
+			free(t);
+			return -1;
+		}
+		t->cap = (unsigned int)n;
+		t->lastid = -1;
+		p->trace = t;
+	}
+	proc_rearm(p);
+	return 0;
+}
+
 /* sys.set_trace(pid, entries): record the last N lines this proc runs.
  * entries = 0 turns it off and frees the ring.
  *
@@ -2754,31 +2812,19 @@ api_set_trace(lua_State *L)
 		n = TRACEMAX;
 	if (!p->L)
 		return luaL_error(L, "proc %d has no state", p->id);
-
-	if (p->trace) {
-		free(p->trace->ent);
-		free(p->trace);
-		p->trace = 0;
-	}
-	if (n > 0) {
-		struct ktrace *t = malloc(sizeof *t);
-
-		if (!t)
-			return luaL_error(L, "out of memory");
-		memset(t, 0, sizeof *t);
-		t->ent = malloc((size_t)n * sizeof *t->ent);
-		if (!t->ent) {
-			free(t);
-			return luaL_error(L, "out of memory");
-		}
-		t->cap = (unsigned int)n;
-		t->lastid = -1;
-		p->trace = t;
-	}
-	/* after the flag, never before: proc_hookmask reads it, and this
-	 * is the call that makes the mask real on every coroutine
+	/* arming a corpse is always a mistake and used to succeed
+	 * quietly, leaving an empty ring and the impression that the
+	 * proc simply ran no lines. a trace has to be armed before the
+	 * death it is meant to explain -- for a proc too short-lived to
+	 * catch, that means spawn's opts.trace.
 	 */
-	proc_rearm(p);
+	if (p->status == BROKE && n > 0)
+		return luaL_error(L,
+		    "proc %d is broke; trace before it dies, or spawn "
+		    "with opts.trace", p->id);
+
+	if (trace_arm(p, (int)n) != 0)
+		return luaL_error(L, "out of memory");
 	lua_pushboolean(L, 1);
 	return 1;
 }

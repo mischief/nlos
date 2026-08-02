@@ -438,6 +438,14 @@ local repl_worker_src = [[
 	_G.stack = function(pid)
 		return magic.stack(pid or sys.self())
 	end
+	-- trace(pid): the last lines a proc ran, once sys.set_trace(pid, n)
+	-- has armed it. arming stays an explicit sys call rather than
+	-- another magic word, because unlike everything else here it has an
+	-- effect on the target -- a line hook costs the traced proc about
+	-- 4.7x -- and that should be typed on purpose.
+	_G.trace = function(pid)
+		return magic.trace(pid or sys.self())
+	end
 	_G.stats = magic.stats
 	_G.caps = caps
 	_G.wire = caps.wire(wireh)

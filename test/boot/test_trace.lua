@@ -27,7 +27,7 @@ local tap = require("tap")
 local sys = require("los.sys")
 local thread = require("los.thread")
 
-tap.plan(19)
+tap.plan(21)
 
 -- ---- a trace of another proc ----
 
@@ -201,19 +201,24 @@ sys.set_trace(tpid, 0)
 sys.close(h3)
 
 -- ---- the payoff: a trace on a corpse ----
+--
+-- armed at spawn rather than after it. a proc that faults immediately
+-- is both the one most worth tracing and the one sys.set_trace cannot
+-- reach: spawning and then arming is a race the proc wins, and by the
+-- time it is broke the lines are already gone. tried at the console
+-- three times before believing it.
 local _, h4 = sys.spawn([[
 	local function inner() error("boom") end
 	local function outer() inner() end
 	local x = 1
 	x = x + 1
 	outer()
-]], { name = "dier" })
+]], { name = "dier", trace = 64 })
 
 local dpid
 for _, p in ipairs(sys.procs()) do
 	if sys.name(p) == "dier" then dpid = p end
 end
-sys.set_trace(dpid, 64)
 sys.monitor(dpid)
 
 local note
@@ -252,6 +257,13 @@ N:mount("/proc", procfs.new(), "procfs")
 local pf = N:readfile("/proc/" .. dpid .. "/trace")
 
 tap.ok(pf and pf:find("dier:"), "/proc/<pid>/trace serves it too")
+
+-- arming a corpse used to return true and record nothing, which reads
+-- as "this proc ran no lines" rather than "you are too late"
+local late, lerr = pcall(sys.set_trace, dpid, 32)
+
+tap.ok(not late, "arming a corpse fails instead of quietly doing nothing")
+tap.ok(tostring(lerr):find("broke"), "and says why: " .. tostring(lerr))
 
 sys.reap(dpid)
 sys.close(h4)
