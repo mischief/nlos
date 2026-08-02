@@ -102,16 +102,18 @@ local function openfile(T)
 	return fs, chan.new(fs, PATH, fs.open(h, "r"))
 end
 
--- reporting happens INSIDE this thread, and thread.run() is never
--- expected to return.
+-- reporting happens INSIDE this thread rather than after thread.run().
 --
--- p9fs.new spawns a reader that lives as long as the connection, and
--- closing the connection does not retire it: it is parked inside the
--- tcp task's recv, and lib/tcp.lua's close op never answers an
--- outstanding recv -- so the reader waits for a reply that will not
--- come. Joining here would hang on that rather than on anything this
--- test is about. Powering off at the end is what collects them, which
--- is fine for a benchmark and would not be for a long-lived program.
+-- Not because anything leaks -- closing a connection DOES retire
+-- p9fs's reader: net_close calls Cancel(0), which signals every
+-- outstanding token's event, so recv_poll reports completion and
+-- lib/tcp.lua answers the parked caller with nil. Verified directly.
+--
+-- It is because a phase here is slow enough to outlast the harness. At
+-- ~120ms per 8K read in a guest (see the note above), 16MB serial is
+-- 2055 reads and over four minutes on its own. Reporting as we go means
+-- a run that gets cut short still says what it managed to measure,
+-- instead of timing out with nothing but the plan line.
 thread.spawn(function()
 	local limit = MB * 1024 * 1024
 
