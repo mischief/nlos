@@ -77,10 +77,26 @@ int	platform_console_input(void);
  * the same reason virtio.h gives for virtio_irq_count.
  *
  * Zero and unchanging on a platform whose devices raise nothing a
- * driver could sleep on, which is what efi returns: its network
- * completions are Events, polled by net.c itself.
+ * driver could sleep on.
  */
 unsigned long platform_dev_irqs(void);
+
+/* something kernel_run can put in its idle WaitForEvent, so that a
+ * machine with nothing runnable wakes on a frame rather than on the
+ * next tick. An EFI_EVENT on efi (SNP's WaitForPacket), returned as
+ * void * because platform.h has no efi types in it.
+ *
+ * 0 means "nothing to wait on, keep polling", which is both a platform
+ * without one and a machine with no card. microvm returns 0 because it
+ * does not need this: its shim's WaitForEvent already halts until an
+ * interrupt, and virtio-net raises a real one.
+ *
+ * Whatever is returned must have no other observer. A firmware Event's
+ * signaled state is consumed by whoever looks first, so anything that
+ * also CheckEvents it would find it already taken -- see
+ * docs/uefi-notes.md, which is where that cost a week.
+ */
+void *platform_dev_wait(void);
 _Noreturn void platform_abort(const char *why);
 
 /* <arch>/machine.c */

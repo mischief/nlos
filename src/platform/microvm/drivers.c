@@ -32,6 +32,16 @@ platform_dev_irqs(void)
 	return virtio_irq_count();
 }
 
+/* nothing: efi_shim's WaitForEvent already halts until an interrupt and
+ * watches platform_dev_irqs itself, so a frame wakes this machine
+ * without an event to name.
+ */
+void *
+platform_dev_wait(void)
+{
+	return 0;
+}
+
 /* ---- los.platform.cons ---- */
 
 /* com1 is the console's keyboard and the 9p wire both, and a byte can

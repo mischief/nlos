@@ -5337,7 +5337,8 @@ void
 kernel_run(void)
 {
 	EFI_EVENT tick = 0;
-	EFI_EVENT waits[2];
+	EFI_EVENT ethwait = platform_dev_wait();
+	EFI_EVENT waits[3];
 	UINTN index;
 	int idle_polls = 0;
 	int tick_slow = 0;
@@ -5487,10 +5488,16 @@ kernel_run(void)
 		}
 
 		if (!ran) {
-			/* everyone blocked: sleep until a key or the tick.
-			 * the wire is not in here yet -- pump_eth polls the
-			 * card each lap instead, so the tick is what bounds
-			 * how promptly a frame gets noticed.
+			/* everyone blocked: sleep until a key, a frame, or
+			 * the tick. without the wire in here a frame waits
+			 * for the next tick to be noticed, because pump_eth
+			 * only runs at the top of a lap and nothing else
+			 * ends the sleep.
+			 *
+			 * ethwait may be 0 -- no card, or a driver that
+			 * publishes no event -- and then the tick is the
+			 * bound again, which is the behaviour this replaces
+			 * rather than a failure.
 			 */
 			nidle++;
 			if (tick) {
@@ -5498,6 +5505,8 @@ kernel_run(void)
 
 				waits[n++] = ST->ConIn->WaitForKey;
 				waits[n++] = tick;
+				if (ethwait)
+					waits[n++] = ethwait;
 				BS->WaitForEvent(n, waits, &index);
 			} else
 				BS->Stall(500);

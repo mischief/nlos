@@ -175,6 +175,20 @@ platform_dev_irqs(void)
 	return snp_rx_count();
 }
 
+/* SNP's WaitForPacket, so an idle machine wakes on a frame instead of
+ * on the next tick. Optional in the protocol -- a driver without one
+ * leaves us polling, which is what returning 0 means here.
+ *
+ * Nothing else touches this event: the pump asks GetStatus, not
+ * CheckEvent, so kernel_run's WaitForEvent is its only observer and
+ * there is no signaled state for it to steal.
+ */
+void *
+platform_dev_wait(void)
+{
+	return snp_wait_event();
+}
+
 /* two devices here: the firmware's ConIn is the keyboard and com2 is
  * the wire, so nothing has to choose between them. See platform.h.
  */
