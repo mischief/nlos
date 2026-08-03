@@ -64,6 +64,10 @@ end
 
 local p9port = envor("LUAOS_9P_PORT", "7777")
 local sshport = envor("LUAOS_SSH_PORT", "2222")
+-- the gefs 9P export listens on the styx port 564 inside; map it to an
+-- unprivileged host port so `9p -a tcp!localhost!5640 ls /` reaches it
+-- without root.
+local styxport = envor("LUAOS_STYX_PORT", "5640")
 local wiresock = envor("LUAOS_WIRE_SOCK", "9p.sock")
 
 if not io.open("OVMF_VARS.fd", "rb") then
@@ -74,7 +78,8 @@ local cmd = table.concat({
 	arch.QEMU, graphics, arch.MACHINE, arch.VIDEO, arch.RNG,
 	"-snapshot",
 	"-netdev user,id=n0,hostfwd=tcp::" .. p9port .. "-:7777" ..
-	    ",hostfwd=tcp::" .. sshport .. "-:2222",
+	    ",hostfwd=tcp::" .. sshport .. "-:2222" ..
+	    ",hostfwd=tcp::" .. styxport .. "-:564",
 	"-device " .. arch.NIC .. ",netdev=n0",
 	"-serial mon:stdio",
 	arch.wire_args("socket", wiresock),

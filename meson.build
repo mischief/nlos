@@ -516,6 +516,8 @@ lua_payload = files(
   'lib/partfs.lua',
   'task/partsrv.lua',
   'task/gefssrv.lua',
+  'lib/p9serve.lua',
+  'task/9pexport.lua',
   'lib/draw.lua',
   'lib/crypto/util.lua',
   'lib/crypto/chacha20.lua',
@@ -1037,4 +1039,15 @@ test('gefs-host', lua_interp,
   args: [files('test/host_gefs.lua')],
   protocol: 'tap',
   timeout: 120,
+)
+
+# lib/p9serve.lua is the 9P server over a dev backend -- the bridge
+# task/9pexport.lua serves gefs (and any other backend) to a real 9p
+# client with. Pure Lua over lib/ninep's codec, so the host drives it
+# with crafted 9P messages against a gefs volume; the live wire is a boot
+# test's concern, this pins the message mapping.
+test('p9serve-host', lua_interp,
+  args: [files('test/host_p9serve.lua')],
+  protocol: 'tap',
+  timeout: 30,
 )

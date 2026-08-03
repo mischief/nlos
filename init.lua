@@ -289,6 +289,7 @@ end
 -- drives. Guarded: a machine with no disk, no gefs partition, or a volume
 -- that will not open stays up without /n/gefs rather than failing to boot.
 if caps_of.blk then
+	local gh
 	local ok = pcall(function()
 		local _, ph = proc.spawn(
 		    assert(rootns:readfile("/task/partsrv.lua")),
@@ -297,16 +298,30 @@ if caps_of.blk then
 		sys.send(ph, { blk = { __right = caps_of.blk },
 		    partition = "gefs" })
 
-		local _, gh = proc.spawn(
+		local _, g = proc.spawn(
 		    assert(rootns:readfile("/task/gefssrv.lua")),
 		    { name = "gefs", ns = nsdesc })
+		gh = g
 
-		sys.send(gh, { blk = { __right = ph }, label = "main" })
-		rootns:mount("/n/gefs", require("mnt").new(gh), "mnt",
-		    { port = { __right = gh } })
+		sys.send(g, { blk = { __right = ph }, label = "main" })
+		rootns:mount("/n/gefs", require("mnt").new(g), "mnt",
+		    { port = { __right = g } })
 	end)
 	log.log(ok and "gefs mounted at /n/gefs" or
 	    "gefs: no volume mounted this boot")
+
+	-- and export it over 9P on the styx port, so `9fs host` or the 9p
+	-- tool can mount the same volume from off the machine. Needs a NIC;
+	-- exportfs of any other backend is the same task, a different right.
+	if ok and gh and caps_of.tcp then
+		local _, xh = proc.spawn(
+		    assert(rootns:readfile("/task/9pexport.lua")),
+		    { name = "9pexport", ns = nsdesc })
+
+		sys.send(xh, { net = { __right = caps_of.tcp },
+		    mount = { __right = gh }, port = 564 })
+		log.log("gefs exported over 9p on tcp/564")
+	end
 end
 
 -- RE-taken, because neither /net nor /srv existed when the first
