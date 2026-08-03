@@ -27,8 +27,17 @@ local consh = sys.sendright(cons)
 
 tap.ok(cons and consh, "a port to play cons on")
 
--- the fake cons: collect both requests, then answer the second one
--- first.
+-- which request is "first" is settled by cons having RECEIVED it, not
+-- by which thread the scheduler happened to run: the second asker does
+-- not send until cons says it holds one request already. Ordering that
+-- rests on spawn order instead is ordering the scheduler is free to
+-- change, and any fix to it would look like this test failing.
+local arrived = thread.chancreate(0)
+local gotA, gotB
+
+-- the fake cons: take both requests, then answer the second one first.
+-- Answering in reverse is the whole point -- with one port for the
+-- proc, the wrong line is sitting there when the first asker looks.
 thread.spawn(function()
 	local req = {}
 
@@ -37,32 +46,22 @@ thread.spawn(function()
 
 		if m.op == "readline" then
 			req[#req + 1] = m.reply.__right
+			if #req == 1 then
+				arrived:send(true)
+			end
 		end
 	end
 	sys.send(req[2], "second\n")
 	sys.send(req[1], "first\n")
 end)
 
--- first and second are made in that order: the handshake channel is
--- what makes "first" mean something.
-local go = thread.chancreate(0)
-local gotA, gotB
-
 thread.spawn(function()
-	local line = thread.readline(consh)	-- request 1
-
-	gotA = line
+	gotA = thread.readline(consh)		-- request 1
 end)
 
 thread.spawn(function()
-	go:recv()
+	arrived:recv()				-- cons holds request 1
 	gotB = thread.readline(consh)		-- request 2
-end)
-
--- let A get its request out before B sends one. A parks in recv()
--- immediately afterwards, so by the time this runs the order is fixed.
-thread.spawn(function()
-	go:send(true)
 end)
 
 thread.run()

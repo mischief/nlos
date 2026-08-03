@@ -25,7 +25,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(12)
+tap.plan(14)
 
 tap.ok(sys.set_torture ~= nil, "sys.set_torture is present")
 
@@ -248,6 +248,62 @@ thread.run()
 
 tap.ok(raised, "an error inside an atomic scope propagates")
 tap.ok(thread._crit == nil, "and the section is still released")
+
+-- ---- a coroutine in the ring twice ----
+--
+-- _ready aimed at a thread that is staged but has not run yet finds it
+-- unparked, takes the token path, and stages it again -- so main pushes
+-- a second ring slot for a coroutine that already had one. Alive that
+-- costs a lap and nothing else. Dead it is the whole proc: the second
+-- slot resumes a corpse, resume_one's accounting runs twice for one
+-- death, _n undercounts, and run() ends its loop leaving whatever is
+-- still parked alive, suspended and uncounted -- no error, no deadlock
+-- report, and a caller told the work is done.
+--
+-- The shape that finds it is a thread woken through one channel while
+-- still queued on another, which is an alt over two -- lib/p9fs.lua's
+-- flush does exactly this. The senders on the shared channel are what
+-- make the second wake land in the window.
+local NALT, NROUND = 30, 5
+local altfin, altwant = {}, 0
+
+for round = 1, NROUND do
+	local shared = thread.chancreate(1)
+
+	for _ = 1, NALT do
+		thread.spawn(function()
+			shared:nbsend(true)
+		end)
+	end
+
+	for id = 1, NALT do
+		local slot = (round - 1) * NALT + id
+
+		altwant = altwant + 1
+		thread.spawn(function()
+			local own = thread.chancreate(1)
+
+			thread.spawn(function()
+				own:send(true)
+			end)
+			thread.alt({ { c = own, op = "recv" },
+			    { c = shared, op = "recv" } })
+			altfin[slot] = true
+		end)
+	end
+	thread.run()
+end
+
+local nalt = 0
+
+for slot = 1, altwant do
+	if altfin[slot] then
+		nalt = nalt + 1
+	end
+end
+
+tap.is(nalt, altwant, "every thread alting over two channels finished")
+tap.is(thread._n, 0, "and none was abandoned alive and uncounted")
 
 sys.set_torture(false)
 tap.ok(thread._crit == nil, "no thread left marked mid-update")

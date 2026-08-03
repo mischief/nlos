@@ -508,6 +508,27 @@ end
 -- the one place a thread is resumed, so the rules about what a yield
 -- meant live together rather than being restated.
 local function resume_one(co)
+	-- a coroutine can be in the ring twice. _ready aimed at one that is
+	-- staged but has not run yet takes the token path -- it is not
+	-- parked -- and stages it again, and main pushes a second slot for
+	-- a coroutine that already had one.
+	--
+	-- Twice over is harmless while it lives: the second resume returns
+	-- it from whatever park it reached in the meantime, and every caller
+	-- of parkon re-checks in a loop, so it costs a lap. Once it has
+	-- exited it is not harmless at all. The second entry resumes a
+	-- corpse, and the accounting below runs a second time for one
+	-- death: _n undercounts, run()'s loop ends early, and whatever was
+	-- still parked is abandoned alive and uncounted, with no error and
+	-- no deadlock reported. Measured on thirty threads alting over two
+	-- channels: 146 of these in a single run, and threads left
+	-- suspended behind them.
+	--
+	-- So a dead coroutine here is a duplicate whose death has already
+	-- been counted, and dropping it is the whole fix.
+	if coroutine.status(co) == "dead" then
+		return
+	end
 	thread._current = co
 	local ok, err = coroutine.resume(co)
 	thread._current = nil
