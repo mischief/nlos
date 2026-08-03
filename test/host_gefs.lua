@@ -396,6 +396,46 @@ do
   package.loaded["los.sys"] = nil
 end
 
+--------------------------------------------------------------------------
+-- H. gefs.slice: a volume living in a window of a larger device
+--
+-- What lets gefs sit on a partition. Ream a volume into the middle of a
+-- device through a slice, and it must read back through a fresh slice and
+-- leave the bytes outside the window untouched.
+
+do
+  local WHOLE = 96 * 1024 * 1024
+  local OFF = 32 * 1024 * 1024
+  local LEN = 48 * 1024 * 1024
+  local disk = gefs.ram.new(WHOLE, 16384)
+
+  -- a marker just before the slice: it must survive everything gefs does
+  disk:write(OFF - 16384, string.rep("Z", 16384))
+
+  local vol = gefs.slice(disk, OFF, LEN)
+  ok(vol:size() == LEN, "a slice reports its own length, not the disk's")
+
+  gefs.ream(vol, { user = "glenda", blksz = 16384 })
+  local fs = gefs.open(vol)
+  local m = fs:mount("main")
+  m:createfile("/inpart"); m:writefile("/inpart", "in a slice\n")
+  fs:sync()
+
+  -- a fresh slice on the same disk reads it back
+  local fs2 = gefs.open(gefs.slice(disk, OFF, LEN))
+  ok(fs2:mount("main"):readfile("/inpart") == "in a slice\n",
+    "a volume reamed through a slice reads back through another")
+  ok(#fs2:check() == 0, "the sliced volume checks out")
+
+  -- gefs wrote only inside its window
+  ok(disk:read(OFF - 16384, 16384) == string.rep("Z", 16384),
+    "the bytes before the slice were never touched")
+
+  -- and the slice refuses to address past its end
+  ok(not select(1, pcall(function() vol:read(LEN, 16) end)),
+    "a read past the slice end is refused")
+end
+
 io.write(("1..%d\n"):format(count))
 if failed > 0 then
   diag(("%d of %d failed"):format(failed, count))

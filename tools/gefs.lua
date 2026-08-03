@@ -73,6 +73,12 @@ do
 			flags.fix = true
 		elseif arg[i] == "-keep" then
 			flags.keep = true
+		elseif arg[i] == "-o" then
+			i = i + 1
+			flags.off = tonumber(arg[i]) or usage()
+		elseif arg[i] == "-l" then
+			i = i + 1
+			flags.len = tonumber(arg[i]) or usage()
 		else
 			args[#args + 1] = arg[i]
 		end
@@ -86,10 +92,20 @@ if cmd == nil or img == nil then
 	usage()
 end
 
+-- -o off -l len operate on a slice of the file, so a volume in a
+-- partition of a larger disk is addressed the same as one that owns its
+-- whole device. The disk is opened, never truncated, so the table around
+-- the partition survives.
 local function opendev(mode)
 	local dev, err = gefs.io.open(img, mode or "rw")
 	if dev == nil then
 		die("cannot open %s: %s", img, tostring(err))
+	end
+	if flags.off then
+		if not flags.len then
+			die("-o needs -l (the partition length)")
+		end
+		return gefs.slice(dev, flags.off, flags.len)
 	end
 	return dev
 end
@@ -116,9 +132,17 @@ local cmds = {}
 function cmds.ream()
 	local size = tonumber(args[3]) or (1024 * 1024 * 1024)
 	local user = args[4] or os.getenv("USER") or "glenda"
-	local dev, err = gefs.io.create(img, size)
-	if dev == nil then
-		die("cannot create %s: %s", img, tostring(err))
+	local dev
+	if flags.off then
+		-- ream into an existing disk's partition, leaving the rest alone
+		dev = opendev("rw")
+		size = flags.len
+	else
+		local err
+		dev, err = gefs.io.create(img, size)
+		if dev == nil then
+			die("cannot create %s: %s", img, tostring(err))
+		end
 	end
 	gefs.ream(dev, { user = user })
 	io.write(("reamed %s: %d bytes, user %s\n"):format(img, size, user))

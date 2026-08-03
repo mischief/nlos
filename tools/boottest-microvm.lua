@@ -36,7 +36,7 @@ local q = require("arch").quote
 local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
 local want9p, wantnet, wantecho, wantblk = false, false, false, false
-local wantgefs, wantgefscommit = false, false
+local wantgefs, wantgefscommit, wantgefsgpt = false, false, false
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
@@ -56,6 +56,8 @@ for i = 3, #arg do
 		-- durability check is a separate opt-in.
 		wantgefs = true
 		wantgefscommit = true
+	elseif arg[i] == "--gefsgpt" then
+		wantgefsgpt = true
 	end
 end
 
@@ -215,6 +217,50 @@ if wantgefs then
 	gefsput("/hello", GEFS_SMALL)
 	seedrun(("lua5.4 %s mkdir %s /dir"):format(q(gefscli), q(blkimg)))
 	gefsput("/dir/big", GEFS_BIG)
+
+	blkargs = table.concat({
+		"-drive if=none,id=d0,format=raw,file=" .. q(blkimg),
+		"-device virtio-blk-device,drive=d0,bus=virtio-mmio-bus.3",
+	}, " ")
+end
+
+-- --gefsgpt puts the volume in a GPT partition beside an ESP, the layout
+-- a disk booted by firmware has, so the guest must read the table to find
+-- where gefs is. The ESP is a bare partition here -- microvm boots the ELF
+-- directly and never looks at it; the point is only that a second
+-- partition sits after it and the guest locates gefs by name.
+local GEFS_ESP_START, GEFS_ESP_SZ = 2048, 90112		-- 44 MiB, sectors
+local GEFS_PART_START, GEFS_PART_SZ = 94208, 98304	-- 48 MiB, sectors
+local GEFS_PART_OFF = GEFS_PART_START * 512
+local GEFS_PART_LEN = GEFS_PART_SZ * 512
+
+local function gefsput_at(path, content, off, len)
+	local tf = tmp .. "/put.tmp"
+	local f = assert(io.open(tf, "wb"))
+	f:write(content)
+	f:close()
+	seedrun(("lua5.4 %s put %s %s -o %d -l %d < %s"):format(
+	    q(gefscli), q(blkimg), q(path), off, len, q(tf)))
+end
+
+if wantgefsgpt then
+	-- a GPT disk big enough for both partitions plus the backup table
+	local secs = GEFS_PART_START + GEFS_PART_SZ + 34
+	seedrun(("truncate -s %d %s"):format(secs * 512, q(blkimg)))
+
+	local layout = ("label: gpt\nstart=%d, size=%d, type=uefi, name=\"EFI\"\n" ..
+	    "start=%d, size=%d, type=linux, name=\"gefs\"\n"):format(
+	    GEFS_ESP_START, GEFS_ESP_SZ, GEFS_PART_START, GEFS_PART_SZ)
+	seedrun(("printf %s | sfdisk --no-reread --no-tell-kernel -q %s"):format(
+	    q(layout), q(blkimg)))
+
+	-- ream and populate the gefs partition, leaving the table alone
+	seedrun(("lua5.4 %s ream %s 0 glenda -o %d -l %d"):format(
+	    q(gefscli), q(blkimg), GEFS_PART_OFF, GEFS_PART_LEN))
+	gefsput_at("/hello", GEFS_SMALL, GEFS_PART_OFF, GEFS_PART_LEN)
+	seedrun(("lua5.4 %s mkdir %s /dir -o %d -l %d"):format(
+	    q(gefscli), q(blkimg), GEFS_PART_OFF, GEFS_PART_LEN))
+	gefsput_at("/dir/big", GEFS_BIG, GEFS_PART_OFF, GEFS_PART_LEN)
 
 	blkargs = table.concat({
 		"-drive if=none,id=d0,format=raw,file=" .. q(blkimg),

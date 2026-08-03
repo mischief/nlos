@@ -53,6 +53,7 @@ M.fsops = require "gefs.fsops"
 M.check = require "gefs.check"
 M.ram = require "gefs.ram"
 M.io = require "gefs.io"
+M.slice = require("gefs.slice").new
 
 M.ream = vol.ream
 M.open = vol.open
