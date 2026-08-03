@@ -954,3 +954,19 @@ test('tcb-lossy', lua_interp,
   protocol: 'tap',
   timeout: 20,
 )
+
+# lib/gefs is a port of 9front's Bε-tree filesystem, and it is sans-io in
+# the same way tcb.lua is: a volume is opened on a device -- any table
+# answering read/write/size -- so gefs.ram drives it in memory and
+# gefs.io over a real file, with no kernel underneath. That is the whole
+# of it that can be tested here, and it is most of it: that the port
+# loads and runs, that lib/gefs/io.lua is a working device, and that a
+# commit cut anywhere leaves the disk whole -- proven both at block
+# granularity and mid-block through a coroutine that yields inside a
+# write and is abandoned. What this cannot say is that a served volume is
+# wired to the block driver, which is test/boot/microvm_gefs.lua's job.
+test('gefs-host', lua_interp,
+  args: [files('test/host_gefs.lua')],
+  protocol: 'tap',
+  timeout: 120,
+)
