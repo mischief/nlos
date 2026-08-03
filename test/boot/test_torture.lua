@@ -25,7 +25,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(7)
+tap.plan(10)
 
 tap.ok(sys.set_torture ~= nil, "sys.set_torture is present")
 tap.ok(sys.set_torture(true), "and a boot payload may ask for it")
@@ -141,6 +141,69 @@ end
 
 tap.is(nfin, NPAR * NKID, "every thread spawned from a thread ran")
 tap.is(thread._n, 0, "and the scheduler's count came back to zero")
+
+-- ---- an allocator a caller wrote ----
+--
+-- `local f = next; next = next + 1` is the shape of lib/p9fs.lua's
+-- newfid and lib/srv.lua's put, and a preemption between the read and
+-- the store hands two threads the same number. Unguarded it is not
+-- close: 75 duplicates in 100. thread.atomic is what a caller has to
+-- say so, and this is the whole of what it promises.
+local next_fid = 1
+local mine = { {}, {}, {}, {} }
+
+local function newfid()
+	local _ <close> = thread.atomic()
+	local f = next_fid
+
+	next_fid = next_fid + 1
+	return f
+end
+
+for id = 1, 4 do
+	thread.spawn(function()
+		local out = mine[id]
+
+		for i = 1, 25 do
+			out[i] = newfid()
+		end
+	end)
+end
+
+thread.run()
+
+local seen, dups = {}, 0
+
+for id = 1, 4 do
+	for _, f in ipairs(mine[id]) do
+		if seen[f] then
+			dups = dups + 1
+		end
+		seen[f] = true
+	end
+end
+
+tap.is(dups, 0, "an atomic allocator hands out no number twice")
+
+-- the guard releases on the way out however the scope ends, which is
+-- what calling the pair by hand cannot promise: an error inside jumps
+-- straight over the release.
+local raised = false
+
+thread.spawn(function()
+	local ok = pcall(function()
+		local _ <close> = thread.atomic()
+
+		error("inside")
+	end)
+
+	raised = not ok
+end)
+
+thread.run()
+
+tap.ok(raised, "an error inside an atomic scope propagates")
+tap.ok(thread._crit == nil, "and the section is still released")
 
 sys.set_torture(false)
 tap.ok(thread._crit == nil, "no thread left marked mid-update")

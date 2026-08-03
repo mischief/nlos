@@ -101,6 +101,50 @@ local function critleave()
 	end
 end
 
+-- the same section, for code outside this file:
+--
+--	local function newfid()
+--		local _ <close> = thread.atomic()
+--		local f = next_fid
+--
+--		next_fid = next_fid + 1
+--		return f
+--	end
+--
+-- Everything the sections below protect, a caller holding threads has
+-- too. `next = next + 1` is the whole of it: read, add, store, with a
+-- preemption free to land between any two of them and hand the proc to
+-- a sibling doing the same. Two threads then leave with the same fid,
+-- and clunking one shuts the other's file -- measured at 75 duplicates
+-- in 100 under sys.set_torture, on lib/p9fs.lua's allocator exactly as
+-- it was written.
+--
+-- <close> rather than a function taking a body, because the guard is
+-- the house idiom for release-on-the-way-out (lib/dev.lua, lib/chan.lua,
+-- lib/ns.lua) and because a body would allocate a closure at every call
+-- site. One guard per coroutine, reused: a coroutine is only ever
+-- inside its own section, and the depth counts the nesting.
+--
+-- What it buys over calling the pair by hand is the path nobody writes
+-- -- an error raised inside, which jumps over the release. What it does
+-- NOT buy is the right to park inside one. Rule 1 still holds, and a
+-- section that yields is still a section run() will resume forever; it
+-- is parkon that puts a stop to that, not this.
+local guardmt = { __close = function() critleave() end }
+local guards = setmetatable({}, { __mode = "k" })
+
+local function atomic()
+	local co = coroutine.running()
+	local g = guards[co]
+
+	if not g then
+		g = setmetatable({}, guardmt)
+		guards[co] = g
+	end
+	critenter()
+	return g
+end
+
 -- the ring needs no section: threads never touch it. They stage a
 -- single store below and run() -- main -- is the only thing that ever
 -- pushes, which is why a hole cannot be created here at all.
@@ -1216,11 +1260,12 @@ end
 -- ---- exports ----
 -- the module is the scheduler table with the rest of the runtime hung
 -- off it: require("los.thread") -> { spawn, run, recv, readline, sleep,
--- recvtimeout, Channel, chancreate, alt, ... }.
+-- recvtimeout, Channel, chancreate, alt, atomic, ... }.
 
 thread.Channel = Channel
 thread.chancreate = chancreate
 thread.alt = alt
+thread.atomic = atomic
 -- park on a port once, thread-aware, without consuming anything. for
 -- callers that need to re-check some other condition (a hangup, say)
 -- after waking rather than just taking the next message.
