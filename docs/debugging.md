@@ -97,9 +97,10 @@ proc: a fault in its main coroutine, the deadlock error out of
 ## Tracing: the last lines a proc ran
 
 `sys.set_trace(pid, entries)` arms a ring; `sys.trace(pid)` reads it,
-oldest first, as `{source=, line=, thread=}`. `entries` of 0 frees it.
-The ring is freed with the proc's state, not at its death, so a corpse
-answers "how did it get here" for as long as it answers "where".
+oldest first, as `{source=, line=, thread=, cpu=, wall=}`. `entries` of
+0 frees it. The ring is freed with the proc's state, not at its death,
+so a corpse answers "how did it get here" for as long as it answers
+"where".
 
 Arming costs the target about **4.7x** (measured: a tight arithmetic
 loop, 3ms untraced against 14ms traced). A line hook fires per line
@@ -112,6 +113,38 @@ The ring is C memory, not the proc's: charging it to `mem_limit` would
 mean the act of debugging a proc near its cap could push it over.
 Bounds are `TRACEMAX` 4096 entries, `TRACESRC` 32 distinct source
 files, `TRACECO` 16 coroutines told apart.
+
+### Two clocks, and why not one
+
+Each entry carries `cpu` and `wall`, both cycles, both deltas from the
+entry before it. One `platform_ticks()` yields both: `p->cputime` and
+`p->resumed` already exist for the scheduler, so a proc's running
+cycles are `cputime` plus however long it has been on the cpu.
+
+- `cpu` is what the line **cost**. Per-proc running cycles are disjoint
+  across procs, so these can be summed and compared.
+- `wall - cpu` is how long the proc was **not running** after that
+  line — the kernel, another proc, or idle.
+
+Neither answers alone. Per-proc cycles are blind to everything outside
+the proc, which is where dispatch, port push and pop and message
+serialisation live. Wall sees all of it, and for a voluntary yield
+attributes it well — the time lands on the line that called `sys.send`
+— but the preempt hook fires anywhere, so an arithmetic line in a loop
+absorbs whatever other procs then ran, and two procs' wall timelines
+cover the same interval and cannot be added.
+
+**The delta belongs to the line that ran, not the one about to.** A
+line hook fires before its line, so the interval between two hooks is
+the earlier line's cost. Recording it against the arriving entry shifts
+the whole profile by one, which blamed `snd_una = seg.ack` for 7.5% of
+the tcp task when the cost was the string reslice above it. The newest
+entry therefore reads zero: nothing has happened after it yet.
+
+A `<scheduled>` entry, source `<scheduled>` and line 0, is recorded at
+every resume. Without it a context switch is an enormous `wall` on
+whichever line ran last and the reader has to guess whether that line
+was slow or the proc was simply away.
 
 ### Arming in time
 
@@ -135,6 +168,52 @@ That ratio is not noise to be filtered out; it is what the proc is
 really doing, and reading it is how the wakeup path in
 `docs/scheduling.md` got fixed.
 
+## Profiling: `sys.tracehist`
+
+`sys.tracehist(pid)` aggregates the ring by source and line, sorted by
+`cpu` — rows of `{source=, line=, count=, cpu=, wall=}`, plus
+`dropped`. It is the same aggregation everyone was writing in Lua, and
+the first time anyone wrote it, it found a task closing and recreating
+a kernel timer on every message.
+
+Keyed on source and line, **not** on thread. What a line costs is a
+property of the line; which coroutine ran it is a different question,
+and the raw ring still answers that.
+
+Computed in C for the reason `src/debug.c` allocates nothing in its
+target: handing a 4096-entry table to the reader charges its
+`mem_limit` for the act of reading. The scratch table is sized to the
+ring and allocated per call, so profiling costs nothing when nobody is
+profiling — and it is exact. A fixed table cannot be: aggregation meets
+keys in the order they occur, so one that fills stops admitting new
+ones, and the rows it then fails to report are not the cold ones but
+whichever appeared late. `dropped` is nonzero only if that allocation
+failed.
+
+### Count or cost, and which question you are asking
+
+The histogram sorts by cost. Reading it by `count` instead answers the
+older question — what runs, and how often — and the two disagree, which
+is the point of having both.
+
+From one tcp task, one transfer:
+
+    10.6%  lib/thread.lua:683   48 hits  the scheduler's tryrecv
+     7.5%  lib/tcb.lua:1117      7 hits  sndq = sndq:sub(bytes + 1)
+     3.1%  lib/tcp4.lua:103     88 hits  tcp4.lt
+     2.6%  lib/tcb.lua:576       2 hits  table.concat(self.rcvq)
+
+`tcp4.lt` tops the count and is cheap. The two string operations are
+nine executions between them and a tenth of the task, and neither
+appears anywhere near the top by count. A count profile finds
+repetition nobody intended; only the clock finds a line that is
+expensive on its own.
+
+It also has a limit worth stating: a syscall is not a Lua line. The
+timer churn above was found because the histogram pointed at the scan
+around it and a person then read the code. Nothing in the ring showed
+`sys.close` at all.
+
 ## Where to find it
 
 From the lua repl (`init.lua` wires these as globals):
@@ -143,6 +222,7 @@ From the lua repl (`init.lua` wires these as globals):
     stats               ports, heap, lua memory, corpses
     stack(pid)          every coroutine of that proc
     trace(pid)          its ring, runs of one line collapsed
+    tracehist(pid)      the same ring by cost, hottest line first
 
 Arming stays an explicit `sys.set_trace` rather than another magic
 word, because unlike the others it has an effect on the target.

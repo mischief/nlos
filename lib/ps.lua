@@ -179,6 +179,53 @@ function M.trace(pid)
 	return table.concat(out, "\n")
 end
 
+-- tracehist(pid): the same ring, by cost rather than by order.
+--
+-- A trace answers "how did it get here". This answers "where does it
+-- spend itself", which is a different question and needs the clock
+-- rather than the sequence: the hottest line by count and the most
+-- expensive line are routinely not the same one, and on the first task
+-- this was pointed at they were nine executions apart.
+--
+-- cpu is what the line cost; wall minus cpu is how long the proc was
+-- not running after it, which is where a blocking call shows up.
+function M.tracehist(pid, top)
+	local h = sys.tracehist(pid)
+	local out = { string.format("%s (pid %d): %d lines by cost",
+	    sys.name(pid), pid, #h) }
+
+	if #h == 0 then
+		out[#out + 1] = "  (not traced -- sys.set_trace(pid, n))"
+		return table.concat(out, "\n")
+	end
+
+	local cyc = sys.stats().cycles_per_ms
+	local total = 0
+
+	for _, r in ipairs(h) do
+		total = total + r.cpu
+	end
+	if total == 0 then
+		total = 1
+	end
+
+	out[#out + 1] = "    cpu_us  blocked_us     %  count  where"
+	for i = 1, math.min(top or 20, #h) do
+		local r = h[i]
+
+		out[#out + 1] = string.format(
+		    "  %8.2f  %10.2f  %5.1f  %5d  %s:%d",
+		    r.cpu * 1000 / cyc, (r.wall - r.cpu) * 1000 / cyc,
+		    r.cpu / total * 100, r.count, r.source, r.line)
+	end
+	if h.dropped and h.dropped > 0 then
+		out[#out + 1] = string.format(
+		    "  (%d entries unaggregated -- allocation failed)",
+		    h.dropped)
+	end
+	return table.concat(out, "\n")
+end
+
 -- halt: unlike ps/stats above, which only report, this one has a real
 -- side effect -- so it deliberately does NOT fire from __tostring.
 -- printing it explains itself; calling it shuts the machine down.

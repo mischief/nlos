@@ -446,6 +446,11 @@ local repl_worker_src = [[
 	_G.trace = function(pid)
 		return magic.trace(pid or sys.self())
 	end
+	-- tracehist(pid): the same ring by cost, hottest line first. Needs
+	-- the same explicit arming, for the same reason.
+	_G.tracehist = function(pid, top)
+		return magic.tracehist(pid or sys.self(), top)
+	end
 	_G.stats = magic.stats
 	_G.ports = magic.ports
 	_G.caps = caps
