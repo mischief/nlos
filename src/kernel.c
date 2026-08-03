@@ -142,7 +142,7 @@ enum { DEAD, READY, BLOCKED, BROKE };
  * lets it build the root namespace every other proc inherits.
  */
 enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
-    PRIV_P9, PRIV_ETH, PRIV_FB };
+    PRIV_P9, PRIV_ETH, PRIV_FB, PRIV_BLK };
 
 /* line trace: the last N lines a proc executed, in a ring.
  *
@@ -543,6 +543,7 @@ static struct kport *ethport;
 static int have_p9;
 static int have_eth;
 static int have_fb;
+static int have_blk;
 
 /* cycles per millisecond, measured once at boot. platform_ticks() is a
  * raw hardware counter -- a tick count, not a time -- and its rate is
@@ -3588,6 +3589,7 @@ extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_p9(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_eth(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
+extern int luaopen_los_platform_blk(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_fb(lua_State *L);	/* gop.c: efi only, no-op elsewhere */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
@@ -4260,6 +4262,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		lua_pushcfunction(p->L, luaopen_los_platform_eth);
 		lua_setfield(p->L, -2, "los.platform.eth");
 		break;
+	case PRIV_BLK:
+		lua_pushcfunction(p->L, luaopen_los_platform_blk);
+		lua_setfield(p->L, -2, "los.platform.blk");
+		break;
 	case PRIV_FB:
 		lua_pushcfunction(p->L, luaopen_los_platform_fb);
 		lua_setfield(p->L, -2, "los.platform.fb");
@@ -4693,6 +4699,7 @@ kernel_init(void)
 	have_eth = platform_have_eth();
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
+	have_blk = platform_have_blk();
 	return 0;
 }
 
@@ -4818,6 +4825,24 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_P9, .devport = 0, .devrecv = 0,
 		  .what = "the virtio-9p filesystem", .enabled = have_p9,
 		  .capname = "p9" },
+		/* the block device: the only proc with los.platform.blk,
+		 * re-serving it over a port as a dev backend
+		 * (lib/blkfs.lua) the same way p9srv does. Unlike every
+		 * other backend here what it serves is not a filesystem --
+		 * it is one file, /data, that IS the disk. Whatever
+		 * eventually reads a filesystem out of those bytes mounts
+		 * this and needs to know nothing about virtio, which is the
+		 * point of putting the seam here.
+		 *
+		 * No devport: nothing is routed to this device's interrupt
+		 * line, so there is no wakeup to deliver. blk.read and
+		 * blk.write yield and re-poll instead, which is what
+		 * virtio-9p has always done.
+		 */
+		{ .path = "/task/blksrv.lua", .chunkname = "=blksrv",
+		  .priv = PRIV_BLK, .devport = 0, .devrecv = 0,
+		  .what = "the block device", .enabled = have_blk,
+		  .capname = "blk" },
 		/* raw ethernet frames, and the bottom of the whole stack.
 		 * This task owns a wire and nothing more -- everything from
 		 * arp upwards is Lua on the far side of its port. No NIC

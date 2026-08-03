@@ -13,6 +13,7 @@
 #include "platform.h"
 #include "virtio.h"
 #include "virtio_9p.h"
+#include "virtio_blk.h"
 #include "virtio_net.h"
 #include "virtio_rng.h"
 
@@ -417,6 +418,159 @@ platform_have_eth(void)
 
 	if (!tried) {
 		present = (virtio_net_init() == 0);
+		tried = 1;
+	}
+	return present;
+}
+
+/* ---- los.platform.blk: virtio-blk, raw sectors ----
+ *
+ * Sectors and a capacity, and nothing above them: no partitions, no
+ * filesystem, no notion of what any of these bytes mean. lib/blkfs.lua
+ * turns this into a dev backend and a filesystem would go above that --
+ * C is mechanism, Lua is policy, and a block device is about as pure a
+ * case of the split as this tree has.
+ */
+
+static int
+blk_capacity(lua_State *L)
+{
+	if (!virtio_blk_present())
+		return 0;		/* nil: no device */
+	lua_pushinteger(L, (lua_Integer)virtio_blk_capacity());
+	lua_pushinteger(L, VIRTIO_BLK_SECTOR);
+	return 2;
+}
+
+/* read and write yield rather than spin, for the reason spelled out
+ * over p9_rpc above: scheduling here is cooperative and single
+ * threaded, so busy-waiting on the device would stop every other proc
+ * as well. The slot rides across the yields in the continuation
+ * context, biased by one so zero can mean "not started yet" -- either
+ * this is the first attempt or every slot was busy when we last tried.
+ *
+ * The arguments stay on the stack across a yield, so the first branch
+ * is the only one that has to look at them.
+ */
+static int
+blk_read_k(lua_State *L, int status, lua_KContext ctx)
+{
+	(void)status;
+
+	if (ctx == 0) {
+		lua_Integer lba = luaL_checkinteger(L, 1);
+		lua_Integer nsec = luaL_checkinteger(L, 2);
+		int slot;
+
+		if (lba < 0)
+			return luaL_error(L, "blk.read: negative sector");
+		if (nsec <= 0 ||
+		    nsec > VIRTIO_BLK_MAXIO / VIRTIO_BLK_SECTOR)
+			return luaL_error(L, "blk.read: bad sector count");
+
+		slot = virtio_blk_start(0, (uint64_t)lba, 0,
+		    (uint32_t)nsec * VIRTIO_BLK_SECTOR);
+		if (slot < 0) {
+			/* the window being full is not an error -- let the
+			 * outstanding requests drain and try again. A
+			 * request the device could never accept was already
+			 * rejected above, so this is the only case left.
+			 */
+			if (!virtio_blk_present())
+				return luaL_error(L, "blk.read: no device");
+			return lua_yieldk(L, 0, 0, blk_read_k);
+		}
+		ctx = (lua_KContext)(slot + 1);
+	}
+
+	const void *data;
+	uint32_t len;
+	int st = virtio_blk_poll((int)ctx - 1, &data, &len);
+
+	if (st < 0)
+		return lua_yieldk(L, 0, ctx, blk_read_k);
+	if (st != 0)
+		return luaL_error(L, "blk.read: device status %d", st);
+
+	lua_pushlstring(L, data, (size_t)len);
+	return 1;
+}
+
+static int
+blk_read(lua_State *L)
+{
+	return blk_read_k(L, LUA_OK, 0);
+}
+
+static int
+blk_write_k(lua_State *L, int status, lua_KContext ctx)
+{
+	(void)status;
+
+	if (ctx == 0) {
+		lua_Integer lba = luaL_checkinteger(L, 1);
+		size_t n;
+		const char *data = luaL_checklstring(L, 2, &n);
+		int slot;
+
+		if (lba < 0)
+			return luaL_error(L, "blk.write: negative sector");
+		if (n == 0 || n % VIRTIO_BLK_SECTOR != 0)
+			return luaL_error(L,
+			    "blk.write: not a whole number of sectors");
+		if (n > VIRTIO_BLK_MAXIO)
+			return luaL_error(L, "blk.write: too large");
+
+		slot = virtio_blk_start(1, (uint64_t)lba, data, (uint32_t)n);
+		if (slot < 0) {
+			if (!virtio_blk_present())
+				return luaL_error(L, "blk.write: no device");
+			return lua_yieldk(L, 0, 0, blk_write_k);
+		}
+		ctx = (lua_KContext)(slot + 1);
+	}
+
+	uint32_t len;
+	int st = virtio_blk_poll((int)ctx - 1, 0, &len);
+
+	if (st < 0)
+		return lua_yieldk(L, 0, ctx, blk_write_k);
+	if (st != 0)
+		return luaL_error(L, "blk.write: device status %d", st);
+
+	lua_pushinteger(L, (lua_Integer)len);
+	return 1;
+}
+
+static int
+blk_write(lua_State *L)
+{
+	return blk_write_k(L, LUA_OK, 0);
+}
+
+static const luaL_Reg blklib[] = {
+	{ "capacity", blk_capacity },
+	{ "read", blk_read },
+	{ "write", blk_write },
+	{ NULL, NULL }
+};
+
+int luaopen_los_platform_blk(lua_State *L);
+
+int
+luaopen_los_platform_blk(lua_State *L)
+{
+	luaL_newlib(L, blklib);
+	return 1;
+}
+
+int
+platform_have_blk(void)
+{
+	static int tried, present;
+
+	if (!tried) {
+		present = (virtio_blk_init() == 0);
 		tried = 1;
 	}
 	return present;

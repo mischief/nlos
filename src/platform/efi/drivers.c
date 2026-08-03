@@ -158,6 +158,33 @@ luaopen_los_platform_p9(lua_State *L)
 	return 1;
 }
 
+/* no block device here yet, and unlike p9 above that is a gap rather
+ * than a property of the platform. The firmware has
+ * EFI_BLOCK_IO_PROTOCOL and this is where a shim over it would go --
+ * same surface as microvm's virtio_blk, with lib/blkfs.lua unchanged
+ * above it. What makes that more than a port is the ESP: while boot
+ * services are alive the firmware holds that media too, so the first
+ * target has to be a second, non-boot volume.
+ *
+ * Same empty-symbol arrangement as p9 above.
+ */
+int
+platform_have_blk(void)
+{
+	return 0;
+}
+
+static const luaL_Reg blk_emptylib[] = { { NULL, NULL } };
+
+int luaopen_los_platform_blk(lua_State *L);
+
+int
+luaopen_los_platform_blk(lua_State *L)
+{
+	luaL_newlib(L, blk_emptylib);
+	return 1;
+}
+
 /* frames received since boot, which is what pump_eth compares.
  *
  * Not interrupts: there are none to count here. SNP's Receive reports

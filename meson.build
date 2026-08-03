@@ -87,6 +87,7 @@ if arch == 'x86_64'
       'src/platform/microvm/virtio_rng.c',
       'src/platform/microvm/virtio_9p.c',
       'src/platform/microvm/virtio_net.c',
+      'src/platform/microvm/virtio_blk.c',
     )
   endif
 elif arch == 'aarch64'
@@ -223,6 +224,8 @@ else
     'lib/p9fs.lua',
     'lib/p9tcp.lua',
     'task/p9srv.lua',
+    'lib/blkfs.lua',
+    'task/blksrv.lua',
     'task/eth.lua',
     'lib/ether.lua',
     'lib/ip4.lua',

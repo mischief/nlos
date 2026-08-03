@@ -40,6 +40,14 @@ int	platform_have_p9(void);
  */
 int	platform_have_eth(void);
 
+/* is there a block device? microvm answers by probing for a virtio-blk;
+ * efi always says no today, for want of an EFI_BLOCK_IO shim rather
+ * than for want of a device -- see the comment on its
+ * platform_have_blk. Storage there still comes from the firmware's own
+ * filesystem, through los.fs.
+ */
+int	platform_have_blk(void);
+
 /* is there a framebuffer? efi answers by probing for a GraphicsOutput
  * (src/platform/efi/gop.c); microvm always says no today, for want of a
  * virtio-gpu driver rather than for want of a device -- see the comment
