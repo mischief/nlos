@@ -282,10 +282,37 @@ if srvdh then
 	end
 end
 
+-- the gefs partition, mounted so every session inherits it in the
+-- namespace. blksrv is a kernel driver where the platform has a disk
+-- (platform_have_blk); partsrv slices the gefs partition off it and
+-- gefssrv serves the filesystem, the chain test/boot/microvm_gefspart
+-- drives. Guarded: a machine with no disk, no gefs partition, or a volume
+-- that will not open stays up without /n/gefs rather than failing to boot.
+if caps_of.blk then
+	local ok = pcall(function()
+		local _, ph = proc.spawn(
+		    assert(rootns:readfile("/task/partsrv.lua")),
+		    { name = "part", ns = nsdesc })
+
+		sys.send(ph, { blk = { __right = caps_of.blk },
+		    partition = "gefs" })
+
+		local _, gh = proc.spawn(
+		    assert(rootns:readfile("/task/gefssrv.lua")),
+		    { name = "gefs", ns = nsdesc })
+
+		sys.send(gh, { blk = { __right = ph }, label = "main" })
+		rootns:mount("/n/gefs", require("mnt").new(gh), "mnt",
+		    { port = { __right = gh } })
+	end)
+	log.log(ok and "gefs mounted at /n/gefs" or
+	    "gefs: no volume mounted this boot")
+end
+
 -- RE-taken, because neither /net nor /srv existed when the first
 -- description was made. dhcpd deliberately keeps the earlier one: it
 -- SERVES /net, and a namespace containing a mount to itself is a loop
--- waiting to be walked.
+-- waiting to be walked. /n/gefs is taken in here too.
 nsdesc = rootns:describe()
 
 if has_tcp then
