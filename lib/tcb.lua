@@ -86,6 +86,24 @@
 -- discovered when someone next writes. Wanted only by something
 -- long-lived and idle, and it needs a way for a client to ask.
 --
+-- BLIND-RESET HARDENING (RFC 5961 section 3). A reset anywhere in the
+-- receive window tears the connection down, which is RFC 793's rule.
+-- 5961 narrows it: only a reset whose sequence number is EXACTLY
+-- rcv_nxt should reset, one merely inside the window should draw a
+-- challenge acknowledgment instead, and one outside should be dropped.
+-- The difference matters to anyone who can guess a port pair but not a
+-- sequence number, which is the whole point of the document. We do
+-- implement its other half -- a SYN arriving inside an open connection
+-- draws a challenge acknowledgment rather than a reset.
+--
+-- DATA ON A SYN. 3.10.7.3 says that if a SYN or SYN,ACK carries text,
+-- processing should continue at the sixth step of 3.10.7.4; it does
+-- not, and the data is dropped. rcv_nxt covers only the SYN, so the
+-- peer retransmits and we accept it normally once established -- the
+-- connection heals itself at the cost of one retransmission timeout.
+-- It is legal to send data on a SYN and TCP Fast Open does, which is
+-- the case that would pay for it.
+--
 -- NAGLE (3.7.4) and the SENDER's half of silly-window avoidance
 -- (3.8.6.2.1). Both coalesce small writes; neither affects the bulk
 -- transfers this has been measured on. The receiver's half of
