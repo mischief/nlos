@@ -68,6 +68,19 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
 #define MAXGRANTS	8	/* named capabilities the kernel hands a proc */
 #define MAXTIMERS	32	/* outstanding one-shot timers, machine-wide */
+/* floor on phase two's dispatch bound -- see kernel_run.
+ *
+ * the bound is what ends a lap at all, because a mid-lap wakeup joins
+ * the current runq and two procs feeding each other hand phase two a
+ * fresh proc every time it takes one. sized to amortise rather than
+ * merely to terminate: everything between laps costs a fixed toll, one
+ * port-i/o trap on microvm and three firmware calls on efi, and a bound
+ * of "whatever was queued" charges a ping-pong pair the whole toll per
+ * exchange -- measured at 3.8x on a bare cross-proc round trip. what it
+ * costs in return is the delay a busy pair can impose on a timer, which
+ * is this many round trips, ~0.1ms. the tick is 10ms.
+ */
+#define LAPSPILL	64
 /* per-port queue ceiling. plan 9's pipes are Queues with a limit
  * (conf.pipeqsize, 256KB) and a writer that sleeps when it is reached;
  * ours had no bound at all, so a fast writer into a slow reader grew the
@@ -4970,7 +4983,8 @@ make_ready(struct kproc *p)
 	p->pri = reprioritize(p, count_runnable() + 1);
 	/* a proc already waiting its turn keeps the lap it was in. one
 	 * arriving fresh joins the current lap, which is how a mid-lap
-	 * wakeup still gets a turn this lap.
+	 * wakeup can still get a turn this lap -- if the lap's remaining
+	 * budget reaches it, and the next lap's opening runq if not.
 	 */
 	rq_add(keep ? keep : runq, p);
 }
@@ -5029,11 +5043,10 @@ run_proc(struct kproc *p)
 		 * after every resume.
 		 *
 		 * the hazard is real: a proc can run a full hook window
-		 * before yielding, and the dispatch loop below can ping-pong
-		 * two procs indefinitely without ever reaching the top of a
-		 * lap, so pump_serial is not a bound on how long the fifo
-		 * goes undrained. that is why this is here and not only up
-		 * there.
+		 * before yielding, and a lap can carry LAPSPILL dispatches
+		 * before it reaches the top of the loop again, so pump_serial
+		 * is not a tight bound on how long the fifo goes undrained.
+		 * that is why this is here and not only up there.
 		 *
 		 * but the drain costs an inb on COM2's LSR, which is a port
 		 * i/o trap, and doing it per resume made it 74% of a
@@ -5189,9 +5202,10 @@ kernel_run(void)
 		 * including procs woken DURING phase 1.
 		 *
 		 * phase 2 is the starvation guarantee, and it is deliberately
-		 * independent of the priority function. every READY proc runs
-		 * at most once and at least once per lap, whatever
-		 * reprioritize() computes. a policy that is buggy, hostile or
+		 * independent of the priority function. every proc READY when
+		 * the lap began runs exactly once in it, whatever
+		 * reprioritize() computes, and one woken during the lap runs
+		 * in it or in the next. a policy that is buggy, hostile or
 		 * merely untuned can cost latency; it cannot wedge the
 		 * machine. that matters because policy is exactly the part we
 		 * expect to get wrong -- see AGENTS.md.
@@ -5209,13 +5223,10 @@ kernel_run(void)
 		 * it is bounded by how many were waiting when the lap
 		 * started, so it cannot spin on procs it keeps waking.
 		 *
-		 * phase two then drains whatever is left, priority not
-		 * consulted -- including anything woken during phase one.
-		 * that is the guarantee: every runnable proc runs at least
-		 * once and at most once per lap, whatever reprioritize
-		 * computes. a policy that is buggy, hostile or merely untuned
-		 * costs latency and cannot wedge the machine, which matters
-		 * because policy is the part we expect to get wrong.
+		 * phase two then takes whatever is left, priority not
+		 * consulted -- including anything woken during phase one --
+		 * and is bounded too, by how many were waiting when it
+		 * started or by LAPSPILL, whichever is larger.
 		 *
 		 * "already had its turn" is membership in donq rather than a
 		 * per-lap marker, so nothing here is sized against MAXPROCS
@@ -5234,7 +5245,22 @@ kernel_run(void)
 				rq_add(donq, p);
 		}
 
-		for (;;) {
+		/* phase two is bounded for the same reason phase one is, and
+		 * it is the bound that makes the lap terminate at all. a proc
+		 * woken mid-lap joins the current runq (see make_ready), so
+		 * two procs feeding each other messages hand phase two a fresh
+		 * proc every time it takes one. an unbounded drain never
+		 * reaches the top of the loop again, and expire_timers,
+		 * pump_eth and pump_serial all live there -- one busy pair
+		 * stops every timer on the machine, in every proc, whether or
+		 * not it has anything to do with the pair.
+		 *
+		 * the floor is what keeps the bound from being expensive: see
+		 * LAPSPILL.
+		 */
+		int spill = runq->n < LAPSPILL ? LAPSPILL : runq->n;
+
+		for (int i = 0; i < spill; i++) {
 			struct kproc *p = rq_take_any(runq);
 
 			if (!p)
@@ -5243,6 +5269,21 @@ kernel_run(void)
 				ran = 1;
 			if (p->status == READY)
 				rq_add(donq, p);
+		}
+
+		/* whatever the bound left behind was woken this lap and has
+		 * not run: it goes onto the set that becomes the next runq,
+		 * not the one that becomes the next donq. leaving it where it
+		 * lies would park it a full lap behind the procs that already
+		 * had a turn, and a lap with nothing else runnable would go to
+		 * the idle sleep with work in hand.
+		 */
+		for (;;) {
+			struct kproc *p = rq_take_any(runq);
+
+			if (!p)
+				break;
+			rq_add(donq, p);
 		}
 
 		/* the lap is over: what ran becomes what runs next. procs
