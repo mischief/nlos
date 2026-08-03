@@ -36,7 +36,7 @@ local q = require("arch").quote
 local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
 local want9p, wantnet, wantecho, wantblk = false, false, false, false
-local wantgefs = false
+local wantgefs, wantgefscommit = false, false
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
@@ -50,6 +50,12 @@ for i = 3, #arg do
 		wantblk = true
 	elseif arg[i] == "--gefs" then
 		wantgefs = true
+	elseif arg[i] == "--gefscommit" then
+		-- microvm_gefs.lua commits /guest and the host verifies it
+		-- landed; the served/concurrency test does not, so the
+		-- durability check is a separate opt-in.
+		wantgefs = true
+		wantgefscommit = true
 	end
 end
 
@@ -373,7 +379,7 @@ end
 -- the file the guest committed. A write that came back inside the guest
 -- is not yet one that reached the disk file; only reading it from a fresh
 -- open of that file says the commit landed.
-if wantgefs then
+if wantgefscommit then
 	local out = popen_line(("lua5.4 %s cat %s /guest 2>/dev/null"):format(
 	    q(gefscli), q(blkimg)))
 
