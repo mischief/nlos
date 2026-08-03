@@ -778,6 +778,7 @@ microvm_tests = [
   ['p9mount', ['--9p']],
   ['p9bench', ['--9p']],
   ['p9par', ['--9p']],
+  ['blk', ['--blk']],
   ['eth', ['--net']],
   ['arp', ['--net']],
   ['ping', ['--net']],

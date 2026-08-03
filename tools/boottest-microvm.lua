@@ -20,7 +20,10 @@
 -- machines. --9p additionally serves a temporary directory over
 -- virtio-9p, seeded with the hello.txt that
 -- test/boot/microvm_p9mount.lua expects; it is opt-in because that test
--- creates a file and wants a private directory to do it in.
+-- creates a file and wants a private directory to do it in. --blk
+-- attaches a small seeded raw disk over virtio-blk, and is the one flag
+-- whose check continues after the guest has gone: the image is verified
+-- on the host afterwards.
 --
 -- a payload that asks for a device the machine does not have blocks in
 -- the driver and surfaces only as a harness timeout, with nothing on
@@ -32,7 +35,7 @@ local q = require("arch").quote
 
 local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
-local want9p, wantnet, wantecho = false, false, false
+local want9p, wantnet, wantecho, wantblk = false, false, false, false
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
@@ -42,6 +45,8 @@ for i = 3, #arg do
 	elseif arg[i] == "--netecho" then
 		wantnet = true
 		wantecho = true
+	elseif arg[i] == "--blk" then
+		wantblk = true
 	end
 end
 
@@ -116,6 +121,48 @@ end
 -- virtio.c scans a fixed eight slots either way.
 local rngargs = "-device virtio-rng-device,bus=virtio-mmio-bus.1"
 
+-- --blk gives the guest a small raw disk, seeded so that any sector can
+-- prove which sector it is: each one begins with its own index, the same
+-- trick blocks.bin uses above and for the same reason -- a transport
+-- with several requests outstanding has to be shown that replies still
+-- match their requests, and identical sectors would hide a swap.
+--
+-- The image is per invocation and is checked again after the guest
+-- exits (see BLK_MARK below), which is the only part of this that a
+-- guest-side readback cannot establish: a write that reached the device
+-- and came back is not yet a write that reached the file.
+local blkargs = ""
+local blkimg = tmp .. "/disk.img"
+
+local BLK_SECTORS = 2048		-- 1 MiB
+local BLK_SECSZ = 512
+
+-- deliberately unaligned and deliberately spanning a sector boundary
+-- (1015 .. 1031 crosses 1024), because that is the case blkfs.lua has
+-- to read-modify-write and the one an aligned test would never reach.
+local BLK_MARK = "MARKER-FROM-LUAOS"
+local BLK_MARK_OFF = 1015
+
+local function blk_sector(i)
+	local mark = string.format("sector %04d\n", i)
+
+	return mark .. string.rep(".", BLK_SECSZ - #mark)
+end
+
+if wantblk then
+	local f = assert(io.open(blkimg, "wb"))
+
+	for i = 0, BLK_SECTORS - 1 do
+		f:write(blk_sector(i))
+	end
+	f:close()
+
+	blkargs = table.concat({
+		"-drive if=none,id=d0,format=raw,file=" .. q(blkimg),
+		"-device virtio-blk-device,drive=d0,bus=virtio-mmio-bus.3",
+	}, " ")
+end
+
 -- --net gives the guest qemu's user networking, where slirp answers as
 -- the gateway at 10.0.2.2 and leases the guest 10.0.2.15. Enough for an
 -- arp exchange to have something on the far side; a bridge would be
@@ -173,7 +220,7 @@ local cmd = table.concat({
 	"-kernel " .. q(elf),
 	payload ~= "-" and
 	    ("-fw_cfg name=opt/org.luaos.test,file=" .. q(payload)) or "",
-	p9args, rngargs, netargs,
+	p9args, rngargs, netargs, blkargs,
 	"-nodefaults -no-user-config -no-reboot -nographic",
 	"-serial file:" .. q(tmp .. "/serial.log"),
 	">/dev/null 2>&1",
@@ -227,6 +274,46 @@ if not sawplan then
 	print("not ok - boottest-microvm harness (no TAP output)")
 	cleanup()
 	os.exit(1)
+end
+
+-- the durability half of the block test, which has to happen here
+-- because it is a question about the host's file rather than about the
+-- guest: did the bytes the guest wrote actually land, at the offset it
+-- named, without disturbing their neighbours?
+--
+-- The neighbours are the point. Writing 17 bytes across a sector
+-- boundary means blkfs.lua read both sectors, patched the middle and
+-- wrote them whole -- so a read-modify-write that got its head or tail
+-- slice wrong would still place the marker correctly and would quietly
+-- destroy everything around it.
+if wantblk then
+	local img = readfile(blkimg)
+	local got = img:sub(BLK_MARK_OFF + 1, BLK_MARK_OFF + #BLK_MARK)
+	local fail
+
+	if got ~= BLK_MARK then
+		fail = "marker at " .. BLK_MARK_OFF .. " is " ..
+		    string.format("%q", got)
+	else
+		-- the untouched remainder of each sector the write landed in
+		local s1 = blk_sector(1)
+		local s2 = blk_sector(2)
+		local want = (s1 .. s2):sub(1, BLK_MARK_OFF - BLK_SECSZ) ..
+		    BLK_MARK ..
+		    (s1 .. s2):sub(BLK_MARK_OFF - BLK_SECSZ + #BLK_MARK + 1)
+
+		if img:sub(BLK_SECSZ + 1, 3 * BLK_SECSZ) ~= want then
+			fail = "the bytes around the marker were disturbed"
+		end
+	end
+
+	if fail then
+		dump("block image check failed: " .. fail)
+		print("not ok - boottest-microvm harness (blk: " .. fail .. ")")
+		cleanup()
+		os.exit(1)
+	end
+	print("# blk: the guest's write survived in the host image")
 end
 
 cleanup()
