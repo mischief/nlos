@@ -25,10 +25,54 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(10)
+tap.plan(12)
 
 tap.ok(sys.set_torture ~= nil, "sys.set_torture is present")
+
+-- ---- is the instrument calibrated? ----
+--
+-- Everything below asserts that some shape survives being cut
+-- everywhere, and every one of those assertions passes trivially if
+-- nothing is being cut at all. So measure the knob before trusting it:
+-- two threads that never park, and how often the proc changes hands
+-- between them.
+--
+-- Cut only at the quantum, a thread that never parks runs to
+-- completion, so the count is one switch per thread and no more. Cut
+-- everywhere, they alternate. The gap is not subtle -- 2 against 30 as
+-- measured -- so this needs no threshold worth tuning.
+--
+-- switches[id] is written only by the thread it belongs to, and `last`
+-- is a single store. A shared tally would be the read-modify-write
+-- these tests are about, and would report the scheduler's fault as its
+-- own.
+local function handovers()
+	local switches = { 0, 0 }
+	local last = 0
+
+	for id = 1, 2 do
+		thread.spawn(function()
+			for _ = 1, 30 do
+				if last ~= id then
+					switches[id] = switches[id] + 1
+					last = id
+				end
+			end
+		end)
+	end
+	thread.run()
+	return switches[1] + switches[2]
+end
+
+local calm = handovers()
+
 tap.ok(sys.set_torture(true), "and a boot payload may ask for it")
+
+local cut = handovers()
+
+tap.is(calm, 2, "untortured, a thread that never parks is not cut")
+tap.ok(cut > 2, "and with torture on the two interleave (" .. cut ..
+    " handovers)")
 
 -- ---- ping-pong: almost nothing but the wakeup path ----
 --
