@@ -421,6 +421,21 @@ else
 endif
 
 
+# tests that ask nothing of either platform's hardware, so the same file
+# runs on both and is named without a platform prefix. Keeping one copy
+# is the point: close() truncating everything past the send window lived
+# in the shared stack, shipped on main, and was caught by one test on one
+# platform -- a second copy of that test would have been a second thing
+# to forget to update.
+#
+# [name, microvm boot flags, needs a nic]. "needs a nic" is not about the
+# wire -- tcploop never reaches it -- but about the tcp task existing at
+# all, since kernel.c only spawns ip and tcp4 when a card is present.
+shared_tests = [
+  ['tcploop', ['--net'], true],
+  ['checksum', [], false],
+]
+
 if platform == 'efi'
 
 lua_payload = files(
@@ -616,6 +631,18 @@ foreach t : boot_tests
   )
 endforeach
 
+foreach t : shared_tests
+  if not t[2]
+    test('boot-' + t[0], boottest,
+      args: [luaos_img, files('test/boot/shared_' + t[0] + '.lua')],
+      protocol: 'tap',
+      timeout: 90,
+      is_parallel: true,
+      env: archenv,
+    )
+  endif
+endforeach
+
 hostenv = archenv
 if have_hostutil
   hostenv = archenv + {'HOSTUTIL_SO': hostutil.full_path()}
@@ -645,6 +672,18 @@ if fw_network
       is_parallel: true,
       env: archenv + {'NET': '1'},
     )
+  endforeach
+
+  foreach t : shared_tests
+    if t[2]
+      test('boot-' + t[0], boottest,
+        args: [luaos_img, files('test/boot/shared_' + t[0] + '.lua')],
+        protocol: 'tap',
+        timeout: 120,
+        is_parallel: true,
+        env: archenv + {'NET': '1'},
+      )
+    endif
   endforeach
 
   if have_hostutil
@@ -745,11 +784,9 @@ microvm_tests = [
   ['udpq', ['--net']],
   ['loopback', ['--net']],
   ['udpbench', ['--net']],
-  ['checksum', []],
   ['autoip', ['--net']],
   ['ipraw', ['--net']],
   ['tcp', ['--netecho']],
-  ['tcploop', ['--net']],
   ['tcpbench', ['--net']],
   ['idle', []],
 ]
@@ -757,6 +794,15 @@ microvm_tests = [
 foreach t : microvm_tests
   test('microvm-' + t[0], microvm_boottest,
     args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] + t[1],
+    protocol: 'tap',
+    timeout: 90,
+    is_parallel: true,
+  )
+endforeach
+
+foreach t : shared_tests
+  test('microvm-' + t[0], microvm_boottest,
+    args: [luaos_microvm_elf, files('test/boot/shared_' + t[0] + '.lua')] + t[1],
     protocol: 'tap',
     timeout: 90,
     is_parallel: true,
