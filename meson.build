@@ -172,6 +172,7 @@ kernel_src = files(
 )
 if platform == 'efi'
   kernel_src += files(
+    'src/platform/efi/blk.c',
     'src/platform/efi/console.c',
     'src/platform/efi/drivers.c',
     'src/platform/efi/fs.c',
@@ -487,6 +488,30 @@ lua_payload = files(
   'task/cons.lua',
   'lib/chan.lua',
   'lib/dev.lua',
+  # the block device and the gefs filesystem over it. blksrv is spawned
+  # by the kernel when platform_have_blk() finds a disk (now true on efi
+  # too, via src/platform/efi/blk.c); the rest is the same stack microvm
+  # carries. salvage stays out -- a host recovery tool, off the boot path.
+  'lib/blkfs.lua',
+  'task/blksrv.lua',
+  'lib/gpt.lua',
+  'lib/gefs.lua',
+  'lib/gefs/dat.lua',
+  'lib/gefs/hash.lua',
+  'lib/gefs/pack.lua',
+  'lib/gefs/obj.lua',
+  'lib/gefs/blk.lua',
+  'lib/gefs/store.lua',
+  'lib/gefs/tree.lua',
+  'lib/gefs/snap.lua',
+  'lib/gefs/fsops.lua',
+  'lib/gefs/check.lua',
+  'lib/gefs/vol.lua',
+  'lib/gefs/ram.lua',
+  'lib/gefs/io.lua',
+  'lib/gefs/slice.lua',
+  'lib/gefsfs.lua',
+  'task/gefssrv.lua',
   'lib/draw.lua',
   'lib/crypto/util.lua',
   'lib/crypto/chacha20.lua',
@@ -657,7 +682,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'ports',
               'fb', 'fbprog',
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
-              'strictglobals']
+              'strictglobals', 'efigefs']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

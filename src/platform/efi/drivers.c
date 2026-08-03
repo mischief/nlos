@@ -13,6 +13,7 @@
 #include "lauxlib.h"
 
 #include "snp.h"
+#include "blk.h"
 #include "platform.h"
 
 extern void console_write(const char *s, unsigned long n);
@@ -171,17 +172,92 @@ luaopen_los_platform_p9(lua_State *L)
 int
 platform_have_blk(void)
 {
-	return 0;
+	return efi_blk_present();
 }
 
-static const luaL_Reg blk_emptylib[] = { { NULL, NULL } };
+/* ---- los.platform.blk: EFI_BLOCK_IO, raw sectors ----
+ *
+ * The same surface virtio_blk gives on microvm, minus the yielding:
+ * firmware ReadBlocks/WriteBlocks are synchronous, so there is nothing to
+ * wait on and no slot to carry across a yield. Sectors and a capacity;
+ * lib/blkfs.lua turns this into /data and the gpt parser and gefs go
+ * above, none of it changed from the microvm path.
+ */
+
+/* a ceiling on one transfer, in the spirit of microvm's VIRTIO_BLK_MAXIO:
+ * bound what a single call allocates rather than trust the count.
+ * blkfs.lua splits larger reads itself, and never asks for more than its
+ * own 32-sector step.
+ */
+#define EFI_BLK_MAXSEC 256
+
+static int
+blk_capacity(lua_State *L)
+{
+	if (!efi_blk_present())
+		return 0;		/* nil: no device */
+	lua_pushinteger(L, (lua_Integer)efi_blk_sectors());
+	lua_pushinteger(L, (lua_Integer)efi_blk_secsz());
+	return 2;
+}
+
+static int
+blk_read(lua_State *L)
+{
+	lua_Integer lba = luaL_checkinteger(L, 1);
+	lua_Integer nsec = luaL_checkinteger(L, 2);
+	uint32_t secsz = efi_blk_secsz();
+	luaL_Buffer b;
+	char *buf;
+	size_t len;
+
+	if (lba < 0)
+		return luaL_error(L, "blk.read: negative sector");
+	if (nsec <= 0 || nsec > EFI_BLK_MAXSEC)
+		return luaL_error(L, "blk.read: bad sector count");
+
+	len = (size_t)nsec * secsz;
+	buf = luaL_buffinitsize(L, &b, len);
+	if (efi_blk_read((uint64_t)lba, (uint32_t)nsec, buf) != 0)
+		return luaL_error(L, "blk.read: device error");
+	luaL_pushresultsize(&b, len);
+	return 1;
+}
+
+static int
+blk_write(lua_State *L)
+{
+	lua_Integer lba = luaL_checkinteger(L, 1);
+	size_t n;
+	const char *data = luaL_checklstring(L, 2, &n);
+	uint32_t secsz = efi_blk_secsz();
+
+	if (lba < 0)
+		return luaL_error(L, "blk.write: negative sector");
+	if (n == 0 || secsz == 0 || n % secsz != 0)
+		return luaL_error(L,
+		    "blk.write: not a whole number of sectors");
+	if (n > (size_t)EFI_BLK_MAXSEC * secsz)
+		return luaL_error(L, "blk.write: too large");
+	if (efi_blk_write((uint64_t)lba, data, (uint32_t)n) != 0)
+		return luaL_error(L, "blk.write: device error");
+	lua_pushinteger(L, (lua_Integer)(n / secsz));
+	return 1;
+}
+
+static const luaL_Reg blk_lib[] = {
+	{ "capacity", blk_capacity },
+	{ "read", blk_read },
+	{ "write", blk_write },
+	{ NULL, NULL },
+};
 
 int luaopen_los_platform_blk(lua_State *L);
 
 int
 luaopen_los_platform_blk(lua_State *L)
 {
-	luaL_newlib(L, blk_emptylib);
+	luaL_newlib(L, blk_lib);
 	return 1;
 }
 

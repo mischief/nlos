@@ -249,7 +249,8 @@ if wantgefsgpt then
 	seedrun(("truncate -s %d %s"):format(secs * 512, q(blkimg)))
 
 	local layout = ("label: gpt\nstart=%d, size=%d, type=uefi, name=\"EFI\"\n" ..
-	    "start=%d, size=%d, type=linux, name=\"gefs\"\n"):format(
+	    "start=%d, size=%d, " ..
+	    "type=C91818F9-8025-47AF-89D2-F030D7000C2C, name=\"gefs\"\n"):format(
 	    GEFS_ESP_START, GEFS_ESP_SZ, GEFS_PART_START, GEFS_PART_SZ)
 	seedrun(("printf %s | sfdisk --no-reread --no-tell-kernel -q %s"):format(
 	    q(layout), q(blkimg)))

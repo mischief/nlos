@@ -72,8 +72,13 @@ local layout = "label: gpt\nstart=" .. PART_START .. ", size=" ..
     PART_SECTORS .. ", type=uefi, name=\"EFI\"\n"
 
 if GEFS_IMG then
+	-- the Plan 9 partition type GUID, gefs being a plan 9 filesystem.
+	-- gpt.lua finds the partition by name, so this is correctness rather
+	-- than function -- but a linux-data GUID on a plan 9 volume is a lie
+	-- any partition tool would repeat.
 	layout = layout .. "start=" .. GEFS_START .. ", size=" ..
-	    gefs_sectors .. ", type=linux, name=\"gefs\"\n"
+	    gefs_sectors ..
+	    ", type=C91818F9-8025-47AF-89D2-F030D7000C2C, name=\"gefs\"\n"
 end
 
 run("printf %s " .. quote(layout) ..

@@ -382,6 +382,38 @@ typedef struct {
 	/* rest unused */
 } EFI_LOADED_IMAGE_PROTOCOL;
 
+/* ---- block i/o: raw sectors off a disk. Layout is UEFI-spec exact
+ * (natural alignment matches the firmware's), since these are called
+ * through function pointers. Only the fields up through LastBlock are
+ * read, so revision 1 media is enough.
+ */
+typedef UINT64 EFI_LBA;
+
+typedef struct {
+	UINT32 MediaId;
+	BOOLEAN RemovableMedia;
+	BOOLEAN MediaPresent;
+	BOOLEAN LogicalPartition;
+	BOOLEAN ReadOnly;
+	BOOLEAN WriteCaching;
+	UINT32 BlockSize;
+	UINT32 IoAlign;
+	EFI_LBA LastBlock;
+} EFI_BLOCK_IO_MEDIA;
+
+typedef struct EFI_BLOCK_IO_PROTOCOL EFI_BLOCK_IO_PROTOCOL;
+struct EFI_BLOCK_IO_PROTOCOL {
+	UINT64 Revision;
+	EFI_BLOCK_IO_MEDIA *Media;
+	EFI_STATUS (EFIAPI *Reset)(EFI_BLOCK_IO_PROTOCOL *This,
+	    BOOLEAN ExtendedVerification);
+	EFI_STATUS (EFIAPI *ReadBlocks)(EFI_BLOCK_IO_PROTOCOL *This,
+	    UINT32 MediaId, EFI_LBA LBA, UINTN BufferSize, void *Buffer);
+	EFI_STATUS (EFIAPI *WriteBlocks)(EFI_BLOCK_IO_PROTOCOL *This,
+	    UINT32 MediaId, EFI_LBA LBA, UINTN BufferSize, void *Buffer);
+	EFI_STATUS (EFIAPI *FlushBlocks)(EFI_BLOCK_IO_PROTOCOL *This);
+};
+
 typedef struct EFI_SERVICE_BINDING_PROTOCOL EFI_SERVICE_BINDING_PROTOCOL;
 struct EFI_SERVICE_BINDING_PROTOCOL {
 	EFI_STATUS (EFIAPI *CreateChild)(EFI_SERVICE_BINDING_PROTOCOL *This,
