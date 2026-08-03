@@ -13,7 +13,7 @@ local ns = require("ns")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(53)
+tap.plan(58)
 
 -- ---- path cleaning, before any backend is involved ----
 tap.is(ns.clean("/a/b/../c"), "/a/c", "clean resolves ..")
@@ -321,5 +321,57 @@ tap.is(rm and rm.realmod, "table",
     "and fell through the union to a real module on the esp")
 tap.ok(rm and rm.iscurrent,
     "proc.spawn adopted the namespace without the chunk asking")
+
+-- ---- readfile does not ask in thimblefuls ----
+--
+-- The chunk readfile asks for used to be sized to a port message, which
+-- was never its business: the mount drivers chunk to their own iounit
+-- (see dev.readloop), so the only thing this number controls is how
+-- much of a file is held at once. It was 4096, which meant a megabyte
+-- cost 256 round trips through a mount for no reason.
+--
+-- Counted rather than timed, so this measures the thing it claims to
+-- and does not depend on how fast the machine is.
+local function counting(inner)
+	local B, n = {}, 0
+
+	for k, v in pairs(inner) do
+		B[k] = v
+	end
+	B.read = function(h, off, want)
+		n = n + 1
+		return inner.read(h, off, want)
+	end
+	return B, function() return n end
+end
+
+do
+	local BIG = 512 * 1024
+	local body = string.rep("0123456789abcdef", BIG // 16)
+	local base = dev.mem({ ["big.bin"] = body })
+	local B, reads = counting(base)
+	local CN = ns.new()
+
+	tap.ok(CN:mount("/", B, "mem"), "mounted a counting backend")
+
+	local got = CN:readfile("/big.bin")
+
+	tap.is(got and #got, #body, "readfile returned the whole file")
+	tap.ok(got == body, "and every byte of it is right")
+
+	-- ceil(size / chunk) reads, plus the one that returns "" at eof.
+	-- Derived from dev.IOUNIT, which is where readfile's chunk comes
+	-- from -- asking ns for the number it used would only prove it
+	-- agrees with itself.
+	local want = math.ceil(#body / dev.IOUNIT) + 1
+
+	tap.is(reads(), want,
+	    "readfile issued " .. reads() .. " reads, not " ..
+	    (math.ceil(#body / 4096) + 1))
+
+	-- the old number, stated so a regression to it is unmistakable
+	tap.ok(reads() < math.ceil(#body / 4096) + 1,
+	    "which is fewer than a 4096-byte chunk would have taken")
+end
 
 tap.done()

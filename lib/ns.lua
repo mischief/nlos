@@ -455,6 +455,28 @@ function NS:readdir(path)
 	return out
 end
 
+-- how much readfile asks for at a time.
+--
+-- this is a memory bound and NOT a transport limit -- the two used to be
+-- confused here. Asking for 4096 was sized to a message that no longer
+-- exists as a concern: lib/mnt.lua and lib/p9fs.lua chunk to their own
+-- iounit now, so a request of any size is legal and the only question
+-- left is how much of a file to hold at once. A megabyte file cost 256
+-- round trips at 4096 and costs 16 here.
+--
+-- still a loop rather than one stat-sized read: stat is another round
+-- trip, a synthetic file reports size 0 while having plenty to say
+-- (lib/procfs.lua), and a file may grow between the stat and the read.
+-- The loop has to exist for those, so the size is the only knob.
+--
+-- set to dev.IOUNIT rather than a round number because the common case
+-- is a mounted file, and a chunk that is not a whole number of iounits
+-- makes every one of them a full round trip plus a runt -- 64K against
+-- a 60K iounit is two messages, the second carrying 4K. Matching it
+-- exactly makes each chunk one round trip. A local backend is
+-- indifferent, so nothing is lost by sizing for the mounted case.
+local RDCHUNK = dev.IOUNIT
+
 -- convenience: whole-file read and write, which is most of what a shell
 -- and its utilities actually do.
 function NS:readfile(path)
@@ -466,7 +488,7 @@ function NS:readfile(path)
 	local parts = {}
 
 	while true do
-		local chunk, rerr = f:read(4096)
+		local chunk, rerr = f:read(RDCHUNK)
 
 		if not chunk then
 			f:close()
