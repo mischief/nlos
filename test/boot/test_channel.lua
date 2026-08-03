@@ -1,10 +1,10 @@
--- threads, channels (rendezvous + buffered), alt, qlock
+-- threads, channels (rendezvous + buffered), alt
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(16)
+tap.plan(15)
 
 -- rendezvous ping/pong
 local c = thread.chancreate(0)
@@ -60,25 +60,6 @@ thread.spawn(function()
 end)
 thread.run()
 tap.is(val, "from-port", "alt picks ready port")
-
--- qlock excludes across yields
-local l = thread.qlockcreate()
-local order = {}
-thread.spawn(function()
-	l:lock()
-	order[#order + 1] = "a-in"
-	thread.chancreate(1):nbsend(true)	-- force a scheduling point
-	sys.yield()
-	order[#order + 1] = "a-out"
-	l:unlock()
-end)
-thread.spawn(function()
-	l:lock()
-	order[#order + 1] = "b"
-	l:unlock()
-end)
-thread.run()
-tap.is(table.concat(order, ","), "a-in,a-out,b", "qlock holds across yield")
 
 -- ---- close ----
 

@@ -6,7 +6,7 @@
 -- Channel/alt lifted from libthread; recv() blocking sugar over ports.
 --
 -- returned as a module: require("los.thread") gives the scheduler table
--- with Channel/alt/QLock/recv/readline hung off it.
+-- with Channel/alt/recv/readline hung off it.
 
 local sys = require("los.sys")
 
@@ -1025,27 +1025,6 @@ local function alt(cases)
 	end
 end
 
--- ---- qlock (plan9 QLock; only matters across yields) ----
-
-local QLock = {}
-QLock.__index = QLock
-
-local function qlockcreate()
-	return setmetatable({ held = false, q = chancreate(0) }, QLock)
-end
-
-function QLock:lock()
-	while self.held do
-		self.q:recv()
-	end
-	self.held = true
-end
-
-function QLock:unlock()
-	self.held = false
-	self.q:nbsend(true)
-end
-
 -- ---- port sugar ----
 
 -- blocking recv on a port right; thread-aware.
@@ -1237,13 +1216,11 @@ end
 -- ---- exports ----
 -- the module is the scheduler table with the rest of the runtime hung
 -- off it: require("los.thread") -> { spawn, run, recv, readline, sleep,
--- recvtimeout, Channel, chancreate, alt, QLock, qlockcreate, ... }.
+-- recvtimeout, Channel, chancreate, alt, ... }.
 
 thread.Channel = Channel
 thread.chancreate = chancreate
 thread.alt = alt
-thread.QLock = QLock
-thread.qlockcreate = qlockcreate
 -- park on a port once, thread-aware, without consuming anything. for
 -- callers that need to re-check some other condition (a hangup, say)
 -- after waking rather than just taking the next message.
