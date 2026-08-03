@@ -96,6 +96,16 @@ local pktport = sys.newport()
 -- calls incoming().
 local service, incoming
 
+-- The clock, read once per pass of the main loop.
+--
+-- Every path that hands time to lib/tcb.lua used to call sys.uptime_ms
+-- itself, which measured at 2.91 syscalls per segment -- three trips
+-- into the kernel to read a number that cannot meaningfully change
+-- between them, since nothing else runs while this proc is running.
+-- sys.syscalls is what showed it; a line profile could not, because a
+-- syscall is not a Lua line.
+local now = 0
+
 local function reply_to(m, v)
 	local h = type(m) == "table" and type(m.reply) == "table" and
 	    m.reply.__right or nil
@@ -265,7 +275,7 @@ local function push(c)
 		return
 	end
 
-	local n = c.t:write(w.data:sub(w.off + 1), sys.uptime_ms())
+	local n = c.t:write(w.data:sub(w.off + 1), now)
 
 	if n == nil then
 		reply_to(w.m, false)
@@ -372,7 +382,7 @@ function incoming(l, src, dst, seg)
 		key = name(src, seg.sport, l.lport),
 		readers = {},
 		listener_id = l.id,
-		deadline = sys.uptime_ms() + DIAL_MS,
+		deadline = now + DIAL_MS,
 	}
 
 	c.t = tcb.new({
@@ -383,7 +393,7 @@ function incoming(l, src, dst, seg)
 	c.t:listen()
 	conns[id] = c
 	byname[c.key] = id
-	c.t:segment(seg, sys.uptime_ms())
+	c.t:segment(seg, now)
 	service(c)
 end
 
@@ -426,7 +436,7 @@ local function on_packet(m)
 		return
 	end
 
-	c.t:segment(seg, sys.uptime_ms())
+	c.t:segment(seg, now)
 	service(c)
 end
 
@@ -481,7 +491,7 @@ local function on_request(m)
 			key = name(raddr, port, lport),
 			readers = {},
 			dialer = m,
-			deadline = sys.uptime_ms() + DIAL_MS,
+			deadline = now + DIAL_MS,
 		}
 
 		local iss = draw_iss()
@@ -498,7 +508,7 @@ local function on_request(m)
 		})
 		conns[id] = c
 		byname[c.key] = id
-		c.t:connect(sys.uptime_ms())
+		c.t:connect(now)
 		service(c)
 
 	elseif m.op == "send" then
@@ -557,7 +567,7 @@ local function on_request(m)
 		-- interest in: from the client's side the connection is over
 		-- the moment it says so.
 		c.closed_by_user = true
-		c.t:close(sys.uptime_ms())
+		c.t:close(now)
 		wake(c, nil)
 		service(c)
 
@@ -750,7 +760,7 @@ local function rearm()
 		sys.close(timer)
 	end
 
-	local ms = soonest - sys.uptime_ms()
+	local ms = soonest - now
 
 	timer = sys.timer(ms > 1 and ms or 1)
 	armed = timer and soonest or nil
@@ -771,6 +781,8 @@ end
 local cases = { { port = sys.SELF }, { port = pktport }, nil }
 local timercase = { port = 0 }
 
+now = sys.uptime_ms()
+
 while true do
 	rearm()
 
@@ -783,6 +795,13 @@ while true do
 
 	local which, m = thread.alt(cases)
 
+	-- AFTER the alt, not before: the alt is where this proc waits, and
+	-- a clock read on the other side of it would be stale by exactly
+	-- the interval that matters to a timer. rearm() at the top of the
+	-- next pass then uses the time this event arrived, which is one
+	-- handler old -- microseconds against deadlines in milliseconds.
+	now = sys.uptime_ms()
+
 	if which == 2 then
 		on_packet(m)
 	elseif which == 3 then
@@ -791,7 +810,7 @@ while true do
 		sys.close(timer)
 		timer = nil
 		armed = nil
-		expire(sys.uptime_ms())
+		expire(now)
 	else
 		on_request(m)
 	end

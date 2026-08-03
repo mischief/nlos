@@ -165,6 +165,11 @@ enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
  * push it over, the same reason src/debug.c allocates nothing in a
  * target it is reading.
  */
+/* los.sys entries, which is what per-proc call counting is sized by.
+ * Checked against the real table at registration -- see los_sys_open.
+ */
+#define NSYSCALL	64
+
 #define TRACESRC	32	/* distinct source files remembered */
 #define TRACECO		16	/* coroutines distinguished, as in debug.c */
 #define TRACEMAX	4096	/* entries, per proc */
@@ -379,6 +384,20 @@ struct kproc {
 	struct grant grants[MAXGRANTS];
 	int ngrants;
 	struct ktrace *trace;	/* line trace ring, or 0; see sys.set_trace */
+
+	/* how many times this proc has made each los.sys call, indexed by
+	 * position in kapi[]. See counted() for why it is a wrapper rather
+	 * than an increment in each api_ function, and sys.syscalls to read
+	 * it.
+	 *
+	 * Always on, unlike the trace ring, because it is affordable enough
+	 * to be: 38 counters is 152 bytes beside a whole lua_State, and
+	 * procv holds pointers so it is per live proc rather than per
+	 * MAXPROCS. Arming would defeat the point -- the case this exists
+	 * for was a task making two syscalls per message, which is only
+	 * obvious if it is already being counted when someone first looks.
+	 */
+	unsigned int calls[NSYSCALL];
 	unsigned int brokeseq;	/* death order, so the cap reaps the oldest */
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
@@ -2538,6 +2557,11 @@ api_close(lua_State *L)
 
 static void preempt_hook(lua_State *L, lua_Debug *ar);
 static void proc_armall(struct kproc *p, int count);
+/* the los.sys table, defined below. Forward-declared because
+ * api_syscalls reads its names and kapi lists api_syscalls, which is a
+ * circle that has to be broken somewhere.
+ */
+static const luaL_Reg kapi[];
 static void trace_put(struct kproc *p, struct ktrace *t, int line, int src,
     int co);
 static void trace_mark(struct kproc *p, const char *what);
@@ -3258,6 +3282,36 @@ api_tracehist(lua_State *L)
 	return 1;
 }
 
+/* sys.syscalls(pid): how many of each los.sys call this proc has made.
+ *
+ * Deliberately not folded into sys.pidstat, which ps calls once per proc
+ * and which should not build a thirty-eight entry table each time. Ask
+ * for this when the question is "what is it doing", not "what is on the
+ * machine".
+ *
+ * Only calls that have happened are reported, so the table is short and
+ * a zero is absence rather than a row of noise.
+ */
+static int
+api_syscalls(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	if (!lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+
+	lua_newtable(L);
+	for (int i = 0; kapi[i].name && i < NSYSCALL; i++)
+		if (p->calls[i]) {
+			lua_pushinteger(L, (lua_Integer)p->calls[i]);
+			lua_setfield(L, -2, kapi[i].name);
+		}
+	return 1;
+}
+
 /* sys.reap(pid): release a corpse.
  *
  * ambient for the same reason sys.stack is, and the reasoning survives
@@ -3606,6 +3660,7 @@ static const luaL_Reg kapi[] = {
 	{ "set_torture", api_set_torture },
 	{ "trace", api_trace },
 	{ "tracehist", api_tracehist },
+	{ "syscalls", api_syscalls },
 	{ "set_priority", api_set_priority },
 	{ "priority", api_priority },
 	{ "pidstat", api_pidstat },
@@ -3635,10 +3690,55 @@ extern int luaopen_los_platform_fb(lua_State *L);	/* gop.c: efi only, no-op else
  * require("los.sys"). the proc pointer comes from the state's extra
  * space, so the api needs no upvalues.
  */
+/* One los.sys call, counted.
+ *
+ * A wrapper at registration rather than an increment inside each of the
+ * thirty-eight api_ functions, because registration is the single door:
+ * a syscall added to kapi later is counted without anyone remembering
+ * to, and the one that someone forgets is invisible in exactly the way
+ * that matters. The arguments are already on the stack, so forwarding is
+ * a call and nothing else.
+ *
+ * Counts only, no cycles. Two tsc reads per syscall would be real
+ * overhead on the cheapest ones, and the line profile already prices the
+ * line a syscall sits on -- what it cannot say is how many calls that
+ * line made and which. This closes exactly that gap: the case it was
+ * built for was task/tcp4.lua closing and recreating a timer on every
+ * message, which sys.tracehist could point at only as "the scan around
+ * it", because a syscall is not a Lua line.
+ */
+static int
+counted(lua_State *L)
+{
+	struct kproc *p = self(L);
+	lua_CFunction f = (lua_CFunction)lua_touserdata(L,
+	    lua_upvalueindex(1));
+
+	if (p)
+		p->calls[lua_tointeger(L, lua_upvalueindex(2))]++;
+	return f(L);
+}
+
 static int
 los_sys_open(lua_State *L)
 {
-	luaL_newlib(L, kapi);
+	int n = 0;
+
+	while (kapi[n].name)
+		n++;
+	/* a table that outgrew its counters would silently stop counting
+	 * the tail of itself, so say so at the door instead.
+	 */
+	if (n > NSYSCALL)
+		return luaL_error(L, "NSYSCALL too small for kapi (%d)", n);
+
+	lua_createtable(L, 0, n);
+	for (int i = 0; i < n; i++) {
+		lua_pushlightuserdata(L, (void *)(intptr_t)kapi[i].func);
+		lua_pushinteger(L, i);
+		lua_pushcclosure(L, counted, 2);
+		lua_setfield(L, -2, kapi[i].name);
+	}
 
 	/* SELF is the only well-known handle, and the only one that can
 	 * be: it is how a proc receives at all, so there is nothing to
