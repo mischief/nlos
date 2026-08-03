@@ -33,9 +33,10 @@
 -- whole proc alive for the 2*MSL a TIME-WAIT connection spends doing
 -- nothing at all.
 --
--- What is not here: congestion control, Nagle and delayed
--- acknowledgments, which live in lib/tcb.lua's half of the work and are
--- the last commit rather than this one.
+-- Everything about a connection's behaviour -- congestion control, the
+-- timers, reassembly, the state machine -- is lib/tcb.lua's. This file
+-- is only the loop, the table of them and the client protocol, which is
+-- why it stays short while that one grows.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
