@@ -62,6 +62,17 @@ void
 intr_init(void)
 {
 	if (intr_have_apic()) {
+		/* a machine can have both, and one that does arrives here
+		 * with the 8259 however the firmware left it -- on q35 that
+		 * is SeaBIOS's mapping, irq 0-7 on vectors 0x08-0x0f with
+		 * the PIT running, so the first tick after sti is delivered
+		 * as vector 8 and read as a double fault. pic_init masks
+		 * both halves and moves them off the exception vectors, so
+		 * the only controller that can raise anything is the one we
+		 * program. On a machine with no PIC (qemu microvm says
+		 * pic=off) these are writes to unassigned ports.
+		 */
+		pic_init();
 		ioapic_init();	/* mask every line before enabling anything */
 		lapic_init();
 	} else {
