@@ -802,6 +802,7 @@ microvm_tests = [
   ['blk', ['--blk']],
   ['gefs', ['--gefscommit']],
   ['gefssrv', ['--gefscommit']],
+  ['gefsshutdown', ['--gefscommit']],
   ['eth', ['--net']],
   ['arp', ['--net']],
   ['ping', ['--net']],
