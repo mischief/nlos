@@ -1088,13 +1088,25 @@ local function recv(h)
 			r.hasmail, r.mail = false, false
 			return m
 		end
-		if co then
-			-- checked even when this coroutine has never parked
-			-- and so has no record yet: a message may have been
-			-- taken for this port with no taker at the time.
-			local q = pending[h]
+		-- checked even when this coroutine has never parked and so
+		-- has no record yet: a message may have been taken for this
+		-- port with no taker at the time.
+		--
+		-- looking and taking are one step, because two threads can be
+		-- in recv() on the same port -- a service port rather than a
+		-- reply port, which is the case replyport() does not cover.
+		-- Both see the one queued message, one takes it, and the other
+		-- reaches table.remove on an empty list and returns its nil to
+		-- a caller that cannot tell it from a message, since nil is
+		-- one. The section costs nothing on the ordinary path: pending
+		-- is empty unless a message arrived for a port whose waiter had
+		-- already gone, so there is normally no queue here to guard.
+		local q = co and pending[h]
 
-			if q and #q > 0 then
+		if q then
+			local _ <close> = atomic()
+
+			if #q > 0 then
 				return table.remove(q, 1)
 			end
 		end
