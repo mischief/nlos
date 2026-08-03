@@ -36,7 +36,16 @@
 -- Everything about a connection's behaviour -- congestion control, the
 -- timers, reassembly, the state machine -- is lib/tcb.lua's. This file
 -- is only the loop, the table of them and the client protocol, which is
--- why it stays short while that one grows.
+-- why it stays short while that one grows. What the stack does not do
+-- is listed in that file's header, at the top.
+--
+-- What THIS file does not do is one thing, and it is the protocol
+-- rather than the loop: lib/caps.lua's close is all or nothing, so a
+-- client cannot say "no more from me, but keep reading" -- the simplex
+-- close of RFC 9293 3.6, which lib/tcb.lua implements and nobody can
+-- reach. Adding it means changing a protocol task/tcp.lua also serves
+-- over the firmware's TCP4, so both sides move together or a client
+-- has to cope with the difference.
 
 local sys = require("los.sys")
 local thread = require("los.thread")

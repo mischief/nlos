@@ -37,9 +37,64 @@
 -- 223 of 402 segments sent in a one-way transfer to be pure
 -- acknowledgments, each costing a full trip out through the ip task.
 --
--- What is deliberately not here: Nagle and the sender's half of
--- silly-window avoidance, which coalesce small writes rather than
--- reducing the acknowledgments a bulk transfer generates.
+-- ---- what this stack does not do ----
+--
+-- Written down here rather than in a tracker, because the person who
+-- needs to know is reading this file. None of it is a known bug: every
+-- item is a decision, and the reasoning is what makes it one.
+--
+-- The two failure shapes to watch for are the ones already found the
+-- hard way. Both were silent: a FIN that overtook queued data, and two
+-- peers acknowledging each other forever. Silence is the signature --
+-- if something here starts behaving oddly, look first for what is NOT
+-- being reported.
+--
+-- SENDER-SIDE SACK. We advertise SACK-permitted and emit blocks, so a
+-- peer's recovery gets the full picture; we ignore the blocks a peer
+-- sends US. Our own recovery is therefore NewReno-serial: one loss
+-- repaired per round trip, where a scoreboard would repair all of them
+-- at once. Costs throughput on a lossy path and nothing on a clean one.
+--
+-- WINDOW SCALING (RFC 7323). Parsed from the peer's SYN and never
+-- offered, so the window is capped at 64KB and throughput at 64KB per
+-- round trip. Invisible on a LAN at half a millisecond; 1.3MB/s over a
+-- 50ms path, which is the difference between working and not on
+-- anything resembling the internet. Nothing here has a round trip long
+-- enough to notice, which is the real reason it has not been done: it
+-- would land untested.
+--
+-- PATH MTU. snd_mss is clamped to our own link (3.7.1) so a peer cannot
+-- make us build frames the device refuses -- but a path SMALLER than
+-- either end's link is not detected. Full-size segments would vanish
+-- and the connection would stall with no error, which is the same
+-- silent shape as the bugs above. lib/icmp.lua can decode
+-- fragmentation-needed; nothing listens for it, because task/ip.lua
+-- answers echo and drops the rest.
+--
+-- FRAGMENTATION. Deliberately never, in lib/ip4.lua. Fragments are
+-- widely dropped and refusing to make them is a position rather than a
+-- gap.
+--
+-- URGENT DATA (3.8.5). The URG bit and the urgent pointer are parsed
+-- and ignored. This is the one outright unmet MUST. In the sockets API
+-- urgent data must be asked for explicitly and essentially nothing
+-- sends it, so the intended resolution is to notice it, say so once,
+-- and drop it -- which is what happens now, minus the saying.
+--
+-- KEEPALIVES (3.8.4). A MAY, and deliberately not done: a connection
+-- with nothing to send sends nothing, and a peer that vanished is
+-- discovered when someone next writes. Wanted only by something
+-- long-lived and idle, and it needs a way for a client to ask.
+--
+-- NAGLE (3.7.4) and the SENDER's half of silly-window avoidance
+-- (3.8.6.2.1). Both coalesce small writes; neither affects the bulk
+-- transfers this has been measured on. The receiver's half of
+-- silly-window IS here, in read().
+--
+-- What the interface above cannot express is a gap of its own:
+-- lib/caps.lua's tcp close is all or nothing, so the simplex close of
+-- 3.6 -- say no more, keep reading -- is implemented here and
+-- unreachable by any client.
 --
 -- Names follow the RFC, in lower case: snd_una is SND.UNA. Keeping them
 -- recognisable matters more than keeping them pretty, because every
