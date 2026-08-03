@@ -257,6 +257,7 @@ function tcb.new(cfg)
 		passive = false,
 		fin_rcvd = false,
 		fin_sent = false,
+		fin_pending = false,
 		fin_seq = nil,
 
 		out = {},
@@ -488,17 +489,27 @@ function T:close(now)
 		return true
 	end
 
-	-- everything still queued goes out first: the RFC is explicit that
-	-- a close delivers what was already sent (3.6), which is what lets
-	-- a client write a request, close, and still expect it to arrive.
+	-- The FIN is queued, not sent. RFC 9293 3.10.4: CLOSE should "queue
+	-- this until all preceding SENDs have been segmentized, then form a
+	-- FIN segment and send it" -- it is the FIN that waits, not the
+	-- close.
+	--
+	-- This used to call _transmit() and then _send_fin() outright, and
+	-- the comment claimed that delivered everything queued. It did not.
+	-- _transmit sends what the WINDOW allows, so with more queued than
+	-- the window it returned with data still in sndq, the FIN went out
+	-- at snd_nxt -- ahead of that data -- and the state moved to
+	-- FIN-WAIT-1, where _transmit is a no-op. Nothing could ever send
+	-- the rest, and the peer saw a FIN it had every reason to treat as
+	-- a clean end of stream.
+	--
+	-- The cost was quiet and total: every response larger than the
+	-- initial congestion window was truncated at 4380 bytes, on both
+	-- platforms, with no error raised at either end. Everything
+	-- lib/http.lua serves goes out under Connection: close, so that was
+	-- every reply over about 4KB.
+	self.fin_pending = true
 	self:_transmit()
-	self:_send_fin()
-
-	if self.state == tcb.CLOSE_WAIT then
-		self.state = tcb.LAST_ACK
-	else
-		self.state = tcb.FIN_WAIT_1
-	end
 	return true
 end
 
@@ -546,6 +557,13 @@ function T:write(data, now)
 
 	if self.state ~= tcb.ESTABLISHED and self.state ~= tcb.CLOSE_WAIT then
 		return nil, "not connected"
+	end
+	-- close() has been called and its FIN is only waiting for the queue
+	-- to drain. Accepting more would put data after a FIN that has
+	-- already been promised, which is the bug this flag exists to fix,
+	-- inverted.
+	if self.fin_pending then
+		return nil, "closing"
 	end
 
 	local room = self.sndbuf - #self.sndq
@@ -699,7 +717,7 @@ function T:_transmit()
 
 		if unsent <= 0 or room <= 0 then
 			self:_update_persist()
-			return
+			break
 		end
 
 		local n = math.min(unsent, room, self.snd_mss)
@@ -714,6 +732,19 @@ function T:_transmit()
 		end
 		self:_send(flags, chunk)
 		self.snd_nxt = tcp4.add(self.snd_nxt, n)
+	end
+
+	-- and the FIN behind it, once there is nothing left to put in
+	-- front. This is the whole of what makes close() deliver what it
+	-- was given: every path that can drain the queue -- an
+	-- acknowledgment opening the window, a window update, the persist
+	-- probe -- comes back through here, so the FIN follows the last
+	-- byte rather than overtaking it.
+	if self.fin_pending and not self.fin_sent and
+	    #self.sndq - tcp4.diff(self.snd_nxt, self.snd_una) <= 0 then
+		self:_send_fin()
+		self.state = self.state == tcb.CLOSE_WAIT and
+		    tcb.LAST_ACK or tcb.FIN_WAIT_1
 	end
 end
 
@@ -1720,6 +1751,7 @@ function T:status()
 		readable = self.rcvbytes,
 		fin_rcvd = self.fin_rcvd,
 		fin_sent = self.fin_sent,
+		fin_pending = self.fin_pending,
 		held = #self.ooo,
 		rto = self.rto,
 		srtt = self.srtt,

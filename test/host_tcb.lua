@@ -747,5 +747,86 @@ is(#rstout, 1, "an abort sends one segment")
 ok((rstout[1].flags & tcp4.RST) ~= 0, "and it is a reset")
 is(a1.state, tcb.CLOSED, "with the connection gone immediately")
 
+
+-- ---- close must deliver what it was given ----
+--
+-- The one that got away, and the shape of it is worth keeping. close()
+-- called _transmit() and then sent the FIN outright, with a comment
+-- saying that delivered everything queued. _transmit sends what the
+-- WINDOW allows, so anything larger than the window left data in the
+-- send queue, the FIN went out ahead of it, and the state moved to
+-- FIN-WAIT-1 where _transmit does nothing at all. The tail could never
+-- leave, and the peer saw a FIN it had every reason to call a clean end
+-- of stream.
+--
+-- It cost every http response over about 4KB on both platforms, in
+-- silence, and no test noticed because none asked for a body bigger
+-- than the initial congestion window. Hence the sizes below: 4096
+-- passed throughout, so one small case would have gone on passing.
+do
+	for _, size in ipairs({ 1024, 4096, 8192, 65536 }) do
+		local a, b = newA({ sndbuf = 256 * 1024 }),
+		    newB({ rcvbuf = 256 * 1024 })
+
+		a:connect()
+		b:listen()
+		pipe(a, b)
+		pipe(b, a)
+		pipe(a, b)
+		a:events()
+		b:events()
+
+		local payload = string.rep("x", size)
+
+		is(a:write(payload), size, size .. " bytes are accepted")
+		a:close(0)
+
+		-- deliver until it settles: the window opens as b
+		-- acknowledges, and each opening lets more of the queue out.
+		local got = {}
+		local total = 0
+
+		for _ = 1, 200 do
+			pipe(a, b)
+			pipe(b, a)
+
+			local d = b:read()
+
+			while d ~= nil and d ~= "" do
+				got[#got + 1] = d
+				total = total + #d
+				d = b:read()
+			end
+			if b.fin_rcvd then
+				break
+			end
+		end
+
+		is(total, size, "and all " .. size .. " arrive after a close")
+		ok(table.concat(got) == payload, "byte for byte at " .. size)
+		ok(b.fin_rcvd, "with the FIN behind them, not in front")
+	end
+end
+
+-- and the FIN is not merely late: nothing may be written after close,
+-- or it would land after a FIN already promised to the peer.
+do
+	local a, b = newA({ sndbuf = 256 * 1024 }), newB()
+
+	a:connect()
+	b:listen()
+	pipe(a, b)
+	pipe(b, a)
+	pipe(a, b)
+	a:events()
+	b:events()
+
+	a:write(string.rep("q", 40000))
+	a:close(0)
+	ok(a:status().fin_pending, "a close with data queued leaves the FIN pending")
+	is(a:write("more"), nil, "and refuses anything written after it")
+	ok(not a:status().fin_sent, "the FIN itself has not gone yet")
+end
+
 io.write(("1..%d\n"):format(count))
 os.exit(failed == 0 and 0 or 1)

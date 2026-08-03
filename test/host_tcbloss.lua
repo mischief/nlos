@@ -654,17 +654,7 @@ do
 
 	a:write(payload, l.now)
 
-	local seen = ""
 	local complete = l:run(l.now + 30000, function()
-		local st = a:status()
-		local line = string.format("rec=%s dup=%d cwnd=%d unack=%d retr=%d rd=%d",
-		    tostring(st.recovery), st.dupacks, st.cwnd or 0, st.unacked,
-		    st.retries, b:status().readable)
-
-		if line ~= seen then
-			diag(string.format("DBG t=%d %s", l.now, line))
-			seen = line
-		end
 		return b:status().readable >= #payload
 	end)
 

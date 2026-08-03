@@ -25,7 +25,7 @@ local thread = require("los.thread")
 local tap = require("tap")
 local caps = require("caps")
 
-tap.plan(14)
+tap.plan(17)
 
 local granted = sys.granted()
 
@@ -114,6 +114,59 @@ thread.spawn(function()
 	tap.diag(string.format("ip frames_out_fail=%d unresolved=%d",
 	    ips.frames_out_fail, ips.unresolved))
 	tap.is(ips.frames_out_fail, 0, "and no send failed for want of a route")
+
+	-- ---- a body larger than the window, written then closed ----
+	--
+	-- The case that was silently truncated. close() sent its FIN
+	-- immediately after whatever the window allowed, so everything past
+	-- the initial congestion window stayed stranded in the send queue
+	-- and the peer saw a clean end of stream: every http response over
+	-- about 4KB, on both platforms, with no error at either end.
+	--
+	-- Three sizes, because 4096 passed throughout -- one small case
+	-- would have gone on passing.
+	local sizes = { 4096, 8192, 65536 }
+
+	for _, size in ipairs(sizes) do
+		local srv = net.listen(PORT + 1)
+		local payload = string.rep("z", size)
+		local back = ""
+
+		thread.spawn(function()
+			local c = net.accept(srv)
+
+			if c then
+				-- in pieces, because one send is one message
+				-- and MAXMSG is 64KB -- which is also how
+				-- lib/http.lua writes a large body.
+				local off = 1
+
+				while off <= #payload do
+					net.send(c, payload:sub(off, off + 16383))
+					off = off + 16384
+				end
+				net.close(c)
+			end
+		end)
+
+		local cl = net.dial(127, 0, 0, 1, PORT + 1)
+
+		while cl do
+			local d = net.recv(cl, 16384)
+
+			if not d then
+				break
+			end
+			back = back .. d
+		end
+		if cl then
+			net.close(cl)
+		end
+		net.close(srv)
+
+		tap.is(#back, size,
+		    "a " .. size .. "-byte body written then closed arrives whole")
+	end
 
 	net.close(conn)
 	net.close(answered)
