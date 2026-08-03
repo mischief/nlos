@@ -24,6 +24,7 @@
 
 #define LAPIC_BASE	0xFEE00000UL
 
+#define REG_ID		0x020
 #define REG_EOI		0x0B0
 #define REG_SVR		0x0F0
 #define REG_LVT_TIMER	0x320
@@ -64,6 +65,12 @@ lapic_write(unsigned reg, uint32_t v)
 	lapic[reg / 4] = v;
 }
 
+static inline uint32_t
+lapic_read(unsigned reg)
+{
+	return lapic[reg / 4];
+}
+
 void
 lapic_init(void)
 {
@@ -102,4 +109,15 @@ void
 lapic_eoi(void)
 {
 	lapic_write(REG_EOI, 0);
+}
+
+/* who a message-signalled interrupt should be addressed to. One cpu
+ * runs here, so this is always the boot processor's id -- but it is
+ * read rather than assumed to be 0, since nothing guarantees that and
+ * an MSI aimed at an id no cpu has is delivered to no one.
+ */
+unsigned
+lapic_id(void)
+{
+	return lapic_read(REG_ID) >> 24;
 }

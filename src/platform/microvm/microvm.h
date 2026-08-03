@@ -41,6 +41,20 @@ void	intr_init(void);
 void	intr_route(int gsi, void (*handler)(void));
 void	intr_mask(int gsi);
 void	intr_eoi(int gsi);
+
+/* a message-signalled interrupt, which has no line and therefore no
+ * controller to program: the device is told a vector and writes it
+ * straight at the LAPIC. So routing one is only installing a handler,
+ * and ending one is only the LAPIC's end-of-interrupt.
+ *
+ * intr_alloc_vector hands out the vectors those messages carry, above
+ * everything the gsi rule can reach (INTR_VECTOR_BASE + the widest
+ * IOAPIC here), so a device's vector cannot collide with a line's. It
+ * returns -1 when they run out.
+ */
+int	intr_alloc_vector(void);
+void	intr_route_msi(int vector, void (*handler)(void));
+void	intr_eoi_msi(void);
 void	timer_arm_periodic(unsigned long long period_100ns);
 unsigned long long timer_ticks(void);
 void	timer_isr(void);
@@ -111,16 +125,42 @@ int	pci_present(void);
 uint32_t pci_config_read(int bus, int dev, int fn, int reg);
 void	pci_config_write(int bus, int dev, int fn, int reg, uint32_t v);
 
+/* one base address register, resolved. Which address space it lives in
+ * is part of the answer and not a property of the machine: the same
+ * virtio device is an IO BAR under vmd and a memory BAR on a q35, and
+ * only the register itself says which.
+ */
+#define PCI_NUM_BARS 6
+
+struct pci_bar {
+	uint64_t base;		/* 0 if the BAR is unimplemented or unassigned */
+	int is_io;
+};
+
 /* what a driver needs about a device it found, and nothing more: where
- * its IO BAR is and which line it raises.
+ * it is on the bus, where its registers are, and which line it raises.
  */
 struct pci_dev {
 	int bus, dev, fn;
-	uint16_t iobase;	/* 0 if BAR0 is memory-mapped, not IO */
+	struct pci_bar bar[PCI_NUM_BARS];
 	int irq;		/* the interrupt line, as config space names it */
 };
 
 int	pci_find(uint16_t vendor, uint16_t device, struct pci_dev *out);
+
+/* find by vendor and either of two device ids -- what a transitional
+ * device costs, since it answers to one id and its non-transitional
+ * twin to another. Pass 0xffff for `alt` to search for one id only.
+ */
+int	pci_find2(uint16_t vendor, uint16_t device, uint16_t alt,
+	    struct pci_dev *out);
+
+/* walk a device's capability list, returning the config-space offset of
+ * the first capability with this id, or 0. `vendor_type` selects among
+ * several vendor-specific (0x09) capabilities by the byte at +3, which
+ * is how virtio names its structures; pass -1 to take the first.
+ */
+int	pci_cap_find(const struct pci_dev *pd, uint8_t id, int vendor_type);
 
 /* idt_stubs.S */
 void	isr_timer(void);
@@ -132,6 +172,7 @@ void	isr_uart(void);
  * Drivers call intr_eoi instead; the 8259 wants a different answer.
  */
 void	lapic_eoi(void);
+unsigned lapic_id(void);
 
 /* reset.c */
 _Noreturn void machine_reset(void);

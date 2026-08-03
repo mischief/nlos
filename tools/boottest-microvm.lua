@@ -25,6 +25,19 @@
 -- whose check continues after the guest has gone: the image is verified
 -- on the host afterwards.
 --
+-- --pci runs the same payload on a q35 with the same devices on PCI
+-- instead: virtio-pci behind pcie root ports, which is the shape both
+-- systemd-vmspawn and real hardware present. Same tests, other
+-- transport -- that is the whole point of it being a flag here rather
+-- than a harness of its own.
+--
+-- --pci0 is the same machine with the devices left on the root bus,
+-- where qemu makes them transitional rather than non-transitional: a
+-- different set of PCI ids, an IO BAR that a device behind a port does
+-- not have, and no bridge to walk. Both shapes occur on one machine --
+-- vmspawn puts its rng on bus 0 and its disk behind a port -- so both
+-- are worth booting.
+--
 -- a payload that asks for a device the machine does not have blocks in
 -- the driver and surfaces only as a harness timeout, with nothing on
 -- the serial line to say which device it was waiting for.
@@ -37,6 +50,7 @@ local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
 local want9p, wantnet, wantecho, wantblk = false, false, false, false
 local wantgefs, wantgefscommit, wantgefsgpt = false, false, false
+local wantpci, wantpci0 = false, false
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
@@ -58,6 +72,11 @@ for i = 3, #arg do
 		wantgefscommit = true
 	elseif arg[i] == "--gefsgpt" then
 		wantgefsgpt = true
+	elseif arg[i] == "--pci" then
+		wantpci = true
+	elseif arg[i] == "--pci0" then
+		wantpci = true
+		wantpci0 = true
 	end
 end
 
@@ -95,6 +114,36 @@ end
 
 local tmp = assert(popen_line("mktemp -d"), "mktemp -d failed")
 
+-- one device, named for whichever transport this run uses, and pinned
+-- to a bus so nothing rests on a default.
+--
+-- The slot number means something different on each. On microvm it is
+-- an index into the fixed mmio window, which is what fixes the device's
+-- gsi. On q35 it is a pcie root port -- and every device gets its own,
+-- deliberately: a device behind a root port is non-transitional and
+-- MSI-X-driven, and it sits on a bus of its own, which is what makes
+-- this exercise the bridge walk in src/platform/microvm/pci.c rather
+-- than finding everything on bus 0.
+local ports = {}
+
+local function dev(driver, slot)
+	if not wantpci then
+		return driver .. "-device,bus=virtio-mmio-bus." .. slot
+	end
+
+	-- the root bus, where qemu makes a device transitional. There is
+	-- no bus to name: pcie.0 is where a -device lands by default.
+	if wantpci0 then
+		return driver .. "-pci"
+	end
+
+	local id = "rp" .. slot
+
+	ports[#ports + 1] = "-device pcie-root-port,id=" .. id ..
+	    ",chassis=" .. (slot + 1)
+	return driver .. "-pci,bus=" .. id
+end
+
 local function cleanup()
 	os.execute("rm -rf " .. q(tmp))
 end
@@ -129,14 +178,15 @@ if want9p then
 
 	p9args = table.concat({
 		"-fsdev local,id=fs0,security_model=none,path=" .. q(share),
-		"-device virtio-9p-device,fsdev=fs0,mount_tag=hostshare," ..
-		    "bus=virtio-mmio-bus.0",
+		"-device " .. dev("virtio-9p", 0) ..
+		    ",fsdev=fs0,mount_tag=hostshare",
 	}, " ")
 end
 
 -- bus slot 1: the 9p device above takes slot 0 when present, and
--- virtio.c scans a fixed eight slots either way.
-local rngargs = "-device virtio-rng-device,bus=virtio-mmio-bus.1"
+-- virtio.c scans a fixed eight slots either way. On PCI the number is a
+-- root port instead, and nothing depends on which.
+local rngargs = "-device " .. dev("virtio-rng", 1)
 
 -- --blk gives the guest a small raw disk, seeded so that any sector can
 -- prove which sector it is: each one begins with its own index, the same
@@ -176,7 +226,7 @@ if wantblk then
 
 	blkargs = table.concat({
 		"-drive if=none,id=d0,format=raw,file=" .. q(blkimg),
-		"-device virtio-blk-device,drive=d0,bus=virtio-mmio-bus.3",
+		"-device " .. dev("virtio-blk", 3) .. ",drive=d0",
 	}, " ")
 end
 
@@ -294,7 +344,7 @@ end
 if wantnet then
 	netargs = table.concat({
 		"-netdev user,id=n0" .. echoargs,
-		"-device virtio-net-device,netdev=n0,bus=virtio-mmio-bus.2",
+		"-device " .. dev("virtio-net", 2) .. ",netdev=n0",
 	}, " ")
 end
 
@@ -318,10 +368,20 @@ end
 -- no pinning of the boot device here, unlike the efi harness: that
 -- works around a stall inside OVMF during boot device selection, and
 -- there is no OVMF.
+--
+-- the q35 alternative pins nothing, because there is nothing to pin:
+-- its firmware numbers the buses and places the BARs, and the guest
+-- reads back what it did. What it does bring is a second interrupt
+-- controller left running by that firmware, which is intr_init's
+-- business (src/platform/microvm/intr.c).
+local machine = wantpci and "-M q35" or
+    "-M microvm,pit=on,pic=off,rtc=off,ioapic2=off,acpi=on"
+
 local cmd = table.concat({
 	"timeout", TIMEOUT,
 	"qemu-system-x86_64",
-	"-M microvm,pit=on,pic=off,rtc=off,ioapic2=off,acpi=on",
+	machine,
+	table.concat(ports, " "),
 	"-enable-kvm -cpu host -m 256",
 	"-kernel " .. q(elf),
 	payload ~= "-" and

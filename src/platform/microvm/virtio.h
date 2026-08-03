@@ -133,15 +133,24 @@ struct virtio_dev {
 	const struct virtio_transport *t;
 	volatile uint32_t *regs;	/* mmio: the register window */
 
-	/* pci: the IO BAR, and where in it each virtio structure the
-	 * capability list pointed at begins. See virtio_pci.c.
+	/* pci: where each virtio structure the capability list pointed at
+	 * begins, as an address in whichever space `pio` names -- a port
+	 * number when the BAR is an IO BAR (vmd), a physical address when
+	 * it is a memory BAR (q35, and real hardware). See virtio_pci.c.
 	 */
-	uint16_t iobase;
-	uint16_t cfg_common;
-	uint16_t cfg_notify;
-	uint16_t cfg_isr;
-	uint16_t cfg_device;
+	int pio;
+	uint64_t cfg_common;
+	uint64_t cfg_notify;
+	uint64_t cfg_isr;
+	uint64_t cfg_device;
 	uint32_t notify_mul;
+
+	/* pci: the MSI-X table, if the device has one, and the vector this
+	 * device was given in it. An INTx device leaves these at zero and
+	 * uses `gsi` instead.
+	 */
+	uint64_t msix_table;
+	int msix_vector;
 
 	struct virtq q[VIRTIO_MAX_QUEUES];
 	int slot;		/* mmio: which slot, which fixes its gsi */
@@ -162,6 +171,19 @@ int	virtio_find(uint32_t device_id, struct virtio_dev *out);
  */
 int	virtio_mmio_find(uint32_t device_id, struct virtio_dev *out);
 int	virtio_pci_find(uint32_t device_id, struct virtio_dev *out);
+
+/* point a PCI device's queues and configuration-change at the vector
+ * discovery gave it. A no-op on any other transport and on a device
+ * with no MSI-X table. Called from virtio_dev_ready, which is the last
+ * moment the specification allows it.
+ */
+void	virtio_pci_msix_arm(struct virtio_dev *d, unsigned nqueues);
+
+/* install the shared virtio handler on a vector a device will send
+ * messages to. Called from discovery; see the definition for why it
+ * cannot wait for virtio_irq_enable.
+ */
+void	virtio_msi_route(int vector);
 
 /* one device-config byte, whatever the transport. Drivers read their
  * config space (a mac address, a mount tag length) through this rather

@@ -99,6 +99,41 @@ intr_route(int gsi, void (*handler)(void))
 		pic_unmask(gsi);
 }
 
+/* the message-signalled path. There is no controller in it: the device
+ * writes the vector at the LAPIC itself, so there is nothing to route
+ * and nothing to unmask -- only a handler to install, and the LAPIC to
+ * tell when it is over.
+ *
+ * The vectors start above the line-derived ones. INTR_VECTOR_BASE + gsi
+ * covers as many vectors as the IOAPIC has pins, and 24 is the widest
+ * one on any machine here; starting at 64 leaves that whole range
+ * alone with room to spare.
+ */
+#define MSI_VECTOR_BASE  (INTR_VECTOR_BASE + 64)
+#define MSI_VECTOR_COUNT 32
+
+int
+intr_alloc_vector(void)
+{
+	static int next;
+
+	if (next >= MSI_VECTOR_COUNT)
+		return -1;
+	return MSI_VECTOR_BASE + next++;
+}
+
+void
+intr_route_msi(int vector, void (*handler)(void))
+{
+	idt_set_vector(vector, handler);
+}
+
+void
+intr_eoi_msi(void)
+{
+	lapic_eoi();
+}
+
 void
 intr_mask(int gsi)
 {

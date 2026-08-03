@@ -180,6 +180,19 @@ virtio_dev_ready(struct virtio_dev *d)
 	 */
 	if (d->features & VIRTIO_F_VERSION_1)
 		status |= STATUS_FEATURES_OK;
+
+	/* the last thing before DRIVER_OK, because it is the last thing
+	 * the specification allows: a queue's vector is part of its
+	 * configuration, and configuration closes here. Every queue that
+	 * was set up gets it -- one that was not has no rings and cannot
+	 * raise anything.
+	 */
+	unsigned nq = 0;
+
+	while (nq < VIRTIO_MAX_QUEUES && d->q[nq].desc != 0)
+		nq++;
+	virtio_pci_msix_arm(d, nq);
+
 	d->t->set_status(d, status);
 }
 
@@ -313,6 +326,7 @@ virtio_poll_used(struct virtio_dev *d, unsigned qi, uint16_t *id, uint32_t *len)
 
 static struct virtio_dev *irq_devs[VIRTIO_MAX_DEVS];
 static int irq_last_gsi = -1;
+static int irq_msi;
 static volatile unsigned long irq_taken;
 
 void virtio_isr(void);
@@ -320,10 +334,20 @@ void virtio_isr(void);
 void
 virtio_isr(void)
 {
+	int claimed = 0;
+
 	for (int i = 0; i < VIRTIO_MAX_DEVS; i++) {
 		struct virtio_dev *d = irq_devs[i];
 
 		if (!d)
+			continue;
+
+		/* a message-signalled device has nothing to clear: the
+		 * message was the whole event, and the specification leaves
+		 * its ISR byte unused (4.1.4.5) -- reading it would answer
+		 * zero forever and mean nothing.
+		 */
+		if (d->msix_vector > 0)
 			continue;
 
 		/* reading is also the acknowledgement on PCI, so this asks
@@ -331,17 +355,46 @@ virtio_isr(void)
 		 * source, without which the controller re-raises the moment
 		 * we return.
 		 */
-		if (d->t->isr_ack(d))
+		if (d->t->isr_ack(d)) {
 			irq_taken++;
+			claimed = 1;
+		}
 	}
+
+	/* an interrupt no line-driven device owned came from a message,
+	 * and there is exactly one such delivery per interrupt however
+	 * many devices are registered.
+	 */
+	if (!claimed && irq_msi)
+		irq_taken++;
 
 	/* the line to end, which is whichever was routed last: with one
 	 * device per line and a shared handler there is no way to tell
 	 * from here which of them the controller delivered, and a
-	 * non-specific EOI is what both controllers want anyway.
+	 * non-specific EOI is what both controllers want anyway. A message
+	 * has no line at all, and ends at the LAPIC.
 	 */
 	if (irq_last_gsi >= 0)
 		intr_eoi(irq_last_gsi);
+	else if (irq_msi)
+		intr_eoi_msi();
+}
+
+/* claim a vector for messages from a device that has just been found.
+ *
+ * At discovery, and not when a driver enables interrupts, because the
+ * device is armed the moment its MSI-X table entry is written: a
+ * polling driver that never enables anything still has a device that
+ * can raise, and the first message would land on a vector with no
+ * handler -- which the idt reports as a trap and the guest does not
+ * survive. Installing it early costs one idt slot and an end-of-
+ * interrupt nobody needed.
+ */
+void
+virtio_msi_route(int vector)
+{
+	irq_msi = 1;
+	intr_route_msi(vector, isr_virtio);
 }
 
 unsigned long
@@ -365,8 +418,19 @@ virtio_irq_enable(struct virtio_dev *d)
 		return;
 
 	irq_devs[slot] = d;
-	irq_last_gsi = d->gsi;
 	d->irq_routed = 1;	/* the handler owns the ack from here */
+
+	/* a message-signalled device needs nothing routed here: its vector
+	 * was installed when it was found, because a message can arrive
+	 * before any driver asks for one and a vector with no handler is
+	 * a fatal trap. Registering it is still worth doing -- that is
+	 * what the ack loop walks -- but there is no line to unmask and
+	 * none to end at. See virtio_isr for the other half.
+	 */
+	if (d->msix_vector > 0)
+		return;
+
+	irq_last_gsi = d->gsi;
 
 	/* the transport worked out the line: a slot's position in the mmio
 	 * window fixes it there, config space names it on PCI.

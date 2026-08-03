@@ -884,6 +884,55 @@ foreach t : shared_tests
   )
 endforeach
 
+# the same guest on a q35, where the devices are virtio-pci behind PCIe
+# root ports rather than virtio-mmio in a fixed window. That is the
+# machine systemd-vmspawn builds and the shape real hardware has, and it
+# exercises what mmio never touches: the bridge walk, memory BARs, and
+# MSI-X (src/platform/microvm/pci.c, virtio_pci.c).
+#
+# One test per device class rather than the whole list. What differs
+# between the transports is discovery and interrupt delivery, which any
+# one test of a device establishes; everything above the ring is the
+# same code either way and is already covered above.
+microvm_pci_tests = [
+  ['hello', []],
+  ['rng', []],
+  ['blk', ['--blk']],
+  ['p9mount', ['--9p']],
+  ['eth', ['--net']],
+  ['ping', ['--net']],
+  ['tcp', ['--netecho']],
+]
+
+# and the same devices on the root bus, where they are transitional:
+# other PCI ids, other BARs, no bridge. rng is what systemd-vmspawn
+# itself attaches that way, and blk is the one whose transitional id
+# (0x1001) is furthest from the formula a reader would guess.
+microvm_pci0_tests = [
+  ['rng', []],
+  ['blk', ['--blk']],
+]
+
+foreach t : microvm_pci0_tests
+  test('pci0-' + t[0], microvm_boottest,
+    args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] +
+      t[1] + ['--pci0'],
+    protocol: 'tap',
+    timeout: 90,
+    is_parallel: true,
+  )
+endforeach
+
+foreach t : microvm_pci_tests
+  test('pci-' + t[0], microvm_boottest,
+    args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] +
+      t[1] + ['--pci'],
+    protocol: 'tap',
+    timeout: 90,
+    is_parallel: true,
+  )
+endforeach
+
 # http over the lua tcp stack, host-driven for the reason its own header
 # gives: a guest cannot reach its own listener (slirp does not hairpin),
 # so hostfwd gives the host a door in and hostutil walks through it. This
