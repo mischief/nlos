@@ -189,6 +189,10 @@ function tcb.new(cfg)
 		-- retransmission queue will come from without needing a
 		-- second copy of anything.
 		sndq = "",
+		-- how much of sndq is already acknowledged and dead.
+		-- Consuming from the front moves this rather than rebuilding
+		-- the string; see _qdrop.
+		sndoff = 0,
 
 		-- segments that arrived ahead of a gap, held until the gap
 		-- fills. Each is {seq=, data=, fin=}. Bounded, because a peer
@@ -437,7 +441,7 @@ end
 -- deliver it is just a leak with a story attached.
 function T:_dead(kind, why)
 	self.state = tcb.CLOSED
-	self.sndq = ""
+	self:_qclear()
 	self.rcvq = {}
 	self.rcvbytes = 0
 	signal(self, kind, why)
@@ -548,6 +552,50 @@ end
 
 -- ---- the user's data ----
 
+-- ---- the send queue ----
+--
+-- sndq holds everything from snd_una onward, and used to be resliced
+-- with sub() on every acknowledgment. A Lua string is immutable, so
+-- that allocated a fresh string and copied the remainder each time --
+-- linear in what was still queued, on the hottest path there is.
+-- sys.tracehist put that one line at 7.5% of the tcp task, from seven
+-- executions.
+--
+-- So the string stays and an offset moves. sndoff is the dead prefix;
+-- everything below indexes past it, and the string is rebuilt only when
+-- the dead part has grown worth reclaiming.
+
+-- bytes still queued, from snd_una onward
+function T:_qlen()
+	return #self.sndq - self.sndoff
+end
+
+-- sndq[from..to], numbered from snd_una rather than from the string
+function T:_qsub(from, to)
+	return self.sndq:sub(self.sndoff + from, self.sndoff + to)
+end
+
+-- n bytes acknowledged and gone.
+--
+-- Compaction is amortised: it only happens once the dead prefix is both
+-- large and most of the buffer, so each copy is paid for by at least as
+-- many bytes dropped for free. Without the size test a small connection
+-- would compact constantly; without the ratio test a large one would
+-- carry a big dead prefix forever.
+function T:_qdrop(n)
+	self.sndoff = self.sndoff + n
+
+	if self.sndoff >= 4096 and self.sndoff * 2 >= #self.sndq then
+		self.sndq = self.sndq:sub(self.sndoff + 1)
+		self.sndoff = 0
+	end
+end
+
+function T:_qclear()
+	self.sndq = ""
+	self.sndoff = 0
+end
+
 -- Accepts what fits and reports how much, the way a non-blocking write
 -- on a socket does. Short is not an error: the caller writes the rest
 -- when the window and the buffer allow, and a caller that treats short
@@ -566,7 +614,7 @@ function T:write(data, now)
 		return nil, "closing"
 	end
 
-	local room = self.sndbuf - #self.sndq
+	local room = self.sndbuf - self:_qlen()
 
 	if room <= 0 then
 		return 0
@@ -574,6 +622,10 @@ function T:write(data, now)
 	if #data > room then
 		data = data:sub(1, room)
 	end
+	-- Appending still copies, including whatever dead prefix has not
+	-- been compacted yet -- but _qdrop keeps that under half the
+	-- string, so the copy stays the same order it always was. The line
+	-- the profile named was the drop, not this.
 	self.sndq = self.sndq .. data
 	self:_transmit()
 	return #data
@@ -591,13 +643,49 @@ function T:read(max)
 		return ""
 	end
 
-	local all = table.concat(self.rcvq)
-	local n = max and math.min(max, #all) or #all
-	local out = all:sub(1, n)
-	local rest = all:sub(n + 1)
+	-- Take only what was asked for, walking the chunks.
+	--
+	-- This used to concatenate the whole queue and then slice it, so a
+	-- reader asking for 16KB out of a full 32KB buffer paid for all
+	-- 32KB, twice -- once to join and once to keep the remainder.
+	-- sys.tracehist put that concat at 2.6% of the tcp task from two
+	-- executions, which is the shape of a line that is cheap to call
+	-- and expensive to run.
+	--
+	-- Whole chunks move by reference; at most one is split, and only
+	-- the tail of it is rebuilt. A reader taking everything now copies
+	-- each byte once instead of three times.
+	local want = max or self.rcvbytes
 
-	self.rcvq = #rest > 0 and { rest } or {}
-	self.rcvbytes = #rest
+	if want > self.rcvbytes then
+		want = self.rcvbytes
+	end
+
+	local taken = {}
+	local got = 0
+
+	while got < want do
+		local chunk = self.rcvq[1]
+
+		if not chunk then
+			break
+		end
+		if got + #chunk <= want then
+			taken[#taken + 1] = chunk
+			got = got + #chunk
+			table.remove(self.rcvq, 1)
+		else
+			local n = want - got
+
+			taken[#taken + 1] = chunk:sub(1, n)
+			self.rcvq[1] = chunk:sub(n + 1)
+			got = want
+		end
+	end
+
+	local out = table.concat(taken)
+
+	self.rcvbytes = self.rcvbytes - #out
 
 	-- The window just opened, and whether to say so is a real decision
 	-- rather than a courtesy. Announcing every read means an extra
@@ -636,7 +724,7 @@ end
 -- is the deadlock this whole mechanism exists to prevent, reintroduced
 -- one level up.
 function T:_update_persist()
-	if self.snd_wnd == 0 and #self.sndq > 0 and
+	if self.snd_wnd == 0 and self:_qlen() > 0 and
 	    self.state == tcb.ESTABLISHED then
 		if not self.persist then
 			self.persist_rto = self.rto
@@ -658,13 +746,13 @@ end
 -- the peer must answer it even with a zero window (3.8.6.1).
 function T:_probe()
 	local sent = self:_flight()
-	local octet = self.sndq:sub(sent + 1, sent + 1)
+	local octet = self:_qsub(sent + 1, sent + 1)
 
 	-- Only new data is worth probing with. If everything queued has
 	-- already been sent, the previous probe is still unacknowledged and
 	-- resending it is what the backoff below is for.
 	if octet == "" then
-		octet = self.sndq:sub(1, 1)
+		octet = self:_qsub(1, 1)
 		if octet == "" then
 			self.persist = nil
 			return
@@ -701,7 +789,7 @@ function T:_transmit()
 		-- the connection that has been up long enough to wrap is
 		-- exactly the one nobody tests.
 		local sent = tcp4.diff(self.snd_nxt, self.snd_una)
-		local unsent = #self.sndq - sent
+		local unsent = self:_qlen() - sent
 		-- "The minimum of cwnd and rwnd governs data transmission"
 		-- (5681 3.1). Before this, the receiver's window was the only
 		-- limit, so a connection opened by sending the peer's whole
@@ -721,7 +809,7 @@ function T:_transmit()
 		end
 
 		local n = math.min(unsent, room, self.snd_mss)
-		local chunk = self.sndq:sub(sent + 1, sent + n)
+		local chunk = self:_qsub(sent + 1, sent + n)
 		-- push when this empties the buffer: it tells the peer's
 		-- application that there is no more coming for now, which is
 		-- what makes a request/reply protocol above us prompt.
@@ -741,7 +829,7 @@ function T:_transmit()
 	-- probe -- comes back through here, so the FIN follows the last
 	-- byte rather than overtaking it.
 	if self.fin_pending and not self.fin_sent and
-	    #self.sndq - tcp4.diff(self.snd_nxt, self.snd_una) <= 0 then
+	    self:_qlen() - tcp4.diff(self.snd_nxt, self.snd_una) <= 0 then
 		self:_send_fin()
 		self.state = self.state == tcb.CLOSE_WAIT and
 		    tcb.LAST_ACK or tcb.FIN_WAIT_1
@@ -918,11 +1006,11 @@ end
 -- against MAX_RETX: this is a segment we have good evidence was lost,
 -- not a peer that has gone quiet.
 function T:_resend_first()
-	local n = math.min(#self.sndq, self.snd_mss)
+	local n = math.min(self:_qlen(), self.snd_mss)
 	local flags = tcp4.ACK
-	local data = n > 0 and self.sndq:sub(1, n) or nil
+	local data = n > 0 and self:_qsub(1, n) or nil
 
-	if self.fin_sent and n == #self.sndq then
+	if self.fin_sent and n == self:_qlen() then
 		flags = flags | tcp4.FIN
 	end
 	if not data and (flags & tcp4.FIN) == 0 then
@@ -957,7 +1045,7 @@ end
 -- the two segments 3042 allows.
 function T:_limited_transmit()
 	local sent = tcp4.diff(self.snd_nxt, self.snd_una)
-	local unsent = #self.sndq - sent
+	local unsent = self:_qlen() - sent
 
 	if unsent <= 0 or not self.cwnd then
 		return
@@ -971,7 +1059,7 @@ function T:_limited_transmit()
 
 	local n = math.min(unsent, self.snd_mss)
 
-	self:_send(tcp4.ACK, self.sndq:sub(sent + 1, sent + n))
+	self:_send(tcp4.ACK, self:_qsub(sent + 1, sent + n))
 	self.snd_nxt = tcp4.add(self.snd_nxt, n)
 end
 
@@ -1175,7 +1263,7 @@ function T:_check_ack(seg)
 			bytes = bytes - 1		-- our FIN
 		end
 		if bytes > 0 then
-			self.sndq = self.sndq:sub(bytes + 1)
+			self:_qdrop(bytes)
 		end
 		self.snd_una = seg.ack
 
@@ -1218,7 +1306,7 @@ function T:_time_wait()
 	self.state = tcb.TIME_WAIT
 	self.timewait = self.now + 2 * self.msl
 	self.retx = nil
-	self.sndq = ""
+	self:_qclear()
 end
 
 -- keep a segment that arrived ahead of the gap, for when the gap fills.
@@ -1648,14 +1736,14 @@ function T:_retransmit()
 		self:_send(tcp4.SYN | tcp4.ACK, nil, self.iss,
 		    { mss = self.rcv_mss, sackok = self.sack_ok })
 	else
-		local n = math.min(#self.sndq, self.snd_mss)
+		local n = math.min(self:_qlen(), self.snd_mss)
 		local flags = tcp4.ACK
-		local data = n > 0 and self.sndq:sub(1, n) or nil
+		local data = n > 0 and self:_qsub(1, n) or nil
 
 		-- the FIN rides along only when everything before it is in
 		-- this segment; otherwise it would arrive ahead of data it
 		-- is supposed to follow.
-		if self.fin_sent and n == #self.sndq then
+		if self.fin_sent and n == self:_qlen() then
 			flags = flags | tcp4.FIN
 		end
 		if data or (flags & tcp4.FIN) ~= 0 then
@@ -1777,7 +1865,7 @@ function T:status()
 		snd_wnd = self.snd_wnd, snd_mss = self.snd_mss,
 		rcv_nxt = self.rcv_nxt, rcv_wnd = self.rcv_wnd,
 		unacked = tcp4.diff(self.snd_nxt, self.snd_una),
-		unsent = #self.sndq - tcp4.diff(self.snd_nxt, self.snd_una),
+		unsent = self:_qlen() - tcp4.diff(self.snd_nxt, self.snd_una),
 		readable = self.rcvbytes,
 		fin_rcvd = self.fin_rcvd,
 		fin_sent = self.fin_sent,
