@@ -4,8 +4,13 @@
 -- that most of that is inter-process messages rather than protocol: a
 -- received segment crosses eth to ip to tcp, and the acknowledgment it
 -- provokes crosses tcp to ip to eth on the way back. Five hops for
--- 1460 bytes. That guess is arithmetic over numbers measured elsewhere,
--- for a different path, which is not the same as measuring this one.
+-- 1460 bytes.
+--
+-- The guess was wrong, and this is what says so. The kernel's share of a
+-- segment -- every dispatch, every port push and pop, every byte of
+-- message serialised -- measures at the noise floor, under a
+-- microsecond. Message passing is not what this costs. What it costs is
+-- Lua, four fifths of it in the tcp task.
 --
 -- So this measures three things that can be compared:
 --
@@ -34,13 +39,29 @@ local caps = require("caps")
 local tcp4 = require("tcp4")
 local tcb = require("tcb")
 
-tap.plan(7)
+tap.plan(8)
 
 local CYCMS = sys.stats().cycles_per_ms
 local granted = sys.granted()
 
 local function us(cyc, n)
 	return (cyc / n) * 1000 / CYCMS
+end
+
+-- every proc's running cycles, which the scheduler has been counting all
+-- along for its own decay. Two reads around a piece of work say where it
+-- went, across procs, with nothing added to any hot path.
+local function cpusnap()
+	local out = {}
+
+	for _, pid in ipairs(sys.procs()) do
+		local st = sys.pidstat(pid)
+
+		if st then
+			out[pid] = { name = st.name, cputime = st.cputime }
+		end
+	end
+	return out
 end
 
 if not tap.ok(granted.tcp ~= nil, "the tcp task is running") then
@@ -193,6 +214,7 @@ end
 
 local before = thread.rpc(granted.tcp, { op = "stats" })
 local got, elapsed = 0, 0
+local cpu0, cpu1, donetick, start
 
 thread.spawn(function()
 	local c = net.accept(l)
@@ -208,6 +230,17 @@ thread.spawn(function()
 		end
 		got = got + #d
 	end
+
+	-- The reader stops the clock and takes the snapshot, the instant
+	-- the last byte lands.
+	--
+	-- The writer used to do both after waking from a thread.sleep(5)
+	-- poll, which put up to five milliseconds of doing nothing inside
+	-- the measurement -- 28us per segment over this transfer, all of it
+	-- attributed to the kernel because no proc was running. It read as
+	-- half the cost of a segment.
+	donetick = sys.ticks()
+	cpu1 = cpusnap()
 	net.close(c)
 end)
 
@@ -222,7 +255,9 @@ thread.spawn(function()
 
 	local payload = string.rep("y", 16384)
 	local sent = 0
-	local start = sys.ticks()
+
+	cpu0 = cpusnap()
+	start = sys.ticks()
 
 	while sent < BULK do
 		if not net.send(conn, payload) then
@@ -237,7 +272,7 @@ thread.spawn(function()
 	while got < BULK do
 		thread.sleep(5)
 	end
-	elapsed = sys.ticks() - start
+	elapsed = (donetick or sys.ticks()) - start
 
 	net.close(conn)
 	net.close(l)
@@ -282,6 +317,50 @@ thread.spawn(function()
 	-- once, and read() announces a reopened window. Those are the cases
 	-- that keep a peer's loss recovery working, and paying a segment
 	-- for them is the trade.
+	-- ---- where the time actually went ----
+	--
+	-- The bench could say how much of a segment was not lib/tcb.lua;
+	-- it could not say whose it was. A line trace cannot answer that
+	-- either, because it fires only inside Lua and the kernel's own
+	-- work -- dispatch, port push and pop, serialising a 1500-byte
+	-- message -- happens in no proc at all.
+	--
+	-- Running cycles per proc do answer it, and whatever the wall clock
+	-- has that their sum does not is the kernel's, plus whatever the
+	-- machine spent idle.
+	local named = {}
+	local accounted = 0
+
+	for pid, after2 in pairs(cpu1) do
+		local was = cpu0[pid] and cpu0[pid].cputime or 0
+		local d = after2.cputime - was
+
+		if d > 0 then
+			named[#named + 1] = { name = after2.name, cyc = d }
+			accounted = accounted + d
+		end
+	end
+	table.sort(named, function(x, y) return x.cyc > y.cyc end)
+
+	tap.diag("per segment, by proc:")
+	for _, e in ipairs(named) do
+		tap.diag(string.format("  %-8s %6.2f us  %4.1f%%", e.name,
+		    us(e.cyc, datasegs), e.cyc / elapsed * 100))
+	end
+	local kern = elapsed - accounted
+	local kernus = us(kern, datasegs)
+
+	-- Sub-microsecond either way, and occasionally a shade negative:
+	-- the two snapshots are taken a few instructions either side of the
+	-- timed region, so the sum of running cycles can just exceed the
+	-- wall clock between them. That it lands at the noise floor is the
+	-- finding, not a defect in the arithmetic.
+	tap.diag(string.format("  %-8s %6.2f us  %4.1f%%%s", "kernel",
+	    kernus, kern / elapsed * 100,
+	    math.abs(kernus) < 1 and "   (at the noise floor)" or ""))
+
+	tap.ok(accounted > 0, "the time is attributed across procs")
+
 	tap.ok(ackratio < 0.85,
 	    "acknowledgments are delayed rather than one per segment: " ..
 	    string.format("%.2f per data segment", ackratio))

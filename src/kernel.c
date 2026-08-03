@@ -3197,6 +3197,20 @@ api_pidstat(lua_State *L)
 	lua_setfield(L, -2, "limit");
 	lua_pushinteger(L, p->weight);
 	lua_setfield(L, -2, "weight");
+	/* raw tsc cycles this proc has actually spent running, which the
+	 * scheduler has accumulated since the beginning for its own decay
+	 * and which nothing could read until now.
+	 *
+	 * It answers a question no other tool here can. A line trace fires
+	 * only inside lua, so the kernel's own work -- dispatch, port push
+	 * and pop, serialising a message -- appears in no proc's trace at
+	 * all; and instrumenting a task measures the instrumentation. Two
+	 * reads of this around a piece of work attribute it across procs
+	 * exactly, with nothing added to any hot path, and whatever the
+	 * wall clock has that the sum does not is the kernel's.
+	 */
+	lua_pushinteger(L, (lua_Integer)p->cputime);
+	lua_setfield(L, -2, "cputime");
 	lua_pushinteger(L, reprioritize(p, count_runnable()));
 	lua_setfield(L, -2, "pri");
 	lua_pushinteger(L, (lua_Integer)p->cpu);
