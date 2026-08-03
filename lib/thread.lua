@@ -1155,8 +1155,17 @@ local function replyport()
 end
 
 -- readline: a request/reply against cons, the sole task with raw
--- keyboard access. the reply port is allocated once per proc and
--- reused, not minted fresh on every call.
+-- keyboard access. the answer comes back on the CALLING THREAD's reply
+-- port, for the reason replyport() above exists at all.
+--
+-- it used to be one port per proc, which is fine while a proc asks for
+-- one line at a time and wrong the moment two of its threads ask
+-- together: both would send the same right and both would read from it,
+-- so whichever thread the scheduler woke took whichever line arrived,
+-- and the lines cross. lib/webterm.lua serves a console per session out
+-- of one proc, which is exactly that shape. the allocation raced too --
+-- two threads finding it nil both minted a port, out of a budget of 128
+-- for the machine, and one was leaked.
 --
 -- consHandle is required: there is no well-known cons handle to fall
 -- back on. the boot payload gets its number from sys.granted().cons,
@@ -1170,7 +1179,6 @@ end
 -- port (lib/webterm.lua serves one to a browser) got every line it
 -- asked for and none of the prompts, while the prompts piled up on
 -- com1 belonging to nobody. one message per prompt is the cost.
-local cons_reply_port
 
 -- send, treating a full queue as backpressure and a dead port as a
 -- reportable fact. returns false only when the port is gone for good.
@@ -1193,9 +1201,8 @@ local function readline(consHandle, prompt)
 	    { op = "write", data = prompt }) then
 		return nil
 	end
-	if not cons_reply_port then
-		cons_reply_port = sys.newport()
-	end
+	local reply = replyport()
+
 	-- a console that has gone away is EOF, exactly as ^d is. this is
 	-- load-bearing rather than tidy: a dead port DROPS silently (it
 	-- never raised, see api_send), so without this a reader whose
@@ -1205,10 +1212,10 @@ local function readline(consHandle, prompt)
 	-- end -- and dos's repl already treats a nil line as "session
 	-- over", so the whole teardown falls out of returning nil here.
 	if not sendwait(consHandle, { op = "readline",
-	    reply = { __right = cons_reply_port } }) then
+	    reply = { __right = reply } }) then
 		return nil
 	end
-	return recv(cons_reply_port)
+	return recv(reply)
 end
 
 -- ---- timers ----
