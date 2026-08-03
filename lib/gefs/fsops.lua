@@ -48,8 +48,14 @@ function Fs:umount(m)
   self:closesnap(m.root)
 end
 
+-- a timestamp in nanoseconds. clockfn is how a host without os.time (the
+-- freestanding kernel has none) supplies one; where os is present it is
+-- the default, and a volume with neither still gets a valid zero rather
+-- than a crash on the first create.
 function Fs:now()
-  return self.clockfn and self.clockfn() or (os.time() * dat.Nsec)
+  if self.clockfn then return self.clockfn() end
+  if os and os.time then return os.time() * dat.Nsec end
+  return 0
 end
 
 function Mount:writable()

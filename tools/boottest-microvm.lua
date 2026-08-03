@@ -36,6 +36,7 @@ local q = require("arch").quote
 local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
 local want9p, wantnet, wantecho, wantblk = false, false, false, false
+local wantgefs = false
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
@@ -47,8 +48,16 @@ for i = 3, #arg do
 		wantecho = true
 	elseif arg[i] == "--blk" then
 		wantblk = true
+	elseif arg[i] == "--gefs" then
+		wantgefs = true
 	end
 end
+
+-- tools/gefs.lua, reused to seed a --gefs disk and to check it after: the
+-- same CLI a person uses to look at a volume, so the fixture is made the
+-- way any volume is.
+local toolsdir = arg[0]:match("^(.*)/[^/]+$") or "."
+local gefscli = toolsdir .. "/gefs.lua"
 
 local function popen_line(cmd)
 	local f = io.popen(cmd)
@@ -156,6 +165,50 @@ if wantblk then
 		f:write(blk_sector(i))
 	end
 	f:close()
+
+	blkargs = table.concat({
+		"-drive if=none,id=d0,format=raw,file=" .. q(blkimg),
+		"-device virtio-blk-device,drive=d0,bus=virtio-mmio-bus.3",
+	}, " ")
+end
+
+-- --gefs seeds the same virtio-blk disk with a gefs volume instead of
+-- marker sectors: the whole disk is one reamed volume, holding files the
+-- guest did not write. test/boot/microvm_gefs.lua reads them back and
+-- must agree with the constants here.
+local GEFS_SIZE = 64 * 1024 * 1024
+local GEFS_SMALL = "hello from gefs\n"
+local GEFS_BIG = ("gefs"):rep(10000)
+local GEFS_GUEST = "written in the guest\n"
+
+local function seedrun(cmd)
+	-- the CLI's own progress goes to stdout; keep it out of the TAP stream
+	cmd = cmd .. " >/dev/null"
+	if os.execute(cmd) ~= true then
+		dump("gefs seed failed: " .. cmd)
+		print("not ok - boottest-microvm harness (gefs seed failed)")
+		cleanup()
+		os.exit(1)
+	end
+end
+
+-- feed a string to `gefs put` through a file, so no content has to
+-- survive the shell
+local function gefsput(path, content)
+	local tf = tmp .. "/put.tmp"
+	local f = assert(io.open(tf, "wb"))
+	f:write(content)
+	f:close()
+	seedrun(("lua5.4 %s put %s %s < %s"):format(
+	    q(gefscli), q(blkimg), q(path), q(tf)))
+end
+
+if wantgefs then
+	seedrun(("lua5.4 %s ream %s %d glenda"):format(
+	    q(gefscli), q(blkimg), GEFS_SIZE))
+	gefsput("/hello", GEFS_SMALL)
+	seedrun(("lua5.4 %s mkdir %s /dir"):format(q(gefscli), q(blkimg)))
+	gefsput("/dir/big", GEFS_BIG)
 
 	blkargs = table.concat({
 		"-drive if=none,id=d0,format=raw,file=" .. q(blkimg),
@@ -314,6 +367,24 @@ if wantblk then
 		os.exit(1)
 	end
 	print("# blk: the guest's write survived in the host image")
+end
+
+-- the durability half for gefs: reopen the volume from the host and read
+-- the file the guest committed. A write that came back inside the guest
+-- is not yet one that reached the disk file; only reading it from a fresh
+-- open of that file says the commit landed.
+if wantgefs then
+	local out = popen_line(("lua5.4 %s cat %s /guest 2>/dev/null"):format(
+	    q(gefscli), q(blkimg)))
+
+	if out ~= GEFS_GUEST:gsub("\n$", "") then
+		dump("gefs readback: guest file was " .. tostring(out))
+		print("not ok - boottest-microvm harness (gefs: the guest's " ..
+		    "commit did not reach the disk)")
+		cleanup()
+		os.exit(1)
+	end
+	print("# gefs: the guest's commit survived in the host volume")
 end
 
 cleanup()

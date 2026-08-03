@@ -30,6 +30,7 @@ local function newfs(dev, geom, opts)
   local fs = setmetatable({
     dev = dev,
     geom = geom,
+    clockfn = opts.clockfn,
     cache = {}, ccount = 0, clock = 0,
     cmax = opts.cachesz or 512,
     nwrite = 0, nread = 0,

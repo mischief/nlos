@@ -77,8 +77,15 @@ end
 -- layer below (the OS, or the block driver), which is what "the write
 -- happened" means to everything above. A file handle has no fsync;
 -- where real durability matters the device below the handle provides it.
+--
+-- a namespace handle over the block device has no flush and needs none:
+-- each write is a synchronous round trip through the mount to the block
+-- server, so it is already at the device when write() returns. The flush
+-- is for a host io handle, which buffers.
 function File:sync()
-  self.f:flush()
+  if self.f.flush then
+    self.f:flush()
+  end
 end
 
 function File:close()

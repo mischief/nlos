@@ -226,6 +226,26 @@ else
     'task/p9srv.lua',
     'lib/blkfs.lua',
     'task/blksrv.lua',
+    # gefs: a filesystem to mount over the block device above. Frozen in
+    # rather than served over a mount because the direction is to boot
+    # from it, which makes it a bootstrap dependency the way blkfs is.
+    # salvage.lua is left out: it is a host recovery tool, not on any
+    # path the guest takes.
+    'lib/gefs.lua',
+    'lib/gefs/dat.lua',
+    'lib/gefs/hash.lua',
+    'lib/gefs/pack.lua',
+    'lib/gefs/obj.lua',
+    'lib/gefs/blk.lua',
+    'lib/gefs/store.lua',
+    'lib/gefs/tree.lua',
+    'lib/gefs/snap.lua',
+    'lib/gefs/fsops.lua',
+    'lib/gefs/check.lua',
+    'lib/gefs/vol.lua',
+    'lib/gefs/ram.lua',
+    'lib/gefs/io.lua',
+    'lib/gefsfs.lua',
     'task/eth.lua',
     'lib/ether.lua',
     'lib/ip4.lua',
@@ -779,6 +799,7 @@ microvm_tests = [
   ['p9bench', ['--9p']],
   ['p9par', ['--9p']],
   ['blk', ['--blk']],
+  ['gefs', ['--gefs']],
   ['eth', ['--net']],
   ['arp', ['--net']],
   ['ping', ['--net']],
