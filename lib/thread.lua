@@ -145,6 +145,40 @@ local function atomic()
 	return g
 end
 
+-- ---- being switched away from ----
+--
+-- A thread loses the cpu where it chose to and nowhere else, which is
+-- plan 9 libthread's contract and now ours. Two places choose: parking
+-- on a channel or port, and yield() below.
+--
+-- The count hook still cuts a thread wherever it likes -- it has to,
+-- since that is the only way control reaches p->co and the proc can be
+-- descheduled at all, and a thread that never returns to run() on its
+-- own would otherwise hold the whole machine (measured at 0.02 of a
+-- fair share before the forced trip existed). What changed is what
+-- run() does afterwards: it resumes the same thread, at the same
+-- instruction, rather than picking someone else. The proc still yields
+-- to the kernel on the quantum; it is only the thread underneath that
+-- carries on.
+--
+-- So the two yields have to be told apart, and they arrive at run()
+-- looking identical -- both are a suspended coroutine that is not
+-- parked. The hook's lua_yield passes no values; this passes FAIR, a
+-- private table nothing else can be mistaken for. resume_one reads it
+-- and decides between the back of the queue and straight back here.
+--
+-- The cost of the contract is the usual one: a thread that neither
+-- parks nor yields keeps the proc until it exits. That is a bug in the
+-- thread rather than something the scheduler defends against, exactly
+-- as it is in libthread -- and defending against it is what made every
+-- multi-step update in this file a critical section.
+local FAIR = {}
+
+-- give up the cpu to a sibling without parking.
+local function yield()
+	coroutine.yield(FAIR)
+end
+
 -- the ring needs no section: threads never touch it. They stage a
 -- single store below and run() -- main -- is the only thing that ever
 -- pushes, which is why a hole cannot be created here at all.
@@ -530,6 +564,9 @@ local function resume_one(co)
 		return
 	end
 	thread._current = co
+	-- the first yielded value is how the two kinds of yield are told
+	-- apart; on an error it is the message instead, which only the dead
+	-- branch below reads.
 	local ok, err = coroutine.resume(co)
 	thread._current = nil
 	if coroutine.status(co) == "dead" then
@@ -552,17 +589,24 @@ local function resume_one(co)
 		-- observed, and run() never allocates a ring slot that this
 		-- coroutine already believes is its own.
 		return
-	elseif not thread._parked[co] then
-		-- preempted by its count hook, or yielded to stay runnable.
-		-- either way it goes back on the queue, and the proc keeps
-		-- running.
+	elseif thread._parked[co] then
+		-- parked. run() wakes it when its channel or port has
+		-- something; nothing to queue here.
+	elseif err == FAIR then
+		-- gave up the cpu on purpose, so somebody else gets it:
+		-- the back of the queue is the whole meaning of yield().
+		push(co)
+	else
+		-- cut by the count hook, which is not a place this thread
+		-- chose. It goes straight back on at the same instruction, so
+		-- nothing of its sees a sibling in the middle of an update.
 		--
 		-- no yield to the kernel here: when the quantum is what
 		-- ended the thread's turn, preempt_hook has already armed
 		-- this state to trip on its next instruction, so the proc is
 		-- about to be descheduled from inside this loop whether or
-		-- not lua asks.
-		push(co)
+		-- not lua asks. It resumes here, and this thread carries on.
+		thread._inplace = co
 	end
 end
 
@@ -618,7 +662,12 @@ function thread.run()
 		--
 		-- the loop repeats because one poll reports one port and
 		-- several may have filled.
-		if thread._qhead <= thread._qtail
+		-- a thread resuming in place counts as runnable here: it is
+		-- about to get the cpu straight back, so without this a
+		-- thread that is merely slow between parks would stop
+		-- delivery to its siblings entirely rather than only holding
+		-- the cpu. Staging a wakeup switches nobody.
+		if (thread._inplace ~= nil or thread._qhead <= thread._qtail)
 		    and next(thread._parked) ~= nil and sys.anyready()
 		    and gatherports() > 0 then
 			local i = sys.altpoll(altset)
@@ -632,7 +681,11 @@ function thread.run()
 				i = sys.altpoll(altset)
 			end
 		end
-		local co = pop()
+		-- the thread the hook cut goes first and keeps going, until
+		-- it parks, yields or exits.
+		local co = thread._inplace or pop()
+
+		thread._inplace = nil
 		if co then
 			resume_one(co)
 		else
@@ -1324,6 +1377,7 @@ end
 -- stalls the proc or nests a second scheduler inside the first.
 thread.inthread = inthread
 thread.park = park
+thread.yield = yield
 
 -- park until a port might have ROOM, the send-side mirror of park().
 -- for a writer that wants backpressure instead of a failed send: loop

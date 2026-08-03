@@ -57,7 +57,9 @@ local stream = {
 				-- nothing to answer yet: let the callers run.
 				-- A real transport parks on its socket here;
 				-- this one has nowhere to park, so it yields.
-				coroutine.yield()
+				-- thread.yield rather than coroutine.yield:
+				-- only the first gives the cpu up.
+				thread.yield()
 			else
 				if #held > 1 then
 					reversals = reversals + 1

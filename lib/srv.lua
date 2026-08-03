@@ -492,11 +492,13 @@ function M.serve(backend, port, opts)
 			return
 		elseif inflight > 0 then
 			-- workers are runnable, so parking the whole proc on
-			-- the port would stop them. A bare yield is what
-			-- thread.run treats as "still runnable" -- the same
-			-- path a preempted thread takes -- so this goes back
-			-- on the run queue rather than into _parked.
-			coroutine.yield()
+			-- the port would stop them. thread.yield gives them the
+			-- cpu without parking: this loop goes to the back of
+			-- the run queue and comes round again. A bare
+			-- coroutine.yield() would not -- the scheduler reads
+			-- that as the count hook cutting us and hands the cpu
+			-- straight back, which here is a spin.
+			thread.yield()
 		else
 			thread.park(port)
 		end

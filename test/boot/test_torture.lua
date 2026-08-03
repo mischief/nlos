@@ -29,23 +29,23 @@ tap.plan(14)
 
 tap.ok(sys.set_torture ~= nil, "sys.set_torture is present")
 
--- ---- is the instrument calibrated? ----
+-- ---- cutting is not switching ----
 --
--- Everything below asserts that some shape survives being cut
--- everywhere, and every one of those assertions passes trivially if
--- nothing is being cut at all. So measure the knob before trusting it:
--- two threads that never park, and how often the proc changes hands
--- between them.
+-- The knob cuts a thread between every pair of its instructions. It
+-- does not follow that anything else gets to run: run() puts the cut
+-- thread straight back at the instruction it was cut at, so a thread
+-- that neither parks nor yields is not interleaved with its siblings
+-- however finely it is chopped.
 --
--- Cut only at the quantum, a thread that never parks runs to
--- completion, so the count is one switch per thread and no more. Cut
--- everywhere, they alternate. The gap is not subtle -- 2 against 30 as
--- measured -- so this needs no threshold worth tuning.
+-- That is the property everything below rests on, so it is measured
+-- first rather than assumed. Two threads that never park: one handover
+-- each, with the knob off and with it on. Before threads were resumed
+-- in place this read 2 against 30, and the difference was every race
+-- this file was written to find.
 --
 -- switches[id] is written only by the thread it belongs to, and `last`
--- is a single store. A shared tally would be the read-modify-write
--- these tests are about, and would report the scheduler's fault as its
--- own.
+-- is a single store, which under this scheduler is belt and braces --
+-- but the rule is worth keeping in a file about scheduling.
 local function handovers()
 	local switches = { 0, 0 }
 	local last = 0
@@ -70,9 +70,8 @@ tap.ok(sys.set_torture(true), "and a boot payload may ask for it")
 
 local cut = handovers()
 
-tap.is(calm, 2, "untortured, a thread that never parks is not cut")
-tap.ok(cut > 2, "and with torture on the two interleave (" .. cut ..
-    " handovers)")
+tap.is(calm, 2, "untortured, a thread that never parks is not switched")
+tap.is(cut, 2, "and cutting it everywhere does not switch it either")
 
 -- ---- ping-pong: almost nothing but the wakeup path ----
 --
