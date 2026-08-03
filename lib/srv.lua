@@ -263,7 +263,12 @@ local function newstate(backend, opts)
 		establish = not opts or opts.establish ~= false,
 	}
 
+	-- opts.workers dispatches each request in its own thread, and every
+	-- one of them allocates fids through here. Read, add, store: cut
+	-- between any two and two clients are handed the same fid, so a
+	-- clunk from one takes the other's handle with it.
 	function S.put(h)
+		local _ <close> = thread.atomic()
 		local fid = S.next
 
 		S.next = fid + 1
