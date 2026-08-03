@@ -371,6 +371,24 @@ function M.new(transport, opts)
 
 	local dotu = (vm.version == "9P2000.u")
 
+	-- the negotiated msize, which until now was proposed and then
+	-- thrown away. A server may answer with less than it was offered
+	-- and every Tread/Twrite after this has to respect that.
+	--
+	-- IOHDRSZ is plan 9's name for the 9P header a data-carrying
+	-- message pays for: size[4] type[1] tag[2] fid[4] offset[8]
+	-- count[4]. What is left is the most data one round trip can move,
+	-- and dev.readloop/dev.writeloop turn that into a transfer of any
+	-- size -- the same thing devmnt does with the same number.
+	local IOHDRSZ = 24
+	local msize = vm.msize
+
+	if type(msize) ~= "number" or msize < 512 or msize > 8192 then
+		msize = 8192
+	end
+
+	local iounit = msize - IOHDRSZ
+
 	rpc(function(t)
 		return ninep.tattach(t, 0, ninep.NOFID, "root", "",
 		    dotu and ninep.NONUNAME or nil)
@@ -485,22 +503,33 @@ function M.new(transport, opts)
 		return dev.closable(B, h_of(nfid, false, name))
 	end
 
+	-- chunked to the negotiated msize. A caller may ask for more than
+	-- one Tread can carry and get it, which is what makes this a mount
+	-- driver rather than a thin 9P wrapper -- see dev.readloop.
 	function B.read(h, off, n)
 		if h.isdir then
 			err(dev.Eisdir)
 		end
-		local m = rpc(function(t) return ninep.tread(t, h.fid, off, n) end,
-		    ninep.Rread, "read")
-		return m.data
+		return dev.readloop(iounit, function(o, c)
+			local m = rpc(
+			    function(t) return ninep.tread(t, h.fid, o, c) end,
+			    ninep.Rread, "read")
+
+			return m.data
+		end, off, n)
 	end
 
 	function B.write(h, off, data)
 		if h.isdir then
 			err(dev.Eisdir)
 		end
-		local m = rpc(function(t) return ninep.twrite(t, h.fid, off, data) end,
-		    ninep.Rwrite, "write")
-		return m.count
+		return dev.writeloop(iounit, function(o, chunk)
+			local m = rpc(
+			    function(t) return ninep.twrite(t, h.fid, o, chunk) end,
+			    ninep.Rwrite, "write")
+
+			return m.count
+		end, off, data)
 	end
 
 	-- directories need their own Topen before Tread, same as files,

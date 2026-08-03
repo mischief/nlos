@@ -110,6 +110,8 @@
 -- stream with a position is a convenience ns.lua can layer on top; it is
 -- not something backends should each reinvent differently.
 
+local sys = require("los.sys")
+
 local M = {}
 
 -- 9front's error strings (/sys/src/9/port/error.h), the subset a
@@ -260,6 +262,103 @@ end
 
 function M.walkpath(backend, h, path)
 	return M.walknames(backend, h, M.elements(path))
+end
+
+-- the most data one request or reply may carry across a port.
+--
+-- sys.MAXMSG is the hard limit on a whole serialized message; a read
+-- reply is that data plus its table and seq. The headroom is far larger
+-- than those cost, because the two directions of being wrong are not
+-- comparable: a little throughput against a message that cannot be sent
+-- at all.
+--
+-- it lives here rather than in lib/mnt.lua because both halves of the
+-- transport need the same number and neither is entitled to define it
+-- for the other -- srv.lua clamps incoming requests to it precisely so
+-- that a client which ignores it cannot make a server build a reply it
+-- can never deliver.
+M.IOUNIT = sys.MAXMSG - 4096
+
+-- ---- transfers larger than one message ----
+--
+-- this is plan 9's mntrdwr (/sys/src/9/port/devmnt.c), and it belongs in
+-- exactly the place plan 9 puts it: the MOUNT DRIVER, not the caller and
+-- not the backend.
+--
+-- the rule that makes the whole stack work is that a transport's message
+-- limit is the transport's business. a read syscall for a megabyte
+-- succeeds on plan 9 even though msize is 8K, because devmnt quietly
+-- issues however many Treads it takes. Nothing above it knows the number,
+-- and no filesystem below it is written twice, once for small reads and
+-- once for large.
+--
+-- we had it the other way round for a while and it cost us: every
+-- backend grew its own ceiling, callers were expected to loop, and a
+-- transfer that outgrew a port message did not fail -- lib/srv.lua could
+-- not send the reply, so the client waited for an answer that was never
+-- coming. A limit enforced by hanging is the worst kind. Now the mount
+-- drivers (lib/mnt.lua, lib/p9fs.lua) each pass their own iounit here,
+-- and a backend simply answers what it was asked.
+--
+-- `one` is a single round trip: one(off, n) -> data for reads,
+-- one(off, chunk) -> count for writes. Raising propagates, as everywhere
+-- else in this interface.
+
+-- a short read ends the transfer, exactly as it does in mntrdwr. that is
+-- the contract a backend is held to: return the full count unless there
+-- is no more file, so "fewer bytes than I asked for" can mean end of
+-- file and nothing else. A backend that returned short for its own
+-- convenience would truncate every large read through a mount.
+function M.readloop(iounit, one, off, n)
+	local parts, got = {}, 0
+
+	while got < n do
+		local want = n - got
+
+		if want > iounit then
+			want = iounit
+		end
+
+		local d = one(off + got, want)
+
+		if not d or d == "" then
+			break			-- end of file
+		end
+		parts[#parts + 1] = d
+		got = got + #d
+		if #d < want then
+			break
+		end
+	end
+
+	return table.concat(parts)
+end
+
+-- writes stop short too, and for the same reason: a server that accepted
+-- fewer bytes than offered has told us it will not take the rest now,
+-- and the count we return is what the caller must believe.
+function M.writeloop(iounit, one, off, data)
+	local n, done = #data, 0
+
+	while done < n do
+		local want = n - done
+
+		if want > iounit then
+			want = iounit
+		end
+
+		local w = one(off + done, data:sub(done + 1, done + want))
+
+		if not w or w <= 0 then
+			break
+		end
+		done = done + w
+		if w < want then
+			break
+		end
+	end
+
+	return done
 end
 
 -- ---- attenuation: the same tree, read-only ----

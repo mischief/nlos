@@ -54,6 +54,10 @@ local dev = require("dev")
 
 local M = {}
 
+-- this transport's msize (dev.IOUNIT), which lib/srv.lua clamps to on
+-- the far side as well.
+local IOUNIT = dev.IOUNIT
+
 -- ONE counter for the whole proc, not one per mount. the reply port is
 -- per thread and shared across every mount that thread uses, so two
 -- mounts numbering their own requests would collide on it -- mount A's
@@ -248,13 +252,23 @@ function M.new(right)
 		return dev.closable(B, h_of(r.fid))
 	end
 
+	-- chunked to what a port message can carry, by dev.readloop /
+	-- dev.writeloop -- see their comment, which is the whole argument.
+	-- a caller may ask this mount for a megabyte and get one; nothing
+	-- above here knows how many round trips that took, and the backend
+	-- on the far side is never asked for more than IOUNIT.
 	function B.read(h, off, n)
-		return rpc({ op = "read", fid = h.fid, off = off, n = n }).data
+		return dev.readloop(IOUNIT, function(o, c)
+			return rpc({ op = "read", fid = h.fid, off = o,
+			    n = c }).data
+		end, off, n)
 	end
 
 	function B.write(h, off, data)
-		return rpc({ op = "write", fid = h.fid, off = off,
-		    data = data }).n
+		return dev.writeloop(IOUNIT, function(o, chunk)
+			return rpc({ op = "write", fid = h.fid, off = o,
+			    data = chunk }).n
+		end, off, data)
 	end
 
 	function B.readdir(h)

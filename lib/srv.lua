@@ -33,7 +33,10 @@
 --                right.
 --   Tauth        holding the right IS the authentication. a proc that
 --                was never sent this port cannot reach this backend.
---   msize        the serializer's own limits already bound a message.
+--   msize        dev.IOUNIT, which both halves chunk to. The serializer
+--                does bound a message, but by REFUSING it -- and a reply
+--                that cannot be sent is a client waiting forever, so the
+--                bound has to be respected rather than merely relied on.
 --   size[4]      the port preserves the boundary.
 --
 -- lib/ninep.lua is still the encoding at a real boundary -- com2, TCP,
@@ -133,8 +136,23 @@ function ops.create(S, m)
 	return { fid = S.put(S.B.create(S.get(m.fid), m.name, m.mode)) }
 end
 
+-- clamped to what a reply can actually carry, rather than trusted.
+--
+-- lib/mnt.lua already chunks to the same number, so a well-behaved
+-- client never reaches this. It is here because the alternative to
+-- clamping is not an error: a reply too big to serialize cannot be sent,
+-- and a client waiting for an answer that will never arrive hangs. A
+-- server must not be reachable into that state by a number in a message.
+--
+-- clamping rather than raising because a short read is already what this
+-- interface means and what every caller handles -- see dev.readloop.
 function ops.read(S, m)
-	return { data = S.B.read(S.get(m.fid), m.off, m.n) }
+	local n = m.n
+
+	if type(n) == "number" and n > dev.IOUNIT then
+		n = dev.IOUNIT
+	end
+	return { data = S.B.read(S.get(m.fid), m.off, n) }
 end
 
 function ops.write(S, m)
@@ -305,7 +323,27 @@ local function dispatch(S, m)
 		-- server keeps no state about it, which is exactly what
 		-- distinguishes it from a 9P tag.
 		out.seq = m.seq
-		sys.send(reply, out)
+
+		-- a reply that cannot be sent must still be answered.
+		--
+		-- sys.send raises if the message will not serialize -- too
+		-- large, or carrying something it cannot encode -- and this
+		-- call is outside the pcall above because it is the reply to
+		-- that pcall's result. Left bare, such a failure returned
+		-- from dispatch having sent nothing, and the client waited
+		-- for an answer that was never coming: a hang, in the one
+		-- place where the whole point is that errors come back as
+		-- Rerror. So the failure is caught and reported as one.
+		--
+		-- the fallback carries only a string, so the thing that
+		-- could not be encoded is not in it.
+		local sent = pcall(sys.send, reply, out)
+
+		if not sent and not NOREPLY[m.op] then
+			pcall(sys.send, reply,
+			    { err = dev.Eio .. ": reply too large to send",
+			      seq = m.seq })
+		end
 	end
 	if reply then
 		sys.close(reply)
