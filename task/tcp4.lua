@@ -40,6 +40,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
+local ether = require("ether")
 local ip4 = require("ip4")
 local tcp4 = require("tcp4")
 local tcb = require("tcb")
@@ -565,7 +566,14 @@ local function on_request(m)
 		-- so this is a question forwarded rather than answered. It
 		-- exists because caps.tcp's clients ask it: lib/dhcp.lua
 		-- wants a mac for chaddr.
-		reply_to(m, ipconfig().mac)
+		--
+		-- as a colon string, which is what every caller of
+		-- caps.tcp's hwaddr expects and what dhcp.encode takes. the
+		-- ip task answers in the six raw bytes it keeps, so the
+		-- conversion belongs on this side of the forward.
+		local hw = ipconfig().mac
+
+		reply_to(m, hw and ether.mac_str(hw) or nil)
 
 	elseif m.op == "setaddr" then
 		local a, b = whole(m.a, 0xff), whole(m.b, 0xff)

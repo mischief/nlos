@@ -7,7 +7,9 @@
 --
 -- what is being tested is not really the codec -- it arrived working --
 -- but that a socket with NO address can carry it, and that the lease can
--- then be installed. both are the pieces the firmware would not lend us.
+-- then be installed. both are the pieces the firmware would not lend us,
+-- and both are now on the machine's own dhcpd rather than on a client
+-- this file runs: there is one port 68, so there is one client.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -15,14 +17,13 @@ local caps = require("caps")
 local dhcp = require("dhcp")
 local tap = require("tap")
 
-tap.plan(21)
+tap.plan(18)
 
 local g = sys.granted()
 
-tap.ok(g.tcp ~= nil and g.udp ~= nil, "the guest has tcp and udp")
+tap.ok(g.tcp ~= nil and g.ip ~= nil, "the guest has tcp and ip")
 
 local tcp = caps.tcp(g.tcp)
-local udp = caps.udp(g.udp)
 
 -- ---- the codec, on a packet we built ourselves ----
 local pkt = dhcp.encode({ xid = 0x1234, mac = "52:54:00:12:34:56",
@@ -48,30 +49,15 @@ local mac = tcp.hwaddr()
 tap.ok(mac ~= nil and mac:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") ~= nil,
     "hwaddr returns the NIC's mac: " .. tostring(mac))
 
-local t0 = sys.uptime_ms()
-local lease, err = dhcp.acquire(udp, g.udp, { mac = mac })
-
-if not tap.ok(lease ~= nil, "acquire got a lease (" .. tostring(err) .. ")") then
-	tap.done()
-	return
-end
-
-local took = sys.uptime_ms() - t0
-
-tap.ok(dhcp.quad(lease.ip) ~= nil,
-    "the lease has an address: " .. tostring(lease.ip) ..
-    "/" .. tostring(lease.mask))
-
--- the point of the exercise. the firmware needs ~4s to accept an offer
--- it already holds, because Ip4Config2 passes Dhcp4 no callback and the
--- first mDhcp4DefaultTimeout entry is 4 seconds. ours chooses its own
--- deadline. generous bound so this is a regression test and not a
--- benchmark -- it has measured 12-24ms.
-tap.ok(took < 1000, "and got it in " .. took .. "ms, not four seconds")
-
--- NOT installed here. lib/dhcpd.lua below is the thing that installs a
--- lease, and it is what the rest of this file exercises -- two clients
--- racing to configure one interface would be testing the race.
+-- the acquire itself is NOT run from here, and cannot be: there is one
+-- dhcp client per machine because there is one port 68, and the machine
+-- already has one -- dhcpd is a task the kernel starts, so every payload
+-- boots with an address rather than negotiating its own. a second client
+-- gets "cannot open port 68", correctly.
+--
+-- so what is exercised below is that same acquire, through its result.
+-- lib/dhcp.lua's encode/decode/quad are covered above on packets built
+-- here; the four-way is covered by the machine having a lease at all.
 
 -- ---- the lease as a filesystem ----
 --
@@ -90,12 +76,9 @@ local N = nsmod.new()
 assert(N:mount("/", require("mnt").new(g.esp), "mnt",
     { port = { __right = g.esp } }))
 
--- rights in the ARG, not a first message: dhcpd's port is srv.serve's
-local pid, h = proc.spawn(assert(N:readfile("/task/dhcpd.lua")),
-    { name = "dhcp2", ns = N:describe(), arg = {
-        tcp = { __right = g.tcp }, udp = { __right = g.udp } } })
+tap.ok(g.dhcpd ~= nil, "dhcpd is in the grant table")
 
-tap.ok(pid ~= nil, "dhcpd spawns with its rights in the spawn arg")
+local h = g.dhcpd
 
 N:mount("/net", require("mnt").new(h), "mnt", { port = { __right = h } })
 
