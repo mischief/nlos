@@ -137,11 +137,12 @@ uart_drain(void)
 	}
 }
 
-/* the same drain for everyone who is not the isr. Both such callers --
- * uart_poll, from the scheduler loop on every proc resume, and uart_rx
- * when its ring is empty -- run with the uart interrupt live, so
- * without this they race it. uart_poll was the frequent one, which is
- * why the reordering showed up under load.
+/* the same drain for everyone who is not the isr. uart_poll, from the
+ * scheduler loop, runs with the uart interrupt live and so races it
+ * without this; uart_rx's own fallback runs only before the interrupt is
+ * routed, where there is nothing to race, and takes this for the shape
+ * rather than the masking. uart_poll was the frequent one, which is why
+ * the reordering showed up under load.
  */
 static void
 drain_masked(void)
@@ -175,11 +176,19 @@ int
 uart_rx(void)
 {
 	if (rxtail == rxhead) {
-		/* nothing buffered. Look at the port anyway: bytes that
-		 * arrived before uart_irq_enable ran are sitting in the
-		 * fifo with no interrupt coming for them.
+		/* nothing buffered. Before the interrupt is routed, look
+		 * at the port anyway: bytes that arrived that early are
+		 * sitting in the fifo with no interrupt coming for them.
+		 *
+		 * Once it is routed the isr is the only filler needed, and
+		 * this costs more than it looks: uart_drain opens with an
+		 * inb on the LSR, which is a port-i/o trap, and pump_serial
+		 * calls this every lap of the scheduler. Paid per lap it
+		 * was 2.5us on a 4us cross-proc round trip -- most of the
+		 * cost of an ipc, spent asking a uart with nothing to say.
 		 */
-		drain_masked();
+		if (!rx_irq_on)
+			drain_masked();
 		if (rxtail == rxhead)
 			return -1;
 	}
