@@ -737,6 +737,7 @@ microvm_tests = [
   ['ipraw', ['--net']],
   ['tcp', ['--netecho']],
   ['tcploop', ['--net']],
+  ['tcpbench', ['--net']],
   ['idle', []],
 ]
 
