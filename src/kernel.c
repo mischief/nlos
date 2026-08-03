@@ -346,6 +346,7 @@ struct kproc {
 	int rhigh;			/* one past the highest slot ever used */
 	TAILQ_HEAD(, kextra) coros;	/* every lua_State of this proc */
 	int hookforced;			/* 0 none, 1 p->co armed, 2 all armed */
+	int torture;			/* yield between EVERY instruction */
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	int reductions;		/* instruction budget per slice */
@@ -2536,6 +2537,7 @@ api_close(lua_State *L)
 }
 
 static void preempt_hook(lua_State *L, lua_Debug *ar);
+static void proc_armall(struct kproc *p, int count);
 static void trace_put(struct kproc *p, struct ktrace *t, int line, int src,
     int co);
 static void trace_mark(struct kproc *p, const char *what);
@@ -2968,6 +2970,40 @@ trace_arm(struct kproc *p, int n)
  * fact that anything wanting to wreck a neighbour's timing can already
  * do it by spinning. it is a tool for the person at the console.
  */
+/* sys.set_torture(pid, on) -- see preempt_hook. A debugging knob that
+ * costs the machine a real guarantee while it is on, so it is PRIV_BOOT
+ * only: a boot payload (which is what every test is) may ask for it,
+ * and nothing else can.
+ *
+ * Arming is by inheritance as much as by the sweep below:
+ * lua_newthread copies hook, mask and count from the state that
+ * created it, so a thread spawned after this returns is born tortured.
+ * Turn it on BEFORE spawning the threads that are meant to be cut.
+ */
+static int
+api_set_torture(lua_State *L)
+{
+	struct kproc *p = self(L);
+	int arg = 1;
+
+	if (lua_gettop(L) > 1) {
+		arg = 2;
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+	if (!kernel_current_is_boot())
+		return luaL_error(L, "no permission to torture a proc");
+	if (!p->L)
+		return luaL_error(L, "proc %d has no state", p->id);
+
+	p->torture = lua_toboolean(L, arg);
+	/* every instruction, or back to the calibrated budget */
+	proc_armall(p, p->torture ? 1 : p->reductions);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static int
 api_set_trace(lua_State *L)
 {
@@ -3567,6 +3603,7 @@ static const luaL_Reg kapi[] = {
 	{ "stack", api_stack },
 	{ "reap", api_reap },
 	{ "set_trace", api_set_trace },
+	{ "set_torture", api_set_torture },
 	{ "trace", api_trace },
 	{ "tracehist", api_tracehist },
 	{ "set_priority", api_set_priority },
@@ -4053,6 +4090,38 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 	}
 	if (!lua_isyieldable(L))
 		return;
+
+	/* torture: cut this thread between EVERY pair of instructions,
+	 * rather than wherever the quantum happens to land.
+	 *
+	 * A race between a thread and thread.run is a window of one or
+	 * two instructions, and whether a run lands in one is a question
+	 * of how many preemptions the work gets cut into -- which is why
+	 * this class of bug is found on slow hardware and not on fast.
+	 * This stops leaving it to chance: every window is landed on,
+	 * every run.
+	 *
+	 * Threads only (L != p->co). The point is to interleave a proc's
+	 * THREADS, and that needs no more than a yield to thread.run --
+	 * which is why the forced walk-out to p->co below is deliberately
+	 * skipped here: it would put a kernel round trip between every
+	 * pair of instructions and turn a ten second test into an
+	 * afternoon.
+	 *
+	 * The cost of skipping it is that a tortured proc does not honour
+	 * its quantum while a thread is running, so it can hold the cpu
+	 * for as long as that thread cares to. That is exactly the
+	 * property a027800 exists to protect, which is why this is
+	 * PRIV_BOOT only and why nothing but a test payload should ever
+	 * ask for it. The proc's own main coroutine is left alone and
+	 * still trips the quantum below, so a tortured proc that returns
+	 * to thread.run is descheduled normally.
+	 */
+	if (p && p->torture && L != p->co) {
+		lua_yield(L, 0);
+		return;		/* not reached */
+	}
+
 	if (p && p->resumed && quantum_cycles &&
 	    platform_ticks() - p->resumed < quantum_cycles)
 		return;		/* under quantum: let it keep the cpu */
