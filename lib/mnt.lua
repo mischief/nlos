@@ -91,7 +91,20 @@ function M.new(right)
 	-- opened on first use rather than in M.new, because ns:mount runs
 	-- dev.check before any traffic and the server need not be answering
 	-- yet at mount time.
+	--
+	-- `opening` is what makes "on first use" safe when the first use is
+	-- several threads at once. Establishing parks -- it is a round trip
+	-- to the server -- so every thread that arrives while the first one
+	-- is waiting also finds no session and opens one of its own. Each
+	-- session has a fid space of its own, which is the point of them,
+	-- so the last assignment wins and every fid the others minted names
+	-- nothing. It does not heal: ns caches the root handle it walked
+	-- from, so a mount used concurrently the first time stays broken
+	-- afterwards for readers that are perfectly serial. Measured, six
+	-- threads on a cold mount: six sessions, and every read from then
+	-- on answered nil.
 	local session
+	local opening
 
 	local function establish(msg)
 		local reply = thread.replyport()
@@ -125,10 +138,56 @@ function M.new(right)
 		end
 	end
 
-	local function rpc(msg)
-		if not session then
-			session = establish({ op = "session" })
+	-- one session, however many threads ask for it first.
+	--
+	-- The claim has to be a section: finding `opening` unset and
+	-- setting it are two steps, and a preemption between them puts two
+	-- threads back to opening two sessions. Nothing parks inside it --
+	-- chancreate does not -- so rule 1 holds. The waiting happens
+	-- afterwards, on the channel, which is where a thread is allowed to
+	-- park.
+	--
+	-- A failed establish leaves both nil and wakes everyone, so a
+	-- waiter retries rather than inheriting the failure: the server
+	-- being unreachable for one caller's round trip is not a verdict on
+	-- the mount.
+	local function getsession()
+		while true do
+			if session then
+				return session
+			end
+
+			local ch, mine
+
+			do
+				local _ <close> = thread.atomic()
+
+				if opening then
+					ch = opening
+				else
+					ch = thread.chancreate(0)
+					opening, mine = ch, true
+				end
+			end
+			if not mine then
+				ch:recv()	-- until the opener is done
+			else
+				local ok, s = pcall(establish,
+				    { op = "session" })
+
+				session = ok and s or nil
+				opening = nil
+				ch:close()	-- wake every waiter
+				if not ok then
+					error(s, 0)
+				end
+				return session
+			end
 		end
+	end
+
+	local function rpc(msg)
+		getsession()
 
 		local reply = thread.replyport()
 
