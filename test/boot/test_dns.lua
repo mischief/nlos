@@ -1,4 +1,4 @@
--- dns over the udp task, end to end against qemu slirp's built-in
+-- dns over our own ipv4 stack, end to end against qemu slirp's built-in
 -- resolver at 10.0.2.3. needs NET=1.
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -10,7 +10,11 @@ tap.plan(3)
 
 local dnspid, dnsh = sys.spawn(io.open("/task/dns.lua"):read("a"),
     { name = "dns" })
-sys.send(dnsh, { udp = { __right = caps_of.udp } })
+-- the ip task is what speaks the udp protocol now: caps.udp wraps it
+-- unchanged, and there is no separate udp capability to hand over. the
+-- key stays "udp" because that is the dns task's own startup protocol,
+-- naming what it wants rather than which task provides it.
+sys.send(dnsh, { udp = { __right = caps_of.ip } })
 
 local dns = caps.dns(dnsh)
 
