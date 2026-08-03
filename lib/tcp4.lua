@@ -26,6 +26,16 @@ tcp4.HDRLEN = 20	-- without options
 -- what we must assume, not what we hope for.
 tcp4.MSS_DEFAULT = 536
 
+-- The smallest send MSS we will accept from a peer.
+--
+-- The RFC sets no floor, and without one a peer advertising an MSS of 1
+-- has us send a segment per byte: forty bytes of header each, a message
+-- to the ip task each, a segment on the wire each. That is a denial of
+-- service written as a configuration, and it costs the peer nothing to
+-- ask for. 88 is what Linux uses (TCP_MIN_MSS) and is comfortably above
+-- RFC 791's 68-byte minimum MTU less the two headers.
+tcp4.MSS_MIN = 88
+
 -- ---- flags ----
 --
 -- A numeric mask rather than a set of booleans, because seg.ack cannot

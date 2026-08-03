@@ -773,6 +773,36 @@ function T:_acceptable(seg)
 	    tcp4.between(tcp4.add(seg.seq, len - 1), self.rcv_nxt, last)
 end
 
+-- What we may put in one segment, from what the peer asked for and what
+-- our own link can carry.
+--
+-- RFC 9293 3.7.1: Eff.snd.MSS is the smaller of the peer's advertisement
+-- and MMS_S, the largest transport message our link can send. We took
+-- the peer's number as given, which is right until a peer names a bigger
+-- one than we can carry -- and then every segment we build is a frame
+-- the device refuses outright. Not one in a thousand: all of them, with
+-- the handshake completing first so it looks like a stall rather than a
+-- misconfiguration.
+--
+-- Nothing we have talked to does it, since a host on a 1500-byte link
+-- advertises 1460. A host on a jumbo segment talking to us across a
+-- router would, and so would anything hostile.
+--
+-- rcv_mss is the right ceiling because it is derived from the same link:
+-- task/tcp4.lua computes it as the MTU less both headers, which is
+-- exactly MMS_S less the TCP header.
+function T:_learn_mss(seg)
+	local peer = seg.opt and seg.opt.mss or tcp4.MSS_DEFAULT
+
+	if peer > self.rcv_mss then
+		peer = self.rcv_mss
+	end
+	if peer < tcp4.MSS_MIN then
+		peer = tcp4.MSS_MIN
+	end
+	self.snd_mss = peer
+end
+
 -- 3.10.7.2. A listening connection has nothing to reset and nothing to
 -- acknowledge, so almost everything is either ignored or refused.
 function T:_in_listen(seg)
@@ -794,7 +824,7 @@ function T:_in_listen(seg)
 	self.irs = seg.seq
 	self.rcv_nxt = tcp4.add(seg.seq, 1)
 	self.rport = seg.sport
-	self.snd_mss = seg.opt and seg.opt.mss or tcp4.MSS_DEFAULT
+	self:_learn_mss(seg)
 	self:_init_cc()
 	self.snd_wnd = seg.wnd
 	self.snd_wl1 = seg.seq
@@ -849,7 +879,7 @@ function T:_in_syn_sent(seg)
 
 	self.irs = seg.seq
 	self.rcv_nxt = tcp4.add(seg.seq, 1)
-	self.snd_mss = seg.opt and seg.opt.mss or tcp4.MSS_DEFAULT
+	self:_learn_mss(seg)
 	self.sack_ok = self.sack_offer and (seg.opt and seg.opt.sackok) or false
 	self:_init_cc()
 

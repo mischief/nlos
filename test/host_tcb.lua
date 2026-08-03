@@ -828,5 +828,45 @@ do
 	ok(not a:status().fin_sent, "the FIN itself has not gone yet")
 end
 
+
+-- ---- what the peer may ask us to send ----
+--
+-- RFC 9293 3.7.1: the effective send MSS is the smaller of what the peer
+-- advertised and what our own link can carry. Taking the peer's number
+-- as given is right until it is bigger than ours, and then every segment
+-- we build is a frame the device refuses -- all of them, not some, with
+-- the handshake completing first so it reads as a stall.
+local function mss_after(offered)
+	local a = newA()          -- rcv_mss 1460, from newA's cfg
+	local b = newB()
+
+	a:connect()
+	b:listen()
+
+	local syn = a:take()[1]
+
+	b:segment(syn)
+
+	local synack = b:take()[1]
+
+	-- rewrite what the peer claims it can receive
+	synack.opt = offered and { mss = offered } or nil
+	a:segment(synack)
+	return a:status().snd_mss
+end
+
+is(mss_after(1460), 1460, "an ordinary peer is taken at its word")
+is(mss_after(536), 536, "and a smaller one is honoured")
+is(mss_after(9000), 1460,
+    "a jumbo advertisement is clamped to what our link carries")
+is(mss_after(nil), tcp4.MSS_DEFAULT,
+    "no option at all means the 536 the RFC requires us to assume")
+
+-- and a floor, which the RFC does not give but arithmetic demands: an
+-- mss of 1 is a segment per byte, forty bytes of header and a message to
+-- the ip task each, which costs the peer nothing to ask for.
+is(mss_after(1), tcp4.MSS_MIN, "an absurdly small one is floored")
+ok(tcp4.MSS_MIN >= 88, "and the floor is at least a sensible minimum mtu")
+
 io.write(("1..%d\n"):format(count))
 os.exit(failed == 0 and 0 or 1)
