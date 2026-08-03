@@ -96,6 +96,24 @@ end
 -- intermediate state: the coroutine is staged or it is not.
 local wake = {}
 
+-- a wake delivered to a thread that has decided to park but has not
+-- got there yet.
+--
+-- Registering on a queue and parking cannot be one step: a section may
+-- not span a yield, so there is always a gap between "I am on the
+-- recvq" and "I am parked". A sender in that gap takes the waiter off
+-- the queue and readies a thread that is not parked, which does
+-- nothing at all -- and the thread then parks, having slept through a
+-- wake that already happened. Both threads park, nothing is queued,
+-- and run() correctly reports a deadlock that is entirely our fault.
+--
+-- So a wake for a thread that is not parked leaves a token, and the
+-- next park consumes it and returns instead of sleeping. That is
+-- park/unpark, and it is what makes the order of the two irrelevant.
+-- Every caller of parkon re-checks its own condition in a loop, so a
+-- token that turns out to be spurious costs one lap and nothing else.
+local woken = {}
+
 local function pop()
 	local h = thread._qhead
 
@@ -146,9 +164,15 @@ local pending = {}	-- port handle -> messages taken with no taker
 local nonrecv = {}
 
 function thread._ready(co)
+	critenter()
 	nonrecv[co] = nil
-	thread._parked[co] = nil
+	if thread._parked[co] then
+		thread._parked[co] = nil
+	else
+		woken[co] = true	-- on its way to park: leave the token
+	end
 	wake[co] = true
+	critleave()
 end
 
 -- hand `msg`, taken from port `h`, to a thread waiting in recv() on it.
@@ -239,6 +263,15 @@ local function parkon(port, ports, chan, isrecv)
 		end
 	elseif port or ports then
 		nonrecv[co] = true
+	end
+	if woken[co] then
+		-- readied between deciding to park and getting here. The
+		-- caller loops and looks again, which is where the value
+		-- actually is.
+		woken[co] = nil
+		nonrecv[co] = nil
+		critleave()
+		return
 	end
 	thread._parked[co] = r
 	critleave()
