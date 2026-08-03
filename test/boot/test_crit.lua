@@ -26,10 +26,11 @@
 -- point -- so this leans on volume, and on the shapes most likely to
 -- get cut: many threads sharing one channel, and a rendezvous where
 -- every send must find its receiver.
+local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(6)
+tap.plan(8)
 
 -- ---- many senders and receivers over one buffered channel ----
 --
@@ -149,6 +150,65 @@ end)
 thread.run()
 
 tap.is(laps, 900, "the ping-pong completed every lap (" .. laps .. ")")
+
+-- ---- a section the thread never leaves ----
+--
+-- alt() polls its port cases inside a section, and sys.tryrecv raises
+-- on a right that has been closed; a channel case sending to a closed
+-- channel raises there too. Neither unwinds the section on the way
+-- past, so a thread that catches the error goes on running as the
+-- holder of a section it believes it left.
+--
+-- Left alone that is fatal to the PROC rather than to the thread. run()
+-- resumes the holder and only the holder, so the moment this thread
+-- parks it is resumed forever and the proc spins without ever blocking
+-- -- no error, no deadlock report, just a machine that stops making
+-- progress. parkon takes the section back instead, on the grounds that
+-- a section may not span a yield and so cannot legitimately still be
+-- held at the one place a thread yields on purpose.
+local dead = sys.newport()
+
+sys.close(dead)
+
+local ran = false
+local held = thread.chancreate(1)
+
+thread.spawn(function()
+	pcall(thread.alt, { { port = dead } })
+	-- parks while still marked the holder, which is what used to hang
+	held:recv()
+	ran = true
+end)
+
+thread.spawn(function()
+	held:send(true)
+end)
+
+thread.run()
+
+tap.ok(ran, "a thread that leaked a section still parks and wakes")
+
+-- and the leak stays with the thread that made it: the depth belongs
+-- to the holder and resets when the section changes hands, so a
+-- sibling entering one afterwards is not counting from somebody else's
+-- number.
+local sib = false
+
+thread.spawn(function()
+	pcall(thread.alt, { { port = dead } })
+end)
+
+thread.spawn(function()
+	local c = thread.chancreate(1)
+
+	c:send(true)		-- takes a section of its own
+	c:recv()
+	sib = true
+end)
+
+thread.run()
+
+tap.ok(sib, "a sibling's sections still work after another leaked one")
 
 -- and the scheduler is left in a consistent state: nothing still
 -- marked mid-update, which would have run() resuming a corpse.

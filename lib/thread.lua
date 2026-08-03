@@ -61,24 +61,43 @@ local thread = {
 -- send() -> nbsend() -> _wakercv() -- and only the outermost may
 -- release. _crit is set before the depth is touched so that a cut
 -- between the two is already covered.
+--
+-- The depth belongs to whoever holds the section, and changing hands
+-- resets it. That is what keeps one thread's mistake to itself: an
+-- error raised inside a section and caught by the thread that made it
+-- leaves the depth standing, because nothing unwinds it on the way
+-- past, and a single shared counter would carry that leak into every
+-- section any other thread entered afterwards. Ownership is already
+-- recorded, so keying the depth to it costs one comparison and no
+-- lookup.
+--
+-- Only a thread running under run() needs any of this. A cut in main
+-- yields the proc to the kernel and resumes exactly where it was, so
+-- there is no moment at which anyone could look; marking a section
+-- there would mean run() finding itself in _crit and trying to resume
+-- the coroutine it is already running.
 local critdepth = 0
 
 local function critenter()
-	local co, ismain = coroutine.running()
+	local co = coroutine.running()
 
-	if ismain then
-		return		-- main cannot be cut in a way that matters
+	if co ~= thread._current then
+		return		-- not a thread under run()
 	end
-	thread._crit = co
+	if thread._crit ~= co then
+		thread._crit = co
+		critdepth = 0	-- whatever is left is someone else's
+	end
 	critdepth = critdepth + 1
 end
 
 local function critleave()
-	if critdepth > 0 then
-		critdepth = critdepth - 1
-		if critdepth == 0 then
-			thread._crit = nil
-		end
+	if thread._crit ~= coroutine.running() then
+		return		-- never held it, or it has changed hands
+	end
+	critdepth = critdepth - 1
+	if critdepth <= 0 then
+		thread._crit = nil
 	end
 end
 
@@ -275,6 +294,20 @@ local function parkon(port, ports, chan, isrecv)
 	end
 	thread._parked[co] = r
 	critleave()
+	-- a section still standing here has leaked, and this is the one
+	-- place that can know it: rule 1 says a section may not span a
+	-- yield, and this is where a thread yields voluntarily, so a depth
+	-- that survived to this line is a section whose critleave was
+	-- jumped over by an error the thread went on to catch. Left alone
+	-- it would be fatal to the proc rather than to the thread -- run()
+	-- resumes the holder and only the holder, so a parked one is
+	-- resumed forever, and the proc spins without ever blocking. The
+	-- thread's own state is already lost; what is repairable is the
+	-- scheduler's, so take the section back and let the rest run.
+	if thread._crit == co then
+		thread._crit = nil
+		critdepth = 0
+	end
 	coroutine.yield()
 	-- a wake that landed between _parked and the yield above cleared
 	-- _parked before it was set, so clear it here too: a RUNNING
