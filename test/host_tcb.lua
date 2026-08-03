@@ -147,11 +147,22 @@ ok((data[1].flags & tcp4.PSH) ~= 0, "pushed, since it emptied the buffer")
 is(b:read(), "hello", "and the peer reads them back")
 is(b:read(), "", "with nothing left over")
 
--- the receiver must acknowledge data it took responsibility for, or the
--- sender will send it again forever.
+-- The receiver must acknowledge data it took responsibility for, or the
+-- sender will send it again forever -- but not necessarily at once.
+--
+-- Five bytes is far short of the two full-sized segments RFC 5681 4.2
+-- waits for, so the acknowledgment is owed rather than sent, and the
+-- timer is what eventually pays it. This assertion used to read "taking
+-- data produces an acknowledgment", which was true and was costing a
+-- segment per segment.
+is(#b:take(), 0, "a small segment is not acknowledged on the spot")
+ok(b:status().delack ~= nil, "the acknowledgment is owed instead")
+
+b:tick(b:status().delack)
+
 local acks = b:take()
 
-is(#acks, 1, "taking data produces an acknowledgment")
+is(#acks, 1, "and the timer pays it")
 is(acks[1].ack, tcp4.add(data[1].seq, 5), "covering exactly what arrived")
 
 a:segment(acks[1])

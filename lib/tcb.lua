@@ -30,9 +30,16 @@
 -- blocks a peer sends US is the other half and is not here -- it needs a
 -- scoreboard and its own interaction with fast recovery.
 --
--- What is deliberately not here: Nagle, delayed acknowledgments and the
--- sender's half of silly-window avoidance, all of which make an
--- implementation politer rather than more correct.
+-- Acknowledgments are delayed (3.8.6.3, 5681 4.2): one per two
+-- full-sized segments, never more than 200ms, and immediately for the
+-- cases that drive a peer's loss recovery. That is a throughput change
+-- rather than a courtesy here -- test/boot/microvm_tcpbench.lua measured
+-- 223 of 402 segments sent in a one-way transfer to be pure
+-- acknowledgments, each costing a full trip out through the ip task.
+--
+-- What is deliberately not here: Nagle and the sender's half of
+-- silly-window avoidance, which coalesce small writes rather than
+-- reducing the acknowledgments a bulk transfer generates.
 --
 -- Names follow the RFC, in lower case: snd_una is SND.UNA. Keeping them
 -- recognisable matters more than keeping them pretty, because every
@@ -114,6 +121,14 @@ local SSTHRESH_INIT = 0xffffffff
 -- merely reordered. Two is not enough -- ordinary reordering produces
 -- two routinely -- and waiting for more costs a round trip per loss.
 local DUPACK_THRESH = 3
+
+-- ---- delayed acknowledgments, RFC 9293 3.8.6.3 and RFC 5681 4.2 ----
+--
+-- How long an acknowledgment may wait for something to ride out with.
+-- The ceiling is 500ms and it is a MUST (MUST-40); 200ms is what the
+-- unixes use, and the shorter it is the less a peer's retransmission
+-- timer can be provoked by our politeness.
+local DELACK_MS = 200
 
 -- 2*MSL in TIME-WAIT. The RFC's MSL is two minutes, making the wait
 -- four; nothing in practice waits that long, and 30 seconds is what the
@@ -210,6 +225,13 @@ function tcb.new(cfg)
 		-- sequence number, and is what stops one lost window from
 		-- being fast-retransmitted over and over.
 		recover = cfg.iss,
+
+		-- an acknowledgment owed but not yet sent, and how many bytes
+		-- it covers. Cleared by anything that goes out carrying an
+		-- ACK, which is what makes a reply or a data segment absorb
+		-- it for free.
+		delack = nil,
+		ackbytes = 0,
 
 		-- The persist timer (RFC 9293 3.8.6.1). Separate from the
 		-- retransmission timer because it is not retransmitting
@@ -323,6 +345,17 @@ function T:_send(flags, data, seq, opt)
 	}
 
 	self.out[#self.out + 1] = s
+
+	-- Whatever this segment is -- a reply, a window update, data going
+	-- the other way -- it carries ack = rcv_nxt, so any acknowledgment
+	-- we owed has just been sent. That piggybacking is where most of
+	-- the saving comes from on a connection with traffic in both
+	-- directions; a one-way transfer has nothing to ride on and falls
+	-- back to one ack per two segments.
+	if (flags & tcp4.ACK) ~= 0 then
+		self.delack = nil
+		self.ackbytes = 0
+	end
 
 	if tcp4.seglen(s) > 0 then
 		if not self.retx then
@@ -858,6 +891,29 @@ function T:_is_dupack(seg)
 	    self:_flight() > 0
 end
 
+-- One segment of new data on a duplicate acknowledgment, if the peer's
+-- window has room and the total in flight would stay within cwnd plus
+-- the two segments 3042 allows.
+function T:_limited_transmit()
+	local sent = tcp4.diff(self.snd_nxt, self.snd_una)
+	local unsent = #self.sndq - sent
+
+	if unsent <= 0 or not self.cwnd then
+		return
+	end
+	if sent + self.snd_mss > self.cwnd + 2 * self.snd_mss then
+		return
+	end
+	if sent + self.snd_mss > self.snd_wnd then
+		return		-- the receiver has no room; it is not ours to take
+	end
+
+	local n = math.min(unsent, self.snd_mss)
+
+	self:_send(tcp4.ACK, self.sndq:sub(sent + 1, sent + n))
+	self.snd_nxt = tcp4.add(self.snd_nxt, n)
+end
+
 -- 5681 3.2 steps 2 and 3, with 6582's guard in front of them.
 function T:_fast_retransmit()
 	-- RFC 6582 step 2: only if the acknowledgment covers more than
@@ -917,12 +973,28 @@ function T:_acked(seg, acked)
 				self.retx = self.now + self.rto
 			end
 		elseif self.cwnd < self.ssthresh then
-			-- slow start, by appropriate byte counting (equation
-			-- 2) rather than a flat segment per ack: a receiver
-			-- that acknowledged one segment in several pieces
-			-- could otherwise inflate the window several times
-			-- over for data it only received once.
-			self.cwnd = self.cwnd + math.min(acked, self.snd_mss)
+			-- Slow start, by appropriate byte counting rather than
+			-- a flat segment per acknowledgment: a receiver that
+			-- acknowledged one segment in several pieces could
+			-- otherwise inflate the window several times over for
+			-- data it only received once.
+			--
+			-- The limit is 2*SMSS rather than 5681 equation 2's
+			-- SMSS, which is RFC 3465 section 2.3 and exists for
+			-- exactly the reason it is needed here: once
+			-- acknowledgments are delayed, one of them covers two
+			-- segments, and a cap of one segment per
+			-- acknowledgment halves the rate the window opens.
+			--
+			-- That is not merely slower. Measured, with the cap at
+			-- one: two losses in a window took 3170ms instead of
+			-- 130ms, because the window never opened enough to put
+			-- three segments above the gap and fast retransmit
+			-- never fired -- the connection waited out a
+			-- retransmission timeout instead. Delayed
+			-- acknowledgments and byte counting are two halves of
+			-- one change.
+			self.cwnd = self.cwnd + math.min(acked, 2 * self.snd_mss)
 		else
 			-- congestion avoidance, equation 3, rounded up to a
 			-- byte so integer arithmetic cannot stall the window
@@ -993,7 +1065,25 @@ function T:_check_ack(seg)
 	if self:_is_dupack(seg) then
 		self.dupacks = self.dupacks + 1
 
-		if self.dupacks == DUPACK_THRESH then
+		if self.dupacks < DUPACK_THRESH then
+			-- Limited transmit, RFC 5681 3.2 step 1 (RFC 3042).
+			-- On the first and second duplicate, send one new
+			-- segment if there is one and the window allows.
+			--
+			-- This is what makes fast retransmit reachable at all
+			-- when the window is small. With an initial window of
+			-- three segments and a loss early in it, only one or
+			-- two segments ever arrive above the gap, so the count
+			-- stops at two and the connection waits out a
+			-- retransmission timeout -- measured, before this went
+			-- in. Each duplicate says a segment left the network,
+			-- so sending one more keeps the same number in flight.
+			--
+			-- cwnd is deliberately not changed (3042 is explicit):
+			-- this is not the window opening, it is the window
+			-- being used to ask a question.
+			self:_limited_transmit()
+		elseif self.dupacks == DUPACK_THRESH then
 			self:_fast_retransmit()
 		elseif self.dupacks > DUPACK_THRESH and self.in_recovery then
 			-- step 4: each further duplicate is another segment
@@ -1215,6 +1305,47 @@ function T:_drain_held()
 	end
 end
 
+-- Acknowledge now, or owe it for a moment.
+--
+-- RFC 5681 4.2: at least every second full-sized segment, never later
+-- than 500ms, and immediately in the cases that drive a peer's loss
+-- recovery -- a segment above a gap (which _text answers directly) and
+-- one that fills all or part of a gap. Delaying either of those slows
+-- the peer's fast retransmit, which costs far more than the segment
+-- saved.
+--
+-- Counted in bytes rather than segments because 2*RMSS is what the RFC
+-- actually says, and a peer sending small segments should not have to
+-- wait for two of ours.
+function T:_ack_for(bytes, immediate)
+	self.ackbytes = self.ackbytes + bytes
+
+	-- A window that has just shut is told at once. The sender needs to
+	-- stop, and waiting 200ms to say so buys nothing but segments it
+	-- will send into a buffer with no room. It also covers the case
+	-- where 2*RMSS is more than the whole receive buffer -- with a
+	-- small rcvbuf that threshold is unreachable, and every
+	-- acknowledgment would otherwise wait out the timer.
+	-- While a gap is open, nothing is delayed. Every segment arriving
+	-- during a loss is either above the gap or filling it, and 5681 4.2
+	-- calls for an immediate acknowledgment in both cases -- but the
+	-- reason is sharper than the rule.
+	--
+	-- Delaying here does not merely slow the peer's recovery, it can
+	-- stop it happening at all. Fast retransmit needs three duplicate
+	-- acknowledgments; delayed acks cut how many the receiver produces
+	-- AND slow the peer's window growth, so fewer segments are in
+	-- flight to arrive above the gap. Measured: two losses in one
+	-- window went from 130ms to 3170ms, because the count reached two
+	-- and the connection then waited out a retransmission timeout.
+	if immediate or self.fin_rcvd or #self.ooo > 0 or
+	    self:_window() == 0 or self.ackbytes >= 2 * self.rcv_mss then
+		self:_ack()
+	elseif not self.delack then
+		self.delack = self.now + DELACK_MS
+	end
+end
+
 -- where a FIN takes us, which depends entirely on what we had already
 -- said ourselves. The four-way close is two independent two-way ones,
 -- and this is the half the peer drives.
@@ -1242,6 +1373,7 @@ end
 function T:_text(seg)
 	local data = seg.data or ""
 	local consumed = false
+	local started = self.rcv_nxt
 
 	-- a retransmission may begin before rcv_nxt; only the new part is
 	-- processed (3.10.7.4's "if a segment's contents straddle the
@@ -1302,7 +1434,13 @@ function T:_text(seg)
 	local before = self.rcv_nxt
 
 	self:_drain_held()
-	if self.rcv_nxt ~= before then
+
+	-- filling all or part of a gap is one of 5681 4.2's immediate
+	-- cases: the peer is in recovery and this is the segment that
+	-- tells it how far it got.
+	local filled = self.rcv_nxt ~= before
+
+	if filled then
 		consumed = true
 	end
 
@@ -1314,8 +1452,8 @@ function T:_text(seg)
 	if consumed then
 		-- acknowledging is not optional: we have taken
 		-- responsibility for the octets, and the peer will keep
-		-- resending them until we say so.
-		self:_ack()
+		-- resending them until we say so. When is the only question.
+		self:_ack_for(tcp4.diff(self.rcv_nxt, started), filled)
 	end
 end
 
@@ -1519,6 +1657,9 @@ function T:deadline()
 	if self.persist and (not t or self.persist < t) then
 		t = self.persist
 	end
+	if self.delack and (not t or self.delack < t) then
+		t = self.delack
+	end
 	return t
 end
 
@@ -1532,6 +1673,10 @@ function T:tick(now)
 	end
 	if self.retx and self.now >= self.retx then
 		self:_retransmit()
+	end
+	if self.delack and self.now >= self.delack then
+		-- nothing came along to carry it, so it goes on its own.
+		self:_ack()
 	end
 	if self.persist and self.now >= self.persist then
 		-- A peer that answers its probes may keep the window shut
@@ -1584,6 +1729,7 @@ function T:status()
 		recovery = self.in_recovery,
 		sack_ok = self.sack_ok,
 		persist = self.persist,
+		delack = self.delack,
 		probes = self.probes,
 		flight = self:_flight(),
 		retries = self.retries,

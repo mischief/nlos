@@ -275,9 +275,16 @@ thread.spawn(function()
 	    pureus, stackus - pureus, stackus,
 	    (stackus - pureus) / stackus * 100, floor))
 
-	tap.ok(ackratio > 0.8,
-	    "today a segment is acknowledged on its own: " ..
-	    string.format("%.2f acks per data segment", ackratio))
+	-- Was 1.25 before acknowledgments were delayed, and this assertion
+	-- was written the other way round to catch the change. It is not
+	-- 0.5 because not everything is delayed: a segment above a gap, one
+	-- filling a gap, a closed window and a FIN are all answered at
+	-- once, and read() announces a reopened window. Those are the cases
+	-- that keep a peer's loss recovery working, and paying a segment
+	-- for them is the trade.
+	tap.ok(ackratio < 0.85,
+	    "acknowledgments are delayed rather than one per segment: " ..
+	    string.format("%.2f per data segment", ackratio))
 
 	tap.done()
 end)

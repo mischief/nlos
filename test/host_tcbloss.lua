@@ -321,13 +321,19 @@ end
 
 -- ---- the signal fast retransmit will use ----
 --
--- The receiver already produces duplicate acknowledgments for every
--- segment that arrives behind a hole -- it has to, since without SACK
--- rcv_nxt is the only thing it can say. Nothing acts on them yet.
--- Counting them here says the signal is present and correctly shaped,
--- which is the half of fast retransmit that already exists.
+-- The receiver produces a duplicate acknowledgment for every segment
+-- that arrives behind a hole -- it has to, since without SACK rcv_nxt is
+-- the only thing it can say. What matters is that the sender acts on
+-- them, so that is what is asserted: it enters fast recovery, and it
+-- does so from the duplicates rather than from a timeout.
+--
+-- Counting the acknowledgments directly, which this did first, turned
+-- out to measure the harness. It hooked take() and counted repeats, and
+-- once acknowledgments were delayed the run of repeats was broken up by
+-- ordinary window growth -- so the count read zero on a connection whose
+-- recovery was working perfectly.
 do
-	local a, b = pair()
+	local a, b = pair({ sndbuf = 256 * 1024 })
 	local ndata = 0
 	local l = link(a, b, {
 		rtt = 20,
@@ -342,42 +348,19 @@ do
 
 	connect(l)
 
-	-- watch what b sends while the hole is open
-	local dupacks = 0
-	local firstack
-
-	local realtake = b.take
-
-	b.take = function(self)
-		local segs = realtake(self)
-
-		for _, s in ipairs(segs) do
-			if (s.flags & tcp4.ACK) ~= 0 and #(s.data or "") == 0 then
-				if not firstack then
-					firstack = s.ack
-				elseif s.ack == firstack then
-					dupacks = dupacks + 1
-				else
-					firstack = s.ack
-					dupacks = 0
-				end
-			end
-		end
-		return segs
-	end
-
-	local payload = string.rep("y", 1460 * 8)
+	local payload = string.rep("y", 1460 * 20)
 
 	a:write(payload, l.now)
 	l:run(l.now + 3000, function()
-		return dupacks >= 3
+		return a:status().recovery
 	end)
 
-	ok(dupacks >= 3,
-	    "a hole produces at least three duplicate acknowledgments: " ..
-	    dupacks)
+	ok(a:status().recovery,
+	    "duplicate acknowledgments put the sender into fast recovery")
+	ok(a:status().retries == 0,
+	    "on the duplicates alone, with no timeout involved")
 	ok(b:status().held > 0,
-	    "and the segments behind it are held, not discarded")
+	    "and the segments behind the hole are held, not discarded")
 end
 
 -- ---- reordering ----
@@ -588,8 +571,15 @@ do
 	local ss = a:status().ssthresh
 
 	ok(ss < 0xffffffff, "which brings the threshold down: " .. ss)
-	is(a:status().cwnd, ss + 3 * 1460,
-	    "and inflates the window by the three segments that left the network")
+	-- Inflated by the segments that have left the network and are
+	-- sitting in the receiver's queue. Not asserted as exactly
+	-- ssthresh + 3*mss: that is its value at the instant recovery
+	-- begins, and the link delivers a batch of segments per step, so
+	-- more duplicates can land before this runs. The property is that
+	-- it is inflated, and by at least those three.
+	ok(a:status().cwnd >= ss + 3 * 1460,
+	    string.format("and inflates the window past the threshold: %d vs %d",
+	    a:status().cwnd, ss))
 
 	-- Drained as it goes, because the payload is larger than the
 	-- receive buffer: a condition waiting for `readable` to reach the
@@ -619,7 +609,16 @@ do
 	end)
 
 	ok(not a:status().recovery, "a full acknowledgment ends recovery")
-	is(a:status().cwnd, ss, "deflating the window to the threshold")
+
+	-- Deflated to ssthresh, give or take one congestion-avoidance
+	-- increment: the window is set to ssthresh on the acknowledgment
+	-- that ends recovery, and the same acknowledgment can carry the
+	-- first increment after it.
+	local cw = a:status().cwnd
+
+	ok(cw >= ss and cw <= ss + 1460,
+	    string.format("deflating the window to the threshold: %d vs %d",
+	    cw, ss))
 
 	l:run(l.now + 20000, function()
 		drain()
@@ -655,7 +654,17 @@ do
 
 	a:write(payload, l.now)
 
+	local seen = ""
 	local complete = l:run(l.now + 30000, function()
+		local st = a:status()
+		local line = string.format("rec=%s dup=%d cwnd=%d unack=%d retr=%d rd=%d",
+		    tostring(st.recovery), st.dupacks, st.cwnd or 0, st.unacked,
+		    st.retries, b:status().readable)
+
+		if line ~= seen then
+			diag(string.format("DBG t=%d %s", l.now, line))
+			seen = line
+		end
 		return b:status().readable >= #payload
 	end)
 
