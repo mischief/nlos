@@ -3341,6 +3341,45 @@ api_reap(lua_State *L)
 	return 1;
 }
 
+/* sys.kill(pid): stop a proc that will not stop on its own.
+ *
+ * The cooperative path is the hangup cascade -- a proc watching its own
+ * port exits when its clients leave, and a shutdown drops rights and lets
+ * that flow down the mounts (test/boot/microvm_gefsshutdown.lua). This is
+ * the backstop for a proc that ignores it, a loop that never parks, so a
+ * shutdown can reclaim it after a deadline instead of waiting forever.
+ *
+ * It becomes a corpse exactly as a crash does: proc_break detaches it --
+ * wait_clear and rq_del unlink it from whatever port or run queue it sits
+ * on, its rights drop (which is what makes killing a client hang up the
+ * server below it), and its monitors are told -- then it is held BROKE
+ * for inspection and reaping. The target is never the running proc, so
+ * its state is freed later by reap, not here; killing self is refused
+ * because freeing the caller mid-syscall is not a thing to smuggle in.
+ *
+ * Ambient, like sys.reap and sys.monitor beside it: proc management here
+ * is deliberately not gated, and a kill capability can narrow it later
+ * without changing this shape. The threat model is a wedged proc, not a
+ * hostile one -- a hostile proc could as easily spin and never die.
+ */
+static int
+api_kill(lua_State *L)
+{
+	struct kproc *p = self(L);
+	int pid = (int)luaL_checkinteger(L, 1);
+	struct kproc *target = find_proc(pid);
+
+	if (target == p)
+		return luaL_error(L, "cannot kill self");
+	if (!target || target->status == BROKE || target->status == DEAD) {
+		lua_pushboolean(L, 0);	/* nothing to kill: already gone */
+		return 1;
+	}
+	proc_break(target, "killed");
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 /* sys.set_priority(pid, weight): a scheduling POLICY knob, not the
  * scheduler itself -- this just writes a clamped integer into the
  * target proc's kproc struct. kernel_run's dispatch loop (the
@@ -3656,6 +3695,7 @@ static const luaL_Reg kapi[] = {
 	{ "wchan", api_wchan },
 	{ "stack", api_stack },
 	{ "reap", api_reap },
+	{ "kill", api_kill },
 	{ "set_trace", api_set_trace },
 	{ "set_torture", api_set_torture },
 	{ "trace", api_trace },
