@@ -801,7 +801,7 @@ microvm_tests = [
   ['p9par', ['--9p']],
   ['blk', ['--blk']],
   ['gefs', ['--gefscommit']],
-  ['gefssrv', ['--gefs']],
+  ['gefssrv', ['--gefscommit']],
   ['eth', ['--net']],
   ['arp', ['--net']],
   ['ping', ['--net']],

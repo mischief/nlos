@@ -391,6 +391,17 @@ function M.serve(backend, port, opts)
 	local S = newstate(backend, opts)
 	local workers = opts and opts.workers or 0
 
+	-- opts.tick = { ms = , fn = function(backend) end } asks for fn to be
+	-- run between requests, at most every ms, and once more as the server
+	-- shuts down. It is how a backend that has to flush on a clock -- gefs
+	-- syncing its cache -- gets a heartbeat without a thread of its own: a
+	-- second thread calling into the backend would run concurrently with a
+	-- request and defeat the whole point of one worker. Here it is the same
+	-- loop, so fn and dispatch never overlap. This is plan 9 gefs's own
+	-- shape, where the 5-second timer only enqueues a sync for the single
+	-- mutator to run in turn (runtasks in fs.c), never syncs itself.
+	local tick = opts and opts.tick
+
 	if workers < 2 then
 		-- thread.await is the drain-then-test-hangup loop this used to
 		-- write out by hand, and the hangup half is the same question
@@ -398,13 +409,32 @@ function M.serve(backend, port, opts)
 		-- the last one, so every client has gone. the reason to answer
 		-- it from `why` rather than from the message being nil is that
 		-- a message legitimately can be.
+		--
+		-- with a tick, recvtimeout stands in for await: it is alt over
+		-- the port and a timer, so a request is still drained first and a
+		-- timeout is the heartbeat. hangup is not a message the alt wakes
+		-- on, so it is tested after each tick -- the shutdown flush lands
+		-- there, at most one interval late.
 		while true do
-			local m, why = thread.await(port)
+			if tick then
+				local m, why = thread.recvtimeout(port, tick.ms)
 
-			if why then
-				return
+				if why then
+					tick.fn(S.B)
+					if sys.hungup(port) then
+						return
+					end
+				else
+					dispatch(S, m)
+				end
+			else
+				local m, why = thread.await(port)
+
+				if why then
+					return
+				end
+				dispatch(S, m)
 			end
-			dispatch(S, m)
 		end
 	end
 

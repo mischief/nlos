@@ -17,10 +17,11 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(7)
+tap.plan(8)
 
 local SMALL = "hello from gefs\n"
 local BIG = ("gefs"):rep(10000)
+local GUEST = "written in the guest\n"		-- the host checks this landed
 
 -- what each client writes: distinct per (client, file), and big enough
 -- that some span several gefs blocks so a write is several requests the
@@ -47,7 +48,10 @@ local function main()
 	-- spawn the server and hand it the block device, dns.lua's pattern
 	local code = io.open("/task/gefssrv.lua"):read("a")
 	local _, g = sys.spawn(code, { name = "gefssrv" })
-	sys.send(g, { blk = { __right = caps.blk }, label = "main" })
+	-- a short sync interval so the shutdown flush lands quickly; the
+	-- explicit /ctl sync below does not wait for it
+	sys.send(g, { blk = { __right = caps.blk }, label = "main",
+	    syncms = 500 })
 
 	local N = ns.new()
 	local mok, merr = N:mount("/g", mnt.new(g), "mnt",
@@ -109,6 +113,19 @@ local function main()
 	-- the files the host wrote were never touched and are still whole
 	tap.ok(N:readfile("/g/hello") == SMALL,
 	    "the seeded file survived the concurrent writes")
+
+	-- persistence: commit a file through the server and force the sync
+	-- explicitly by writing "sync" to the synthetic /ctl -- open it, do
+	-- not writefile it, which would create a real file of that name. The
+	-- host reopens the volume after the guest exits and checks /guest
+	-- landed (boottest-microvm.lua --gefscommit).
+	N:writefile("/g/guest", GUEST)
+	local cf = N:open("/g/ctl", "w")
+	local synced = cf and pcall(function()
+		cf:write("sync")
+		cf:close()
+	end)
+	tap.ok(synced, "forced a commit through /ctl")
 
 	tap.done()
 end

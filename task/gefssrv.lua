@@ -21,6 +21,15 @@
 -- corrupt it. Many clients may still send at once; they queue at the
 -- port and are answered in turn, which is upstream gefs's single-mutator
 -- funnel by another name.
+--
+-- Writes only reach the disk at a sync, so the volume is committed on a
+-- clock: srv.serve's tick calls the backend's sync between requests,
+-- never beside one, at most every syncms and once more as the server
+-- shuts down. A client can also force it by writing "sync" to /ctl. This
+-- is 9front gefs's runtasks timer and ctl "sync" in one, and the reason
+-- the tick runs in the serve loop rather than a thread of its own is the
+-- same one worker: a second thread syncing would interleave with a
+-- request. Default 5s, as upstream; the spawner may ask for less.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -36,10 +45,13 @@ local function clock()
 	return sys.uptime_ms() * 1000000
 end
 
-srv.main(function()
+-- srv.serve directly rather than srv.main, so the sync interval can come
+-- from the init message (build() runs after it, too late to shape opts).
+thread.spawn(function()
 	local init = thread.recv(sys.SELF)
 	local blk = init.blk.__right
 	local label = init.label or "main"
+	local syncms = init.syncms or 5000
 
 	-- mount the block device and open /data as a seekable file, exactly
 	-- as a client of blksrv would -- gefs sits on the file, not on virtio
@@ -55,5 +67,11 @@ srv.main(function()
 	local dev = gefs.io.wrap(h, size)
 
 	local fs = gefs.open(dev, { clockfn = clock })
-	return gefsfs.new(fs:mount(label))
-end, { workers = 1 })
+	local backend = gefsfs.new(fs:mount(label))
+
+	srv.serve(backend, sys.SELF, {
+		workers = 1,
+		tick = { ms = syncms, fn = function(B) B.sync() end },
+	})
+end)
+thread.run()
