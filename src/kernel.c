@@ -174,6 +174,26 @@ struct tracent {
 	int line;
 	unsigned short src;	/* index into ktrace.name */
 	unsigned short co;	/* index into ktrace.co */
+
+	/* Two clocks, from one tsc read, each as a delta from the previous
+	 * entry rather than an absolute.
+	 *
+	 * `cpu` is cycles this proc actually spent running, so deltas are
+	 * disjoint across procs and a line's own cost is what it says.
+	 * `wall` is elapsed cycles, so `wall - cpu` is how long the proc
+	 * was NOT running after that line -- the kernel, another proc, or
+	 * idle. Neither alone is enough: per-proc cycles are blind to
+	 * everything outside the proc, and wall alone cannot be summed
+	 * across procs, since two timelines covering one interval would
+	 * count it twice.
+	 *
+	 * u32 because consecutive lines are microseconds apart at most. An
+	 * absolute u32 would wrap in under a second at 4.5GHz; a delta
+	 * does not, and saturates rather than wrapping if a proc really
+	 * was away for longer.
+	 */
+	unsigned int wall;
+	unsigned int cpu;
 };
 
 struct ktrace {
@@ -190,6 +210,8 @@ struct ktrace {
 	 */
 	const void *lastsrc;
 	int lastid;
+	unsigned long long lastwall;	/* tsc at the previous entry */
+	unsigned long long lastcpu;	/* running cycles at the previous entry */
 	const void *co[TRACECO];
 	int nco;
 };
@@ -2563,6 +2585,9 @@ api_close(lua_State *L)
 }
 
 static void preempt_hook(lua_State *L, lua_Debug *ar);
+static void trace_put(struct kproc *p, struct ktrace *t, int line, int src,
+    int co);
+static void trace_mark(struct kproc *p, const char *what);
 
 /* memory accounting: meminfo([pid]) -> used, peak, limit */
 static int
@@ -3059,15 +3084,190 @@ api_trace(lua_State *L)
 	for (unsigned int i = 0; i < n; i++) {
 		struct tracent *e = &t->ent[(start + i) % t->cap];
 
-		lua_createtable(L, 0, 3);
+		lua_createtable(L, 0, 5);
 		lua_pushstring(L, e->src < t->nname ? t->name[e->src] : "?");
 		lua_setfield(L, -2, "source");
 		lua_pushinteger(L, e->line);
 		lua_setfield(L, -2, "line");
 		lua_pushinteger(L, e->co);
 		lua_setfield(L, -2, "thread");
+		/* cycles this line cost, and cycles the proc was not running
+		 * after it. See struct tracent on why both.
+		 */
+		lua_pushinteger(L, e->cpu);
+		lua_setfield(L, -2, "cpu");
+		lua_pushinteger(L, e->wall);
+		lua_setfield(L, -2, "wall");
 		lua_rawseti(L, -2, (int)i + 1);
 	}
+	return 1;
+}
+
+/* sys.tracehist(pid): the ring, aggregated by source and line.
+ *
+ * Every caller that wanted a profile was writing the same fifteen lines
+ * of Lua -- count by source:line, sort, count again by file -- and the
+ * first time anyone did it, it found a task rebuilding a kernel timer
+ * on every message. That is worth having built in.
+ *
+ * It is computed here rather than in the caller for the reason
+ * src/debug.c allocates nothing in its target: handing over a
+ * 4096-entry table charges the reader's mem_limit for the act of
+ * reading, and the ring is bigger than anything debug.c builds.
+ *
+ * Keyed on source and line, NOT on thread. What a line costs is a
+ * property of the line; which coroutine ran it is a different question
+ * and the raw ring still answers it. Keying on both would multiply the
+ * rows of a lib/thread proc, where the same scheduler lines run in
+ * every thread, and bury the total that is usually wanted.
+ *
+ * Sorted by cpu, so the answer to "where does the time go" is the top
+ * of the list. With no timestamps in play that degenerates to sorting
+ * by count, which is the older question and still a useful one.
+ */
+/* The fallback table, used only if the exact one cannot be allocated.
+ * See the allocation below for why exact matters.
+ */
+#define HISTMAX 256
+
+struct histrow {
+	int line;
+	unsigned short src;
+	unsigned int count;
+	unsigned long long cpu;
+	unsigned long long wall;
+};
+
+static int
+api_tracehist(lua_State *L)
+{
+	/* The fallback, static rather than on the stack because 256 rows is
+	 * 8KB and kernel.c builds with -Wframe-larger-than=4096. Safe
+	 * because the machine is cooperative and single-threaded: nothing
+	 * else runs between the first line of this function and the last,
+	 * which is the property src/debug.c already relies on to read
+	 * another proc's stack at all.
+	 */
+	static struct histrow fixed[HISTMAX];
+	struct kproc *p = self(L);
+	struct ktrace *t;
+	struct histrow *row;
+	int cap, nrow = 0, last = -1;
+	unsigned int n, start, dropped = 0;
+
+	if (!lua_isnoneornil(L, 1)) {
+		p = find_proc((int)luaL_checkinteger(L, 1));
+		if (!p)
+			return luaL_error(L, "no such proc");
+	}
+	t = p->trace;
+	if (!t || !t->cap) {
+		lua_newtable(L);
+		return 1;
+	}
+	n = t->n < t->cap ? t->n : t->cap;
+	start = t->n - n;
+
+	/* Sized to the ring, so every distinct line gets a row and the
+	 * result is the hottest lines rather than the earliest ones.
+	 *
+	 * A fixed table cannot do that. Aggregation meets keys in the order
+	 * they occur, so a table that fills simply stops admitting new
+	 * ones -- and the lines it then fails to report are not the cold
+	 * ones, they are whichever happened to appear late. A histogram
+	 * that quietly does that is worse than no histogram, because it
+	 * looks like an answer. Measured before this: 256 rows kept, 303
+	 * entries dropped, on a trace of one task.
+	 *
+	 * Allocated per call and freed below, so tracing costs what it
+	 * costs and reading it costs nothing lasting. If the allocation
+	 * fails the fixed table still answers, with `dropped` saying how
+	 * much it could not.
+	 */
+	cap = (int)n;
+	row = malloc((size_t)cap * sizeof *row);
+	if (!row) {
+		row = fixed;
+		cap = HISTMAX;
+	}
+
+	for (unsigned int i = 0; i < n; i++) {
+		struct tracent *e = &t->ent[(start + i) % t->cap];
+		int j;
+
+		/* consecutive entries are often the same line -- a loop, or
+		 * a line that yields -- so try the last match first, the
+		 * same trick the source interning uses one field over.
+		 */
+		if (last >= 0 && row[last].line == e->line &&
+		    row[last].src == e->src) {
+			j = last;
+		} else {
+			for (j = 0; j < nrow; j++)
+				if (row[j].line == e->line &&
+				    row[j].src == e->src)
+					break;
+		}
+		if (j == nrow) {
+			if (nrow >= cap) {
+				dropped++;
+				continue;
+			}
+			row[nrow].line = e->line;
+			row[nrow].src = e->src;
+			row[nrow].count = 0;
+			row[nrow].cpu = 0;
+			row[nrow].wall = 0;
+			nrow++;
+		}
+		row[j].count++;
+		row[j].cpu += e->cpu;
+		row[j].wall += e->wall;
+		last = j;
+	}
+
+	/* selection sort: a few hundred rows, once, in a debugging call.
+	 * Anything cleverer would be optimising the reader.
+	 */
+	for (int i = 0; i < nrow; i++) {
+		int best = i;
+
+		for (int j = i + 1; j < nrow; j++)
+			if (row[j].cpu > row[best].cpu ||
+			    (row[j].cpu == row[best].cpu &&
+			     row[j].count > row[best].count))
+				best = j;
+		if (best != i) {
+			struct histrow tmp = row[i];
+
+			row[i] = row[best];
+			row[best] = tmp;
+		}
+	}
+
+	lua_createtable(L, nrow, 1);
+	for (int i = 0; i < nrow; i++) {
+		lua_createtable(L, 0, 5);
+		lua_pushstring(L, row[i].src < t->nname ?
+		    t->name[row[i].src] : "?");
+		lua_setfield(L, -2, "source");
+		lua_pushinteger(L, row[i].line);
+		lua_setfield(L, -2, "line");
+		lua_pushinteger(L, (lua_Integer)row[i].count);
+		lua_setfield(L, -2, "count");
+		lua_pushinteger(L, (lua_Integer)row[i].cpu);
+		lua_setfield(L, -2, "cpu");
+		lua_pushinteger(L, (lua_Integer)row[i].wall);
+		lua_setfield(L, -2, "wall");
+		lua_rawseti(L, -2, i + 1);
+	}
+	/* said rather than silently truncated: a histogram missing rows is
+	 * a histogram whose percentages do not mean what they look like.
+	 */
+	lua_pushinteger(L, (lua_Integer)dropped);
+	lua_setfield(L, -2, "dropped");
+	if (row != fixed)
+		free(row);
 	return 1;
 }
 
@@ -3417,6 +3617,7 @@ static const luaL_Reg kapi[] = {
 	{ "reap", api_reap },
 	{ "set_trace", api_set_trace },
 	{ "trace", api_trace },
+	{ "tracehist", api_tracehist },
 	{ "set_priority", api_set_priority },
 	{ "priority", api_priority },
 	{ "pidstat", api_pidstat },
@@ -3775,12 +3976,102 @@ trace_line(struct kproc *p, lua_State *L, lua_Debug *ar)
 			t->co[t->nco++] = (const void *)L;
 	}
 
-	struct tracent *e = &t->ent[t->n % t->cap];
+	trace_put(p, t, ar->currentline, src, co);
+}
 
-	e->line = ar->currentline;
+/* One entry, with both clocks.
+ *
+ * A single platform_ticks() yields both: the wall reading directly, and
+ * this proc's running cycles as cputime plus however long it has been
+ * on the cpu since it was resumed. p->resumed exists for exactly this
+ * -- its own comment says "for the hook" -- so nothing new has to be
+ * tracked to get the second number.
+ */
+static void
+trace_put(struct kproc *p, struct ktrace *t, int line, int src, int co)
+{
+	unsigned long long now = platform_ticks();
+	unsigned long long cpu = p->cputime +
+	    (p->resumed && now > p->resumed ? now - p->resumed : 0);
+	struct tracent *e;
+
+	/* The elapsed time belongs to the PREVIOUS entry, not this one.
+	 *
+	 * A line hook fires before its line runs, so the interval between
+	 * two hooks is the cost of the earlier line. Recording it against
+	 * the arriving entry shifts the whole profile down by one, and the
+	 * shift is not harmless: it blamed `snd_una = seg.ack` for 7.5% of
+	 * a tcp task, when the cost was the reslice of the send buffer on
+	 * the line above it. A profile that names the wrong line is worse
+	 * than none, because the wrong line is usually innocent and cheap
+	 * and the reader concludes something strange is happening.
+	 *
+	 * The newest entry therefore carries zero until the next line
+	 * arrives, which is honest: nothing has happened after it yet.
+	 */
+	if (t->n > 0) {
+		struct tracent *prev = &t->ent[(t->n - 1) % t->cap];
+		unsigned long long dw = now - t->lastwall;
+		unsigned long long dc = cpu > t->lastcpu ? cpu - t->lastcpu : 0;
+
+		/* saturate rather than wrap: a proc that was away for a
+		 * second is worth seeing as "a very long time" and not as a
+		 * small number.
+		 */
+		prev->wall = dw > 0xffffffffull ? 0xffffffffu :
+		    (unsigned int)dw;
+		prev->cpu = dc > 0xffffffffull ? 0xffffffffu :
+		    (unsigned int)dc;
+	}
+
+	e = &t->ent[t->n % t->cap];
+	e->line = line;
 	e->src = (unsigned short)src;
 	e->co = (unsigned short)co;
+	e->wall = 0;
+	e->cpu = 0;
+
+	t->lastwall = now;
+	t->lastcpu = cpu;
 	t->n++;
+}
+
+/* A marker entry, for something that is not a line of Lua.
+ *
+ * A context switch is the one that matters. Without it the gap shows up
+ * as an enormous wall delta on whichever line happened to run last, and
+ * the reader has to guess whether that line was slow or the proc was
+ * simply not running. With it the discontinuity is a thing in the trace
+ * rather than an adjustment to be trusted -- and the histogram has
+ * somewhere honest to put those intervals instead of blaming a line.
+ *
+ * The name is interned in the same table as a source file, so it costs
+ * one of TRACESRC's slots and reads as a filename with line 0.
+ */
+static void
+trace_mark(struct kproc *p, const char *what)
+{
+	struct ktrace *t = p ? p->trace : 0;
+	int src;
+
+	if (!t || !t->cap)
+		return;
+
+	for (src = 0; src < t->nname; src++)
+		if (!strcmp(t->name[src], what))
+			break;
+	if (src == t->nname) {
+		if (t->nname >= TRACESRC)
+			return;		/* out of slots; a marker is not worth evicting a file */
+		snprintf(t->name[t->nname++], LUA_IDSIZE, "%s", what);
+	}
+
+	/* the source cache names a lua string pointer, and this is not
+	 * one -- clear it so the next real line re-interns rather than
+	 * matching a marker's slot.
+	 */
+	t->lastsrc = 0;
+	trace_put(p, t, 0, src, 0);
 }
 
 static void
@@ -5040,6 +5331,12 @@ run_proc(struct kproc *p)
 		unsigned long long t0 = platform_ticks();
 
 		p->resumed = t0;
+
+		/* after p->resumed, so the marker's own cpu delta is
+		 * measured against this slice rather than the last one.
+		 */
+		if (p->trace)
+			trace_mark(p, "<scheduled>");
 
 		int rc = lua_resume(p->co, 0, p->nargs, &nres);
 
