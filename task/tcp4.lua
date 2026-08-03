@@ -689,6 +689,7 @@ end
 -- the header: MAXTIMERS is 32 machine-wide, so this is not an
 -- optimisation but the only arrangement that scales past 32 conns.
 local timer
+local armed		-- the deadline `timer` was set for, or nil
 
 local function rearm()
 	local soonest
@@ -709,15 +710,42 @@ local function rearm()
 		end
 	end
 
+	-- Only re-arm to fire SOONER. A timer already set for an earlier
+	-- moment than we now need is harmless: it wakes us, we find nothing
+	-- due, and we come back through here to set the real one. A timer
+	-- set for a later moment is not harmless, so that case must re-arm.
+	--
+	-- This used to close and recreate the timer on every pass, which is
+	-- every message: two syscalls per segment for a deadline that had
+	-- usually moved by microseconds. It showed up as the second hottest
+	-- region in a line histogram of this task, which is what a count
+	-- profile is good for -- repetition nobody intended.
+	--
+	-- The delayed-acknowledgment deadline is the case that made it
+	-- pathological: it is set to now + 200ms afresh on each arrival, so
+	-- the soonest deadline moved LATER almost every time and the timer
+	-- was rebuilt for no reason at all.
+	if not soonest then
+		if timer then
+			sys.close(timer)
+			timer = nil
+			armed = nil
+		end
+		return
+	end
+
+	if timer and armed and soonest >= armed then
+		return			-- the one we have fires early enough
+	end
+
 	if timer then
 		sys.close(timer)
-		timer = nil
 	end
-	if soonest then
-		local ms = soonest - sys.uptime_ms()
 
-		timer = sys.timer(ms > 1 and ms or 1)
-	end
+	local ms = soonest - sys.uptime_ms()
+
+	timer = sys.timer(ms > 1 and ms or 1)
+	armed = timer and soonest or nil
 end
 
 -- ---- start ----
@@ -729,13 +757,20 @@ if not thread.rpc(iph, { op = "raw", proto = ip4.PROTO_TCP,
 	error("tcp: the ip task refused the tcp protocol", 0)
 end
 
+-- Built once and edited in place. Rebuilding these three tables per
+-- message allocated four tables a segment for a set that changes only
+-- when the timer does.
+local cases = { { port = sys.SELF }, { port = pktport }, nil }
+local timercase = { port = 0 }
+
 while true do
 	rearm()
 
-	local cases = { { port = sys.SELF }, { port = pktport } }
-
 	if timer then
-		cases[3] = { port = timer }
+		timercase.port = timer
+		cases[3] = timercase
+	else
+		cases[3] = nil
 	end
 
 	local which, m = thread.alt(cases)
@@ -743,6 +778,11 @@ while true do
 	if which == 2 then
 		on_packet(m)
 	elseif which == 3 then
+		-- one-shot: it has fired and its port is spent, so the next
+		-- rearm has to make a new one rather than trust this handle.
+		sys.close(timer)
+		timer = nil
+		armed = nil
 		expire(sys.uptime_ms())
 	else
 		on_request(m)
