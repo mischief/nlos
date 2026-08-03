@@ -19,7 +19,6 @@
 #include <sys/queue.h>
 
 #include "kernel.h"
-#include "net.h"
 
 #include "lua.h"
 #include "lualib.h"
@@ -143,7 +142,7 @@ enum { DEAD, READY, BLOCKED, BROKE };
  * lets it build the root namespace every other proc inherits.
  */
 enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
-    PRIV_TCP, PRIV_UDP, PRIV_P9, PRIV_ETH, PRIV_FB };
+    PRIV_P9, PRIV_ETH, PRIV_FB };
 
 /* line trace: the last N lines a proc executed, in a ring.
  *
@@ -531,38 +530,16 @@ release_inflight(const unsigned short *refs, const unsigned char *refrecv,
 static struct kport *port_new(void);
 static int right_new(struct kproc *p, struct kport *port, int recv);
 
-/* net's own wakeup: a kernel-owned port, exactly like kbdport/serport,
- * except fed by pump_net's ping rather than by bytes showing up --
- * net.c's completions are token/Event based (see kernel_new_net_event
- * below for why nothing but net.c's own poll may touch those events).
- * whoever holds netport's recv right (the net task) just does an
- * ordinary thread.recv -- same proven wakeup path as every other
- * blocking primitive here, no new primitive with its own race to get
- * wrong.
- */
-static struct kport *netport;
-static struct kport *udpport;
-
-/* the eth task's wakeup, and the only one here that is driven by a real
- * interrupt rather than by a poll.
+/* the eth task's wakeup, and the only device port here that is driven
+ * by a real interrupt rather than by a poll.
  *
- * netport above is pinged on a tick because efi's completions cannot be
- * waited on; this one is pushed only when a device has actually
- * signalled, so a machine with a quiet wire sleeps instead of asking.
- * That is the whole point of it: everything above the frame wants to
- * block until a frame arrives, and until there was something to park
- * on, every layer had to poll.
+ * Everything above the frame wants to block until a frame arrives, and
+ * until there was something to park on, every layer had to poll. This
+ * is pushed only when a device has actually signalled, so a machine
+ * with a quiet wire sleeps instead of asking.
  */
 static struct kport *ethport;
 
-/* true once net_init() has located tcp4 and the net task has been (or
- * will be) spawned; guards pump_net so it doesn't push into netport
- * forever with no reader when there's no NIC -- netport would never
- * gain a receive right in that case, so nothing would ever mark it
- * dead, and the queue would grow unbounded.
- */
-static int have_net;
-static int have_udp;
 static int have_p9;
 static int have_eth;
 static int have_fb;
@@ -799,33 +776,6 @@ expire_timers(void)
 			t->port = 0;
 		}
 	}
-}
-
-/* net.c calls this instead of BS->CreateEvent directly. */
-EFI_EVENT
-kernel_new_net_event(void)
-{
-	EFI_EVENT ev;
-
-	/* plain event, NO notify function and NOT registered in
-	 * kernel_run's own wait array. proven via test/tcp4echo (a
-	 * standalone app with no lua-os kernel at all) that a bare
-	 * CheckEvent-polled event works correctly end to end; a
-	 * notify-signal event does not, here, on this firmware -- the
-	 * notify dispatch itself appears to consume the signaled state
-	 * as a side effect of merely running, so by the time net.c's own
-	 * CheckEvent poll runs afterward the signal is already gone even
-	 * though the operation genuinely completed. same reasoning rules
-	 * out registering it in kernel_run's wait array too: kernel_run's
-	 * own WaitForEvent call would consume it there instead, before
-	 * net.c's poll ever gets a look. pump_net's netport ping (which
-	 * never touches this event's state at all) is the only wakeup
-	 * source now; net.c's own poll functions are the sole code that
-	 * ever calls CheckEvent on a tcp4 token.
-	 */
-	if (BS->CreateEvent(0, 0, 0, 0, &ev) != EFI_SUCCESS)
-		return 0;
-	return ev;
 }
 
 static struct kproc *
@@ -3636,8 +3586,6 @@ extern int luaopen_ssh_crypto_native(lua_State *L);	/* native.c */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
-extern int luaopen_los_platform_tcp(lua_State *L);	/* net.c */
-extern int luaopen_los_platform_udp(lua_State *L);	/* net.c */
 extern int luaopen_los_platform_p9(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_eth(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_fb(lua_State *L);	/* gop.c: efi only, no-op elsewhere */
@@ -4304,14 +4252,6 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		lua_pushcfunction(p->L, luaopen_los_platform_power);
 		lua_setfield(p->L, -2, "los.platform.power");
 		break;
-	case PRIV_TCP:
-		lua_pushcfunction(p->L, luaopen_los_platform_tcp);
-		lua_setfield(p->L, -2, "los.platform.tcp");
-		break;
-	case PRIV_UDP:
-		lua_pushcfunction(p->L, luaopen_los_platform_udp);
-		lua_setfield(p->L, -2, "los.platform.udp");
-		break;
 	case PRIV_P9:
 		lua_pushcfunction(p->L, luaopen_los_platform_p9);
 		lua_setfield(p->L, -2, "los.platform.p9");
@@ -4653,51 +4593,15 @@ pump_serial(void)
 	return 1;
 }
 
-/* ---- net pump ---- */
-
-/* tcp4 completion events created by kernel_new_net_event() are plain
- * (no notify function, not in kernel_run's wait array) -- the owning
- * task's own CheckEvent poll is the only thing that ever consumes
- * their signaled state. a notify function was tried first and broke:
- * the notify dispatch itself appeared to consume the event's signal
- * as a side effect of running, so a real inbound connection completed
- * fully at the wire level (confirmed via packet capture) yet the
- * later CheckEvent poll always saw "not signaled."
- *
- * pump_net is therefore the sole wakeup: nudge netport so net.lua
- * reruns checkpending() and polls its outstanding tokens directly.
- *
- * the ping is TICK-PACED and coalesced, not issued every lap. issuing
- * it unconditionally (the first version of this) kept the net task
- * permanently READY: kernel_run's `ran` flag was then set on every
- * lap, so the WaitForEvent idle path never executed at all whenever a
- * NIC was present and the machine spun at full tilt instead of
- * sleeping. coalescing alone doesn't fix that -- the task drains the
- * ping the same lap it arrives, so the next lap pushes another one.
- *
- * pacing it to the timer (see kernel_run) is what actually fixes it:
- * one ping per tick period bounds completion latency exactly the way
- * the serial pump's latency is already bounded, and between ticks
- * every proc is blocked, so the machine reaches a real firmware
- * sleep. the queue check on top means a slow task can't accumulate a
- * backlog of pings it will never need.
- */
-static void
-pump_net(void)
-{
-	if (have_net && netport && !netport->head)
-		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
-	if (have_udp && udpport && !udpport->head)
-		port_push(udpport, (const unsigned char *)"N", 1, 0, 0);
-}
+/* ---- eth pump ---- */
 
 /* the eth wakeup: push only when a device interrupt has been taken
  * since the last look.
  *
- * Coalesced by the emptiness check, like pump_net, so a burst of frames
- * is one wakeup rather than one per frame -- the task drains what is
- * there when it runs, and a second ping while the first is unread would
- * tell it nothing new.
+ * Coalesced by the emptiness check, so a burst of frames is one wakeup
+ * rather than one per frame -- the task drains what is there when it
+ * runs, and a second ping while the first is unread would tell it
+ * nothing new.
  */
 static void
 pump_eth(void)
@@ -4708,8 +4612,8 @@ pump_eth(void)
 	if (now == seen)
 		return;
 	seen = now;
-	/* "N" is a serialized nil, which is what pump_net pushes too and
-	 * what this has to be: a port carries serialized values, and the
+	/* "N" is a serialized nil, which is what this has to be: a port
+	 * carries serialized values, and the
 	 * receiving task deserializes whatever arrives. A byte chosen to
 	 * be mnemonic instead of valid ("E", the first try) reaches the
 	 * task as a corrupt message and kills it. The wakeup carries no
@@ -4762,46 +4666,31 @@ kernel_init(void)
 	kbdport = port_new();
 	serport = port_new();
 	diskport = port_new();
-	netport = port_new();
-	udpport = port_new();
 	ethport = port_new();
 	schedport = port_new();
-	if (!kbdport || !serport || !diskport || !netport || !udpport ||
-	    !schedport || !ethport)
+	if (!kbdport || !serport || !diskport || !schedport || !ethport)
 		return -1;
-	/* kernel refs: the pumps (and, for diskport/netport/schedport,
-	 * the kernel itself) hold these ports forever
+	/* kernel refs: the pumps (and, for diskport/schedport, the kernel
+	 * itself) hold these ports forever
 	 */
 	kbdport->nrights++;
 	serport->nrights++;
 	diskport->nrights++;
-	netport->nrights++;
-	udpport->nrights++;
 	ethport->nrights++;
 	schedport->nrights++;
 
 	/* soft-fail: no NIC (real hardware, or qemu -net none) just means
-	 * no net task gets spawned later, same as any other optional
+	 * no eth task gets spawned later, same as any other optional
 	 * boot-time resource.
-	 */
-	/* the nic first, because taking it decides the rest.
 	 *
 	 * platform_have_eth() on efi calls DisconnectController, which
-	 * unbinds the firmware's MNP/IP4/TCP4/UDP4 from the card -- it has
-	 * to, since SNP has one receive queue and no fan-out, so a
-	 * firmware stack left bound would eat frames we never see. Once
-	 * that has happened net_init() cannot succeed and must not be
-	 * asked to: its service bindings are gone, and any that lingered
-	 * would be a second stack competing for the same wire.
-	 *
-	 * So this is an either/or rather than a preference, and the Lua
-	 * stack wins. A machine with a NIC runs task/eth.lua, task/ip.lua
-	 * and task/tcp4.lua on both platforms; the firmware's sockets are
-	 * what is left when there is no SNP to take.
+	 * unbinds the firmware's MNP/IP4/TCP4/UDP4 from the card. It has
+	 * to: SNP has one receive queue and no fan-out, so a firmware
+	 * stack left bound would eat frames we never see. There is nothing
+	 * left to fall back TO -- one stack, task/eth.lua under
+	 * task/ip.lua under task/tcp4.lua, on every platform.
 	 */
 	have_eth = platform_have_eth();
-	have_net = !have_eth && (net_init() == 0);
-	have_udp = have_net && net_have_udp();
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
 	return 0;
@@ -4916,20 +4805,6 @@ spawn_init(const char *code, size_t len, int is_file)
 		{ .path = "/task/power.lua", .chunkname = "=power",
 		  .priv = PRIV_POWER, .devport = 0, .devrecv = 0,
 		  .what = "reset/stall", .enabled = 1, .capname = "power" },
-		/* no NIC (real hardware, or qemu -net none) is the normal
-		 * case, not a boot failure -- don't even try spawning a task
-		 * that could never listen/dial successfully. tcp and udp are
-		 * two separate exclusive tasks (see PRIV_TCP/PRIV_UDP),
-		 * soft-failing independently of each other.
-		 */
-		{ .path = "/task/tcp.lua", .chunkname = "=tcp",
-		  .priv = PRIV_TCP, .devport = netport, .devrecv = 1,
-		  .what = "networking (tcp)", .enabled = have_net,
-		  .capname = "tcp" },
-		{ .path = "/task/udp.lua", .chunkname = "=udp",
-		  .priv = PRIV_UDP, .devport = udpport, .devrecv = 1,
-		  .what = "networking (udp)", .enabled = have_udp,
-		  .capname = "udp" },
 		/* the virtio-9p mount source: the only proc with
 		 * los.platform.p9, re-serving it over a port as an
 		 * ordinary dev backend (lib/p9fs.lua) so mnt.lua can mount
@@ -4943,11 +4818,12 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_P9, .devport = 0, .devrecv = 0,
 		  .what = "the virtio-9p filesystem", .enabled = have_p9,
 		  .capname = "p9" },
-		/* raw ethernet frames, microvm only. Unlike tcp and udp
-		 * above, which re-serve a stack the firmware already
-		 * implements, this task owns a wire and nothing more --
-		 * everything from arp upwards is Lua on the far side of its
-		 * port (lib/eth.lua).
+		/* raw ethernet frames, and the bottom of the whole stack.
+		 * This task owns a wire and nothing more -- everything from
+		 * arp upwards is Lua on the far side of its port. No NIC
+		 * (real hardware, or qemu -net none) is the normal case
+		 * rather than a boot failure, so it and everything needing
+		 * it simply do not spawn.
 		 */
 		{ .path = "/task/eth.lua", .chunkname = "=eth",
 		  .priv = PRIV_ETH, .devport = ethport, .devrecv = 1,
@@ -4966,26 +4842,21 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
 		  .what = "the ipv4 stack", .enabled = have_eth,
 		  .capname = "ip", .needs = "eth" },
-		/* the dhcp client, which is what gives the stack above an
-		 * address and then keeps it. Same file the efi platform
-		 * runs from init.lua, where it is handed tcp and udp
-		 * instead -- see its header on why one right does here what
-		 * two do there.
-		 */
-		/* tcp in lua, over the ip task rather than over firmware.
-		 * Its capname is "tcp" -- the same one task/tcp.lua takes
-		 * above -- and that is the point rather than a collision:
-		 * the two are enabled by different platforms and never
-		 * both, so a client asking sys.granted() for "tcp" gets the
-		 * firmware's TCP4 on efi and this on a machine with nothing
-		 * but a NIC, and cannot tell which. lib/http.lua, lib/ssh,
-		 * task/sshd.lua and task/webterm.lua are written against
-		 * that protocol and run unchanged on both.
+		/* tcp in lua, over the ip task. Its capname is "tcp"
+		 * because that is the protocol name its clients ask for:
+		 * lib/http.lua, lib/ssh, task/sshd.lua and task/webterm.lua
+		 * are written against it and cannot tell what implements
+		 * it. The firmware's own TCP4 used to answer to the same
+		 * name on efi, which is how they came to run unchanged on
+		 * both platforms; now this is the only thing that does.
 		 */
 		{ .path = "/task/tcp4.lua", .chunkname = "=tcp4",
 		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
 		  .what = "networking (tcp)", .enabled = have_eth,
 		  .capname = "tcp", .needs = "ip", .rng = 1 },
+		/* the dhcp client, which is what gives the stack above an
+		 * address and then keeps it.
+		 */
 		{ .path = "/task/dhcpd.lua", .chunkname = "=dhcpd",
 		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
 		  .what = "dhcp", .enabled = have_eth,
@@ -5470,7 +5341,6 @@ kernel_run(void)
 	UINTN index;
 	int idle_polls = 0;
 	int tick_slow = 0;
-	int tick_fired = 0;
 
 	/* periodic timer: idle becomes a real firmware sleep (hlt)
 	 * instead of a hot stall-poll. the old "timer hangs the serial
@@ -5487,11 +5357,13 @@ kernel_run(void)
 
 		nlaps++;
 
-		/* CheckEvent consumes the signal, so this is also what
-		 * re-arms tick_fired for the periodic timer.
+		/* drain the periodic timer's signal. nothing is paced
+		 * against it any more, but a tick that fires during a busy
+		 * lap stays signaled otherwise, and the WaitForEvent below
+		 * would then return at once instead of sleeping.
 		 */
-		if (tick && BS->CheckEvent(tick) == EFI_SUCCESS)
-			tick_fired = 1;
+		if (tick)
+			BS->CheckEvent(tick);
 
 		expire_timers();
 		pump_eth();
@@ -5509,15 +5381,6 @@ kernel_run(void)
 				    TICK_SLOW_100NS);
 				tick_slow = 1;
 			}
-		}
-		/* see pump_net: paced to the tick so an idle machine can
-		 * still reach the WaitForEvent sleep below. with no timer
-		 * at all there's nothing to pace against, so fall back to
-		 * pinging every lap.
-		 */
-		if (tick_fired || !tick) {
-			pump_net();
-			tick_fired = 0;
 		}
 		/* dispatch in two phases, and the split is the whole design.
 		 *
@@ -5625,11 +5488,9 @@ kernel_run(void)
 
 		if (!ran) {
 			/* everyone blocked: sleep until a key or the tick.
-			 * tcp4 completion events are deliberately NOT in
-			 * here -- WaitForEvent would consume their signaled
-			 * state before net.c's own CheckEvent poll could see
-			 * it (see kernel_new_net_event). the tick is what
-			 * bounds how promptly a completion gets noticed.
+			 * the wire is not in here yet -- pump_eth polls the
+			 * card each lap instead, so the tick is what bounds
+			 * how promptly a frame gets noticed.
 			 */
 			nidle++;
 			if (tick) {
@@ -5638,11 +5499,6 @@ kernel_run(void)
 				waits[n++] = ST->ConIn->WaitForKey;
 				waits[n++] = tick;
 				BS->WaitForEvent(n, waits, &index);
-				/* woken by key or tick; either way the tick
-				 * may have been what fired, and WaitForEvent
-				 * consumed it. ping on the next lap.
-				 */
-				tick_fired = 1;
 			} else
 				BS->Stall(500);
 		}

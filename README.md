@@ -41,12 +41,12 @@ differently: com2 at a fixed io port on a pc, a `-device pci-serial`
 card on qemu's `virt` machines (whose one uart belongs to the firmware
 console). The scripts above add whichever is needed.
 
-The riscv64 firmware qemu ships is built without edk2's NetworkPkg — it
-publishes the virtio-net `SimpleNetworkProtocol` and nothing above it —
-and our net stack is a thin binding over the firmware's `EFI_TCP4`/
-`EFI_UDP4`. So networking is absent there and the net tests do not
-register. Build edk2's `RiscVVirtQemu` with `NETWORK_ENABLE` and
-configure `-Dfw_network=enabled` if you want them back.
+The net tests are gated on `-Dfw_network`, which defaults off for
+riscv64: the firmware qemu ships for it is built without edk2's
+NetworkPkg. It does publish the virtio-net `SimpleNetworkProtocol`,
+which is all our stack needs now that it drives the card directly, so
+that default may be more conservative than it has to be — nobody has
+tried it. Configure `-Dfw_network=enabled` to find out.
 
 Talk 9P to it from the host, with plan9port:
 

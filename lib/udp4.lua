@@ -1,12 +1,11 @@
 -- UDP over IPv4, RFC 768. Eight bytes of header and one awkward
 -- checksum.
 --
--- Named udp4 and not udp because lib/udp.lua is already the task that
--- re-serves the UEFI firmware's udp4 protocol. This is the other kind:
--- the datagram itself, for a machine with no firmware to ask. When the
--- Lua stack grows a task of its own it should present lib/udp.lua's
--- message protocol, so that lib/dhcp.lua and lib/dns.lua -- which are
--- already Lua, and already speak it -- work unchanged on both.
+-- Named udp4 and not udp because "udp" is the name of the message
+-- protocol in lib/caps.lua, which is what a client holds a right to and
+-- all it can see. This is the layer under that -- the datagram itself.
+-- task/ip.lua is what serves the one in terms of the other, so
+-- lib/dhcp.lua and lib/dns.lua reach the wire without knowing it.
 --
 -- The checksum is the awkward part, and the reason this module needs to
 -- know about addresses at all. UDP's covers a pseudo-header made of the

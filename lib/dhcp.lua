@@ -196,9 +196,9 @@ end
 --
 -- everything above is a transport-free codec, ported unchanged from
 -- ~/code/lua/init/net/dhcp.lua. this is the RFC 2131 four-way over a
--- udp socket that has NO address yet -- udp.open(port, true), see the
--- raw case in src/net.c's udp_open, which is configured exactly as
--- EDK2's own client configures its pre-lease port.
+-- udp socket that has NO address yet -- udp.open(port, true), whose
+-- raw flag is what tells task/ip.lua to accept a datagram addressed to
+-- a machine that does not have an address to be addressed at.
 --
 -- why do it ourselves at all: the firmware takes four seconds to accept
 -- an offer it already has. Ip4Config2 passes Dhcp4 no callback, so
@@ -405,8 +405,8 @@ function M.renew(udp, udph, lease, mac)
 	return nil, err or "no reply"
 end
 
--- install a lease: policy Static plus the address, which is also what
--- stops the firmware's own DHCP (see net_setaddr in src/net.c).
+-- install a lease: hand the address to the stack, which is the only
+-- thing that decides what this machine answers to.
 function M.install(tcp, lease)
 	local a, b, c, d = M.quad(lease.ip)
 	local ma, mb, mc, md = M.quad(lease.mask or "255.255.255.0")

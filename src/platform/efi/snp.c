@@ -43,7 +43,7 @@
 #include "efi.h"
 #include "lua.h"
 #include "lauxlib.h"
-#include "net.h"
+#include "snp.h"
 
 static EFI_GUID snp_guid = { 0xA19832B9, 0xAC25, 0x11D3,
 	{ 0x9A, 0x2D, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D } };

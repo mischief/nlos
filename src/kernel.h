@@ -59,6 +59,5 @@ int	kernel_current_is_boot(void);
  * and registers the event in the dynamic wait-set above. returns 0
  * (NULL) on failure, same convention as CreateEvent's out-param.
  */
-void	*kernel_new_net_event(void);
 
 #endif

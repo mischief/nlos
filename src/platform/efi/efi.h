@@ -390,10 +390,15 @@ struct EFI_SERVICE_BINDING_PROTOCOL {
 	    EFI_HANDLE ChildHandle);
 };
 
-/* ---- tcp4: async, token/Event-based -- see src/net.c and
- * kernel_new_net_event. field order/sizes follow the UEFI spec
- * exactly; these are called through function pointers, so layout is
- * abi, not style.
+/* ---- tcp4: async, token/Event-based. field order/sizes follow the
+ * UEFI spec exactly; these are called through function pointers, so
+ * layout is abi, not style.
+ *
+ * Nothing in the kernel uses these any more -- we take the card from
+ * the firmware and run our own stack over SNP. They are kept for
+ * test/tcp4echo, the standalone diagnostic that established how EFI
+ * completion events behave (see docs/uefi-notes.md), which is the only
+ * thing left that speaks TCP4.
  */
 
 typedef struct {

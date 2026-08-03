@@ -1,10 +1,11 @@
 -- DNS over the Lua stack: one question, one answer.
 --
 -- lib/dns.lua is the wire format and task/dns.lua is the service that
--- serves it over the firmware's udp4; this is the third piece, the same
--- codec driven over lib/inet.lua for a machine with no firmware to ask.
--- The split is the point: a fix to the parser reaches both transports,
--- and neither can quietly disagree with the other about the protocol.
+-- serves it over a udp capability; this is the third piece, the same
+-- codec driven over lib/inet.lua directly, for code that holds frames
+-- rather than a capability. The split is the point: a fix to the parser
+-- reaches both transports, and neither can quietly disagree with the
+-- other about the protocol.
 --
 -- No cache and no search list. A cache belongs in whatever task ends up
 -- owning resolution for the machine, where it can be shared and aged; a

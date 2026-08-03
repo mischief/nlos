@@ -3,10 +3,10 @@
 -- Query building and response parsing, in the string.pack/unpack style
 -- lib/ninep.lua uses. Extracted from task/dns.lua, which had it as
 -- local functions and could not share them: the same codec now serves
--- that task, which rides the firmware's udp4 through a capability, and
--- lib/dnsc.lua, which rides the Lua stack over raw frames. One
--- understanding of the protocol, two transports -- the same shape
--- lib/dhcp.lua and lib/dhcpc.lua already have.
+-- that task, which rides a udp capability, and lib/dnsc.lua, which
+-- rides lib/inet.lua over raw frames. One understanding of the
+-- protocol, two transports -- the same shape lib/dhcp.lua and
+-- lib/dhcpc.lua already have.
 --
 -- Everything here is pure. That is what makes it checkable against an
 -- implementation that is not ours, which for a codec is the only test

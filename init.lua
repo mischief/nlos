@@ -465,7 +465,7 @@ local repl_worker_src = [[
 
 	-- resolve: a real function (needs an argument), not a bare
 	-- magic word like ps/halt/stats. plain nil when there's no dns
-	-- capability (no NIC, no udp4 driver, or dns task never spawned).
+	-- capability (no NIC, no ip task, or dns task never spawned).
 	_G.resolve = dns and dns.resolve or nil
 
 	-- see lib/ps.lua for why the effect needs parens and the bare

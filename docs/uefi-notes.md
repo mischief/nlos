@@ -138,8 +138,12 @@ works, and idle CPU drops to approximately zero.
 `poll()` says "this fd is readable now, go read whatever is there". An
 EFI `Receive()` issues the read up front and signals its own Event only
 when *that specific operation* finishes. This is closer to IOCP or
-io_uring than to POSIX poll, and it dictates the two-phase
-`start`/`poll` shape of every long-running operation in `src/net.c`.
+io_uring than to POSIX poll, and it dictated the two-phase
+`start`/`poll` shape of every long-running operation in the TCP4/UDP4
+driver we used to have. That driver is gone — we drive the card through
+SNP and run our own stack above it — but the model is a property of
+UEFI, not of that code, and it applies to anything else here that ever
+waits on a firmware Event.
 
 ### The signal is consumed by whoever observes it first
 
@@ -150,8 +154,9 @@ the owning `CheckEvent` poll can see it, so an operation that genuinely
 completed at the wire level — confirmed by packet capture — looks
 forever pending to the code waiting on it.
 
-Both mistakes were made and both produced the same symptom. See the
-comment on `kernel_new_net_event()` in `src/kernel.c`.
+Both mistakes were made and both produced the same symptom. This is
+the first thing to check before putting any firmware Event into
+`kernel_run`'s wait set — `snp->WaitForPacket`, for instance.
 
 `test/tcp4echo/` exists to answer exactly this class of question: a bare
 EFI application with no kernel, scheduler, Lua, malloc or libc under it,
@@ -162,13 +167,14 @@ the kernel is precisely what does not work.
 
 ### Consequences for the wakeup path
 
-Because nothing but `src/net.c` may touch those events, the only wakeup
-signal is `pump_net`'s ping on a kernel-owned port, and that ping is
-paced to the periodic tick. Pinging every scheduler lap instead keeps
-the owning task permanently READY, which means `kernel_run`'s idle path
-never executes at all and the machine spins at full tilt with a NIC
-present. Measured with every proc parked over a 10 second window:
-9.8s CPU unpaced versus 2.1s paced.
+When the only wakeup signal is a kernel-owned port being pinged, the
+ping has to be paced to the periodic tick. Pinging every scheduler lap
+instead keeps the owning task permanently READY, which means
+`kernel_run`'s idle path never executes at all and the machine spins at
+full tilt with a NIC present. Measured with every proc parked over a 10
+second window: 9.8s CPU unpaced versus 2.1s paced. `pump_eth` avoids it
+a different way — it pushes only when the card reports a frame — but
+the trap is the same one.
 
 Coalescing the ping is *not* sufficient on its own — the task drains it
 on the same lap it arrives, so the next lap simply pushes another.

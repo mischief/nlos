@@ -493,13 +493,14 @@ at thousands of timers, and `MAXPROCS` is 32.
 - **The firmware having a NIC driver does not mean it has a network
   stack.** qemu's `edk2-riscv-code.fd` publishes the virtio-net
   `SimpleNetworkProtocol` — one handle, the card is right there — and
-  nothing above it: no MNP, ARP, IP4, DHCP4, TCP4 or UDP4. `src/net.c`
-  binds the firmware's `EFI_TCP4`/`EFI_UDP4` and nothing else, so
-  networking is simply absent on that firmware and every net test fails
-  for a reason that is not in this tree. It is a NetworkPkg build
-  option, not an arch limitation; `-Dfw_network=` is the switch, and
+  nothing above it: no MNP, ARP, IP4, DHCP4, TCP4 or UDP4. When our net
+  stack was a binding over `EFI_TCP4`/`EFI_UDP4` that made networking
+  simply absent on that firmware, and every net test failed for a
+  reason that was not in this tree. `-Dfw_network=` is the switch, and
   `test_efiprobe` is what told us. Probe the layer you need, not the
-  device under it.
+  device under it — and note that the layer we need has since moved
+  down to SNP itself, so the riscv64 default is now untested rather
+  than known.
 - **Bundling unrelated resources into one privileged task** ("conio" =
   console-write plus reset/stall) is the same mistake it was fixing.
 - **`Configure()` does not dial.** With `ActiveFlag=1` it only prepares

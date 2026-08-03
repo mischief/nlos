@@ -3,12 +3,10 @@
 -- no I/O -- lib/tcb.lua is one connection, task/tcp4.lua is the proc
 -- that owns them all.
 --
--- Named tcp4 and not tcp for the same reason as lib/udp4.lua:
--- task/tcp.lua is already the task re-serving the UEFI firmware's own
--- TCP4 protocol. This is the other kind, the segment itself, for a
--- machine with no firmware to ask. What the two have in common is the
--- message protocol in lib/caps.lua, which is the point -- a client
--- holding a right cannot tell which one is underneath it.
+-- Named tcp4 and not tcp for the same reason as lib/udp4.lua: "tcp" is
+-- the name of the message protocol in lib/caps.lua, which is what a
+-- client holds a right to and all it can see. This is the layer under
+-- that -- the segment itself.
 --
 -- Splitting the codec out from the state machine is not tidiness. The
 -- state machine is the part that cannot be tested against a real peer:

@@ -158,7 +158,7 @@ add_project_arguments(freestanding_args, language: 'c')
 inc = include_directories('include', 'src', 'lua', 'src/platform' / platform)
 
 # dirs.c/kernel.c/linit.c are firmware-blind (the platform seam is
-# platform.h + fs.h/net.h/efi.h, all resolved from the per-platform
+# platform.h + fs.h/efi.h, all resolved from the per-platform
 # include dir above); everything else is the platform's own.
 kernel_src = files(
   'src/native.c',
@@ -178,7 +178,6 @@ if platform == 'efi'
     'src/platform/efi/los.c',
     'src/platform/efi/main.c',
     'src/platform/efi/malloc.c',
-    'src/platform/efi/net.c',
     'src/platform/efi/rng.c',
     'src/platform/efi/snp.c',
   )
@@ -190,7 +189,6 @@ else
     'src/platform/microvm/fs.c',
     'src/platform/microvm/main.c',
     'src/platform/microvm/malloc.c',
-    'src/platform/microvm/net.c',
   )
 
   # what the microvm C loader can open before any namespace exists (see
@@ -517,9 +515,7 @@ lua_payload = files(
   'task/srvd.lua',
   'lib/srvfs.lua',
   'lib/tap.lua',
-  'task/tcp.lua',
   'lib/thread.lua',
-  'task/udp.lua',
   'lib/webterm.lua',
   'task/wire.lua',
 )
@@ -625,11 +621,11 @@ if have_hostutil
   hostenv = archenv + {'HOSTUTIL_SO': hostutil.full_path()}
 endif
 
-# does the firmware have a tcp/ip stack? our net stack is a thin
-# binding over the firmware's own EFI_TCP4/EFI_UDP4, so without one
-# there is nothing under us to drive and every net test fails for a
-# reason that has nothing to do with this code. see meson.options; the
-# per-arch default below is what the stock blobs actually ship.
+# does the firmware ship a network stack? this gates the net tests, and
+# it dates from when ours was a binding over the firmware's own
+# EFI_TCP4/EFI_UDP4. We drive the card through SNP now, which the stock
+# riscv64 blob does publish, so the per-arch default below may be more
+# conservative than it needs to be -- untested. see meson.options.
 fw_network = get_option('fw_network')
 if fw_network.auto()
   fw_network = arch != 'riscv64'
@@ -684,8 +680,8 @@ if fw_network
     )
   endif
 else
-  warning('firmware has no EFI_TCP4/EFI_UDP4: skipping the net tests. ' +
-          '-Dfw_network=enabled if yours does.')
+  warning('firmware is built without NetworkPkg: skipping the net tests. ' +
+          '-Dfw_network=enabled to try them anyway.')
 endif
 
 # ---- benchmarks ----

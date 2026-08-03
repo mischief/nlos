@@ -1,12 +1,11 @@
 -- DHCP over the Lua stack: DISCOVER, OFFER, REQUEST, ACK (RFC 2131).
 --
 -- The packet codec is lib/dhcp.lua's, unchanged and unforked. That
--- module was written against lib/udp.lua -- the task that re-serves the
--- UEFI firmware's udp4 -- but only its acquire() and renew() ever touch
--- a capability; encode and decode are pure, and this drives them over
--- lib/inet.lua instead. Two transports, one understanding of the
--- protocol, which is the whole reason to keep a codec free of the thing
--- that carries it.
+-- module was written against a udp capability, but only its acquire()
+-- and renew() ever touch one; encode and decode are pure, and this
+-- drives them over lib/inet.lua instead. Two transports, one
+-- understanding of the protocol, which is the whole reason to keep a
+-- codec free of the thing that carries it.
 --
 -- What is genuinely different here is that there is no firmware to have
 -- configured anything first. This runs with no address: the client

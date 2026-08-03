@@ -12,7 +12,7 @@
 #include "lua.h"
 #include "lauxlib.h"
 
-#include "net.h"
+#include "snp.h"
 #include "platform.h"
 
 extern void console_write(const char *s, unsigned long n);
