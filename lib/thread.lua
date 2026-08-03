@@ -27,12 +27,74 @@ local thread = {
 	_n = 0,
 }
 
+-- ---- being cut in half ----
+--
+-- The count hook can stop a coroutine between ANY two instructions, and
+-- unlike a yield that is not a place the code chose. Where it lands
+-- decides whether it matters:
+--
+--   main    stopped mid-update yields the whole PROC to the kernel.
+--           Nothing else in this proc runs until it is resumed, and it
+--           resumes exactly where it was. Harmless.
+--   thread  stopped mid-update returns control to run(), which carries
+--           on -- requeues it, picks someone else, and lets that
+--           someone observe, or write over, a half-finished update.
+--
+-- So every multi-step update a THREAD makes to state another thread
+-- reads is a critical section, and this is how they are marked. It is
+-- not a lock: nothing is owned, nothing blocks, and two threads can
+-- never be inside one at the same time anyway, because there is no
+-- moment at which two coroutines are running. All it says is "do not
+-- let anyone else look until I am finished", and run() honours it by
+-- resuming this coroutine, and only this coroutine, until it clears.
+--
+-- Two rules come with it, and they are the usual two:
+--
+--   1. NEVER park inside one. A thread that yields voluntarily with
+--      _crit set would be resumed forever by a scheduler waiting for
+--      it to finish. Everything below leaves the section before it
+--      parks.
+--   2. A thread that dies inside one must clear it, or run() spins on
+--      a corpse. resume_one does that.
+--
+-- Depth-counted because the channel operations call each other --
+-- send() -> nbsend() -> _wakercv() -- and only the outermost may
+-- release. _crit is set before the depth is touched so that a cut
+-- between the two is already covered.
+local critdepth = 0
+
+local function critenter()
+	local co, ismain = coroutine.running()
+
+	if ismain then
+		return		-- main cannot be cut in a way that matters
+	end
+	thread._crit = co
+	critdepth = critdepth + 1
+end
+
+local function critleave()
+	if critdepth > 0 then
+		critdepth = critdepth - 1
+		if critdepth == 0 then
+			thread._crit = nil
+		end
+	end
+end
+
+-- the ring needs no section: threads never touch it. They stage a
+-- single store below and run() -- main -- is the only thing that ever
+-- pushes, which is why a hole cannot be created here at all.
 local function push(co)
 	local t = thread._qtail + 1
 
 	thread._qtail = t
 	thread._runq[t] = co
 end
+
+-- wake[co] = true is ONE store with no index that can go stale, and no
+-- intermediate state: the coroutine is staged or it is not.
+local wake = {}
 
 local function pop()
 	local h = thread._qhead
@@ -86,7 +148,7 @@ local nonrecv = {}
 function thread._ready(co)
 	nonrecv[co] = nil
 	thread._parked[co] = nil
-	push(co)
+	wake[co] = true
 end
 
 -- hand `msg`, taken from port `h`, to a thread waiting in recv() on it.
@@ -163,6 +225,7 @@ local function parkon(port, ports, chan, isrecv)
 		    recv = false, mail = false, hasmail = false }
 		parkrec[co] = r
 	end
+	critenter()
 	r.port, r.ports, r.chan, r.recv = port, ports, chan, isrecv or false
 	if isrecv then
 		local q = portq[port]
@@ -178,7 +241,13 @@ local function parkon(port, ports, chan, isrecv)
 		nonrecv[co] = true
 	end
 	thread._parked[co] = r
+	critleave()
 	coroutine.yield()
+	-- a wake that landed between _parked and the yield above cleared
+	-- _parked before it was set, so clear it here too: a RUNNING
+	-- coroutine must never be marked parked, or run() will decline to
+	-- requeue it the next time the hook cuts it.
+	thread._parked[co] = nil
 end
 
 -- the table form, for any caller outside this file.
@@ -201,7 +270,7 @@ function thread.spawn(fn, ...)
 	-- -- the very constant 4e5a1c2 removed for being unknowable ahead
 	-- of time. test/boot/test_preempt.lua pins the property.
 	thread._n = thread._n + 1
-	push(co)
+	wake[co] = true
 	return co
 end
 
@@ -311,9 +380,67 @@ local function wakehungup()
 	return woke
 end
 
+-- the one place a thread is resumed, so the rules about what a yield
+-- meant live together rather than being restated.
+local function resume_one(co)
+	thread._current = co
+	local ok, err = coroutine.resume(co)
+	thread._current = nil
+	if coroutine.status(co) == "dead" then
+		thread._n = thread._n - 1
+		thread._parked[co] = nil
+		if thread._crit == co then
+			-- died mid-update. nothing can repair the structure
+			-- it was halfway through, but leaving _crit set
+			-- would have run() resume a corpse forever.
+			thread._crit = nil
+			critdepth = 0
+		end
+		if not ok then
+			print("thread error: " .. tostring(err))
+		end
+	elseif thread._crit == co then
+		-- cut inside a critical section: NOT requeued and nothing
+		-- else runs. run() comes straight back to it, which is the
+		-- whole mechanism -- the half-finished update is never
+		-- observed, and run() never allocates a ring slot that this
+		-- coroutine already believes is its own.
+		return
+	elseif not thread._parked[co] then
+		-- preempted by its count hook, or yielded to stay runnable.
+		-- either way it goes back on the queue, and the proc keeps
+		-- running.
+		--
+		-- no yield to the kernel here: when the quantum is what
+		-- ended the thread's turn, preempt_hook has already armed
+		-- this state to trip on its next instruction, so the proc is
+		-- about to be descheduled from inside this loop whether or
+		-- not lua asks.
+		push(co)
+	end
+end
+
 -- run until all threads finish. this is the proc's event loop.
 function thread.run()
 	while thread._n > 0 do
+		-- a thread stopped mid-update finishes before anything else
+		-- in this proc runs -- including the delivery sweep below,
+		-- which readies threads and would push onto a ring the cut
+		-- thread may itself be in the middle of.
+		if thread._crit then
+			resume_one(thread._crit)
+			goto lap
+		end
+
+		-- staged wakeups enter the ring here, in main. Must be
+		-- before every "is anything runnable" test below, or a
+		-- staged thread reads as nothing to run.
+		if next(wake) ~= nil then
+			for c in pairs(wake) do
+				wake[c] = nil
+				push(c)
+			end
+		end
 
 		-- deliver to parked threads while a sibling is still
 		-- runnable.
@@ -361,31 +488,7 @@ function thread.run()
 		end
 		local co = pop()
 		if co then
-			thread._current = co
-			local ok, err = coroutine.resume(co)
-			thread._current = nil
-			if coroutine.status(co) == "dead" then
-				thread._n = thread._n - 1
-				thread._parked[co] = nil
-				if not ok then
-					print("thread error: " .. tostring(err))
-				end
-			elseif not thread._parked[co] then
-				-- preempted by its count hook, or yielded to
-				-- stay runnable. either way it goes back on
-				-- the queue.
-				-- preempted by its count hook, or yielded to
-				-- stay runnable. either way it goes back on
-				-- the queue, and the proc keeps running.
-				--
-				-- no yield to the kernel here: when the
-				-- quantum is what ended the thread's turn,
-				-- preempt_hook has already armed this state
-				-- to trip on its next instruction, so the
-				-- proc is about to be descheduled from
-				-- inside this loop whether or not lua asks.
-				push(co)
-			end
+			resume_one(co)
 		else
 			-- everyone parked. gather ports, sleep in kernel.
 			if gatherports() == 0 then
@@ -447,6 +550,7 @@ function thread.run()
 				end
 			end
 		end
+		::lap::
 	end
 end
 
@@ -499,12 +603,17 @@ local function chancreate(cap)
 end
 
 function Channel:_wakercv()
+	critenter()
 	while #self.recvq > 0 do
 		local w = table.remove(self.recvq, 1)
+
+		-- off the queue and not yet readied is the state that must
+		-- not be left behind: nothing would ever wake it again.
 		if w.co then
 			thread._ready(w.co)
 		end
 	end
+	critleave()
 end
 
 -- no more values will ever be sent. wakes everyone parked on this
@@ -515,6 +624,8 @@ function Channel:close()
 		return
 	end
 	self.closed = true
+
+	critenter()
 
 	-- a parked SENDER's value was never taken and now never will be,
 	-- so it is dropped and the sender raises. a DEPOSITED rendezvous
@@ -531,23 +642,28 @@ function Channel:close()
 	end
 	self.sendq = keep
 	self:_wakercv()
+	critleave()
 end
 
 function Channel:nbsend(v)
 	if self.closed then
 		error("send on closed channel", 2)
 	end
+	critenter()
 	if #self.buf < self.cap then
 		self.buf[#self.buf + 1] = v
 		self:_wakercv()
+		critleave()
 		return true
 	end
 	if self.cap == 0 and #self.recvq > 0 then
 		-- rendezvous with a parked receiver: deposit the value
 		self.sendq[#self.sendq + 1] = { v = v, done = true }
 		self:_wakercv()
+		critleave()
 		return true
 	end
+	critleave()
 	return false
 end
 
@@ -556,8 +672,11 @@ function Channel:send(v)
 		return
 	end
 	local r = { v = v, co = coroutine.running(), done = false }
+
+	critenter()
 	self.sendq[#self.sendq + 1] = r
 	self:_wakercv()
+	critleave()
 	repeat
 		parkon(false, false, self)
 		-- close() dropped us from sendq and woke us; the value was
@@ -569,6 +688,7 @@ function Channel:send(v)
 end
 
 function Channel:nbrecv()
+	critenter()
 	if #self.buf > 0 then
 		local v = table.remove(self.buf, 1)
 		local s = table.remove(self.sendq, 1)
@@ -579,6 +699,7 @@ function Channel:nbrecv()
 				thread._ready(s.co)
 			end
 		end
+		critleave()
 		return true, v
 	end
 	local s = table.remove(self.sendq, 1)
@@ -587,6 +708,7 @@ function Channel:nbrecv()
 		if s.co then
 			thread._ready(s.co)
 		end
+		critleave()
 		return true, s.v
 	end
 	-- drained. only now does the close become visible -- the third
@@ -594,26 +716,47 @@ function Channel:nbrecv()
 	-- nil", which a rendezvous channel can genuinely do. alt() takes
 	-- two values and is unaffected.
 	if self.closed then
+		critleave()
 		return true, nil, true
 	end
+	critleave()
 	return false
 end
 
 function Channel:recv()
 	while true do
+		-- looking and then registering is ONE step. A sender that
+		-- runs between them finds a recvq we are not in yet, wakes
+		-- nobody, and leaves its value in the buffer -- and we would
+		-- then park on a value that had already arrived. That is the
+		-- race that hung the 9p client, and it is why the section
+		-- covers the nbrecv as well as the append.
+		--
+		-- It ends before parkon: parking inside a section would have
+		-- run() resume us forever waiting for us to finish.
+		critenter()
 		local ok, v, closed = self:nbrecv()
+
 		if ok then
+			critleave()
 			return v, not closed
 		end
+
 		local w = { co = coroutine.running() }
+
 		self.recvq[#self.recvq + 1] = w
+		critleave()
+
 		parkon(false, false, self)
+
+		critenter()
 		for i, q in ipairs(self.recvq) do
 			if q == w then
 				table.remove(self.recvq, i)
 				break
 			end
 		end
+		critleave()
 	end
 end
 
@@ -673,6 +816,13 @@ local function alt(cases)
 	local n = #cases
 
 	while true do
+		-- polling every case and then registering on the ones that
+		-- had nothing is ONE step, exactly as in Channel:recv: a
+		-- sender that runs in between finds queues we are not on
+		-- yet, wakes nobody, and we park on a value that arrived.
+		-- Every early return below leaves the section first.
+		critenter()
+
 		-- a counted loop rather than ipairs: this scan runs on every
 		-- alt whether or not anything parks, so the per-case iterator
 		-- call is pure overhead on the one path that is always taken.
@@ -682,15 +832,18 @@ local function alt(cases)
 			if cs.port then
 				local ok, m = sys.tryrecv(cs.port)
 				if ok then
+					critleave()
 					return i, m
 				end
 			elseif cs.op == "recv" then
 				local ok, v = cs.c:nbrecv()
 				if ok then
+					critleave()
 					return i, v
 				end
 			else
 				if cs.c:nbsend(cs.v) then
+					critleave()
 					return i
 				end
 			end
@@ -744,7 +897,9 @@ local function alt(cases)
 			for i = np + 1, #plist do
 				plist[i] = nil
 			end
+			critleave()
 			parkon(false, plist, false)
+			critenter()
 			for i = 1, nm do
 				local q = marks[i]
 				local w = waiters[i]
@@ -757,6 +912,7 @@ local function alt(cases)
 				end
 				marks[i] = false
 			end
+			critleave()
 		else
 			-- top-level caller (no thread.run() driving us, e.g.
 			-- an exclusive task's main chunk calling alt()
@@ -775,6 +931,7 @@ local function alt(cases)
 			-- channel cases make no sense here either way (recvq
 			-- is purely in-process), so only port cases are
 			-- valid.
+			critleave()
 			local plist = {}
 			for _, cs in ipairs(cases) do
 				if not cs.port then
