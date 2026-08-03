@@ -302,8 +302,23 @@ function thread.spawn(fn, ...)
 	-- overrode the kernel's calibrated period with a hardcoded 25000
 	-- -- the very constant 4e5a1c2 removed for being unknowable ahead
 	-- of time. test/boot/test_preempt.lua pins the property.
+	--
+	-- the count is a read-modify-write on state every thread shares, and
+	-- spawn is callable from a thread, so it needs the section: two
+	-- threads cut between the read and the store lose an increment, _n
+	-- undercounts, and run()'s loop ends while the threads it forgot are
+	-- still queued or parked. they are not deadlocked and nothing is
+	-- raised -- the proc simply leaves them where they stand and its
+	-- caller is told the work is done.
+	--
+	-- wake[co] needs nothing beyond being inside it: one store, no index
+	-- that can go stale. resume_one's matching decrement needs nothing at
+	-- all, since it runs only in main, where a cut yields to the kernel
+	-- and resumes in place.
+	critenter()
 	thread._n = thread._n + 1
 	wake[co] = true
+	critleave()
 	return co
 end
 
