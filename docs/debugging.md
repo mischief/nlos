@@ -12,6 +12,11 @@ actually answers. The scheduler rules these sit on top of are
 | where is this proc now | `stack pid`, `/proc/n/stack` |
 | how did it get there | `trace pid`, `/proc/n/trace` |
 
+Three more arrived with the profiling work — what it costs, which proc
+owns the time, and how often it calls into the kernel. They are at the
+end, under "Which tool answers which question", together with the order
+to reach for them in.
+
 A stack shows the calls that are still *open*. After a fault that is
 the shape of the failure rather than the route to it: the call that
 returned just before everything went wrong is precisely the one it
@@ -213,6 +218,60 @@ It also has a limit worth stating: a syscall is not a Lua line. The
 timer churn above was found because the histogram pointed at the scan
 around it and a person then read the code. Nothing in the ring showed
 `sys.close` at all.
+
+## Counting: `sys.syscalls`
+
+`sys.syscalls(pid)` returns `name -> count` for the `los.sys` calls a
+proc has made, and only the ones it has made, so a zero is an absence
+rather than a row of noise. Always on: 38 counters is 152 bytes beside a
+whole `lua_State`, and `procv` holds pointers, so it costs per live proc
+rather than per `MAXPROCS`.
+
+It exists because **a syscall is not a Lua line.** `sys.tracehist` found
+a task rebuilding a kernel timer on every message only as "the scan
+around it" — nothing in the ring showed `sys.close` at all, and finding
+it meant reading the code from a hint. A count says `timer: 2 per
+message` outright.
+
+Counted by a wrapper installed at registration rather than by an
+increment inside each call, so a syscall added to `kapi` later is
+counted without anyone remembering to. `kapi`'s array order is the
+index and `kapi[i].name` gives the name back, so there is nothing to
+keep in sync.
+
+Counts and not cycles, deliberately. Two TSC reads per syscall is real
+overhead on the cheapest ones, and the line profile already prices the
+line a syscall sits on. What it cannot say is how many calls that line
+made and which — which is all this adds.
+
+Read it as a rate against whatever the proc is doing, not as a total.
+From the tcp task, per data segment:
+
+    tryrecv     6.36    the scheduler's port scan in alt
+    uptime_ms   2.79    one per pass of the message loop
+    send        2.67    the segment and its acknowledgment
+    close       0.52    reply rights
+    timer       0.03    was 2 per message before it was fixed
+
+## Which tool answers which question
+
+| question | tool |
+| --- | --- |
+| what is on the machine | `ps`, `sys.wchan` |
+| where is this proc now | `stack pid` |
+| how did it get there | `trace pid` |
+| what does it run, and how often | `tracehist pid`, read by `count` |
+| what does it *cost* | `tracehist pid`, read by `cpu` |
+| where does it block | `tracehist pid`, `wall` minus `cpu` |
+| which proc owns the time | `sys.pidstat(pid).cputime`, differenced |
+| how much is the kernel's | wall clock minus the sum of those |
+| how often does it call in | `sys.syscalls(pid)` |
+
+The last three are the ones that are easy to reach for in the wrong
+order. Narrow to a proc with `cputime` first — it is exact, costs
+nothing, and it is the only one that can see the kernel's own share,
+since a line hook fires only inside Lua. Then profile inside whichever
+proc dominates.
 
 ## Where to find it
 
