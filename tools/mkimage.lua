@@ -27,7 +27,28 @@ local qout = quote(out)
 -- is left over.
 local PART_START = 2048
 local PART_SECTORS = 32 * 44 * 64
-local SECTORS = PART_START + PART_SECTORS + 34	-- + room for the backup GPT
+
+-- an optional second partition holding a prebuilt gefs volume (built by
+-- tools/mkgefs.lua and pointed at by $GEFS_IMG), sized to the image so
+-- the partition is exactly the volume. It sits after the ESP: the
+-- firmware boots from the ESP and a block driver reads this one (see
+-- src/platform/efi/drivers.c). Absent the env var this is the old
+-- single-ESP disk, unchanged.
+local GEFS_IMG = os.getenv("GEFS_IMG")
+local GEFS_START = PART_START + PART_SECTORS
+local gefs_sectors = 0
+
+if GEFS_IMG then
+	local f = assert(io.open(GEFS_IMG, "rb"))
+	local sz = f:seek("end")
+
+	f:close()
+	gefs_sectors = (sz + 511) // 512
+end
+
+local last = GEFS_IMG and (GEFS_START + gefs_sectors) or
+    (PART_START + PART_SECTORS)
+local SECTORS = last + 34	-- + room for the backup GPT
 
 os.remove(out)
 
@@ -47,9 +68,15 @@ run("truncate -s " .. (SECTORS * 512) .. " " .. qout)
 -- sfdisk does the same job in about 15ms, is util-linux rather than a
 -- separate gptfdisk package, and --no-reread --no-tell-kernel say
 -- explicitly that there is no kernel here to tell.
-run("printf %s " ..
-    quote("label: gpt\nstart=" .. PART_START .. ", size=" ..
-        PART_SECTORS .. ", type=uefi, name=\"EFI\"\n") ..
+local layout = "label: gpt\nstart=" .. PART_START .. ", size=" ..
+    PART_SECTORS .. ", type=uefi, name=\"EFI\"\n"
+
+if GEFS_IMG then
+	layout = layout .. "start=" .. GEFS_START .. ", size=" ..
+	    gefs_sectors .. ", type=linux, name=\"gefs\"\n"
+end
+
+run("printf %s " .. quote(layout) ..
     " | " .. quote(SFDISK) .. " --no-reread --no-tell-kernel -q " ..
     qout .. " >/dev/null")
 
@@ -97,4 +124,13 @@ for i = 3, #arg do
 
 	mkdirs(dest)
 	run("mcopy -o -i " .. qdrive .. " " .. quote(f) .. " ::" .. dest)
+end
+
+-- drop the gefs volume into its partition, after the ESP is done with.
+-- conv=notrunc keeps the disk and the backup GPT sfdisk wrote at its end;
+-- sparse keeps the volume's holes holes rather than materialising zeroes.
+if GEFS_IMG then
+	run("dd if=" .. quote(GEFS_IMG) .. " of=" .. qout ..
+	    " bs=512 seek=" .. GEFS_START ..
+	    " conv=notrunc,sparse status=none")
 end

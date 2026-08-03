@@ -561,12 +561,23 @@ lua_payload = files(
   'task/wire.lua',
 )
 
-# 48M gpt disk with one esp, assembled with sgdisk + mtools (no root)
+# a prebuilt gefs volume with one file, for the disk's second partition.
+# Its size is the partition's size (mkimage reads it), so it is picked
+# here rather than fixed in two places.
+gefs_img = custom_target('gefs.img',
+  output: 'gefs.img',
+  command: [lua_interp, files('tools/mkgefs.lua'), '@OUTPUT@'],
+)
+
+# gpt disk: an esp, and a gefs partition after it holding gefs_img.
+# Assembled with sfdisk + mtools + dd, no root. $GEFS_IMG is what makes
+# mkimage add the second partition.
 luaos_img = custom_target('luaos.img',
   input: [luaos_efi] + lua_payload,
   output: 'luaos.img',
   command: [lua_interp, files('tools/mkimage.lua'), '@OUTPUT@', '@INPUT@'],
-  env: {'BOOT_EFI': boot_efi},
+  env: {'BOOT_EFI': boot_efi, 'GEFS_IMG': gefs_img.full_path()},
+  depends: gefs_img,
   build_by_default: true,
 )
 
