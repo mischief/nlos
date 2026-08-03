@@ -60,12 +60,23 @@ tap.ok(#tr <= 64, "and the ring never exceeds its size (" .. #tr .. ")")
 
 local sourced, lined = true, true
 
+-- markers are entries too, and deliberately not lines: trace_mark writes
+-- a context switch as source "<scheduled>" with line 0, so the gap it
+-- covers has somewhere honest to sit instead of inflating whichever line
+-- ran last. Anything else with no line number is the bug this asserts.
+local function marker(e)
+	return type(e.source) == "string" and e.source:sub(1, 1) == "<" and
+	    e.line == 0
+end
+
 for _, e in ipairs(tr) do
 	if type(e.source) ~= "string" or e.source == "?" then sourced = false end
-	if type(e.line) ~= "number" or e.line <= 0 then lined = false end
+	if not marker(e) and (type(e.line) ~= "number" or e.line <= 0) then
+		lined = false
+	end
 end
 tap.ok(sourced, "every entry names its source")
-tap.ok(lined, "every entry has a line number")
+tap.ok(lined, "every entry is a line, or a marker that says it is not")
 
 -- the ring is a ring: it holds the LAST n lines, not the first
 local seen = {}
