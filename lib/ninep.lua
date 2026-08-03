@@ -203,6 +203,12 @@ function M.ropen(tag, qid, iounit)
 	return frame(M.Ropen, tag, putqid(qid) .. spack("<I4", iounit or 0))
 end
 
+-- Rcreate is Ropen's body under a different type: the new file's qid and
+-- the iounit for writing it.
+function M.rcreate(tag, qid, iounit)
+	return frame(M.Rcreate, tag, putqid(qid) .. spack("<I4", iounit or 0))
+end
+
 function M.rread(tag, data)
 	return frame(M.Rread, tag, spack("<I4", #data) .. data)
 end

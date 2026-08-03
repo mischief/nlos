@@ -78,5 +78,16 @@ ok(rpc(p9.twalk(12, 0, 12, { "nope" })).type == p9.Rerror,
 -- an unknown fid is refused
 ok(rpc(p9.tstat(13, 99)).type == p9.Rerror, "an unknown fid is refused")
 
+-- create a new file, write to it, read it back through a fresh walk
+rpc(p9.tclone(20, 0, 20))
+ok(rpc(p9.tcreate(21, 20, "new.txt", 0x1b6, 1)).type == p9.Rcreate,
+    "Tcreate makes a new file")
+ok(rpc(p9.twrite(22, 20, 0, "written via 9p")).type == p9.Rwrite,
+    "Twrite to the created file")
+rpc(p9.twalk(23, 0, 23, { "new.txt" }))
+rpc(p9.topen(24, 23, 0))
+ok(rpc(p9.tread(25, 23, 0, 100)).data == "written via 9p",
+    "the created file reads back")
+
 io.write("1.." .. count .. "\n")
 if failed > 0 then os.exit(1) end

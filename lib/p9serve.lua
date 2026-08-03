@@ -180,6 +180,26 @@ function M.responder(backend)
 			local q = qidof(f.path, ok2 and st or { dir = f.dir })
 			return p9.ropen(m.tag, q, msize - 24)
 
+		elseif m.type == p9.Tcreate then
+			-- create names a new file in the directory the fid holds
+			-- and leaves the fid pointing at it, open. The backend's
+			-- create makes files only (gefsfs does), so DMDIR in the
+			-- perm is not honoured -- a directory create waits on the
+			-- dev interface growing one (see dev.lua and gefsfs).
+			local f = fids[m.fid]
+			if not f then return p9.rerror(m.tag, dev.Ebadfid) end
+			local lo = m.mode & 3
+			local mode = lo == 0 and "r" or lo == 1 and "w" or "rw"
+			local ok, nh = pcall(backend.create, f.h, m.name, mode)
+			if not ok then return err(m.tag, nh) end
+			pcall(backend.clunk, f.h)	-- the directory handle is spent
+			f.h = nh
+			f.path = childpath(f.path, m.name)
+			f.dir = false
+			local ok2, st = pcall(backend.stat, nh)
+			local q = qidof(f.path, ok2 and st or { dir = false })
+			return p9.rcreate(m.tag, q, msize - 24)
+
 		elseif m.type == p9.Tread then
 			local f = fids[m.fid]
 			if not f then return p9.rerror(m.tag, dev.Ebadfid) end
