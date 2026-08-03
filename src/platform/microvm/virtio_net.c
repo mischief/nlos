@@ -68,8 +68,27 @@ static unsigned net_hdr_len = NET_HDR_LEN_LEGACY;
 #define FRAME_MAX 1514
 #define BUF_SIZE  2048
 
-#define NRX 16
-#define NTX 8
+/* How many frames may be in flight in each direction.
+ *
+ * OpenBSD's if_vio and 9front's ethervirtio10 both take whatever the
+ * device advertises rather than choosing a number -- vq_num and qsize
+ * respectively -- and virtio_queue_init already clamps a request down to
+ * the device's maximum, so these are an upper bound on our own static
+ * allocation rather than a negotiation. qemu offers 256.
+ *
+ * The old NTX of 8 was measurably too few. virtio_net_send fails when
+ * every transmit buffer is still in flight, the ip task counts that as
+ * frames_out_fail, and a 32MB download over a real LAN produced 252 of
+ * them -- each one a segment TCP then had to retransmit, and, since
+ * congestion control landed, a halved window as well. The count rose
+ * with throughput, which is what identified it: the same transfer at
+ * half the speed lost six.
+ *
+ * At BUF_SIZE each, 64 and 64 is under 200KB of the arena, which is the
+ * trade being made.
+ */
+#define NRX 64
+#define NTX 64
 
 static struct virtio_dev netdev;
 static int net_ready;
