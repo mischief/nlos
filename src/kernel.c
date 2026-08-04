@@ -485,6 +485,20 @@ static struct lock ipclock = LOCK_INIT;
 static struct cpu *ipcowner;
 static int ipcdepth;
 
+/* the contract the inner helpers assert. Named after OpenBSD's
+ * MUTEX_ASSERT_LOCKED (mutex(9)), and live on every platform: lock.h
+ * keeps the held flag even where NCPU is 1, so efi, aarch64 and
+ * riscv64 -- which run this same file -- check it too.
+ */
+#define IPC_ASSERT_LOCKED() do {					\
+	if (!holding(&ipclock)) {					\
+		char b_[96];						\
+		snprintf(b_, sizeof b_, "ipclock not held: %s",		\
+		    __func__);						\
+		platform_abort(b_);					\
+	}								\
+} while (0)
+
 static void
 ipclock_enter(void)
 {
@@ -643,6 +657,11 @@ static void
 release_inflight(const unsigned short *refs, const unsigned char *refrecv,
     int n)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: msg_free, port_push, port_push_owned,
+	 * port_send_from_lua, and api_spawn via release_inflight_locked.
+	 */
+	IPC_ASSERT_LOCKED();
 	for (int i = 0; i < n; i++) {
 		struct kport *port = portv[refs[i]];
 
@@ -1011,6 +1030,11 @@ port_flush(struct kport *port)
 static void
 port_unref(struct kport *port)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: expire_timers, port_new, reap_dead_timers,
+	 * release_inflight, right_drop.
+	 */
+	IPC_ASSERT_LOCKED();
 	if (--port->nrights <= 0) {
 		/* flush first: it can unref other ports, and one of those
 		 * could be this one's last reference from a queued message
@@ -1080,6 +1104,12 @@ right_slot_grow(struct kproc *p, int h)
 static int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: api_newport, api_sendright, api_timer, api_spawn,
+	 * deserialize, grant_named, proc_new, release_inflight,
+	 * spawn_driver.
+	 */
+	IPC_ASSERT_LOCKED();
 	/* start where a free slot was last seen. without it a proc holding
 	 * five hundred rights rescans all of them for each new one, which is
 	 * quadratic for exactly the case a large MAXRIGHTS is meant to allow
@@ -1111,6 +1141,10 @@ right_new(struct kproc *p, struct kport *port, int recv)
 static void
 right_drop(struct right *r)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: api_close, proc_detach, proc_new.
+	 */
+	IPC_ASSERT_LOCKED();
 	struct kport *port = r->port;
 
 	r->used = 0;
@@ -1516,6 +1550,11 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 static int
 wait_add(struct kproc *p, struct kport *port, int send)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: the five blocking calls, all of which hold it
+	 * across the test that decided to sleep.
+	 */
+	IPC_ASSERT_LOCKED();
 	struct waiter *w;
 
 	if (!p->w0used) {
@@ -1540,6 +1579,10 @@ wait_add(struct kproc *p, struct kport *port, int send)
 static void
 wait_clear(struct kproc *p)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: alt, proc_detach, wake_receivers, wake_senders.
+	 */
+	IPC_ASSERT_LOCKED();
 	while (!SLIST_EMPTY(&p->waiters)) {
 		struct waiter *w = SLIST_FIRST(&p->waiters);
 
@@ -1555,6 +1598,11 @@ wait_clear(struct kproc *p)
 static void
 wake_receivers(struct kport *port)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: port_push_owned and port_unref. Touches another
+	 * proc's waiter list and its cpu's run queue.
+	 */
+	IPC_ASSERT_LOCKED();
 	struct waiter *w, *n;
 
 	TAILQ_FOREACH_SAFE(w, &port->waiters, pq, n) {
@@ -1587,6 +1635,11 @@ wake_receivers(struct kport *port)
 static void
 wake_senders(struct kport *port)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: port_pop_to_lua and port_unref. Same reach as
+	 * wake_receivers.
+	 */
+	IPC_ASSERT_LOCKED();
 	struct waiter *w, *n;
 
 	TAILQ_FOREACH_SAFE(w, &port->waiters, pq, n) {
@@ -1616,6 +1669,10 @@ static int
 port_push_owned(struct kport *port, unsigned char *data, size_t len,
     const unsigned short *refs, const unsigned char *refrecv, int nrefs)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: port_push, notify_exit, port_send_from_lua.
+	 */
+	IPC_ASSERT_LOCKED();
 	if (port->dead) {
 		port->ndrop_dead++;
 		release_inflight(refs, refrecv, nrefs);
@@ -1665,6 +1722,10 @@ static int
 port_push(struct kport *port, const unsigned char *data, size_t len,
     const unsigned short *refs, int nrefs)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: any outer ipc entry point.
+	 */
+	IPC_ASSERT_LOCKED();
 	unsigned char *copy = malloc(len);
 
 	if (!copy) {
@@ -1981,7 +2042,13 @@ api_send(lua_State *L)
 	return 1;
 }
 
-/* a proc about to block must hold no waits, because a proc that is
+/* BLOCKED_TWICE_MSG, and why the test that raises it is spelled out at
+ * each of its four call sites now rather than living in a helper: the
+ * test reads shared state and has to sit inside the same region as the
+ * wait_add it guards, while the raise has to sit outside it, because
+ * luaL_error longjmps. One helper cannot be in both places.
+ *
+ * A proc about to block must hold no waits, because a proc that is
  * blocked is not running and so cannot ask to block again. Reaching
  * here with waits already attached means the last block never actually
  * stopped this proc, and the only way that happens is a lua_yield that
@@ -2004,14 +2071,8 @@ api_send(lua_State *L)
  * there are no waits at all, which is both stronger and O(1).
  * api_altblock is not guarded because it clears any waits up front.
  */
-static int
-blocking_twice(lua_State *L, struct kproc *p)
-{
-	if (SLIST_EMPTY(&p->waiters))
-		return 0;
-	return luaL_error(L, "already blocked (sys.block from a coroutine? "
-	    "use los.thread's park)");
-}
+#define BLOCKED_TWICE_MSG "already blocked (sys.block from a coroutine? " \
+	"use los.thread's park)"
 
 /* block until this port might have room for a message of `need` bytes,
  * the send-side api_block. `need` is optional and defaults to zero,
@@ -2112,8 +2173,7 @@ api_sendblock(lua_State *L)
 	case BADRIGHT:
 		return luaL_error(L, "bad right");
 	case TWICE:
-		return luaL_error(L, "already blocked (sys.block from a "
-		    "coroutine? use los.thread's park)");
+		return luaL_error(L, BLOCKED_TWICE_MSG);
 	case NOWAIT:
 		return luaL_error(L, "out of waiters");
 	case DONTSLEEP:
@@ -2255,8 +2315,7 @@ api_block(lua_State *L)
 	case HAVEMSG:
 		return 0;
 	case TWICE:
-		return luaL_error(L, "already blocked (sys.block from a "
-		    "coroutine? use los.thread's park)");
+		return luaL_error(L, BLOCKED_TWICE_MSG);
 	case NOWAIT:
 		return luaL_error(L, "out of waiters");
 	case OK:
@@ -2373,16 +2432,30 @@ static int
 api_call(lua_State *L)
 {
 	struct kproc *p = self(L);
+	lua_Integer sh = luaL_checkinteger(L, 1);	/* raises; before */
+	lua_Integer rh = luaL_checkinteger(L, 3);	/* raises; before */
+	struct right *r, *rr;
+	int twice;
 
-	struct right *r = right_get(p, luaL_checkinteger(L, 1));
-	lua_Integer rh = luaL_checkinteger(L, 3);
-	struct right *rr = right_get(p, rh);
+	luaL_checkany(L, 2);				/* raises; before */
+
+	/* before the region, because it raises. sys.call blocks, so the
+	 * same guard applies as to sys.block -- and it is checked before
+	 * the send below, so a call that cannot wait also does not deliver
+	 * a request whose answer nobody will collect.
+	 */
+	nopark(L, p);
+
+	ipclock_enter();
+	r = right_get(p, sh);
+	rr = right_get(p, rh);
+	twice = !SLIST_EMPTY(&p->waiters);
+	ipclock_leave();
 
 	if (!r)
 		return luaL_error(L, "call: bad right");
 	if (!rr || !rr->recv)
 		return luaL_error(L, "call: bad reply right");
-	luaL_checkany(L, 2);
 	/* before the send, not after: refusing a call we cannot finish is
 	 * better than delivering a request whose answer nobody will collect.
 	 *
@@ -2392,10 +2465,13 @@ api_call(lua_State *L)
 	 * is not is worse than one that always refuses. los.thread's call()
 	 * is the shape for a thread, and picks this only at the top level.
 	 */
-	nopark(L, p);
-	blocking_twice(L, p);
+	if (twice)
+		return luaL_error(L, BLOCKED_TWICE_MSG);
 
+	ipclock_enter();
 	int rc = port_send_from_lua(L, p, r, 2);
+
+	ipclock_leave();
 
 	if (rc == SEND_UNSERIALIZABLE)
 		return luaL_error(L, "unserializable message");
@@ -3047,9 +3123,15 @@ api_spawn(lua_State *L)
 	if (!lua_isnoneornil(L, 2)) {
 		lua_getfield(L, 2, "arg");
 		if (!lua_isnil(L, -1)) {
-			if (serialize(L, -1, &argw, p, 0)) {
+			int bad;
+
+			ipclock_enter();
+			bad = serialize(L, -1, &argw, p, 0);
+			if (bad)
 				release_inflight(argw.refs, argw.refrecv,
 				    argw.nrefs);
+			ipclock_leave();
+			if (bad) {
 				free(argw.p);
 				lua_pop(L, 1);
 				return luaL_error(L, "spawn: unserializable arg");
@@ -3103,8 +3185,12 @@ api_spawn(lua_State *L)
 	 */
 	if (have_arg) {
 		size_t off = 0;
+		int bad;
 
-		if (deserialize(child->co, argw.p, argw.len, &off, child, 0)) {
+		ipclock_enter();
+		bad = deserialize(child->co, argw.p, argw.len, &off, child, 0);
+		ipclock_leave();
+		if (bad) {
 			/* a partial deserialize may have left values on co's
 			 * stack under the chunk's feet, and rights already
 			 * minted into the child. the proc is unusable; kill
@@ -6375,6 +6461,10 @@ rq_take_any(struct rqset *set)
 static void
 make_ready(struct kproc *p)
 {
+	/* caller holds ipclock.
+	 * CONTEXT: proc_new, wake_receivers, wake_senders.
+	 */
+	IPC_ASSERT_LOCKED();
 	struct rqset *keep = p->onq;
 
 	if (keep)
