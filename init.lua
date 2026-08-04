@@ -288,9 +288,10 @@ end
 -- gefssrv serves the filesystem, the chain test/boot/microvm_gefspart
 -- drives. Guarded: a machine with no disk, no gefs partition, or a volume
 -- that will not open stays up without /n/gefs rather than failing to boot.
+local gefs_mounted = false
+
 if caps_of.blk then
-	local gh
-	local ok = pcall(function()
+	gefs_mounted = pcall(function()
 		local _, ph = proc.spawn(
 		    assert(rootns:readfile("/task/partsrv.lua")),
 		    { name = "part", ns = nsdesc })
@@ -301,27 +302,13 @@ if caps_of.blk then
 		local _, g = proc.spawn(
 		    assert(rootns:readfile("/task/gefssrv.lua")),
 		    { name = "gefs", ns = nsdesc })
-		gh = g
 
 		sys.send(g, { blk = { __right = ph }, label = "main" })
 		rootns:mount("/n/gefs", require("mnt").new(g), "mnt",
 		    { port = { __right = g } })
 	end)
-	log.log(ok and "gefs mounted at /n/gefs" or
+	log.log(gefs_mounted and "gefs mounted at /n/gefs" or
 	    "gefs: no volume mounted this boot")
-
-	-- and export it over 9P on the styx port, so `9fs host` or the 9p
-	-- tool can mount the same volume from off the machine. Needs a NIC;
-	-- exportfs of any other backend is the same task, a different right.
-	if ok and gh and caps_of.tcp then
-		local _, xh = proc.spawn(
-		    assert(rootns:readfile("/task/9pexport.lua")),
-		    { name = "9pexport", ns = nsdesc })
-
-		sys.send(xh, { net = { __right = caps_of.tcp },
-		    mount = { __right = gh }, port = 564 })
-		log.log("gefs exported over 9p on tcp/564")
-	end
 end
 
 -- RE-taken, because neither /net nor /srv existed when the first
@@ -329,6 +316,21 @@ end
 -- SERVES /net, and a namespace containing a mount to itself is a loop
 -- waiting to be walked. /n/gefs is taken in here too.
 nsdesc = rootns:describe()
+
+-- export the gefs subtree over 9P on the styx port, so `9fs host` or the
+-- 9p tool can reach the same volume from off the machine. It is spawned
+-- with the namespace above (which now holds /n/gefs) and told to export
+-- that subtree: exactly `exportfs -r /n/gefs`, and a different root or a
+-- differently-built namespace exports anything else the same way.
+if gefs_mounted and caps_of.tcp then
+	local _, xh = proc.spawn(
+	    assert(rootns:readfile("/task/9pexport.lua")),
+	    { name = "9pexport", ns = nsdesc })
+
+	sys.send(xh, { net = { __right = caps_of.tcp },
+	    root = "/n/gefs", port = 564 })
+	log.log("gefs exported over 9p on tcp/564")
+end
 
 if has_tcp then
 	sys.send(tcp9srv, { net = { __right = caps_of.tcp } })

@@ -1,16 +1,18 @@
--- 9pexport: serve a dev backend over 9P on TCP -- plan 9's exportfs.
+-- 9pexport: serve a subtree of this proc's namespace over 9P -- plan 9's
+-- exportfs, `exportfs -r root` and all.
 --
--- What it exports is whatever dev server it is handed a right to: gefssrv
--- for the gefs volume, or (once lib/nsfs exists) a whole namespace. The
--- choice is the spawner's, not this file's -- exportfs exports a
--- namespace and does not care what is in it.
+-- It exports a namespace, not a filesystem: what is in the namespace is
+-- the spawner's to build (mount gefs alone, or gefs beside everything
+-- else, or a hand-assembled tree), and root chooses which subtree to
+-- serve. So "just gefs" is this proc's namespace rooted at /n/gefs, and
+-- "everything" is the same proc rooted at /, with no code here caring
+-- which -- exactly plan 9's split between constructing a namespace and
+-- exporting it.
 --
--- protocol on the self port, one of:
---   { net={__right=}, mount={__right=<a dev server>}, port=564 }
---       export that one server (gefssrv for the gefs volume).
---   { net={__right=}, wholens=true, port=564 }
---       export this proc's whole namespace, /proc and /srv and every
---       mount together -- the fully general exportfs.
+-- protocol on the self port: { net = {__right=}, root = "/n/gefs",
+-- port = 564 }. root defaults to "/". The proc is spawned with the
+-- namespace to export (ns = <a description>), so its /lib is there to
+-- load this code from while a rooted export hands out none of it.
 --
 -- One connection at a time, served to completion before the next accept,
 -- the same shape init's 9p-over-tcp server has and for the same reason:
@@ -19,16 +21,14 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
-local mnt = require("mnt")
 local ns = require("ns")
 local nsfs = require("nsfs")
 local p9serve = require("p9serve")
 
 local m0 = thread.recv(sys.SELF)
 local net = m0.net.__right
-local backend = m0.wholens and nsfs.new(ns.current())
-    or mnt.new(m0.mount.__right)
 local port = m0.port or 564
+local backend = nsfs.new(ns.current(), m0.root or "/")
 
 -- the tcp task's request/reply protocol, as init's tcp9srv uses it
 local replyport = sys.newport()
