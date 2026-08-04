@@ -455,6 +455,59 @@ static int prochigh;
  */
 static struct lock ipclock = LOCK_INIT;
 
+/* the ipc lock is recursive, and it is not a shortcut.
+ *
+ * Measured, by making re-entry abort and naming both ends:
+ *
+ *	PANIC: ipclock re-entered: api_close inside api_tryrecv
+ *
+ * api_tryrecv holds the lock across port_pop_to_lua, which
+ * deserializes the message, which allocates, which can run the
+ * collector, and a __gc handler here is arbitrary lua -- clunking a
+ * handle is the whole reason those handlers exist, so it comes back
+ * through api_close. Six tests hung on exactly this and nothing else.
+ *
+ * There is no "acquire around the shared work only" that avoids it,
+ * because the shared work IS the allocation: a message cannot be
+ * delivered to lua without building lua objects. The alternatives are
+ * stopping the collector across every ipc call, or forbidding
+ * finalizers from touching handles, and both are worse than a depth
+ * counter.
+ *
+ * The usual objection to a recursive lock is that it hides a contract
+ * bug rather than reporting it. That holds, and the answer here is
+ * that this re-entry is neither a bug nor avoidable. It cost a full
+ * bisect to establish, twice: the first attempt at this wrapper failed
+ * to convert the unlock sites -- \block does not match inside "unlock"
+ * -- so ipcowner stayed set, every later acquire was a no-op, and the
+ * suite passed by not locking at all.
+ */
+static struct cpu *ipcowner;
+static int ipcdepth;
+
+static void
+ipclock_enter(void)
+{
+	struct cpu *me = cpu_self();
+
+	if (ipcowner == me) {
+		ipcdepth++;
+		return;
+	}
+	lock(&ipclock);
+	ipcowner = me;
+	ipcdepth = 1;
+}
+
+static void
+ipclock_leave(void)
+{
+	if (--ipcdepth > 0)
+		return;
+	ipcowner = 0;
+	unlock(&ipclock);
+}
+
 static struct kport *portv[MAXPORTS];
 static int porthigh;		/* one past the highest slot ever used */
 static struct kport *kbdport;
@@ -844,7 +897,7 @@ reap_dead_timers(void)
 static void
 expire_timers(void)
 {
-	lock(&ipclock);
+	ipclock_enter();
 	unsigned long long now = uptime_ms();
 
 	reap_dead_timers();	/* cancelled ones, before looking at deadlines */
@@ -859,7 +912,7 @@ expire_timers(void)
 			t->port = 0;
 		}
 	}
-	unlock(&ipclock);
+	ipclock_leave();
 }
 
 static struct kproc *
@@ -1881,13 +1934,19 @@ static int
 api_send(lua_State *L)
 {
 	struct kproc *p = self(L);
-	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+	lua_Integer h = luaL_checkinteger(L, 1);	/* raises; before */
+	struct right *r;
+	int rc;
+
+	luaL_checkany(L, 2);				/* raises; before */
+
+	ipclock_enter();
+	r = right_get(p, h);
+	rc = r ? port_send_from_lua(L, p, r, 2) : 0;
+	ipclock_leave();
 
 	if (!r)
 		return luaL_error(L, "bad right");
-	luaL_checkany(L, 2);
-
-	int rc = port_send_from_lua(L, p, r, 2);
 
 	if (rc == SEND_UNSERIALIZABLE)
 		return luaL_error(L, "unserializable message");
@@ -2085,18 +2144,31 @@ static int
 api_tryrecv(lua_State *L)
 {
 	struct kproc *p = self(L);
-	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+	lua_Integer h = luaL_checkinteger(L, 1);	/* raises; before */
+	struct right *r;
+	int empty = 0, rc = 0;
+
+	ipclock_enter();
+	r = right_get(p, h);
+	if (r && r->recv) {
+		empty = !r->port->head;
+		if (!empty) {
+			lua_pushboolean(L, 1);
+			rc = port_pop_to_lua(L, p, r->port);
+		}
+	}
+	ipclock_leave();
 
 	if (!r || !r->recv)
 		return luaL_error(L, "bad receive right");
-	if (!r->port->head) {
+	if (empty) {
 		lua_pushboolean(L, 0);
 		return 1;
 	}
-	lua_pushboolean(L, 1);
-
-	int rc = port_pop_to_lua(L, p, r->port);
-
+	/* the reason is carried out of the region rather than raised
+	 * inside it: popfail raises, and a raise under the lock leaves it
+	 * held.
+	 */
 	if (rc)
 		return popfail(L, p, rc);
 	return 2;
@@ -2614,11 +2686,11 @@ api_newport(lua_State *L)
 	 * outside it: luaL_error longjmps, so nothing that raises may
 	 * run while this is held.
 	 */
-	lock(&ipclock);
+	ipclock_enter();
 	port = port_new();
 	if (port)
 		h = right_new(p, port, 1);
-	unlock(&ipclock);
+	ipclock_leave();
 
 	if (!port)
 		return luaL_error(L, "out of ports");
@@ -2690,11 +2762,11 @@ api_sendright(lua_State *L)
 	struct right *r;
 	int h = -1;
 
-	lock(&ipclock);
+	ipclock_enter();
 	r = right_get(p, arg);
 	if (r)
 		h = right_new(p, r->port, 0);
-	unlock(&ipclock);
+	ipclock_leave();
 
 	if (!r)
 		return luaL_error(L, "bad right");
@@ -2702,6 +2774,20 @@ api_sendright(lua_State *L)
 		return luaL_error(L, "out of rights");
 	lua_pushinteger(L, h);
 	return 1;
+}
+
+/* release_inflight for the one caller that is not already holding the
+ * lock. api_spawn interleaves five of these with luaL_error, and a
+ * region wide enough to cover them all would have to survive a
+ * longjmp; one acquisition per call cannot.
+ */
+static void
+release_inflight_locked(const unsigned short *refs, const unsigned char *refrecv,
+    int nrefs)
+{
+	ipclock_enter();
+	release_inflight(refs, refrecv, nrefs);
+	ipclock_leave();
 }
 
 static int
@@ -2802,22 +2888,27 @@ api_spawn(lua_State *L)
 	 * sequence (spawn_cons/spawn_wire/spawn_power) sets a real priv
 	 * value, never reachable from lua.
 	 */
+	/* the region ends before the error paths below: they call
+	 * release_inflight_locked, which takes this lock itself.
+	 */
+	ipclock_enter();
 	int pid = proc_new(code, n, chunkname, 0, reductions, mem_limit,
 	    PRIV_NONE);
+	struct kproc *child = pid >= 0 ? find_proc(pid) : 0;
+
+	ipclock_leave();
 
 	if (is_dumped)
 		free(buf.data);	/* proc_new/luaL_loadbuffer copies, doesn't keep it */
 
 	if (pid < 0) {
-		release_inflight(argw.refs, argw.refrecv, argw.nrefs);
+		release_inflight_locked(argw.refs, argw.refrecv, argw.nrefs);
 		free(argw.p);
 		return luaL_error(L, "spawn failed");
 	}
 
-	struct kproc *child = find_proc(pid);
-
 	if (!child) {
-		release_inflight(argw.refs, argw.refrecv, argw.nrefs);
+		release_inflight_locked(argw.refs, argw.refrecv, argw.nrefs);
 		free(argw.p);
 		return luaL_error(L, "spawn: child vanished");
 	}
@@ -2843,7 +2934,7 @@ api_spawn(lua_State *L)
 			 * minted into the child. the proc is unusable; kill
 			 * it rather than start it half-built.
 			 */
-			release_inflight(argw.refs, argw.refrecv, argw.nrefs);
+			release_inflight_locked(argw.refs, argw.refrecv, argw.nrefs);
 			free(argw.p);
 			proc_kill(child, "spawn: could not deliver arg");
 			return luaL_error(L, "spawn: could not deliver arg");
@@ -2853,11 +2944,14 @@ api_spawn(lua_State *L)
 		 * its own from right_new, exactly as a delivered message
 		 * releases its refs once received.
 		 */
-		release_inflight(argw.refs, argw.refrecv, argw.nrefs);
+		release_inflight_locked(argw.refs, argw.refrecv, argw.nrefs);
 		free(argw.p);
 	}
 	/* hand parent a send right on the child's self port */
+	ipclock_enter();
 	int h = right_new(p, child->rights[0].port, 0);
+
+	ipclock_leave();
 
 	if (h < 0)
 		return luaL_error(L, "out of rights");
@@ -2884,7 +2978,9 @@ api_monitor(lua_State *L)
 	if (target && target->status == BROKE)
 		target = 0;
 	if (!target) {
+		ipclock_enter();
 		notify_exit(p, pid, "noproc", -1, 0, 0);
+		ipclock_leave();
 		lua_pushboolean(L, 1);
 		return 1;
 	}
@@ -2910,11 +3006,11 @@ api_close(lua_State *L)
 	lua_Integer h = luaL_checkinteger(L, 1);	/* raises; before the lock */
 	struct right *r;
 
-	lock(&ipclock);
+	ipclock_enter();
 	r = right_get(p, h);
 	if (r && h != 0)
 		right_drop(r);
-	unlock(&ipclock);
+	ipclock_leave();
 
 	if (!r)
 		return luaL_error(L, "bad right");
@@ -3962,7 +4058,7 @@ api_timer(lua_State *L)
 	 * the failure paths all return 0 to lua rather than erroring.
 	 * So one region covers the whole of it.
 	 */
-	lock(&ipclock);
+	ipclock_enter();
 	for (int tries = 0; tries < 2 && slot < 0; tries++) {
 		for (int i = 0; i < MAXTIMERS; i++)
 			if (!timers[i].port) {
@@ -3979,14 +4075,14 @@ api_timer(lua_State *L)
 			reap_dead_timers();
 	}
 	if (slot < 0) {
-		unlock(&ipclock);
+		ipclock_leave();
 		return 0;
 	}
 
 	struct kport *port = port_new();
 
 	if (!port) {
-		unlock(&ipclock);
+		ipclock_leave();
 		return 0;
 	}
 
@@ -3994,13 +4090,13 @@ api_timer(lua_State *L)
 
 	if (h < 0) {
 		port->used = 0;
-		unlock(&ipclock);
+		ipclock_leave();
 		return 0;
 	}
 	port->nrights++;	/* the timer table's own ref */
 	timers[slot].port = port;
 	timers[slot].due_ms = uptime_ms() + (unsigned long long)ms;
-	unlock(&ipclock);
+	ipclock_leave();
 	lua_pushinteger(L, h);
 	return 1;
 }
@@ -5148,6 +5244,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
  * already being sent, rather than a second notification mechanism.
  */
 static void
+/* caller holds ipclock: reached from proc_detach, which has it, and
+ * from the noproc path above, which takes it. Locking here as well is
+ * what hung every test that tears a proc down with a watcher
+ * attached -- which is every test, at poweroff.
+ */
 notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
     const char *exitmsg, int broke)
 {
@@ -5209,9 +5310,7 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 		    wput(&w, "broke", 5) || wbyte(&w, 'T'))
 			goto fail;
 	}
-	lock(&ipclock);
 	port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0);
-	unlock(&ipclock);
 	return;
 fail:
 	free(w.p);
@@ -5299,9 +5398,19 @@ proc_kill(struct kproc *p, const char *why)
 	char reason[224];
 
 	proc_logdeath(p, why, reason, sizeof reason);
+
+	/* the lock goes around proc_detach and not around
+	 * proc_freestate, which calls lua_close, which runs this proc's
+	 * __gc finalizers -- arbitrary lua, and the reason those
+	 * finalizers exist is to clunk handles, so they reach api_close
+	 * and would take this lock while we held it.
+	 */
 	proc_freestate(p);
+
+	ipclock_enter();
 	proc_detach(p, why, reason, 0);
 	p->status = DEAD;
+	ipclock_leave();
 }
 
 /* how many corpses may be held at once.
@@ -5331,6 +5440,8 @@ proc_break(struct kproc *p, const char *why)
 	int n = 0;
 
 	proc_logdeath(p, why, reason, sizeof reason);
+
+	ipclock_enter();
 	proc_detach(p, why, reason, 1);
 	p->status = BROKE;
 	p->brokeseq = ++brokeseq;
@@ -5344,6 +5455,10 @@ proc_break(struct kproc *p, const char *why)
 		if (!oldest || q->brokeseq < oldest->brokeseq)
 			oldest = q;
 	}
+	ipclock_leave();
+	/* outside: proc_reap frees the corpse's state, which is
+	 * lua_close again and the same finalizer problem.
+	 */
 	if (n > MAXBROKE && oldest)
 		proc_reap(oldest);
 }
@@ -5377,9 +5492,9 @@ pump_serial(void)
 	/* serialized string message: tag, u32 len, bytes */
 	buf[0] = 'S';
 	memcpy(buf + 1, &n, 4);
-	lock(&ipclock);
+	ipclock_enter();
 	port_push(serport, buf, 5 + n, 0, 0);
-	unlock(&ipclock);
+	ipclock_leave();
 	return 1;
 }
 
@@ -5410,10 +5525,10 @@ pump_eth(void)
 	 * information anyway -- the frames are still in the device's
 	 * queue, and this says only "ask again".
 	 */
-	lock(&ipclock);
+	ipclock_enter();
 	if (have_eth && ethport && !ethport->head)
 		port_push(ethport, (const unsigned char *)"N", 1, 0, 0);
-	unlock(&ipclock);
+	ipclock_leave();
 }
 
 /* ---- keyboard pump ---- */
@@ -5475,7 +5590,7 @@ pump_devkbd(void)
 static void
 pump_keyboard(void)
 {
-	lock(&ipclock);
+	ipclock_enter();
 	EFI_INPUT_KEY key;
 
 	while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_SUCCESS) {
@@ -5510,7 +5625,7 @@ pump_keyboard(void)
 		msg[5] = (unsigned char)key.UnicodeChar;
 		port_push(kbdport, msg, sizeof msg, 0, 0);
 	}
-	unlock(&ipclock);
+	ipclock_leave();
 }
 
 /* ---- kernel ---- */
@@ -5521,12 +5636,17 @@ kernel_init(void)
 	calibrate_reductions();	/* kernel_clock_init already ran in efi_main */
 	rq_init();		/* before any proc exists to be dispatched */
 	uart_init();
+	/* boot, before any proc exists: the lock is uncontended and is
+	 * taken for the contract rather than for the contention.
+	 */
+	ipclock_enter();
 	kbdport = port_new();
 	devkbdport = platform_have_kbd() ? port_new() : 0;
 	serport = port_new();
 	diskport = port_new();
 	ethport = port_new();
 	schedport = port_new();
+	ipclock_leave();
 	if (!kbdport || !serport || !diskport || !schedport || !ethport)
 		return -1;
 	/* kernel refs: the pumps (and, for diskport/schedport, the kernel
@@ -5571,6 +5691,9 @@ static int
 spawn_driver(const char *path, const char *chunkname, int priv,
     struct kport *devport, int devrecv, const char *what)
 {
+	/* caller holds ipclock: spawn_init calls this in a loop and
+	 * holds it across all of them.
+	 */
 	int pid = proc_new(path, 0, chunkname, 1, 0, 0, priv);
 	char buf[160];
 
@@ -5772,6 +5895,13 @@ spawn_init(const char *code, size_t len, int is_file)
 	int pids[sizeof drivers / sizeof drivers[0]];
 	size_t i;
 
+	/* one region over the whole of boot's proc and port creation.
+	 * spawn_driver, proc_new and grant_named are all caller-holds,
+	 * and holding it across the lot is free here: nothing else is
+	 * running yet, and the alternative is acquiring and releasing
+	 * once per driver for no benefit.
+	 */
+	ipclock_enter();
 	for (i = 0; i < ndrivers; i++) {
 		if (!drivers[i].enabled) {
 			char skip[160];
@@ -5803,8 +5933,10 @@ spawn_init(const char *code, size_t len, int is_file)
 
 	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_BOOT);
 
-	if (pid < 0)
+	if (pid < 0) {
+		ipclock_leave();
 		return pid;
+	}
 
 	struct kproc *p = find_proc(pid);
 
@@ -5860,6 +5992,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		grant_named(p, "kbd", devkbdport, 1);
 	grant_named(p, "disk", diskport, 0);
 	grant_named(p, "sched", schedport, 0);
+	ipclock_leave();
 	return pid;
 }
 

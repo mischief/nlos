@@ -49,9 +49,10 @@ static size_t arena_bytes;
  * proc's life. If that stops being true the answer is a per-cpu cache
  * of chunks in front of this, not a cleverer lock.
  *
- * It is the first lock in lock.h's order, which follows from the same
- * fact: everything above it may need memory, so it must be possible to
- * take this while holding anything else, and never the reverse.
+ * It is last in lock.h's order, which is the same fact stated as a
+ * rule: everything above may need memory while holding its own lock,
+ * so this must be takeable while holding anything else, and nothing
+ * may be taken while holding this.
  */
 static struct lock pmmlock = LOCK_INIT;
 

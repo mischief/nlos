@@ -23,11 +23,19 @@
  *
  * LOCK ORDER, and it is the whole discipline:
  *
- *	pmm  ->  port  ->  cpu runq
+ *	ipc  ->  cpu runq  ->  pmm
  *
- * Take them left to right, release in any order. Two locks of the same
- * class are taken in ascending address order, which today happens in
- * exactly one place: an idle cpu stealing from another cpu's runq.
+ * Take them left to right, release in any order. pmm is last because
+ * it is a leaf: nothing is ever acquired while holding it, and almost
+ * everything needs memory while holding something else -- port_push
+ * allocates a message body with the ipc lock held, and proc_new builds
+ * a whole lua_State that way. An earlier version of this comment put
+ * pmm first while describing it as innermost, which are opposite
+ * claims; innermost is the true one.
+ *
+ * Two locks of the same class are taken in ascending cpu index, which
+ * today happens in exactly one place: an idle cpu stealing from
+ * another cpu's runq.
  * Nothing takes two port locks -- the multi-port paths (alt) hold one
  * at a time and re-validate, which is what altrecv_take's comment
  * ("the two passes below are one critical section ... when a lock
