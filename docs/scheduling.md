@@ -4,6 +4,13 @@ Two schedulers, stacked, sharing one preemption mechanism. The rules
 that follow are the ones the code cannot state locally, because they
 are properties of how the two levels meet.
 
+The short version: the kernel preempts **procs**, so no proc can hold
+the machine. `thread.run` does not preempt **threads** — a thread runs
+until it parks, yields or exits, which is plan 9 libthread's contract.
+The hook cuts threads anyway, because that is the only way the proc can
+be descheduled, but nothing observes it: every level resumes what it
+interrupted, at the instruction it interrupted.
+
 ## The hierarchy
 
     kernel_run (src/kernel.c)          picks a proc, resumes p->co
@@ -60,7 +67,9 @@ arms `p->co` to fire on its very next instruction. The thread yields to
 again where a yield does reach the kernel.
 
 The cost of getting this wrong is not subtle. A competing spinner's
-share of the machine's throughput:
+share of the machine's throughput — this is fairness between **procs**,
+which is the only fairness promised; threads inside one proc share by
+yielding to each other and not otherwise:
 
 | spinner runs as | share |
 | --- | --- |
@@ -79,6 +88,13 @@ demonstrably did not land, so it arms **every** coroutine of the proc
 instead, and the yield then walks out one instruction per level. Depth
 one never escalates, so the common case pays nothing.
 
+This is what makes the containment real, and it is why nested
+coroutines are still preempted rather than exempted: without it, four
+lines — `coroutine.create` and a `resume` loop — hold the machine for
+as long as the proc likes. `test_nesting.lua` spawns a separate proc
+that does exactly that and measures what everyone else still gets.
+What the walk-out costs a *correct* coroutine is handled above.
+
 That needs an exact list of a proc's coroutines. `src/debug.c`'s
 reachability walk will not do: it misses any coroutine held only from a
 C closure's upvalue or a live local, and it allocates, which is not
@@ -96,15 +112,64 @@ two reasons: nothing on this path allocates, and a registry table is
 reachable through `debug.getregistry`, which non-boot procs keep — so a
 proc could clear the mechanism meant to contain it.
 
-## Where a preempted proc resumes
+## What it takes to lose the cpu
 
-Into `thread.run`, never into the interrupted coroutine.
+A thread is switched away from where it chose to be and nowhere else:
+parking on a channel or port, calling `thread.yield`, or returning.
+That is plan 9 libthread's contract. Nothing preempts a thread against
+its siblings, and the locks libthread has are for state shared between
+procs and across yields — not against being cut mid-update.
 
-The yield happens in `p->co` inside `thread.run`'s loop, so when the
-kernel resumes the proc, the scheduler is what continues, and it picks
-what runs next by its own policy. Resuming straight back into the
-interrupted thread would let one thread hold the cpu across proc
-slices, with `thread.run` never getting a say.
+The count hook still cuts a thread wherever it likes, because that is
+the only way control reaches `p->co` and so the only way the *proc* can
+be descheduled. What `thread.run` does afterwards is resume the same
+thread, at the same instruction. The proc still yields to the kernel on
+its quantum; only the thread underneath carries on.
+
+The two yields arrive at `thread.run` looking identical — a suspended
+coroutine that is not parked — so they are told apart by what they
+carry. The hook's `lua_yield` passes no values; `thread.yield` passes a
+private sentinel. A bare `coroutine.yield()` from a thread therefore
+reads as a hook cut and hands the cpu straight back, which is a spin
+rather than a yield: use `thread.yield`.
+
+The cost is the usual one. A thread that neither parks nor yields keeps
+the proc until it exits. That is a bug in the thread rather than
+something the scheduler defends against — and defending against it is
+what once made every multi-step update in `lib/thread.lua` a critical
+section, along with the fid and tag allocators in `lib/p9fs.lua` and
+`lib/srv.lua`. Those are plain read-modify-writes again.
+
+`test_preempt.lua` pins what is still promised; `test_torture.lua`
+measures the rest by cutting a thread between every pair of
+instructions and checking that nothing observes it.
+
+## Generators, and yields nobody asked for
+
+`lua_yield` unwinds to the resumer of the state it fired in. For a
+thread that is `thread.run`, which knows what the yield meant. For an
+ordinary coroutine it is whoever called `resume` — and `for v in
+seq(n)` reads a yield of no values as the generator being finished, so
+the loop ends early and the caller gets short data with no error.
+
+It was a function of work done per item, which is a quantum showing
+through. Items delivered out of ten: ten at trivial work, three at
+10000, none at 200000, none at all inside a thread.
+
+Not preempting nested coroutines would fix it and is wrong — the
+walk-out below is the only thing between a proc and the whole machine.
+A watchdog instead is worse: its timeout is how long one buggy proc
+freezes everything, and `MAXPROCS` is 4096.
+
+So `coroutine.wrap` resumes again rather than believing the yield
+(`kernel_cowrap`). Being stopped does not disturb a coroutine, so
+carrying on lands at the instruction it was stopped at. It yields
+*itself* first, so the level above still gets to deschedule the proc —
+which works only because every level now resumes in place.
+
+`coroutine.resume` is left raw on purpose. It is what a scheduler uses,
+and a scheduler has to see the preemption: `resume_one` in
+`lib/thread.lua` is exactly this.
 
 ## How a message reaches a parked thread
 
@@ -118,14 +183,18 @@ Three paths, in order of preference:
    something; `readyon` wakes only the threads parked on it.
    `readyall` — wake everyone and let each look — is the last resort
    for a wake no port of ours accounts for.
-3. **The run queue is not empty.** No wake can arrive: `port_push`
-   wakes whoever is *parked on the port*, and a running proc is not
-   parked. So `thread.run` asks, every round, with `sys.anyready` — a
-   bounded scan of the proc's own rights, no port set to build — and
-   pays for the `altpoll` sweep only when the answer is yes.
+3. **Something is still runnable** — the run queue is not empty, or a
+   thread is about to be resumed in place. No wake can arrive:
+   `port_push` wakes whoever is *parked on the port*, and a running
+   proc is not parked. So `thread.run` asks, every round, with
+   `sys.anyready` — a bounded scan of the proc's own rights, no port
+   set to build — and pays for the `altpoll` sweep only when the answer
+   is yes.
 
-Without (3), one thread that never parks starves every thread that
-does, because (1) and (2) run only when the run queue drains.
+Without (3), one thread that is merely slow between parks starves every
+thread that is waiting, because (1) and (2) run only when nothing is
+runnable. Staging a wakeup switches nobody, so this costs a busy thread
+nothing but keeps its siblings' messages moving.
 
 ## Hangups
 
