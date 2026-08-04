@@ -2070,27 +2070,58 @@ static int
 api_sendblock(lua_State *L)
 {
 	struct kproc *p = self(L);
+	lua_Integer h = luaL_checkinteger(L, 1);	/* raises; before */
+	lua_Integer need = luaL_optinteger(L, 2, 0);	/* raises; before */
+	struct right *r;
+	enum { OK, BADRIGHT, NEG, DONTSLEEP, TWICE, NOWAIT } rc = OK;
 
-	struct right *r = right_get(p, luaL_checkinteger(L, 1));
-	lua_Integer need = luaL_optinteger(L, 2, 0);
-
-	if (!r)
-		return luaL_error(L, "bad right");
 	if (need < 0)
 		return luaL_error(L, "negative size");
 
+	/* before the region, because it raises and a raise under the lock
+	 * leaves it held. See nopark: at entry is where it belongs anyway.
+	 */
 	nopark(L, p);
-	blocking_twice(L, p);
-	if (r->port->dead)
-		return 0;	/* never going to drain; let the send report it */
-	if ((size_t)need > MAXQUEUE)
-		return 0;	/* can never fit; let the send report it */
-	if (r->port->qbytes + (size_t)need <= MAXQUEUE)
-		return 0;	/* room already, don't sleep */
-	if (!wait_add(p, r->port, 1))
+
+	/* the room test and the wait_add are one region, for the reason
+	 * api_block's are: a receiver draining the port between them
+	 * would wake nobody and leave this proc parked on a port that
+	 * has the room it asked for.
+	 */
+	ipclock_enter();
+	r = right_get(p, h);
+	if (!r)
+		rc = BADRIGHT;
+	else if (!SLIST_EMPTY(&p->waiters))
+		rc = TWICE;
+	else if (r->port->dead)
+		rc = DONTSLEEP;		/* never drains; let the send say so */
+	else if ((size_t)need > MAXQUEUE)
+		rc = DONTSLEEP;		/* can never fit; same */
+	else if (r->port->qbytes + (size_t)need <= MAXQUEUE)
+		rc = DONTSLEEP;		/* room already */
+	else if (!wait_add(p, r->port, 1))
+		rc = NOWAIT;
+	else {
+		p->status = BLOCKED;
+		rq_del(p);
+	}
+	ipclock_leave();
+
+	switch (rc) {
+	case BADRIGHT:
+		return luaL_error(L, "bad right");
+	case TWICE:
+		return luaL_error(L, "already blocked (sys.block from a "
+		    "coroutine? use los.thread's park)");
+	case NOWAIT:
 		return luaL_error(L, "out of waiters");
-	p->status = BLOCKED;
-	rq_del(p);
+	case DONTSLEEP:
+		return 0;
+	case NEG:
+	case OK:
+		break;
+	}
 	return lua_yield(L, 0);
 }
 
@@ -2178,19 +2209,63 @@ static int
 api_block(lua_State *L)
 {
 	struct kproc *p = self(L);
+	lua_Integer h = luaL_checkinteger(L, 1);	/* raises; before */
+	struct right *r;
+	enum { OK, BADRIGHT, HAVEMSG, TWICE, NOWAIT } rc = OK;
 
-	struct right *r = right_get(p, luaL_checkinteger(L, 1));
-
-	if (!r || !r->recv)
-		return luaL_error(L, "bad receive right");
-	if (r->port->head)
-		return 0;	/* message already there, don't sleep */
+	/* before the region, and so before the state change rather than
+	 * after the emptiness test. nopark raises, and the region sets
+	 * BLOCKED and registers a waiter inside itself -- a guard after
+	 * that leaves both behind, which is what nopark exists to avoid.
+	 * The cost is that a nested caller whose message is already there
+	 * is refused rather than answered; the code is wrong either way
+	 * and the next call is the one that hangs.
+	 */
 	nopark(L, p);
-	blocking_twice(L, p);
-	if (!wait_add(p, r->port, 0))
+
+	/* the emptiness test and the wait_add are one region and have to
+	 * be: between deciding there is no message and joining the port's
+	 * waiter list, a sender on another cpu would push and find nobody
+	 * to wake. That is a proc asleep on a port that already has its
+	 * message, which is a hang rather than a wrong answer.
+	 *
+	 * So every reason to refuse is computed in here and reported out
+	 * there: luaL_error longjmps, and it must not do so while this is
+	 * held.
+	 */
+	ipclock_enter();
+	r = right_get(p, h);
+	if (!r || !r->recv)
+		rc = BADRIGHT;
+	else if (r->port->head)
+		rc = HAVEMSG;		/* already there, don't sleep */
+	else if (!SLIST_EMPTY(&p->waiters))
+		rc = TWICE;
+	else if (!wait_add(p, r->port, 0))
+		rc = NOWAIT;
+	else {
+		p->status = BLOCKED;
+		rq_del(p);
+	}
+	ipclock_leave();
+
+	switch (rc) {
+	case BADRIGHT:
+		return luaL_error(L, "bad receive right");
+	case HAVEMSG:
+		return 0;
+	case TWICE:
+		return luaL_error(L, "already blocked (sys.block from a "
+		    "coroutine? use los.thread's park)");
+	case NOWAIT:
 		return luaL_error(L, "out of waiters");
-	p->status = BLOCKED;
-	rq_del(p);
+	case OK:
+		break;
+	}
+	/* outside the region on purpose: a lock held across a yield is
+	 * held until this proc is next resumed, which is a machine-wide
+	 * stall for as long as it stays parked.
+	 */
 	return lua_yield(L, 0);
 }
 
@@ -2233,16 +2308,29 @@ static int
 call_k(lua_State *L, int status, lua_KContext ctx)
 {
 	struct kproc *p = self(L);
-	struct right *rr = right_get(p, (int)ctx);
+	struct right *rr;
 
 	(void)status;
+
+	ipclock_enter();
+	rr = right_get(p, (int)ctx);
 	/* re-resolved rather than carried across the yield: a handle is an
 	 * index into a table this proc can rearrange, and the struct right
-	 * behind it may have moved. the proc cannot have closed it while
-	 * parked here, so failing to find it is a bug rather than a race.
+	 * behind it may have moved.
+	 *
+	 * It used to say the proc could not have closed it while parked,
+	 * so failing to find it was a bug rather than a race. That was
+	 * true of a machine where the only way to reach here was through
+	 * this proc's own resume. It is still this proc's own handle
+	 * table, so a second cpu cannot close it -- but the port behind
+	 * it can be torn down by the last other right going away while we
+	 * were parked, so treat the miss as the ordinary outcome it now
+	 * is rather than an impossibility.
 	 */
-	if (!rr || !rr->recv)
+	if (!rr || !rr->recv) {
+		ipclock_leave();
 		return luaL_error(L, "call: reply right went away");
+	}
 	if (!rr->port->head) {
 		/* nobody left who could answer: our right is the last one, so
 		 * the one that rode out with the request is gone. checked
@@ -2252,6 +2340,7 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 		 * arrive is delivered even when the server answered and died.
 		 */
 		if (rr->port->nrights <= 1) {
+			ipclock_leave();
 			lua_pushnil(L);
 			lua_pushliteral(L, "hungup");
 			return 2;
@@ -2261,14 +2350,20 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 		 * dropped our waiter, so this adds a fresh one rather than
 		 * leaking the old.
 		 */
-		if (!wait_add(p, rr->port, 0))
+		if (!wait_add(p, rr->port, 0)) {
+			ipclock_leave();
 			return luaL_error(L, "out of waiters");
+		}
 		p->status = BLOCKED;
 		rq_del(p);
+		ipclock_leave();
 		return lua_yieldk(L, 0, ctx, call_k);
 	}
+
 	int rc = port_pop_to_lua(L, p, rr->port);
 
+	ipclock_leave();
+	/* named out here, because popfail raises */
 	if (rc)
 		return popfail(L, p, rc);
 	return 1;
