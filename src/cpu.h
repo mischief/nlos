@@ -55,6 +55,14 @@ struct cpu {
 	 */
 	struct kproc *current;
 
+	/* running the dispatch loop, and so able to be given work. The
+	 * boot processor sets it in kernel_run; an AP sets it when it
+	 * enters its own loop. Placement only considers cpus that have
+	 * it, which is what keeps a proc off a cpu that is still parked
+	 * in hlt and would never run it.
+	 */
+	int dispatching;
+
 	/* parked in the platform's idle sleep and needs an interrupt to
 	 * come out. Set before sleeping and cleared on waking, so a cpu
 	 * queueing work here knows whether to send one.

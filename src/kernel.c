@@ -352,6 +352,13 @@ struct kproc {
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	struct luaheap *heap;	/* this proc's lua heap; see kalloc */
+	/* which cpu dispatches this proc. Not p->cpu, which is taken and
+	 * means a percentage. A proc's queues live on its home cpu, so
+	 * this is what make_ready enqueues against -- from whichever cpu
+	 * happens to be sending, which is the only cross-cpu operation
+	 * the scheduler has.
+	 */
+	unsigned home;
 	int reductions;		/* instruction budget per slice */
 	/* args waiting on co's stack for the FIRST resume only: sys.spawn's
 	 * `arg`, already deserialized into this proc, which the chunk
@@ -639,7 +646,7 @@ static int trace_arm(struct kproc *p, int n);
 static unsigned int brokeseq;
 static void wake_senders(struct kport *port);
 static int reprioritize(struct kproc *p, int nrunnable);
-static int count_runnable(void);
+static int count_runnable(struct cpu *c);
 static void rq_init(void);
 static void rq_del(struct kproc *p);
 static void rq_add(struct rqset *set, struct kproc *p);
@@ -4204,7 +4211,7 @@ api_priority(lua_State *L)
 	if (!p)
 		return luaL_error(L, "no such proc");
 	lua_pushinteger(L, p->weight);
-	lua_pushinteger(L, reprioritize(p, count_runnable()));
+	lua_pushinteger(L, reprioritize(p, count_runnable(cpu_at(p->home))));
 	lua_pushinteger(L, (lua_Integer)p->cpu);
 	return 3;
 }
@@ -4232,11 +4239,17 @@ api_pidstat(lua_State *L)
 			return luaL_error(L, "no such proc");
 	}
 
-	lua_createtable(L, 0, 9);
+	lua_createtable(L, 0, 10);
 	lua_pushinteger(L, p->id);
 	lua_setfield(L, -2, "pid");
 	lua_pushstring(L, p->name);
 	lua_setfield(L, -2, "name");
+	/* which cpu dispatches it. Distinct from "cpu" below, which is a
+	 * share of one; reported so placement can be seen from a test
+	 * rather than inferred from timing.
+	 */
+	lua_pushinteger(L, (lua_Integer)p->home);
+	lua_setfield(L, -2, "home");
 	lua_pushinteger(L, (lua_Integer)p->mem_used);
 	lua_setfield(L, -2, "used");
 	lua_pushinteger(L, (lua_Integer)p->mem_peak);
@@ -4259,7 +4272,7 @@ api_pidstat(lua_State *L)
 	 */
 	lua_pushinteger(L, (lua_Integer)p->cputime);
 	lua_setfield(L, -2, "cputime");
-	lua_pushinteger(L, reprioritize(p, count_runnable()));
+	lua_pushinteger(L, reprioritize(p, count_runnable(cpu_at(p->home))));
 	lua_setfield(L, -2, "pri");
 	lua_pushinteger(L, (lua_Integer)p->cpu);
 	lua_setfield(L, -2, "cpu");
@@ -5207,6 +5220,31 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	TAILQ_INIT(&p->coros);
 	p->hookforced = 0;
+	/* which cpu will run it, decided once and here.
+	 *
+	 * Least loaded by queue length, which is the cheapest thing that
+	 * is not "always cpu 0" and is chosen for that rather than for
+	 * being good: a proc's cost is not known at spawn, so any
+	 * placement rule is a guess. What keeps a bad guess from being
+	 * permanent is that a proc can be moved later -- the heap moves
+	 * with it, which is why the heap is per proc and not per cpu.
+	 */
+	{
+		struct cpu *best = 0;
+		unsigned i;
+
+		for (i = 0; cpu_at(i); i++) {
+			struct cpu *c = cpu_at(i);
+
+			if (!c->dispatching)
+				continue;
+			if (!best || c->runq->n + c->donq->n <
+			    best->runq->n + best->donq->n)
+				best = c;
+		}
+		p->home = best ? best->idx : 0;
+	}
+
 	/* before lua_newstate, which allocates through kalloc, which
 	 * reaches this proc's heap and nothing else's.
 	 */
@@ -6375,16 +6413,23 @@ reprioritize(struct kproc *p, int nrunnable)
 static void
 rq_init(void)
 {
-	struct cpu *c = cpu_self();
+	/* every cpu, not just this one: placement in proc_new reads the
+	 * queue lengths of all of them to pick the least loaded, and an
+	 * AP's runq pointer being null would be a fault before any AP
+	 * had run a single proc.
+	 */
+	for (unsigned n = 0; cpu_at(n); n++) {
+		struct cpu *c = cpu_at(n);
 
-	for (int s = 0; s < 2; s++) {
-		for (int i = 0; i < NRQ; i++)
-			TAILQ_INIT(&c->rq[s].q[i]);
-		c->rq[s].mask = 0;
-		c->rq[s].n = 0;
+		for (int s = 0; s < 2; s++) {
+			for (int i = 0; i < NRQ; i++)
+				TAILQ_INIT(&c->rq[s].q[i]);
+			c->rq[s].mask = 0;
+			c->rq[s].n = 0;
+		}
+		c->runq = &c->rq[0];
+		c->donq = &c->rq[1];
 	}
-	c->runq = &c->rq[0];
-	c->donq = &c->rq[1];
 }
 
 static int
@@ -6461,39 +6506,43 @@ rq_take_any(struct rqset *set)
 static void
 make_ready(struct kproc *p)
 {
+	struct cpu *c = cpu_at(p->home);
+
 	/* caller holds ipclock.
 	 * CONTEXT: proc_new, wake_receivers, wake_senders.
 	 */
 	IPC_ASSERT_LOCKED();
 	struct rqset *keep = p->onq;
 
+	if (!c)			/* the cpu it was placed on went away */
+		c = cpu_at(0);
 	if (keep)
 		rq_del(p);		/* pri is about to change; rebucket */
 	p->status = READY;
 	/* +1 because p has just been taken off its bucket and so is not in
 	 * the count, but it is runnable and the fair share has to include it
 	 */
-	p->pri = reprioritize(p, count_runnable() + 1);
+	p->pri = reprioritize(p, count_runnable(c) + 1);
 	/* a proc already waiting its turn keeps the lap it was in. one
 	 * arriving fresh joins the current lap, which is how a mid-lap
 	 * wakeup can still get a turn this lap -- if the lap's remaining
 	 * budget reaches it, and the next lap's opening runq if not.
 	 */
-	rq_add(keep ? keep : cpu_self()->runq, p);
+	rq_add(keep ? keep : c->runq, p);
 }
 
 static int
-count_runnable(void)
+count_runnable(struct cpu *c)
 {
 	/* the proc being resumed is on neither set -- dispatch takes it off
 	 * before running it and puts it back after -- so it has to be
 	 * counted here, or a proc asking about its own fair share leaves
 	 * itself out of the divisor.
 	 */
-	int running = cpu_self()->current && cpu_self()->current->status == READY &&
-	    !cpu_self()->current->onq;
+	int running = c->current && c->current->status == READY &&
+	    !c->current->onq;
 
-	return cpu_self()->runq->n + cpu_self()->donq->n + running;
+	return c->runq->n + c->donq->n + running;
 }
 
 /* run the proc's sys.atexit handlers, LIFO, on the main state -- p->co
@@ -6690,6 +6739,8 @@ kernel_run(void)
 	    EFI_SUCCESS ||
 	    BS->SetTimer(tick, TimerPeriodic, TICK_FAST_100NS) != EFI_SUCCESS)
 		tick = 0;
+
+	cpu_self()->dispatching = 1;
 
 	while (nlive > 0) {
 		int ran = 0;
