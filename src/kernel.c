@@ -4991,6 +4991,34 @@ pump_eth(void)
 
 /* ---- keyboard pump ---- */
 
+/* the firmware's serial console reports the arrow/navigation keys and the
+ * Escape key as ScanCodes with UnicodeChar 0, having already parsed the
+ * ANSI sequences a byte terminal sends. A full-screen program (bin/vi.lua)
+ * wants those bytes, so turn the ScanCodes back into the sequences -- the
+ * exact inverse of what the firmware did, so vi sees what it would see on
+ * a raw serial line. Values are the UEFI spec's (table "EFI Scan Codes");
+ * SCAN_DELETE (physical Backspace under OVMF) is handled separately below
+ * and deliberately absent here. Returns 0 for a ScanCode with no mapping,
+ * including the 0 that a raw serial shim (microvm) always reports.
+ */
+static const char *
+scancode_seq(unsigned scan)
+{
+	switch (scan) {
+	case 0x17: return "\033";	/* Esc */
+	case 0x01: return "\033[A";	/* Up */
+	case 0x02: return "\033[B";	/* Down */
+	case 0x03: return "\033[C";	/* Right */
+	case 0x04: return "\033[D";	/* Left */
+	case 0x05: return "\033[H";	/* Home */
+	case 0x06: return "\033[F";	/* End */
+	case 0x09: return "\033[5~";	/* PageUp */
+	case 0x0a: return "\033[6~";	/* PageDown */
+	case 0x07: return "\033[2~";	/* Insert */
+	default:   return 0;
+	}
+}
+
 static void
 pump_keyboard(void)
 {
@@ -5010,7 +5038,20 @@ pump_keyboard(void)
 			port_push(kbdport, msg, sizeof msg, 0, 0);
 			continue;
 		}
-		if (key.UnicodeChar == 0 || key.UnicodeChar >= 0x80)
+		/* a non-unicode key: an arrow, Escape and the like. Deliver the
+		 * ANSI sequence one byte per message, exactly as a raw serial
+		 * line would -- vi's readkey reads Esc, then the rest.
+		 */
+		if (key.UnicodeChar == 0) {
+			const char *seq = scancode_seq(key.ScanCode);
+
+			for (; seq && *seq; seq++) {
+				msg[5] = (unsigned char)*seq;
+				port_push(kbdport, msg, sizeof msg, 0, 0);
+			}
+			continue;
+		}
+		if (key.UnicodeChar >= 0x80)
 			continue;
 		msg[5] = (unsigned char)key.UnicodeChar;
 		port_push(kbdport, msg, sizeof msg, 0, 0);

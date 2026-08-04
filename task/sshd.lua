@@ -140,6 +140,10 @@ do
 			["seq.lua"] = slurp("/bin/seq.lua"),
 			["ps.lua"] = slurp("/bin/ps.lua"),
 			["stack.lua"] = slurp("/bin/stack.lua"),
+			-- the program is copied in (prog loads it from the session
+			-- namespace); its ed/ engine and terminal are require'd from
+			-- the ESP by the ambient searcher, not copied.
+			["vi.lua"] = slurp("/bin/vi.lua"),
 		},
 		["tmp"] = {},
 	}
@@ -193,6 +197,27 @@ local function session(connid)
 		end
 	end
 
+	-- the raw side, for a full-screen program (vi) run over this session.
+	-- in raw mode the line discipline is off: client bytes queue in rawin
+	-- and go to getch one at a time, unedited and unechoed, and the
+	-- program draws its own screen.
+	local rawmode = false
+	local rawin = ""		-- keystrokes not yet handed to a getch
+	local getwait = nil		-- reply port of a parked getch
+	local gettimer = nil		-- its timeout, so a lone Esc resolves
+
+	-- answer a parked getch and drop its timeout timer.
+	local function reply_getch(byte)
+		if getwait then
+			sys.send(getwait, byte)
+			getwait = nil
+		end
+		if gettimer then
+			sys.close(gettimer)
+			gettimer = nil
+		end
+	end
+
 	-- A console message from the shell proc. Reached only from the
 	-- protocol thread, from inside read() -- which is between packets,
 	-- never during one, so writing here cannot interleave with a send
@@ -203,8 +228,36 @@ local function session(connid)
 		end
 		if m.op == "write" then
 			if chan then
-				srv:data(chan,
-				    (tostring(m.data):gsub("\n", "\r\n")))
+				-- cooked writes get \n -> \r\n so a shell that prints
+				-- lines lands right on a terminal; a raw-mode program
+				-- places every byte itself, so leave those alone.
+				local data = tostring(m.data)
+
+				if not rawmode then
+					data = data:gsub("\n", "\r\n")
+				end
+				srv:data(chan, data)
+			end
+		elseif m.op == "rawon" then
+			rawmode = true
+		elseif m.op == "rawoff" then
+			rawmode = false
+			rawin = ""
+		elseif m.op == "getch" then
+			local rp = m.reply and m.reply.__right
+
+			-- a byte already queued answers at once; otherwise park the
+			-- getch for the next keystroke or its timeout (see pump).
+			if #rawin > 0 then
+				local b = rawin:sub(1, 1)
+
+				rawin = rawin:sub(2)
+				if rp then
+					sys.send(rp, b)
+				end
+			else
+				getwait = rp
+				gettimer = m.timeout and sys.timer(m.timeout) or nil
 			end
 		elseif m.op == "readline" then
 			if m.prompt and chan then
@@ -227,7 +280,15 @@ local function session(connid)
 	local function pump()
 		pumpcases[2].port = consport
 
-		local i, v = thread.alt(pumpcases)
+		-- a getch waiting with a timeout waits on its timer too, so a
+		-- lone Escape resolves instead of hanging until the next key.
+		local cases = pumpcases
+
+		if gettimer then
+			cases = { pumpcases[1], pumpcases[2], { port = gettimer } }
+		end
+
+		local i, v = thread.alt(cases)
 
 		if i == 1 then
 			if v == nil then
@@ -235,8 +296,11 @@ local function session(connid)
 			else
 				inbuf = inbuf .. v
 			end
-		else
+		elseif i == 2 then
 			from_shell(v)
+		else
+			-- the parked getch timed out: "" means "no key".
+			reply_getch("")
 		end
 	end
 
@@ -357,6 +421,20 @@ local function session(connid)
 				srv:close(ev.chan)
 				break
 
+			elseif ev.type == "data" and rawmode then
+				-- a full-screen program is reading raw keys:
+				-- queue the bytes and hand the waiting getch its
+				-- next one, with no echo and no line editing --
+				-- the program draws its own screen. the rest wait
+				-- in rawin for the getch after this.
+				rawin = rawin .. ev.data
+				if getwait and #rawin > 0 then
+					local b = rawin:sub(1, 1)
+
+					rawin = rawin:sub(2)
+					reply_getch(b)
+				end
+
 			elseif ev.type == "data" then
 				-- The line discipline, byte by byte, because
 				-- there is no tty anywhere in this system to
@@ -440,6 +518,18 @@ local function session(connid)
 		if waiting then
 			sys.send(waiting, nil)
 			waiting = nil
+		end
+		-- same for a program parked in getch when the connection drops:
+		-- answer it "" (its eof) and drop our right to its reply port, or
+		-- the daemon leaks one right per abruptly-closed full-screen
+		-- session -- the getch analogue of the readline case above.
+		if getwait then
+			sys.send(getwait, "")
+			getwait = nil
+		end
+		if gettimer then
+			sys.close(gettimer)
+			gettimer = nil
 		end
 		sys.close(consport)
 		consport = sys.newport()

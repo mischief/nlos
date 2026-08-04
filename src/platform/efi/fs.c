@@ -48,8 +48,18 @@ fs_open(const char *path, int write)
 		mode |= EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE;
 	if (rootdir->Open(rootdir, &f, wpath, mode, 0) != EFI_SUCCESS)
 		return 0;
-	if (write)
-		f->SetPosition(f, 0);
+	if (write) {
+		/* truncate, which EFI Open does not: an existing file keeps
+		 * its length, so an overwrite that shrinks it -- a text editor
+		 * saving fewer bytes -- would leave the old tail behind. Delete
+		 * removes the file and closes the handle (the spec closes it
+		 * regardless of the result), so re-creating gives a fresh empty
+		 * one. posix "w" truncates for the same reason.
+		 */
+		f->Delete(f);
+		if (rootdir->Open(rootdir, &f, wpath, mode, 0) != EFI_SUCCESS)
+			return 0;
+	}
 	return f;
 }
 

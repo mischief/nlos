@@ -603,6 +603,8 @@ function M.main()
 
 	-- the screen, if the launcher lent us one. see M.screen below.
 	ctx.fb = ctx.fb and ctx.fb.__right or nil
+	-- the terminal, if the launcher lent us one. see M.tty below.
+	ctx.tty = ctx.tty and ctx.tty.__right or nil
 
 	local N, nerr = ns.restore(ctx.nsdesc)
 
@@ -637,6 +639,10 @@ function M.corun(spec)
 		stdout = spec.stdout,
 		stderr = spec.stderr or spec.stdout,
 		fb = spec.fb,
+		-- a coroutine stage carries the terminal as the bare handle the
+		-- shell holds, where M.main gets it wrapped in {__right=} off the
+		-- wire -- see Sh:pipecoro. either way M.tty() reads ctx.tty.
+		tty = spec.tty,
 	}
 
 	if not ctx.ns then
@@ -672,6 +678,19 @@ function M.screen()
 		return nil
 	end
 	return require("caps").fb(ctx.fb)
+end
+
+-- the terminal, wrapped, or nil if the launcher lent none -- the same
+-- rule and the same test as M.screen, one capability up. a full-screen
+-- program calls this once and errors out on nil, which is what "not a
+-- terminal" means: it was piped, or handed to a shell with no console.
+function M.tty()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.tty then
+		return nil
+	end
+	return require("caps").tty(ctx.tty)
 end
 
 return M

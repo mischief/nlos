@@ -477,6 +477,55 @@ function M.fb(handle, chunk)
 	return f
 end
 
+-- the console as an interactive terminal, for a full-screen program
+-- (bin/vi.lua). the handle is the same console mailbox every proc writes
+-- to; a tty adds the raw side of it: rawon/rawoff to leave and re-enter
+-- line-edited cooked mode, and getch for one un-echoed keystroke. cons,
+-- the ssh session and (later) webterm each answer these, so a program
+-- runs over any of them the way posix vi runs over a serial line, a pty
+-- or an xterm -- one contract, several terminals.
+--
+-- getch is a plain request/reply, deliberately: the console owns the
+-- timeout (it replies "" when `timeout` ms pass with no key), so this
+-- side just blocks on the answer. that is what lets the same call work
+-- whether the program is a proc of its own or a coroutine in a shell --
+-- thread.recv adapts to either, where a client-side timer would need the
+-- scheduler and would race the console over who consumed the byte.
+function M.tty(handle)
+	local t = { handle = handle }	-- for re-granting: {__right = t.handle}
+	local replyport
+
+	function t.write(s)
+		sys.send(handle, { op = "write", data = s })
+	end
+	-- fire and forget: messages to one port keep their order, so a rawon
+	-- followed by a getch is seen in that order without a round trip.
+	function t.rawon()
+		sys.send(handle, { op = "rawon" })
+	end
+	function t.rawoff()
+		sys.send(handle, { op = "rawoff" })
+	end
+	-- one keystroke, or "" once `timeout` ms pass with none. one reusable
+	-- reply port: a full-screen editor reads one key at a time, never
+	-- concurrently, so there is nothing to cross-deliver.
+	function t.getch(timeout)
+		if not replyport then
+			replyport = sys.newport()
+		end
+		sys.send(handle, { op = "getch", timeout = timeout,
+		    reply = { __right = replyport } })
+		return thread.recv(replyport)
+	end
+	function t.close()
+		if replyport then
+			sys.close(replyport)
+			replyport = nil
+		end
+	end
+	return t
+end
+
 function M.power(handle)
 	local p = { handle = handle }	-- for re-granting to a spawned child: {__right = p.handle}
 

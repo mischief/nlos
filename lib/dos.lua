@@ -397,6 +397,14 @@ function Sh:spawn1(path, argv, streams)
 	if self.fb then
 		msg.fb = { __right = self.fb }
 	end
+	-- and the terminal, on the same terms as the screen: lent to every
+	-- program, used by the few that ask (prog.tty -> a full-screen editor
+	-- like vi). the handle is this shell's own console, whatever it is --
+	-- cons, an ssh session, a browser -- so a program gets raw keys and
+	-- control output over the same terminal the prompt uses.
+	if self.cons then
+		msg.tty = { __right = self.cons }
+	end
 	-- the pull flag rides BESIDE stdin, not inside it. a table carrying
 	-- __right is serialized as the right and nothing else (see
 	-- kernel.c's serialize), so every sibling field is silently
@@ -534,6 +542,11 @@ function Sh:pipecoro(stages)
 			path = st.path, name = st.argv[1], args = st.argv,
 			env = self.env, cwd = self.cwd, ns = self.ns,
 			stdin = stdin, stdout = stdout, stderr = cons,
+			-- the console handle itself, so a full-screen program run
+			-- in a coro session (ssh, webterm) reaches the raw terminal
+			-- the same way a spawned one does. bare handle, not
+			-- {__right=}: corun takes objects, not wire rights.
+			tty = self.cons,
 		}
 
 		thread.spawn(function()
