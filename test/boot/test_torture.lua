@@ -16,6 +16,18 @@
 -- exactly that. The rest are shapes that used to break, kept as
 -- regressions.
 --
+-- The knob has to stay armed for any of this to mean anything, and
+-- that is measured rather than assumed. Put the old behaviour back --
+-- requeue a cut thread instead of resuming it in place -- and:
+--
+--	torture on	case 4 fails, and the run then hangs
+--	torture off	nothing fails at all
+--
+-- So with the knob off this file passes against a scheduler that is
+-- broken in the one way it exists to notice. Case 4 is the load
+-- bearing one; it is the only thing in the tree that can tell whether
+-- being cut is still different from being switched away from.
+--
 -- It has to be the kernel's hook. A lua debug hook cannot do it: ldblib
 -- calls the hook function with lua_call, so a coroutine.yield() inside
 -- one is always across a C-call boundary. Nothing in lua can reschedule
@@ -246,6 +258,11 @@ tap.is(dups, 0, "an unguarded allocator hands out no number twice")
 -- still queued on another, which is an alt over two -- lib/p9fs.lua's
 -- flush does exactly this. The senders on the shared channel are what
 -- make the second wake land in the window.
+--
+-- This one does not need the knob: it is about the order of a wake and
+-- a park, which no amount of cutting changes, and it fails with torture
+-- off just as readily. It lives here because the rounds above have
+-- already paid for the threads.
 local NALT, NROUND = 30, 5
 local altfin, altwant = {}, 0
 
