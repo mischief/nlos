@@ -137,75 +137,12 @@ local _, ninesrv = sys.spawn([[
 sys.send(ninesrv, { wire = { __right = caps_of.wire } })
 print("9p server listening on com2 (mount me!)")
 
--- same namespace, served over tcp/7777 instead of the com2 wire, via
--- the tcp task's request/reply protocol (lib/tcp.lua) instead of
--- wire's. tcp only exists when a NIC was found at boot (see have_net
--- in kernel.c), in which case it appears in sys.granted().
-local _, tcp9srv = sys.spawn([[
-	local sys = require("los.sys")
-	local thread = require("los.thread")
-	local p9 = require("ninep")
-	local m = thread.recv(sys.SELF)
-	local net = m.net.__right
-	local replyport = sys.newport()
-
-	local function req(op, extra)
-		extra = extra or {}
-		extra.op = op
-		extra.reply = { __right = replyport }
-		sys.send(net, extra)
-		return thread.recv(replyport)
-	end
-
-	local function make_io(connid)
-		local rx = function() return req("recv", { connid = connid, maxlen = 4096 }) end
-		local tx = function(bytes) req("send", { connid = connid, data = bytes }) end
-		return rx, tx
-	end
-
-	local root = p9.synth({
-		["README"] = "this is lua-os, mounted over 9p-over-tcp. hello!\n",
-		["uname"] = "lua-os " .. sys.stats().arch .. " uefi\n",
-		["version"] = _VERSION .. "\n",
-	})
-
-	-- a listen before an address exists fails with EFI_NO_MAPPING, so
-	-- retry. this used to allow fifteen seconds because it was waiting
-	-- out the firmware's own dhcp; init now runs lib/dhcpd.lua, which
-	-- has an address in ~15ms, so the only thing left to cover is being
-	-- scheduled before it finishes. thread.sleep parks, so this costs
-	-- no cpu either way.
-	local listener
-	for _ = 1, 20 do
-		listener = req("listen", { port = 7777 })
-		if listener then
-			break
-		end
-		thread.sleep(50)
-	end
-	if not listener then
-		return
-	end
-	while true do
-		local conn = req("accept", { connid = listener })
-		if conn then
-			local rx, tx = make_io(conn)
-			-- a client dropping the tcp connection mid-request (no
-			-- clean Tclunk) makes rx() return nil; ninep.lua isn't
-			-- eof-hardened for that, so pcall keeps one bad
-			-- connection from taking the whole listener down.
-			pcall(p9.serve, root, rx, tx)
-			-- fire-and-forget: tcp.lua's "close" handler never
-			-- replies (see lib/tcp.lua's op table comment), so
-			-- this must NOT go through req()/thread.recv or it
-			-- deadlocks forever waiting on a reply that never
-			-- comes -- which then wedges this proc and silently
-			-- stops it from ever accepting again.
-			sys.send(net, { op = "close", connid = conn })
-		end
-	end
-]], { name = "9ptcp" })
-
+-- the whole namespace goes out over tcp/7777 with task/9pexport.lua, the
+-- same exportfs that serves gefs on 564 -- rooted at "/" instead of
+-- /n/gefs, so `9p tcp!host!7777 ls /` shows /net, /srv, /n and the rest.
+-- It is spawned after the namespace is fully assembled (below), because
+-- it needs those mounts to be there to export them. tcp only exists when
+-- a NIC was found at boot (see have_net in kernel.c).
 local has_tcp = caps_of.tcp ~= nil
 local has_udp = caps_of.udp ~= nil
 
@@ -332,12 +269,19 @@ if gefs_mounted and caps_of.tcp then
 	log.log("gefs exported over 9p on tcp/564")
 end
 
+-- and the whole namespace over tcp/7777: the same exportfs, rooted at "/"
+-- instead of /n/gefs, so a client sees /net, /srv, /n, /proc and the ESP
+-- together. This is where a synth "hello" tree used to be; now it is the
+-- machine's real namespace, which is what 9P is for.
 if has_tcp then
-	sys.send(tcp9srv, { net = { __right = caps_of.tcp } })
+	local _, wh = proc.spawn(
+	    assert(rootns:readfile("/task/9pexport.lua")),
+	    { name = "9pexport-all", ns = nsdesc })
+
+	sys.send(wh, { net = { __right = caps_of.tcp },
+	    root = "/", port = 7777 })
 	print("9p server listening on tcp/7777 (mount me!)")
 end
--- no NIC: tcp9srv just sits parked in thread.recv(sys.SELF) forever,
--- same as any other never-sent-to blocked proc -- harmless.
 
 -- dns server proc: resolves hostnames via lib/dns.lua, riding on the
 -- udp task's capability -- not a kernel-level exclusive task itself

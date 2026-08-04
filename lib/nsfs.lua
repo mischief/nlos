@@ -78,9 +78,19 @@ function M.new(ns, root)
 			return h_of(h.path == "/" and "/" or parentpath(h.path))
 		end
 		local cp = childpath(h.path, name)
-		-- NS:walk raises Enonexist if the element is not there; the
-		-- chan it returns is only to prove the walk, so let it close
-		local c <close> = ns:walk(nspath(cp))
+		-- prove the element exists. NS:walk raises if it is not there --
+		-- but a bare mount point (no backend, only mounts below it, like
+		-- /n over /n/gefs) does not walk yet stats as a directory, so
+		-- fall back to that. The chan is only for the proof; close it.
+		local ok = pcall(function()
+			local c <close> = ns:walk(nspath(cp))
+		end)
+		if not ok then
+			local st = ns:stat(nspath(cp))
+			if not (st and st.dir) then
+				dev.error(dev.Enonexist)
+			end
+		end
 		return h_of(cp)
 	end
 
