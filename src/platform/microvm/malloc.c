@@ -4,6 +4,7 @@
  * platforms.
  */
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,8 +21,26 @@ struct hdr {
 
 #define MAGIC 0x6c75616f73ULL	/* "luaos" */
 
-static size_t live_bytes, peak_bytes;
-static unsigned long live_blocks, total_blocks;
+/* diagnostics, and the only things here two cpus touch at once: the
+ * arena underneath is locked, but these sit outside it. Relaxed is
+ * the right order for all four -- nothing is published through them
+ * and no one draws a conclusion from the order two of them changed
+ * in. peak needs the compare-exchange loop rather than a load and a
+ * store, since between those two a larger value can be lost.
+ */
+static atomic_size_t live_bytes, peak_bytes;
+static atomic_ulong live_blocks, total_blocks;
+
+static void
+note_peak(size_t live)
+{
+	size_t seen = atomic_load_explicit(&peak_bytes, memory_order_relaxed);
+
+	while (live > seen &&
+	    !atomic_compare_exchange_weak_explicit(&peak_bytes, &seen, live,
+	    memory_order_relaxed, memory_order_relaxed))
+		;
+}
 
 void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
@@ -31,13 +50,15 @@ malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total)
 {
 	if (live)
-		*live = live_bytes;
+		*live = atomic_load_explicit(&live_bytes, memory_order_relaxed);
 	if (peak)
-		*peak = peak_bytes;
+		*peak = atomic_load_explicit(&peak_bytes, memory_order_relaxed);
 	if (blocks)
-		*blocks = live_blocks;
+		*blocks = atomic_load_explicit(&live_blocks,
+		    memory_order_relaxed);
 	if (total)
-		*total = total_blocks;
+		*total = atomic_load_explicit(&total_blocks,
+		    memory_order_relaxed);
 }
 
 void *
@@ -49,11 +70,10 @@ malloc(size_t n)
 		return 0;
 	h->size = n;
 	h->magic = MAGIC;
-	live_bytes += n + sizeof *h;
-	if (live_bytes > peak_bytes)
-		peak_bytes = live_bytes;
-	live_blocks++;
-	total_blocks++;
+	note_peak(atomic_fetch_add_explicit(&live_bytes, n + sizeof *h,
+	    memory_order_relaxed) + n + sizeof *h);
+	atomic_fetch_add_explicit(&live_blocks, 1, memory_order_relaxed);
+	atomic_fetch_add_explicit(&total_blocks, 1, memory_order_relaxed);
 	return h + 1;
 }
 
@@ -68,8 +88,9 @@ free(void *p)
 	if (h->magic != MAGIC)
 		platform_abort("free: bad heap magic (double free or corruption)");
 	h->magic = 0;
-	live_bytes -= h->size + sizeof *h;
-	live_blocks--;
+	atomic_fetch_sub_explicit(&live_bytes, h->size + sizeof *h,
+	    memory_order_relaxed);
+	atomic_fetch_sub_explicit(&live_blocks, 1, memory_order_relaxed);
 	pmm_free(h, h->size + sizeof *h);
 }
 

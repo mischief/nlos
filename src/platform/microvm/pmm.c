@@ -29,6 +29,7 @@
 #include <stdint.h>
 
 #include "microvm.h"
+#include "lock.h"
 
 struct pmm_block {
 	size_t size;
@@ -37,6 +38,22 @@ struct pmm_block {
 
 static struct pmm_block *freelist;
 static size_t arena_bytes;
+
+/* one lock for the whole arena.
+ *
+ * It covers a first-fit walk with coalescing on both sides, so there is
+ * no finer granularity to be had without a different data structure --
+ * and none is wanted: this allocator is not on a hot path. Every lua
+ * allocation goes to a proc's own heap (src/luaheap.c), which comes
+ * here only when it needs another 8K chunk, a handful of times in a
+ * proc's life. If that stops being true the answer is a per-cpu cache
+ * of chunks in front of this, not a cleverer lock.
+ *
+ * It is the first lock in lock.h's order, which follows from the same
+ * fact: everything above it may need memory, so it must be possible to
+ * take this while holding anything else, and never the reverse.
+ */
+static struct lock pmmlock = LOCK_INIT;
 
 #define ALIGN 16
 
@@ -105,8 +122,11 @@ pmm_add(uintptr_t base, size_t len)
 
 	b = (struct pmm_block *)base;
 	b->size = end - base;
+
+	lock(&pmmlock);
 	arena_bytes += b->size;
 	freelist_insert(b);
+	unlock(&pmmlock);
 }
 
 /* what the machine has, and what is left of it.
@@ -120,10 +140,12 @@ pmm_meminfo(size_t *total, size_t *avail)
 {
 	size_t a = 0;
 
+	lock(&pmmlock);
 	for (struct pmm_block *b = freelist; b; b = b->next)
 		a += b->size;
 	if (total)
 		*total = arena_bytes;
+	unlock(&pmmlock);
 	if (avail)
 		*avail = a;
 }
@@ -137,6 +159,7 @@ pmm_alloc(size_t n)
 
 	struct pmm_block **pp = &freelist;
 
+	lock(&pmmlock);
 	while (*pp) {
 		struct pmm_block *b = *pp;
 
@@ -151,10 +174,12 @@ pmm_alloc(size_t n)
 			} else {
 				*pp = b->next;
 			}
+			unlock(&pmmlock);
 			return b;
 		}
 		pp = &b->next;
 	}
+	unlock(&pmmlock);
 	return 0;
 }
 
@@ -167,5 +192,8 @@ pmm_free(void *p, size_t n)
 	if (n < sizeof(struct pmm_block))
 		n = sizeof(struct pmm_block);
 	b->size = n;
+
+	lock(&pmmlock);
 	freelist_insert(b);
+	unlock(&pmmlock);
 }

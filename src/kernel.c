@@ -366,6 +366,7 @@ struct kproc {
 	int torture;			/* yield between EVERY instruction */
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
+	struct luaheap *heap;	/* this proc's lua heap; see kalloc */
 	int reductions;		/* instruction budget per slice */
 	/* args waiting on co's stack for the FIRST resume only: sys.spawn's
 	 * `arg`, already deserialized into this proc, which the chunk
@@ -449,28 +450,38 @@ static struct kport *kbdport;
 static struct kport *devkbdport;
 static int nlive;
 
-/* one heap behind every lua_State on the machine.
+/* one heap per proc, in p->heap.
  *
- * A heap per proc is the obvious arrangement and is worse, measured: a
- * proc's lua heap is only ~39K, so the tail of its last chunk and the
- * page rounding underneath it get paid once per proc instead of once
- * for the machine. Per proc that was 57514 bytes against 52053 shared,
- * and the waste inside the heap was 20% against 6%.
+ * This used to be a single heap behind every lua_State on the machine,
+ * and the argument for that was measured and good: a proc's lua heap is
+ * small, so the tail of its last chunk gets paid once per proc instead
+ * of once for the machine, and one proc reusing another's freed blocks
+ * lowers total fragmentation rather than raising it. Measured over 20
+ * idle procs on microvm: 24646 bytes of mapped memory per proc shared
+ * against 31211 per proc, 27% more, with heap waste going from 15.0%
+ * to 30.5%. What lua actually asked for is identical, 21670 either
+ * way -- the whole difference is chunk tails.
  *
- * What a per-proc heap would have bought does not survive looking at:
- * teardown cannot skip lua_close anyway, since __gc finalizers are how
- * handles get clunked; there is nothing to lock either way under
- * cooperative scheduling; and one proc reusing another's freed blocks
- * lowers total fragmentation rather than raising it. Containment is
- * unaffected -- mem_used and mem_limit are counted in kalloc, per proc,
- * and never depended on the heap being separate.
+ * A second cpu is what changes the answer, and only one clause of the
+ * old argument: "there is nothing to lock either way under cooperative
+ * scheduling". There is now. A shared heap needs a lock taken on every
+ * lua allocation, which is the most frequent thing this kernel does --
+ * so the choice is 27% more memory, or serialising every cpu on the
+ * hottest path in the system. That is not a close call.
  *
- * The one thing given up is that a proc which allocates hugely and dies
- * no longer hands those pages back to the firmware; they stay in the
- * free lists. Returning wholly-empty chunks would fix that and is not
- * built.
+ * What makes the per-proc heap need no lock of its own: a proc runs on
+ * one cpu at a time, and its heap is touched only while it is running.
+ * The chunk source underneath is shared and is locked (pmm.c), but a
+ * heap asks it for another 8K only a handful of times in a proc's life.
+ *
+ * Containment is unaffected either way -- mem_used and mem_limit are
+ * counted in kalloc, per proc, and never depended on the heap being
+ * separate.
+ *
+ * What this buys back, incidentally: a proc that allocates hugely and
+ * dies now returns those chunks, because its whole heap is destroyed
+ * with it rather than dissolving into shared free lists.
  */
-static struct luaheap *proc_heap;
 static int nextpid;
 
 /* who's running right now. kernel_run sets this before every
@@ -2971,17 +2982,31 @@ api_stats(lua_State *L)
 	lua_pushinteger(L, (lua_Integer)htotal);
 	lua_setfield(L, -2, "heap_total_allocs");
 
-	/* the lua heap every proc shares. live is what the states between
-	 * them asked for; mapped is what the machine holds to serve it, and
-	 * the gap is what bounds how many procs fit.
+	/* the lua heaps, summed: there is one per proc now, and what the
+	 * machine wants to know is still the total. live is what the
+	 * states asked for; mapped is what the machine holds to serve it,
+	 * and the gap is what bounds how many procs fit.
 	 *
 	 * Note heap_used above counts these chunks as ordinary C
 	 * allocations, since that is what they are -- so the two are not
 	 * additive.
 	 */
-	struct luaheap_stats hs;
+	struct luaheap_stats hs = { 0 }, one;
 
-	luaheap_stats(proc_heap, &hs);
+	for (int i = 0; i < prochigh; i++) {
+		if (!procv[i] || !procv[i]->heap)
+			continue;
+		luaheap_stats(procv[i]->heap, &one);
+		hs.live += one.live;
+		hs.peak += one.peak;
+		hs.mapped += one.mapped;
+		hs.waste += one.waste;
+		hs.rounding += one.rounding;
+		hs.headers += one.headers;
+		hs.unused += one.unused;
+		hs.chunks += one.chunks;
+		hs.larges += one.larges;
+	}
 	lua_pushinteger(L, (lua_Integer)hs.live);
 	lua_setfield(L, -2, "lua_live");
 	lua_pushinteger(L, (lua_Integer)hs.mapped);
@@ -4282,7 +4307,7 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	size_t real_osize = ptr ? osize : 0;
 
 	if (nsize == 0) {
-		luaheap_realloc(proc_heap, ptr, real_osize, 0);
+		luaheap_realloc(p->heap, ptr, real_osize, 0);
 		p->mem_used -= real_osize;
 		return 0;
 	}
@@ -4295,7 +4320,7 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	    p->mem_used - real_osize + nsize > p->mem_limit)
 		return 0;
 
-	void *q = luaheap_realloc(proc_heap, ptr, real_osize, nsize);
+	void *q = luaheap_realloc(p->heap, ptr, real_osize, nsize);
 
 	if (!q)
 		return 0;
@@ -4307,10 +4332,11 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 
 /* tear down a proc's state.
  *
- * lua_close frees every block the proc held back into the shared heap's
- * free lists, where the next proc picks them up. It cannot be skipped:
- * __gc finalizers are how handles get clunked, so discarding the memory
- * without running them would leak what the memory was only pointing at.
+ * lua_close cannot be skipped even though the heap is about to be
+ * destroyed whole: __gc finalizers are how handles get clunked, so
+ * dropping the memory without running them would leak what the memory
+ * was only pointing at. Destroying the heap afterwards is what returns
+ * the chunks, which a shared heap could not do.
  */
 static void
 proc_freestate(struct kproc *p)
@@ -4319,6 +4345,13 @@ proc_freestate(struct kproc *p)
 		lua_close(p->L);
 	p->L = 0;
 	p->co = 0;
+	/* after lua_close, never before: the finalizers it runs are
+	 * still allocating and freeing in this heap.
+	 */
+	if (p->heap) {
+		luaheap_destroy(p->heap);
+		p->heap = 0;
+	}
 	/* lua_close frees every coroutine through kernel_cofree, so the
 	 * list is already empty; re-init rather than trust that, since a
 	 * reused slot would inherit whatever is left
@@ -4756,6 +4789,12 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	TAILQ_INIT(&p->coros);
 	p->hookforced = 0;
+	/* before lua_newstate, which allocates through kalloc, which
+	 * reaches this proc's heap and nothing else's.
+	 */
+	p->heap = luaheap_new(&kalloc_ops, 0);
+	if (!p->heap)
+		return -1;
 	p->L = lua_newstate(kalloc, p);
 	if (!p->L)
 		return -1;
@@ -5413,9 +5452,6 @@ kernel_init(void)
 {
 	calibrate_reductions();	/* kernel_clock_init already ran in efi_main */
 	rq_init();		/* before any proc exists to be dispatched */
-	proc_heap = luaheap_new(&kalloc_ops, 0);
-	if (!proc_heap)		/* before any proc exists to allocate */
-		return -1;
 	uart_init();
 	kbdport = port_new();
 	devkbdport = platform_have_kbd() ? port_new() : 0;
