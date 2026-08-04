@@ -19,6 +19,7 @@
 #include <sys/queue.h>
 
 #include "kernel.h"
+#include "cpu.h"
 
 #include "lua.h"
 #include "lualib.h"
@@ -81,7 +82,7 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 /* floor on phase two's dispatch bound -- see kernel_run.
  *
  * the bound is what ends a lap at all, because a mid-lap wakeup joins
- * the current runq and two procs feeding each other hand phase two a
+ * the current cpu_self()->runq and two procs feeding each other hand phase two a
  * fresh proc every time it takes one. sized to amortise rather than
  * merely to terminate: everything between laps costs a fixed toll, one
  * port-i/o trap on microvm and three firmware calls on efi, and a bound
@@ -305,22 +306,6 @@ struct grant {
  */
 struct kproc;
 
-/* dispatch keeps two of these and swaps them each lap: one holds procs
- * still to run, the other those that have run. membership is what says
- * "already had its turn", so there is no per-lap array to size against
- * MAXPROCS and nothing to scan.
- *
- * buckets by priority with a mask of the non-empty ones, so taking the
- * highest is a bit scan rather than a search -- plan 9's runq[].
- */
-#define NRQ 16
-
-struct rqset {
-	TAILQ_HEAD(rqbucket, kproc) q[NRQ];
-	unsigned mask;
-	int n;
-};
-
 struct waiter {
 	struct kproc *p;
 	struct kport *port;
@@ -484,14 +469,13 @@ static int nlive;
  */
 static int nextpid;
 
-/* who's running right now. kernel_run sets this before every
- * lua_resume and clears it after. plain C code with no lua_State
- * (stdio.c's fopen, called via liolib.c with no proc identity
- * threaded through) uses this to find out who's asking -- the only
- * way to check a capability from a context where self(L) isn't
- * available at all.
+/* who's running right now is cpu_self()->current: run_proc sets it
+ * before every lua_resume and clears it after. plain C code with no
+ * lua_State (stdio.c's fopen, called via liolib.c with no proc
+ * identity threaded through) uses this to find out who's asking --
+ * the only way to check a capability from a context where self(L)
+ * isn't available at all.
  */
-static struct kproc *current_proc;
 
 
 /* how many times kernel_run has found every proc blocked and gone to
@@ -502,7 +486,7 @@ static struct kproc *current_proc;
  * sampling can't see it, because a task woken and re-blocked between
  * two samples looks identical to one that never woke.
  */
-static unsigned long long nidle;
+
 
 /* dispatch accounting, for answering "where does a round trip go?"
  * without guessing -- laps per round trip is what showed the ping-pong
@@ -510,7 +494,7 @@ static unsigned long long nidle;
  * how long the uart fifo goes undrained. plain increments; anything
  * needing a timestamp belongs in a temporary probe, not here.
  */
-static unsigned long long nlaps, ndispatch;
+
 
 /* disk gates write/append only -- read is deliberately ambient (see
  * stdio.c's fopen): the threat model is buggy lua, not hostile users
@@ -1655,7 +1639,7 @@ kernel_strip_debug(lua_State *L)
 int
 kernel_current_is_boot(void)
 {
-	return current_proc && current_proc->priv == PRIV_BOOT;
+	return cpu_self()->current && cpu_self()->current->priv == PRIV_BOOT;
 }
 
 /* ---- coroutine.wrap, made transparent to preemption ----
@@ -2943,13 +2927,20 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "procs");
 	lua_pushinteger(L, nbroke);
 	lua_setfield(L, -2, "broke");
-	lua_pushinteger(L, (lua_Integer)nidle);
+	unsigned long long tidle = 0, tlaps = 0, tdisp = 0;
+
+	for (unsigned i = 0; cpu_at(i); i++) {
+		tidle += cpu_at(i)->nidle;
+		tlaps += cpu_at(i)->nlaps;
+		tdisp += cpu_at(i)->ndispatch;
+	}
+	lua_pushinteger(L, (lua_Integer)tidle);
 	lua_setfield(L, -2, "idles");
 	lua_pushinteger(L, rights_high);
 	lua_setfield(L, -2, "rightshigh");
-	lua_pushinteger(L, (lua_Integer)nlaps);
+	lua_pushinteger(L, (lua_Integer)tlaps);
 	lua_setfield(L, -2, "laps");
-	lua_pushinteger(L, (lua_Integer)ndispatch);
+	lua_pushinteger(L, (lua_Integer)tdisp);
 	lua_setfield(L, -2, "dispatches");
 
 
@@ -5904,22 +5895,24 @@ reprioritize(struct kproc *p, int nrunnable)
  * are irregular where laps were not. that is why the chunked decay above
  * had to come first.
  */
-/* the two dispatch sets. runq holds procs still to run this lap, donq
+/* the two dispatch sets. cpu_self()->runq holds procs still to run this lap, cpu_self()->donq
  * those that have already had their turn; they swap at the end of a lap.
  */
-static struct rqset rqsets[2];
-static struct rqset *runq = &rqsets[0];
-static struct rqset *donq = &rqsets[1];
+
 
 static void
 rq_init(void)
 {
+	struct cpu *c = cpu_self();
+
 	for (int s = 0; s < 2; s++) {
 		for (int i = 0; i < NRQ; i++)
-			TAILQ_INIT(&rqsets[s].q[i]);
-		rqsets[s].mask = 0;
-		rqsets[s].n = 0;
+			TAILQ_INIT(&c->rq[s].q[i]);
+		c->rq[s].mask = 0;
+		c->rq[s].n = 0;
 	}
+	c->runq = &c->rq[0];
+	c->donq = &c->rq[1];
 }
 
 static int
@@ -6008,9 +6001,9 @@ make_ready(struct kproc *p)
 	/* a proc already waiting its turn keeps the lap it was in. one
 	 * arriving fresh joins the current lap, which is how a mid-lap
 	 * wakeup can still get a turn this lap -- if the lap's remaining
-	 * budget reaches it, and the next lap's opening runq if not.
+	 * budget reaches it, and the next lap's opening cpu_self()->runq if not.
 	 */
-	rq_add(keep ? keep : runq, p);
+	rq_add(keep ? keep : cpu_self()->runq, p);
 }
 
 static int
@@ -6021,10 +6014,10 @@ count_runnable(void)
 	 * counted here, or a proc asking about its own fair share leaves
 	 * itself out of the divisor.
 	 */
-	int running = current_proc && current_proc->status == READY &&
-	    !current_proc->onq;
+	int running = cpu_self()->current && cpu_self()->current->status == READY &&
+	    !cpu_self()->current->onq;
 
-	return runq->n + donq->n + running;
+	return cpu_self()->runq->n + cpu_self()->donq->n + running;
 }
 
 /* run the proc's sys.atexit handlers, LIFO, on the main state -- p->co
@@ -6074,12 +6067,12 @@ run_proc(struct kproc *p)
 	 */
 	for (int w = 0; w < p->weight; w++) {
 		ran = 1;
-		ndispatch++;
+		cpu_self()->ndispatch++;
 		p->nresume++;
 
 		int nres = 0;
 
-		current_proc = p;
+		cpu_self()->current = p;
 
 		unsigned long long t0 = platform_ticks();
 
@@ -6097,7 +6090,7 @@ run_proc(struct kproc *p)
 
 		p->cputime += platform_ticks() - t0;
 		p->resumed = 0;
-		current_proc = 0;
+		cpu_self()->current = 0;
 
 		/* a proc can run a full hook window (200k insns) before
 		 * yielding; drain the 16-byte fifo now so it can't overflow
@@ -6225,7 +6218,7 @@ kernel_run(void)
 	while (nlive > 0) {
 		int ran = 0;
 
-		nlaps++;
+		cpu_self()->nlaps++;
 
 		/* drain the periodic timer's signal. nothing is paced
 		 * against it any more, but a tick that fires during a busy
@@ -6270,7 +6263,7 @@ kernel_run(void)
 		 * machine. that matters because policy is exactly the part we
 		 * expect to get wrong -- see AGENTS.md.
 		 *
-		 * plan 9 cannot do this: runproc() scans runq[] from the top
+		 * plan 9 cannot do this: runproc() scans cpu_self()->runq[] from the top
 		 * and takes the first thing it finds, with no aging, so a
 		 * high-basepri proc starves a low one indefinitely (which
 		 * PriEdf > PriKproc > PriNormal makes deliberate). it has
@@ -6289,26 +6282,26 @@ kernel_run(void)
 		 * and is bounded too, by how many were waiting when it
 		 * started or by LAPSPILL, whichever is larger.
 		 *
-		 * "already had its turn" is membership in donq rather than a
+		 * "already had its turn" is membership in cpu_self()->donq rather than a
 		 * per-lap marker, so nothing here is sized against MAXPROCS
 		 * and nothing scans.
 		 */
-		int budget = runq->n;
+		int budget = cpu_self()->runq->n;
 
 		for (int i = 0; i < budget; i++) {
-			struct kproc *p = rq_take_high(runq);
+			struct kproc *p = rq_take_high(cpu_self()->runq);
 
 			if (!p)
 				break;
 			if (run_proc(p))
 				ran = 1;
 			if (p->status == READY)
-				rq_add(donq, p);
+				rq_add(cpu_self()->donq, p);
 		}
 
 		/* phase two is bounded for the same reason phase one is, and
 		 * it is the bound that makes the lap terminate at all. a proc
-		 * woken mid-lap joins the current runq (see make_ready), so
+		 * woken mid-lap joins the current cpu_self()->runq (see make_ready), so
 		 * two procs feeding each other messages hand phase two a fresh
 		 * proc every time it takes one. an unbounded drain never
 		 * reaches the top of the loop again, and expire_timers,
@@ -6319,43 +6312,43 @@ kernel_run(void)
 		 * the floor is what keeps the bound from being expensive: see
 		 * LAPSPILL.
 		 */
-		int spill = runq->n < LAPSPILL ? LAPSPILL : runq->n;
+		int spill = cpu_self()->runq->n < LAPSPILL ? LAPSPILL : cpu_self()->runq->n;
 
 		for (int i = 0; i < spill; i++) {
-			struct kproc *p = rq_take_any(runq);
+			struct kproc *p = rq_take_any(cpu_self()->runq);
 
 			if (!p)
 				break;
 			if (run_proc(p))
 				ran = 1;
 			if (p->status == READY)
-				rq_add(donq, p);
+				rq_add(cpu_self()->donq, p);
 		}
 
 		/* whatever the bound left behind was woken this lap and has
-		 * not run: it goes onto the set that becomes the next runq,
-		 * not the one that becomes the next donq. leaving it where it
+		 * not run: it goes onto the set that becomes the next cpu_self()->runq,
+		 * not the one that becomes the next cpu_self()->donq. leaving it where it
 		 * lies would park it a full lap behind the procs that already
 		 * had a turn, and a lap with nothing else runnable would go to
 		 * the idle sleep with work in hand.
 		 */
 		for (;;) {
-			struct kproc *p = rq_take_any(runq);
+			struct kproc *p = rq_take_any(cpu_self()->runq);
 
 			if (!p)
 				break;
-			rq_add(donq, p);
+			rq_add(cpu_self()->donq, p);
 		}
 
 		/* the lap is over: what ran becomes what runs next. procs
-		 * woken from here on join the new runq and so get a turn in
+		 * woken from here on join the new cpu_self()->runq and so get a turn in
 		 * the next lap rather than being lost.
 		 */
 		{
-			struct rqset *t = runq;
+			struct rqset *t = cpu_self()->runq;
 
-			runq = donq;
-			donq = t;
+			cpu_self()->runq = cpu_self()->donq;
+			cpu_self()->donq = t;
 		}
 
 		if (!ran) {
@@ -6370,7 +6363,7 @@ kernel_run(void)
 			 * bound again, which is the behaviour this replaces
 			 * rather than a failure.
 			 */
-			nidle++;
+			cpu_self()->nidle++;
 			if (tick) {
 				UINTN n = 0;
 
@@ -6388,7 +6381,7 @@ kernel_run(void)
 /* disk gates write/append only (read is ambient, see stdio.c's
  * fopen): does whoever is currently resumed hold any right to
  * diskport? used from fopen, which has no lua_State at all --
- * liolib.c's io.open calls it as plain C, so current_proc is the
+ * liolib.c's io.open calls it as plain C, so cpu_self()->current is the
  * only way to learn who's asking.
  */
 static int
@@ -6408,5 +6401,5 @@ proc_has_port(struct kproc *p, struct kport *port)
 int
 kernel_current_has_disk(void)
 {
-	return proc_has_port(current_proc, diskport);
+	return proc_has_port(cpu_self()->current, diskport);
 }

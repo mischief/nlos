@@ -30,6 +30,7 @@
 #include "platform.h"
 #include "smp.h"
 #include "cpu.h"
+#include "machine.h"
 
 /* the boot stack in boot.S is 64K, and an AP does the same work on
  * its own, so match it. These are static rather than allocated
@@ -56,6 +57,27 @@ struct cpu *
 cpu_at(unsigned i)
 {
 	return i < ncpu ? &cpus[i] : 0;
+}
+
+struct cpu *
+cpu_self(void)
+{
+	return machine_cpu_self();
+}
+
+/* claim a struct cpu as this cpu's own. Every cpu runs this once, on
+ * itself, before it touches anything per-cpu.
+ */
+static void
+cpu_claim(struct cpu *c, unsigned idx)
+{
+	c->self = c;
+	c->idx = idx;
+	/* vmd has no apic to ask; there is also only ever one cpu
+	 * there, so 0 is both unavailable and correct.
+	 */
+	c->apicid = intr_have_apic() ? lapic_id() : 0;
+	machine_set_cpu_self(c);
 }
 
 unsigned
@@ -101,10 +123,7 @@ fwcfg_ncpus(void)
 void
 ap_main(unsigned idx)
 {
-	struct cpu *c = &cpus[idx];
-
-	c->idx = idx;
-	c->apicid = lapic_id();
+	cpu_claim(&cpus[idx], idx);
 
 	lapic_init();
 
@@ -154,7 +173,11 @@ smp_init(void)
 {
 	unsigned want;
 
-	cpus[0].idx = 0;
+	/* the boot processor claims cpu 0 whatever happens next: on a
+	 * machine with no apic, or with one cpu, everything above still
+	 * reaches its per-cpu state through cpu_self().
+	 */
+	cpu_claim(&cpus[0], 0);
 
 	/* no LAPIC is no IPI, and so no way to start anything. That is
 	 * OpenBSD vmd, where vmm masks CPUID_APIC out -- see intr.c.
@@ -163,8 +186,6 @@ smp_init(void)
 	if (!intr_have_apic()) {
 		return;
 	}
-
-	cpus[0].apicid = lapic_id();
 
 	want = fwcfg_ncpus();
 	if (want <= 1)

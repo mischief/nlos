@@ -6,6 +6,7 @@
 #include "fs.h"
 #include "kernel.h"
 #include "platform.h"
+#include "cpu.h"
 
 
 EFI_SYSTEM_TABLE *ST;
@@ -82,6 +83,24 @@ out:
 	while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_NOT_READY)
 		BS->WaitForEvent(1, &ST->ConIn->WaitForKey, &index);
 	return EFI_SUCCESS;
+}
+
+/* the one cpu, and so a plain static rather than anything found
+ * through a register. cpu_self() is still the only way kernel.c
+ * reaches it, which is what keeps that file free of the distinction.
+ */
+static struct cpu thecpu = { .self = &thecpu, .idx = 0, .apicid = 0 };
+
+struct cpu *
+cpu_self(void)
+{
+	return &thecpu;
+}
+
+struct cpu *
+cpu_at(unsigned i)
+{
+	return i == 0 ? &thecpu : 0;
 }
 
 /* one cpu, always. EFI's other processors are reachable only through
