@@ -115,15 +115,10 @@ function M.new(transport, opts)
 	-- the server having lost a reply outright.
 	local poisoned = {}
 
-	-- the search and the claim are one step. Finding t free and marking
-	-- it are separated by a preemption otherwise, and the thread that
-	-- runs in between searches from the same nexttag and finds the same
-	-- t free -- two requests outstanding under one tag, which is
-	-- precisely what a tag exists to prevent. The scan reads the tables
-	-- the claim writes, so the section has to cover both; dev.error
-	-- raising out of the middle is the guard's business, not ours.
+	-- the search and the claim need nothing between them: a thread is
+	-- not switched away from except where it parks, and nothing here
+	-- does. Finding t free is still true when it is marked.
 	local function alloctag()
-		local _ <close> = thread.atomic()
 		local t = nexttag
 
 		repeat
@@ -402,13 +397,7 @@ function M.new(transport, opts)
 		    dotu and ninep.NONUNAME or nil)
 	end, ninep.Rattach, "attach")
 
-	-- read, add, store, and a preemption free to land between any two
-	-- of them. Every caller here is a thread -- task/p9srv.lua serves
-	-- with eight of them -- so two arriving together leave with the
-	-- same fid, and since every handle owns its fid independently,
-	-- clunking one shuts the other's file.
 	local function newfid()
-		local _ <close> = thread.atomic()
 		local f = next_fid
 
 		next_fid = next_fid + 1

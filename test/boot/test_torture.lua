@@ -1,16 +1,20 @@
 -- the scheduler, cut between every pair of instructions.
 --
--- test_crit covers the same ground by volume, and volume is a poor way
--- to ask this question: a race between a thread and thread.run is a
--- window of one or two instructions, so whether a run finds it depends
--- on how finely the work happens to be cut. That is why these bugs
--- turned up on an rpi4 and never on a desktop -- preemptions arrive per
--- unit of WALL time while the window is measured in instructions.
+-- sys.set_torture makes every instruction boundary in every thread a
+-- preemption, so whatever the hook could land on, it lands on.
 --
--- sys.set_torture takes the luck out: every instruction boundary in
--- every thread becomes a preemption, so every window is landed on. What
--- passes here is not "probably safe", it is "there was no instruction
--- at which being cut mattered" -- for the paths this exercises.
+-- It was built to find races by exhaustion: a window between a thread
+-- and thread.run is one or two instructions wide, and whether a test
+-- run falls into one depended on how finely the work happened to be
+-- cut -- which is set by the machine, since preemptions arrive per unit
+-- of WALL time while the window is measured in instructions. That is
+-- why those bugs turned up on an rpi4 and never on a desktop.
+--
+-- What it asks now is the opposite question. A thread is resumed in
+-- place after being cut, so cutting one everywhere should not let
+-- anything else observe it at all, and the first case below measures
+-- exactly that. The rest are shapes that used to break, kept as
+-- regressions.
 --
 -- It has to be the kernel's hook. A lua debug hook cannot do it: ldblib
 -- calls the hook function with lua_call, so a coroutine.yield() inside
@@ -25,7 +29,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(14)
+tap.plan(11)
 
 tap.ok(sys.set_torture ~= nil, "sys.set_torture is present")
 
@@ -110,12 +114,11 @@ tap.is(laps, LAPS, "the ping-pong completed every lap")
 -- The shape the 9p client had: more waiters than values, so the
 -- register-then-park path runs constantly and every value must reach
 -- exactly one receiver.
--- every count here is kept in the counting thread's own slot rather
--- than in one shared total. `got = got + 1` from three threads is the
--- very race this file exists to find: torture cuts between the read and
--- the store, increments are lost, and the test reports a failure of the
--- scheduler that is really a failure of its own bookkeeping. distinct
--- keys are safe because no two threads ever write the same one.
+--
+-- Each receiver counts into its own slot. That is no longer load
+-- bearing -- a shared total would survive this scheduler -- but a test
+-- about scheduling should not be the thing that has to be reasoned
+-- about when it fails.
 local ch = thread.chancreate(2)
 local gotby = { 0, 0, 0 }
 local NMSG = 40
@@ -187,16 +190,16 @@ tap.is(thread._n, 0, "and the scheduler's count came back to zero")
 
 -- ---- an allocator a caller wrote ----
 --
--- `local f = next; next = next + 1` is the shape of lib/p9fs.lua's
--- newfid and lib/srv.lua's put, and a preemption between the read and
--- the store hands two threads the same number. Unguarded it is not
--- close: 75 duplicates in 100. thread.atomic is what a caller has to
--- say so, and this is the whole of what it promises.
+-- `local f = next; next = next + 1` is lib/p9fs.lua's newfid and
+-- lib/srv.lua's put, written out. It carries no guard of any kind, and
+-- under the scheduler this file is about it does not need one: a thread
+-- is not switched away from between the read and the store, however
+-- finely it is cut. Under the one before it, this shape handed out 75
+-- duplicates in 100.
 local next_fid = 1
 local mine = { {}, {}, {}, {} }
 
 local function newfid()
-	local _ <close> = thread.atomic()
 	local f = next_fid
 
 	next_fid = next_fid + 1
@@ -226,27 +229,7 @@ for id = 1, 4 do
 	end
 end
 
-tap.is(dups, 0, "an atomic allocator hands out no number twice")
-
--- the guard releases on the way out however the scope ends, which is
--- what calling the pair by hand cannot promise: an error inside jumps
--- straight over the release.
-local raised = false
-
-thread.spawn(function()
-	local ok = pcall(function()
-		local _ <close> = thread.atomic()
-
-		error("inside")
-	end)
-
-	raised = not ok
-end)
-
-thread.run()
-
-tap.ok(raised, "an error inside an atomic scope propagates")
-tap.ok(thread._crit == nil, "and the section is still released")
+tap.is(dups, 0, "an unguarded allocator hands out no number twice")
 
 -- ---- a coroutine in the ring twice ----
 --
@@ -305,6 +288,4 @@ tap.is(nalt, altwant, "every thread alting over two channels finished")
 tap.is(thread._n, 0, "and none was abandoned alive and uncounted")
 
 sys.set_torture(false)
-tap.ok(thread._crit == nil, "no thread left marked mid-update")
-
 tap.done()

@@ -140,12 +140,12 @@ function M.new(right)
 
 	-- one session, however many threads ask for it first.
 	--
-	-- The claim has to be a section: finding `opening` unset and
-	-- setting it are two steps, and a preemption between them puts two
-	-- threads back to opening two sessions. Nothing parks inside it --
-	-- chancreate does not -- so rule 1 holds. The waiting happens
-	-- afterwards, on the channel, which is where a thread is allowed to
-	-- park.
+	-- Finding `opening` unset and setting it need nothing between them:
+	-- a thread is not switched away from except where it parks, and
+	-- neither the test nor chancreate does. The waiting happens
+	-- afterwards, on the channel, which is where a thread may park --
+	-- and it is the park that made this necessary in the first place,
+	-- since establishing a session is a round trip.
 	--
 	-- A failed establish leaves both nil and wakes everyone, so a
 	-- waiter retries rather than inheriting the failure: the server
@@ -159,15 +159,11 @@ function M.new(right)
 
 			local ch, mine
 
-			do
-				local _ <close> = thread.atomic()
-
-				if opening then
-					ch = opening
-				else
-					ch = thread.chancreate(0)
-					opening, mine = ch, true
-				end
+			if opening then
+				ch = opening
+			else
+				ch = thread.chancreate(0)
+				opening, mine = ch, true
 			end
 			if not mine then
 				ch:recv()	-- until the opener is done
