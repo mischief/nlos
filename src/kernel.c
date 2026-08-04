@@ -2613,8 +2613,11 @@ altrecv_take(lua_State *L, struct kproc *p)
 
 	int rc = port_pop_to_lua(L, p, r->port);
 
+	/* carried out rather than raised: this runs inside the region, and
+	 * popfail longjmps. The caller names it once outside.
+	 */
 	if (rc)
-		return popfail(L, p, rc);
+		return rc < -1 ? -2 : -1;
 	return 2;
 }
 
@@ -2624,8 +2627,18 @@ altrecv_take(lua_State *L, struct kproc *p)
 static int
 api_altrecvnb(lua_State *L)
 {
+	int got;
+
 	luaL_checktype(L, 1, LUA_TTABLE);
-	return altrecv_take(L, self(L));
+	luaL_checkstack(L, 3, "altrecvnb");
+
+	ipclock_enter();
+	got = altrecv_take(L, self(L));
+	ipclock_leave();
+
+	if (got < 0)
+		return luaL_error(L, "corrupt message");
+	return got;
 }
 
 static int
@@ -2636,7 +2649,17 @@ altrecv_k(lua_State *L, int status, lua_KContext ctx)
 	/* nothing for us after all -- a hangup wake, or another proc took
 	 * it. returning nothing is legal and means "go round again".
 	 */
-	return altrecv_take(L, self(L));
+	int got;
+
+	luaL_checkstack(L, 3, "altrecv");
+
+	ipclock_enter();
+	got = altrecv_take(L, self(L));
+	ipclock_leave();
+
+	if (got < 0)
+		return luaL_error(L, "corrupt message");
+	return got;
 }
 
 /* block until any entry of a port set is ready.
@@ -2659,24 +2682,53 @@ api_altblock(lua_State *L)
 	n = (int)luaL_len(L, 1);
 	if (n < 1)
 		return luaL_error(L, "altblock: need at least one port");
+	luaL_checkstack(L, 2, "altblock");	/* raises; before the region */
 
+	/* the whole scan is one region, and that is the point of this
+	 * commit. The loop adds a waiter to each port as it goes, so by
+	 * the time it reaches port 5 it is already on port 1's list --
+	 * and a sender to port 1 would wake this proc and wait_clear its
+	 * waiters, after which the loop carries on, adds more, sets
+	 * BLOCKED and yields. The proc then sleeps having already been
+	 * woken, with its message sitting in a port it is no longer
+	 * waiting on. A hang, not a wrong answer.
+	 *
+	 * Nothing that raises may run in here, so the handle is read
+	 * with lua_tointegerx rather than luaL_checkinteger and a bad
+	 * one becomes an outcome reported below. altready's comment
+	 * about level questions going stale the moment a second cpu
+	 * exists is this, and is now answered by holding the lock across
+	 * both passes rather than by asking more carefully.
+	 */
+	ipclock_enter();
 	wait_clear(p);
 	for (int i = 1; i <= n; i++) {
+		int isnum = 0;
+		lua_Integer h;
+		struct right *r;
+
 		lua_rawgeti(L, 1, i);
-
-		struct right *r = right_get(p, luaL_checkinteger(L, -1));
-
+		h = lua_tointegerx(L, -1, &isnum);
 		lua_pop(L, 1);
-
+		/* raise-free, so it may run in here: rawgeti and a type
+		 * test, nothing that allocates or calls a metamethod.
+		 */
 		lua_Integer need = altneed(L, i);
 		int send = need >= 0;
 
+		if (!isnum) {
+			wait_clear(p);
+			ipclock_leave();
+			return luaL_error(L, "altblock: bad receive right");
+		}
+		r = right_get(p, h);
 		/* a send wait needs only a send right, for the same reason
 		 * api_sendblock does: a writer waiting on its reader has no
 		 * business holding the receive end.
 		 */
 		if (!r || (!send && !r->recv)) {
 			wait_clear(p);
+			ipclock_leave();
 			return luaL_error(L, send ? "altblock: bad right" :
 			    "altblock: bad receive right");
 		}
@@ -2684,6 +2736,7 @@ api_altblock(lua_State *L)
 		    r->port->qbytes + (size_t)need <= MAXQUEUE) :
 		    (r->port->head != 0)) {
 			wait_clear(p);
+			ipclock_leave();
 			lua_pushinteger(L, i);
 			return 1;	/* already ready, don't sleep */
 		}
@@ -2706,11 +2759,13 @@ api_altblock(lua_State *L)
 			}
 		if (!seen && !wait_add(p, r->port, send)) {
 			wait_clear(p);
+			ipclock_leave();
 			return luaL_error(L, "altblock: out of waiters");
 		}
 	}
 	p->status = BLOCKED;
 	rq_del(p);
+	ipclock_leave();
 	return lua_yieldk(L, 0, 0, altblock_k);
 }
 
@@ -2729,20 +2784,44 @@ api_altrecv(lua_State *L)
 	if (n < 1)
 		return luaL_error(L, "altrecv: need at least one port");
 
+	luaL_checkstack(L, 3, "altrecv");	/* raises; before the region */
+
+	/* the take and the wait-set build are one region. altrecv_take's
+	 * own comment already said the find and the take are one
+	 * critical section that this kernel could not yield between, and
+	 * that a lock would go around both; it goes around rather more
+	 * than that, because a message arriving after the take failed
+	 * but during the build is lost the same way altblock's is.
+	 */
+	ipclock_enter();
+
 	int got = altrecv_take(L, p);
 
-	if (got)
+	if (got) {
+		ipclock_leave();
+		if (got < 0)
+			return luaL_error(L, "corrupt message");
 		return got;
+	}
 
 	wait_clear(p);
 	for (int i = 1; i <= n; i++) {
+		int isnum = 0;
+		lua_Integer h;
+		struct right *r;
+
 		lua_rawgeti(L, 1, i);
-
-		struct right *r = right_get(p, (int)luaL_checkinteger(L, -1));
-
+		h = lua_tointegerx(L, -1, &isnum);
 		lua_pop(L, 1);
+		if (!isnum) {
+			wait_clear(p);
+			ipclock_leave();
+			return luaL_error(L, "altrecv: bad receive right");
+		}
+		r = right_get(p, h);
 		if (!r || !r->recv) {
 			wait_clear(p);
+			ipclock_leave();
 			return luaL_error(L, "altrecv: bad receive right");
 		}
 
@@ -2756,11 +2835,13 @@ api_altrecv(lua_State *L)
 			}
 		if (!seen && !wait_add(p, r->port, 0)) {
 			wait_clear(p);
+			ipclock_leave();
 			return luaL_error(L, "altrecv: out of waiters");
 		}
 	}
 	p->status = BLOCKED;
 	rq_del(p);
+	ipclock_leave();
 	return lua_yieldk(L, 0, 0, altrecv_k);
 }
 
