@@ -6516,6 +6516,12 @@ make_ready(struct kproc *p)
 
 	if (!c)			/* the cpu it was placed on went away */
 		c = cpu_at(0);
+	/* the target cpu's lock, not this one's: the caller is whichever
+	 * cpu is sending, and the queues being changed belong to the cpu
+	 * that will run p. Taken while holding the ipc lock, which is
+	 * the one nesting lock.h's order allows (ipc -> cpu runq).
+	 */
+	lock(&c->lock);
 	if (keep)
 		rq_del(p);		/* pri is about to change; rebucket */
 	p->status = READY;
@@ -6529,6 +6535,7 @@ make_ready(struct kproc *p)
 	 * budget reaches it, and the next lap's opening runq if not.
 	 */
 	rq_add(keep ? keep : c->runq, p);
+	unlock(&c->lock);
 }
 
 static int
@@ -6825,17 +6832,34 @@ kernel_run(void)
 		 * per-lap marker, so nothing here is sized against MAXPROCS
 		 * and nothing scans.
 		 */
-		int budget = cpu_self()->runq->n;
+		struct cpu *me = cpu_self();
+
+		lock(&me->lock);
+		int budget = me->runq->n;
+
+		unlock(&me->lock);
 
 		for (int i = 0; i < budget; i++) {
-			struct kproc *p = rq_take_high(cpu_self()->runq);
+			struct kproc *p;
 
+			lock(&me->lock);
+			p = rq_take_high(me->runq);
+			unlock(&me->lock);
 			if (!p)
 				break;
+			/* outside the lock, and this is the rule the whole
+			 * scheme rests on: a resume runs lua, which can send,
+			 * which takes the ipc lock and then some cpu's runq
+			 * lock. Holding this across it would invert that order
+			 * and deadlock against any other cpu doing the same.
+			 */
 			if (run_proc(p))
 				ran = 1;
-			if (p->status == READY)
-				rq_add(cpu_self()->donq, p);
+			if (p->status == READY) {
+				lock(&me->lock);
+				rq_add(me->donq, p);
+				unlock(&me->lock);
+			}
 		}
 
 		/* phase two is bounded for the same reason phase one is, and
@@ -6851,17 +6875,26 @@ kernel_run(void)
 		 * the floor is what keeps the bound from being expensive: see
 		 * LAPSPILL.
 		 */
-		int spill = cpu_self()->runq->n < LAPSPILL ? LAPSPILL : cpu_self()->runq->n;
+		lock(&me->lock);
+		int spill = me->runq->n < LAPSPILL ? LAPSPILL : me->runq->n;
+
+		unlock(&me->lock);
 
 		for (int i = 0; i < spill; i++) {
-			struct kproc *p = rq_take_any(cpu_self()->runq);
+			struct kproc *p;
 
+			lock(&me->lock);
+			p = rq_take_any(me->runq);
+			unlock(&me->lock);
 			if (!p)
 				break;
 			if (run_proc(p))
 				ran = 1;
-			if (p->status == READY)
-				rq_add(cpu_self()->donq, p);
+			if (p->status == READY) {
+				lock(&me->lock);
+				rq_add(me->donq, p);
+				unlock(&me->lock);
+			}
 		}
 
 		/* whatever the bound left behind was woken this lap and has
@@ -6871,23 +6904,28 @@ kernel_run(void)
 		 * had a turn, and a lap with nothing else runnable would go to
 		 * the idle sleep with work in hand.
 		 */
+		lock(&me->lock);
 		for (;;) {
-			struct kproc *p = rq_take_any(cpu_self()->runq);
+			struct kproc *p = rq_take_any(me->runq);
 
 			if (!p)
 				break;
-			rq_add(cpu_self()->donq, p);
+			rq_add(me->donq, p);
 		}
+		unlock(&me->lock);
 
 		/* the lap is over: what ran becomes what runs next. procs
 		 * woken from here on join the new runq and so get a turn in
 		 * the next lap rather than being lost.
 		 */
 		{
-			struct rqset *t = cpu_self()->runq;
+			struct rqset *t;
 
-			cpu_self()->runq = cpu_self()->donq;
-			cpu_self()->donq = t;
+			lock(&me->lock);
+			t = me->runq;
+			me->runq = me->donq;
+			me->donq = t;
+			unlock(&me->lock);
 		}
 
 		if (!ran) {
