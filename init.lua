@@ -87,55 +87,16 @@ print(("%s on %s (fw rev 0x%x)"):format(_VERSION, efi.firmware,
 print("mach-lite kernel + plan9 furniture (threads, channels, alt, 9p)")
 print("")
 
--- 9p server proc: serves a synthetic namespace on com2. it gets a
--- send-right to wire in its first message -- wire is the sole task
--- with raw access to com2, both directions, so reading and writing
--- the 9p wire both mean sending it a message.
-local _, ninesrv = sys.spawn([[
-	local sys = require("los.sys")
-	local thread = require("los.thread")
-	local p9 = require("ninep")
-	local m = thread.recv(sys.SELF)
-	local wire = m.wire.__right
-	local readreply = sys.newport()
-
-	local function wire_read()
-		sys.send(wire, { op = "read",
-		    reply = { __right = readreply } })
-		return thread.recv(readreply)
-	end
-
-	local function wire_write(bytes)
-		sys.send(wire, { op = "write", data = bytes })
-	end
-
-	local root = p9.synth({
-		["README"] = "this is lua-os, mounted over 9p. hello!\n",
-		["uname"] = "lua-os " .. sys.stats().arch .. " uefi\n",
-		["version"] = _VERSION .. "\n",
-		["ticks"] = function(off, n)
-			if off > 0 then return "" end
-			return tostring(sys.ticks()) .. "\n"
-		end,
-		["proc"] = { children = {
-			["list"] = function(off, n)
-				if off > 0 then return "" end
-				local t = sys.procs()
-				local out = {}
-				for i, pid in ipairs(t) do
-					out[i] = tostring(pid)
-				end
-				return table.concat(out, " ") .. "\n"
-			end,
-		}},
-	})
-
-	p9.serve(root, wire_read, wire_write)
-]], { name = "9p" })
-
--- hand over a send-right to wire (proc 0 owns handle 2 at boot)
-sys.send(ninesrv, { wire = { __right = caps_of.wire } })
-print("9p server listening on com2 (mount me!)")
+-- com2 -- the "wire" -- is left unused now. It once carried a 9P server,
+-- the machine's namespace mounted over the serial line, from before there
+-- was a network to carry one; task/9pexport.lua on tcp/7777 is that today,
+-- and better. The capability has not gone anywhere: the kernel still
+-- starts the wire driver and grants proc 0 a right to it (caps_of.wire),
+-- so a serial 9P mount could be brought back by spawning a server on it
+-- the way the tcp export is spawned below -- ninep.serve takes a
+-- read/write pair, and wire's op="read"/op="write" messages are one. It
+-- is documented rather than kept because a demo tree on a wire nobody
+-- mounts is a crutch, and the real namespace over tcp is the thing.
 
 -- the whole namespace goes out over tcp/7777 with task/9pexport.lua, the
 -- same exportfs that serves gefs on 564 -- rooted at "/" instead of
@@ -205,9 +166,9 @@ if srvdh then
 	    { port = { __right = srvdh } })
 
 	-- publish what is actually mountable. These are srv.lua-style
-	-- servers, which is what mnt.new can forward to -- unlike ninesrv
-	-- and tcp9srv above, which speak 9P over a byte wire to clients
-	-- off the machine and have no port to hand out.
+	-- servers, which is what mnt.new can forward to -- unlike the 9P
+	-- export on tcp/7777, which speaks 9P to clients off the machine and
+	-- has no port to hand out.
 	--
 	-- sendright, not the handle: init keeps its own, and posting is
 	-- giving a right away.
@@ -285,7 +246,7 @@ end
 
 -- dns server proc: resolves hostnames via lib/dns.lua, riding on the
 -- udp task's capability -- not a kernel-level exclusive task itself
--- (no raw efi access of its own), same shape as ninesrv/tcp9srv.
+-- (no raw efi access of its own), same shape as the 9P export.
 local _, dnssrv = proc.spawn(assert(rootns:readfile("/task/dns.lua")),
     { name = "dns", ns = nsdesc })
 local has_dns = has_udp and
@@ -392,7 +353,7 @@ end
 -- CONS/WIRE/POWER/DISK/[TCP]/[UDP] handed to it via the {__right=}
 -- message below, at handles it can't know until it receives them, so
 -- it has to pull them out of that first message itself -- same shape
--- as ninesrv/tcp9srv above, not a closure over this scope (lua_dump
+-- as the task servers above, not a closure over this scope (lua_dump
 -- can't carry live upvalue values across to a different lua_State
 -- anyway, only _ENV survives that trip).
 local repl_worker_src = [[
@@ -403,7 +364,6 @@ local repl_worker_src = [[
 
 	local m = thread.recv(sys.SELF)
 	local consh = m.cons.__right
-	local wireh = m.wire.__right
 	local powerh = m.power.__right
 	local diskh = m.disk.__right
 	local tcph = m.tcp and m.tcp.__right
@@ -442,7 +402,6 @@ local repl_worker_src = [[
 	_G.stats = magic.stats
 	_G.ports = magic.ports
 	_G.caps = caps
-	_G.wire = caps.wire(wireh)
 	_G.power = caps.power(powerh)
 	local dns = dnsh and caps.dns(dnsh) or nil
 
@@ -539,7 +498,6 @@ while true do
 
 	local grant = {
 		cons = { __right = caps_of.cons },
-		wire = { __right = caps_of.wire },
 		power = { __right = caps_of.power },
 		disk = { __right = caps_of.disk },
 	}
