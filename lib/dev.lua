@@ -463,14 +463,14 @@ function M.mem(tree)
 		return M.closable(B, h)
 	end
 
-	function B.create(h, name, mode)
+	function B.create(h, name, mode, dir)
 		if type(h.node) ~= "table" then
 			M.error(M.Enotdir)
 		end
 		if h.node[name] ~= nil then
 			M.error(M.Eexist)
 		end
-		h.node[name] = ""
+		h.node[name] = dir and {} or ""
 		return B.open(B.walk(h, name), mode or "rw")
 	end
 

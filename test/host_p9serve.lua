@@ -89,5 +89,28 @@ rpc(p9.topen(24, 23, 0))
 ok(rpc(p9.tread(25, 23, 0, 100)).data == "written via 9p",
     "the created file reads back")
 
+-- a directory (DMDIR in the perm), then a file created inside it: the
+-- shape `tar xf` uses to populate a tree
+rpc(p9.tclone(30, 0, 30))
+ok(rpc(p9.tcreate(31, 30, "d", p9.DMDIR | 0x1ff, 0)).type == p9.Rcreate,
+    "Tcreate with DMDIR makes a directory")
+rpc(p9.twalk(32, 0, 32, { "d" }))
+rpc(p9.tclone(33, 32, 33))
+ok(rpc(p9.tcreate(34, 33, "inner", 0x1b6, 1)).type == p9.Rcreate,
+    "a file can be created inside the new directory")
+rpc(p9.twrite(35, 33, 0, "nested"))
+rpc(p9.twalk(36, 0, 36, { "d", "inner" }))
+rpc(p9.topen(37, 36, 0))
+ok(rpc(p9.tread(38, 36, 0, 100)).data == "nested",
+    "the nested file reads back through d/inner")
+
+-- clone a FILE's fid with a zero-name walk, the way 9pfuse does before
+-- every open -- a file is not a directory, so this must not be a "." walk
+rpc(p9.twalk(40, 0, 40, { "README" }))
+rpc(p9.tclone(41, 40, 41))
+rpc(p9.topen(42, 41, 0))
+ok(rpc(p9.tread(43, 41, 0, 100)).data == "hello over 9p\n",
+    "a cloned file fid opens and reads (the 9pfuse path)")
+
 io.write("1.." .. count .. "\n")
 if failed > 0 then os.exit(1) end

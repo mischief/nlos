@@ -137,9 +137,16 @@ function M.responder(backend)
 			if not f then return p9.rerror(m.tag, dev.Ebadfid) end
 
 			-- clone: no names, newfid becomes a fresh handle at the
-			-- same place. walk "." is how a dev backend dups one.
+			-- same place. Re-walk from the root rather than walk "."
+			-- -- a file is not a directory and refuses ".", and a 9P
+			-- client clones a file's fid before opening it (9pfuse
+			-- does, every read). A fresh handle also avoids aliasing
+			-- one mnt fid under two, which dev.lua warns against.
 			if #m.wname == 0 then
-				local ok, nh = pcall(backend.walk, f.h, ".")
+				local ok, nh = pcall(function()
+					return dev.walknames(backend, backend.attach(),
+					    dev.elements(f.path))
+				end)
 				if not ok then return err(m.tag, nh) end
 				fids[m.newfid] = { h = nh, path = f.path, dir = f.dir }
 				return p9.rwalk(m.tag, {})
@@ -190,14 +197,17 @@ function M.responder(backend)
 			if not f then return p9.rerror(m.tag, dev.Ebadfid) end
 			local lo = m.mode & 3
 			local mode = lo == 0 and "r" or lo == 1 and "w" or "rw"
-			local ok, nh = pcall(backend.create, f.h, m.name, mode)
+			-- DMDIR in the perm asks for a directory; the backend
+			-- honours it if it can (gefsfs does), else makes a file
+			local dir = (m.perm & p9.DMDIR) ~= 0
+			local ok, nh = pcall(backend.create, f.h, m.name, mode, dir)
 			if not ok then return err(m.tag, nh) end
 			pcall(backend.clunk, f.h)	-- the directory handle is spent
 			f.h = nh
 			f.path = childpath(f.path, m.name)
-			f.dir = false
+			f.dir = dir
 			local ok2, st = pcall(backend.stat, nh)
-			local q = qidof(f.path, ok2 and st or { dir = false })
+			local q = qidof(f.path, ok2 and st or { dir = dir })
 			return p9.rcreate(m.tag, q, msize - 24)
 
 		elseif m.type == p9.Tread then
@@ -233,6 +243,18 @@ function M.responder(backend)
 			local ok, st = pcall(backend.stat, f.h)
 			if not ok then return err(m.tag, st) end
 			return p9.rstat(m.tag, statbytes(f.path, st))
+
+		elseif m.type == p9.Twstat then
+			-- accepted and ignored: the dev interface has no wstat,
+			-- so mode, mtime and rename cannot be applied yet. A
+			-- client that sets them (tar's utime and chmod) needs the
+			-- accept not to fail; truncate and rename over 9P wait on
+			-- dev growing wstat, the same way directory create waited
+			-- on create growing a flag.
+			if not fids[m.fid] then
+				return p9.rerror(m.tag, dev.Ebadfid)
+			end
+			return p9.rwstat(m.tag)
 
 		else
 			return p9.rerror(m.tag, "operation not supported")

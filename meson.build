@@ -517,6 +517,7 @@ lua_payload = files(
   'task/partsrv.lua',
   'task/gefssrv.lua',
   'lib/p9serve.lua',
+  'lib/nsfs.lua',
   'task/9pexport.lua',
   'lib/draw.lua',
   'lib/crypto/util.lua',

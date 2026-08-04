@@ -5,9 +5,12 @@
 -- choice is the spawner's, not this file's -- exportfs exports a
 -- namespace and does not care what is in it.
 --
--- protocol: { net = {__right=}, mount = {__right=<a dev server>},
--- port = 564 } on the self port. It mounts the given server as a backend
--- and speaks 9P for it to every TCP client.
+-- protocol on the self port, one of:
+--   { net={__right=}, mount={__right=<a dev server>}, port=564 }
+--       export that one server (gefssrv for the gefs volume).
+--   { net={__right=}, wholens=true, port=564 }
+--       export this proc's whole namespace, /proc and /srv and every
+--       mount together -- the fully general exportfs.
 --
 -- One connection at a time, served to completion before the next accept,
 -- the same shape init's 9p-over-tcp server has and for the same reason:
@@ -17,11 +20,14 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local mnt = require("mnt")
+local ns = require("ns")
+local nsfs = require("nsfs")
 local p9serve = require("p9serve")
 
 local m0 = thread.recv(sys.SELF)
 local net = m0.net.__right
-local backend = mnt.new(m0.mount.__right)
+local backend = m0.wholens and nsfs.new(ns.current())
+    or mnt.new(m0.mount.__right)
 local port = m0.port or 564
 
 -- the tcp task's request/reply protocol, as init's tcp9srv uses it

@@ -347,7 +347,7 @@ function NS:open(path, mode)
 end
 
 -- create and open, like 9P's Tcreate and dev's create.
-function NS:create(path, mode)
+function NS:create(path, mode, isdir)
 	local cleaned = clean(path)
 	local dir, name = cleaned:match("^(.*)/([^/]+)$")
 
@@ -361,7 +361,8 @@ function NS:create(path, mode)
 	local ok, res = pcall(function()
 		local d = self:walk(dir)
 
-		return chan.new(d.B, cleaned, d.B.create(d.h, name, mode or "rw"))
+		return chan.new(d.B, cleaned,
+		    d.B.create(d.h, name, mode or "rw", isdir))
 	end)
 
 	if not ok then

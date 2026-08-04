@@ -133,7 +133,7 @@ function ops.open(S, m)
 end
 
 function ops.create(S, m)
-	return { fid = S.put(S.B.create(S.get(m.fid), m.name, m.mode)) }
+	return { fid = S.put(S.B.create(S.get(m.fid), m.name, m.mode, m.dir)) }
 end
 
 -- clamped to what a reply can actually carry, rather than trusted.

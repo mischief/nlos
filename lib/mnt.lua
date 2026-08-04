@@ -245,9 +245,9 @@ function M.new(right)
 		return dev.closable(B, h_of(r.fid))
 	end
 
-	function B.create(h, name, mode)
+	function B.create(h, name, mode, dir)
 		local r = rpc({ op = "create", fid = h.fid, name = name,
-		    mode = mode })
+		    mode = mode, dir = dir })
 
 		return dev.closable(B, h_of(r.fid))
 	end

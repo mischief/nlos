@@ -225,6 +225,11 @@ function M.rstat(tag, statb)
 	return frame(M.Rstat, tag, spack("<I2", #statb) .. statb)
 end
 
+-- Rwstat has an empty body: it says only that the wstat was accepted.
+function M.rwstat(tag)
+	return frame(M.Rwstat, tag, "")
+end
+
 -- ---- encode T-messages: the client side ----
 -- a fid space and NOTAG/tag bookkeeping belong to whoever drives these
 -- (see the microvm platform's los.platform.p9-backed client, which

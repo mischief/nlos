@@ -144,7 +144,7 @@ function M.new(mnt)
 		return dev.closable(B, h_of(h.path))
 	end
 
-	function B.create(h, name, mode)
+	function B.create(h, name, mode, dir)
 		local d = direntof(h.path)
 		if not isdir(d) then
 			dev.error(dev.Enotdir)
@@ -153,7 +153,11 @@ function M.new(mnt)
 		if mnt:walk(cp) ~= nil then
 			dev.error(dev.Eexist)
 		end
-		mnt:createfile(cp)
+		if dir then
+			mnt:mkdir(cp)
+		else
+			mnt:createfile(cp)
+		end
 		return dev.closable(B, h_of(cp))
 	end
 
