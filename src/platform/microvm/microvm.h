@@ -33,6 +33,17 @@ void	lapic_eoi(void);
  */
 void	lapic_startap(unsigned apicid, unsigned long entry);
 
+/* a fixed-delivery ipi at a vector this kernel chose; see intr.c. */
+void	lapic_ipi(unsigned apicid, unsigned vector);
+
+/* the reschedule ipi: wake a cpu that is parked in its idle hlt
+ * because work has been put on its queue. Carries nothing.
+ */
+void	intr_ipi_init(void);
+void	intr_resched(unsigned apicid);
+void	resched_isr(void);
+void	isr_resched(void);
+
 /* smp.c -- start the other cpus, if this machine has any and can. */
 void	smp_init(void);
 

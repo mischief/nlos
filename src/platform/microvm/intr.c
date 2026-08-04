@@ -109,6 +109,12 @@ intr_route(int gsi, void (*handler)(void))
  * one on any machine here; starting at 64 leaves that whole range
  * alone with room to spare.
  */
+/* the reschedule ipi, above the msi range so it cannot collide with a
+ * device's vector. It carries nothing: waking the cpu is the message,
+ * and its queue is where the work actually is.
+ */
+#define IPI_RESCHED_VECTOR (MSI_VECTOR_BASE + MSI_VECTOR_COUNT)
+
 #define MSI_VECTOR_BASE  (INTR_VECTOR_BASE + 64)
 #define MSI_VECTOR_COUNT 32
 
@@ -192,4 +198,26 @@ timer_isr(void)
 	if (intr_have_apic())
 		lapic_timer_rearm();
 	intr_eoi(TIMER_GSI);
+}
+
+/* the resched ipi's handler. Acknowledging is all of it -- the hlt it
+ * ended is the effect, and the dispatch loop looks at its own queue
+ * when it comes back round.
+ */
+void
+resched_isr(void)
+{
+	lapic_eoi();
+}
+
+void
+intr_ipi_init(void)
+{
+	idt_set_vector(IPI_RESCHED_VECTOR, isr_resched);
+}
+
+void
+intr_resched(unsigned apicid)
+{
+	lapic_ipi(apicid, IPI_RESCHED_VECTOR);
 }

@@ -6535,7 +6535,19 @@ make_ready(struct kproc *p)
 	 * budget reaches it, and the next lap's opening runq if not.
 	 */
 	rq_add(keep ? keep : c->runq, p);
+
+	/* it has work now; if it went to sleep without any, wake it.
+	 * Read under the lock, so it cannot have decided to sleep
+	 * between this test and the queue it would have found empty --
+	 * the idle path sets the flag with this same lock held, and for
+	 * that reason.
+	 */
+	int wake = c->idle && c != cpu_self();
+
 	unlock(&c->lock);
+
+	if (wake)
+		platform_wake_cpu(c->idx);
 }
 
 static int

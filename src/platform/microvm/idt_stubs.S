@@ -175,3 +175,44 @@ isr_uart:
 	popq	%rcx
 	popq	%rax
 	iretq
+
+/* the reschedule ipi: one cpu telling another that it has work.
+ *
+ * Its handler does nothing but acknowledge, and that is the whole
+ * design -- the interrupt exists to end a hlt, and the dispatch loop
+ * finds the work by looking at its own queue when it wakes. Nothing is
+ * carried in the message because there is nothing a vector could say
+ * that the queue does not.
+ *
+ * Same shape as isr_timer and isr_virtio, and for the same reason:
+ * idt_dispatch is _Noreturn, so an interrupt that must return to what
+ * it interrupted needs an entry that saves the caller-clobbered
+ * registers and iretqs.
+ */
+	.text
+	.globl	isr_resched
+isr_resched:
+	pushq	%rax
+	pushq	%rcx
+	pushq	%rdx
+	pushq	%rsi
+	pushq	%rdi
+	pushq	%r8
+	pushq	%r9
+	pushq	%r10
+	pushq	%r11
+
+	call	resched_isr
+
+	popq	%r11
+	popq	%r10
+	popq	%r9
+	popq	%r8
+	popq	%rdi
+	popq	%rsi
+	popq	%rdx
+	popq	%rcx
+	popq	%rax
+	iretq
+
+	.section .note.GNU-stack, "", @progbits

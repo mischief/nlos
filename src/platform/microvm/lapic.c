@@ -155,6 +155,18 @@ lapic_ipi_wait(void)
 	}
 }
 
+/* an ordinary fixed-delivery interrupt aimed at one cpu. Same
+ * register pair as the startup sequence, and the same reason to wait:
+ * the icr holds one command at a time.
+ */
+void
+lapic_ipi(unsigned apicid, unsigned vector)
+{
+	lapic_write(REG_ICR_HI, apicid << 24);
+	lapic_write(REG_ICR_LO, vector);
+	lapic_ipi_wait();
+}
+
 /* the universal start-up algorithm, MP spec appendix B.4, example
  * B-1: INIT, wait, then two STARTUPs carrying the page the target is
  * to begin executing at.

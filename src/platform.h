@@ -177,6 +177,12 @@ void platform_chunk_free(void *p, size_t n);
  */
 unsigned platform_ncpu(void);
 
+/* wake cpu i out of its idle sleep because work was put on its queue.
+ * A no-op on a platform with one cpu, and on any cpu that is not
+ * asleep -- the caller has already decided it is worth sending.
+ */
+void platform_wake_cpu(unsigned i);
+
 /* <arch>/uart.c */
 void	uart_takeover(void);	/* wrest the wire port from the firmware */
 void	uart_init(void);

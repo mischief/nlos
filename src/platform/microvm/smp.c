@@ -187,6 +187,11 @@ smp_init(void)
 		return;
 	}
 
+	/* the vector every cpu will be woken through, installed in the
+	 * shared idt before any cpu can be sent one.
+	 */
+	intr_ipi_init();
+
 	want = fwcfg_ncpus();
 	if (want <= 1)
 		return;
@@ -203,4 +208,16 @@ smp_init(void)
 			if (startap(i, i) == 0)
 			ncpu++;
 		}
+}
+
+/* wake another cpu. The vector carries nothing: ending its hlt is the
+ * message, and the queue it then looks at is where the work is.
+ */
+void
+platform_wake_cpu(unsigned i)
+{
+	struct cpu *c = cpu_at(i);
+
+	if (c && c != cpu_self())
+		intr_resched(c->apicid);
 }

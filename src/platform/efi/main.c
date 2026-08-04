@@ -113,3 +113,10 @@ platform_ncpu(void)
 {
 	return 1;
 }
+
+/* one cpu, so there is never another to wake. */
+void
+platform_wake_cpu(unsigned i)
+{
+	(void)i;
+}
