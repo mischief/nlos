@@ -156,7 +156,8 @@ freestanding_args = [
 
 add_project_arguments(freestanding_args, language: 'c')
 
-inc = include_directories('include', 'src', 'lua', 'src/platform' / platform)
+inc = include_directories('include', 'src', 'lua', 'src' / arch,
+  'src/platform' / platform)
 
 # dirs.c/kernel.c/linit.c are firmware-blind (the platform seam is
 # platform.h + fs.h/efi.h, all resolved from the per-platform
@@ -1007,6 +1008,24 @@ luaheap_test = executable('luaheap_test',
   native: true,
 )
 test('luaheap', luaheap_test, protocol: 'tap', timeout: 120)
+
+# src/lock.h is the other file that can only be tested where there is
+# more than one cpu, which the target never has enough of and the host
+# always does. Built native, with NCPU forced past 1 so the real ticket
+# lock compiles rather than the uniprocessor barrier, and against the
+# host's own src/<arch>/machine.h for machine_relax.
+host_arch = build_machine.cpu_family()
+if host_arch in ['x86_64', 'aarch64', 'riscv64']
+  thread_dep = dependency('threads', native: true)
+  lock_test = executable('lock_test',
+    ['test/lock_test.c'],
+    include_directories: include_directories('src', 'src' / host_arch),
+    c_args: ['-DNCPU=8'],
+    dependencies: thread_dep,
+    native: true,
+  )
+  test('lock', lock_test, protocol: 'tap', timeout: 120)
+endif
 
 # the bench needs a real lua to allocate through, which is the host's
 # rather than the freestanding one this build produces.
