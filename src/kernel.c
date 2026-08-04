@@ -423,6 +423,38 @@ static int prochigh;
  * a port's identity survives being moved -- and .bss no longer holds a
  * body for every port that could ever exist.
  */
+/* the lock over everything shared between procs: the port and proc
+ * index tables, every port's message list and waiter list, the
+ * refcounts that decide when a port dies, and the rights a sender
+ * mints into a receiving proc's table.
+ *
+ * One lock, not one per port. Per-port is the obvious next refinement
+ * and is speculative until something measures contention here: a
+ * proc's own heap needs no lock (see kalloc), its lua execution needs
+ * none, and its run queues belong to its cpu, so this is taken on the
+ * ipc path only. lock.h's order already anticipates the split.
+ *
+ * The discipline is caller-holds, because the helpers nest --
+ * port_push_owned calls wake_receivers calls wait_clear and
+ * make_ready -- so a lock taken inside each would deadlock on itself.
+ * It is acquired at the outer entry points instead.
+ *
+ * Two things make "outer" not simply mean "the syscall boundary":
+ *
+ * the five calls that block (api_block, api_sendblock, api_altblock,
+ * api_altrecv, call_k) lua_yield in the middle, and a lock held across
+ * a yield is held until that proc is next resumed; and any lua C
+ * function may raise, which longjmps out past whatever would have
+ * released. So on the lua-facing paths the lock has to go around a
+ * region that neither yields nor raises, which is narrower than the
+ * function.
+ *
+ * Coverage is partial at this commit: the plain-C entry points below
+ * take it, the lua-facing ones do not yet. That is safe only because
+ * nothing runs on a second cpu -- see smp.c, where the APs still park.
+ */
+static struct lock ipclock = LOCK_INIT;
+
 static struct kport *portv[MAXPORTS];
 static int porthigh;		/* one past the highest slot ever used */
 static struct kport *kbdport;
@@ -798,6 +830,10 @@ static struct ktimer timers[MAXTIMERS];
 static void
 reap_dead_timers(void)
 {
+	/* caller holds ipclock: reached both from expire_timers, which
+	 * already has it, and from api_timer, which must take it. This
+	 * is the nesting that made the whole-function version deadlock.
+	 */
 	for (int i = 0; i < MAXTIMERS; i++)
 		if (timers[i].port && timers[i].port->dead) {
 			port_unref(timers[i].port);
@@ -808,6 +844,7 @@ reap_dead_timers(void)
 static void
 expire_timers(void)
 {
+	lock(&ipclock);
 	unsigned long long now = uptime_ms();
 
 	reap_dead_timers();	/* cancelled ones, before looking at deadlines */
@@ -822,6 +859,7 @@ expire_timers(void)
 			t->port = 0;
 		}
 	}
+	unlock(&ipclock);
 }
 
 static struct kproc *
@@ -5140,7 +5178,9 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 		    wput(&w, "broke", 5) || wbyte(&w, 'T'))
 			goto fail;
 	}
+	lock(&ipclock);
 	port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0);
+	unlock(&ipclock);
 	return;
 fail:
 	free(w.p);
@@ -5306,7 +5346,9 @@ pump_serial(void)
 	/* serialized string message: tag, u32 len, bytes */
 	buf[0] = 'S';
 	memcpy(buf + 1, &n, 4);
+	lock(&ipclock);
 	port_push(serport, buf, 5 + n, 0, 0);
+	unlock(&ipclock);
 	return 1;
 }
 
@@ -5337,8 +5379,10 @@ pump_eth(void)
 	 * information anyway -- the frames are still in the device's
 	 * queue, and this says only "ask again".
 	 */
+	lock(&ipclock);
 	if (have_eth && ethport && !ethport->head)
 		port_push(ethport, (const unsigned char *)"N", 1, 0, 0);
+	unlock(&ipclock);
 }
 
 /* ---- keyboard pump ---- */
@@ -5400,6 +5444,7 @@ pump_devkbd(void)
 static void
 pump_keyboard(void)
 {
+	lock(&ipclock);
 	EFI_INPUT_KEY key;
 
 	while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_SUCCESS) {
@@ -5434,6 +5479,7 @@ pump_keyboard(void)
 		msg[5] = (unsigned char)key.UnicodeChar;
 		port_push(kbdport, msg, sizeof msg, 0, 0);
 	}
+	unlock(&ipclock);
 }
 
 /* ---- kernel ---- */
@@ -6219,6 +6265,18 @@ kernel_run(void)
 		int ran = 0;
 
 		cpu_self()->nlaps++;
+
+		/* nothing may hold the ipc lock across the top of a lap:
+		 * every acquisition is inside one call and releases
+		 * before returning to here. This catches the release
+		 * that a lua error longjmped past, which is the failure
+		 * mode the lua-facing acquisitions have and which no
+		 * amount of reading finds reliably. It is a real check on
+		 * one cpu, which is the point -- the whole existing suite
+		 * exercises it.
+		 */
+		if (holding(&ipclock))
+			platform_abort("ipclock held across a lap");
 
 		/* drain the periodic timer's signal. nothing is paced
 		 * against it any more, but a tick that fires during a busy
