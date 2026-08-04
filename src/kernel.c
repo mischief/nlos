@@ -2607,12 +2607,21 @@ static int
 api_newport(lua_State *L)
 {
 	struct kproc *p = self(L);
-	struct kport *port = port_new();
+	struct kport *port;
+	int h = -1;
+
+	/* both allocations inside one region, and the errors raised
+	 * outside it: luaL_error longjmps, so nothing that raises may
+	 * run while this is held.
+	 */
+	lock(&ipclock);
+	port = port_new();
+	if (port)
+		h = right_new(p, port, 1);
+	unlock(&ipclock);
 
 	if (!port)
 		return luaL_error(L, "out of ports");
-	int h = right_new(p, port, 1);
-
 	if (h < 0)
 		return luaL_error(L, "out of rights");
 	lua_pushinteger(L, h);
@@ -2677,13 +2686,18 @@ static int
 api_sendright(lua_State *L)
 {
 	struct kproc *p = self(L);
-	struct right *r = right_get(p, luaL_checkinteger(L, 1));
+	lua_Integer arg = luaL_checkinteger(L, 1);	/* raises; before the lock */
+	struct right *r;
+	int h = -1;
+
+	lock(&ipclock);
+	r = right_get(p, arg);
+	if (r)
+		h = right_new(p, r->port, 0);
+	unlock(&ipclock);
 
 	if (!r)
 		return luaL_error(L, "bad right");
-
-	int h = right_new(p, r->port, 0);
-
 	if (h < 0)
 		return luaL_error(L, "out of rights");
 	lua_pushinteger(L, h);
@@ -2893,14 +2907,19 @@ static int
 api_close(lua_State *L)
 {
 	struct kproc *p = self(L);
-	lua_Integer h = luaL_checkinteger(L, 1);
-	struct right *r = right_get(p, h);
+	lua_Integer h = luaL_checkinteger(L, 1);	/* raises; before the lock */
+	struct right *r;
+
+	lock(&ipclock);
+	r = right_get(p, h);
+	if (r && h != 0)
+		right_drop(r);
+	unlock(&ipclock);
 
 	if (!r)
 		return luaL_error(L, "bad right");
 	if (h == 0)
 		return luaL_error(L, "cannot close self port");
-	right_drop(r);
 	if ((int)h < p->rhint)
 		p->rhint = (int)h;	/* reuse the slot we just freed */
 	return 0;
@@ -3938,6 +3957,12 @@ api_timer(lua_State *L)
 
 	int slot = -1;
 
+	/* everything from here down is shared -- the timer table, the
+	 * port table, this proc's rights -- and nothing in it raises:
+	 * the failure paths all return 0 to lua rather than erroring.
+	 * So one region covers the whole of it.
+	 */
+	lock(&ipclock);
 	for (int tries = 0; tries < 2 && slot < 0; tries++) {
 		for (int i = 0; i < MAXTIMERS; i++)
 			if (!timers[i].port) {
@@ -3953,23 +3978,29 @@ api_timer(lua_State *L)
 		if (slot < 0 && tries == 0)
 			reap_dead_timers();
 	}
-	if (slot < 0)
+	if (slot < 0) {
+		unlock(&ipclock);
 		return 0;
+	}
 
 	struct kport *port = port_new();
 
-	if (!port)
+	if (!port) {
+		unlock(&ipclock);
 		return 0;
+	}
 
 	int h = right_new(p, port, 1);
 
 	if (h < 0) {
 		port->used = 0;
+		unlock(&ipclock);
 		return 0;
 	}
 	port->nrights++;	/* the timer table's own ref */
 	timers[slot].port = port;
 	timers[slot].due_ms = uptime_ms() + (unsigned long long)ms;
+	unlock(&ipclock);
 	lua_pushinteger(L, h);
 	return 1;
 }
