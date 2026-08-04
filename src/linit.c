@@ -95,6 +95,13 @@ lazylib_index(lua_State *L)
 				if (strcmp(key, LUA_DBLIBNAME) == 0 &&
 				    !kernel_current_is_boot())
 					kernel_strip_debug(L);
+				/* every proc, boot included: a generator
+				 * truncated by the quantum is wrong for a
+				 * test payload exactly as it is for anyone
+				 * else.
+				 */
+				if (strcmp(key, LUA_COLIBNAME) == 0)
+					kernel_wrap_coroutine(L);
 				return 1;
 			}
 	/* only a string key is a variable name. _G[1] and _G[t] are table

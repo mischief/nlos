@@ -45,6 +45,10 @@ void	kernel_strip_io(struct lua_State *L);
  * leaves it there. Same contract, same reason, same re-strip hazard.
  */
 void	kernel_strip_debug(struct lua_State *L);
+/* kernel_wrap_coroutine expects the coroutine table on top of the stack
+ * and replaces wrap with one that is transparent to preemption.
+ */
+void	kernel_wrap_coroutine(struct lua_State *L);
 int	kernel_current_is_boot(void);
 
 /* dynamic wait-set for token/Event-based device completions (net.c's

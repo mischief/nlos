@@ -38,6 +38,14 @@ struct lua_State;
 struct kextra {
 	struct kproc *p;		/* offset 0: see self() in kernel.c */
 	TAILQ_ENTRY(kextra) link;
+	/* this state's last yield came from preempt_hook rather than from
+	 * the code running in it. lua_yield unwinds to the RESUMER of the
+	 * state it fires in, so for a coroutine that is whoever called
+	 * resume -- ordinary code that never asked to be interrupted and
+	 * reads a yield of no values as "finished". kernel_cowrap resumes
+	 * again instead of believing it; see preempt_hook.
+	 */
+	int preempted;
 };
 
 #undef LUA_EXTRASPACE

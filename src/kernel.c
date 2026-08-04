@@ -1592,6 +1592,146 @@ kernel_current_is_boot(void)
 	return current_proc && current_proc->priv == PRIV_BOOT;
 }
 
+/* ---- coroutine.wrap, made transparent to preemption ----
+ *
+ * preempt_hook stops whatever state is running and yields it, and
+ * lua_yield unwinds to the RESUMER of that state. For a thread that is
+ * thread.run, which knows what the yield meant. For an ordinary
+ * coroutine it is whoever called it -- and `for v in seq(n)` reads a
+ * yield of no values as the generator being finished, so the loop ends
+ * early and the caller is handed short data with no error at all.
+ *
+ * Measured before this existed, items delivered out of 10 by work done
+ * per item: 10 at 1, 10 at 100, 3 at 10000, none at 200000. A generator
+ * was usable only while it stayed under a quantum.
+ *
+ * The fix is not to stop preempting -- that is what stops a proc
+ * spinning inside a coroutine from holding the machine, and it is the
+ * only thing that does (see the walk-out in preempt_hook and
+ * test_nesting). It is to resume again rather than believe the yield.
+ * The coroutine's state is untouched by being stopped, so resuming
+ * continues at the instruction it was stopped at, and the caller never
+ * learns it happened.
+ *
+ * Yielding OURSELVES first is what keeps that from defeating the
+ * preemption it hides: the level above -- thread.run, or the kernel --
+ * gets its chance to deschedule, and both resume in place, so control
+ * comes back here and the generator carries on. The proc still honours
+ * its quantum; only the generator is spared knowing about it.
+ *
+ * Nested wraps compose because the explicit yield below marks THIS
+ * state preempted too, so an enclosing wrap treats it the same way
+ * rather than reporting a finished generator to its own caller.
+ *
+ * coroutine.resume is deliberately left alone. It is the interface a
+ * scheduler uses -- lib/thread.lua's resume_one is exactly this -- and
+ * a scheduler has to see the preemption to do its job. Swallowing it
+ * there would put a table allocation on the hottest path in the system
+ * and leave run() unable to tell a cut thread from a parked one.
+ */
+static int kernel_cowrap_resume(lua_State *L, lua_State *co, int narg);
+
+static int
+kernel_cowrap_k(lua_State *L, int status, lua_KContext ctx)
+{
+	lua_State *co = lua_tothread(L, lua_upvalueindex(1));
+
+	(void)status;
+	(void)ctx;
+	/* no arguments on the way back in: the coroutine is stopped
+	 * mid-instruction, not waiting at a yield for a value.
+	 */
+	return kernel_cowrap_resume(L, co, 0);
+}
+
+static int
+kernel_cowrap_resume(lua_State *L, lua_State *co, int narg)
+{
+	struct kextra *kx = (struct kextra *)lua_getextraspace(co);
+
+	for (;;) {
+		int nres, st;
+
+		if (!lua_checkstack(co, narg))
+			return luaL_error(L, "too many arguments to resume");
+		lua_xmove(L, co, narg);
+		kx->preempted = 0;
+		st = lua_resume(co, L, narg, &nres);
+		if (st != LUA_OK && st != LUA_YIELD) {
+			int s = lua_status(co);
+
+			if (s != LUA_OK && s != LUA_YIELD) {
+				s = lua_closethread(co, L);
+				lua_xmove(co, L, 1);
+			} else {
+				lua_xmove(co, L, 1);
+			}
+			if (s != LUA_ERRMEM &&
+			    lua_type(L, -1) == LUA_TSTRING) {
+				luaL_where(L, 1);
+				lua_insert(L, -2);
+				lua_concat(L, 2);
+			}
+			return lua_error(L);
+		}
+		if (!lua_checkstack(L, nres + 1)) {
+			lua_pop(co, nres);
+			return luaL_error(L, "too many results to resume");
+		}
+		lua_xmove(co, L, nres);
+		if (st != LUA_YIELD || !kx->preempted)
+			return nres;
+
+		/* stopped by the hook. Nothing was yielded -- drop it
+		 * anyway rather than trust the count -- and go round.
+		 */
+		lua_pop(L, nres);
+		kx->preempted = 0;
+		if (!lua_isyieldable(L)) {
+			/* nowhere to hand the quantum to, so carry on
+			 * rather than report a generator that is not
+			 * finished as finished. Correctness first; the
+			 * proc is descheduled at the next chance.
+			 */
+			narg = 0;
+			continue;
+		}
+		((struct kextra *)lua_getextraspace(L))->preempted = 1;
+		return lua_yieldk(L, 0, 0, kernel_cowrap_k);
+	}
+}
+
+static int
+kernel_cowrap_aux(lua_State *L)
+{
+	lua_State *co = lua_tothread(L, lua_upvalueindex(1));
+
+	return kernel_cowrap_resume(L, co, lua_gettop(L));
+}
+
+static int
+kernel_cowrap(lua_State *L)
+{
+	lua_State *co;
+
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+	co = lua_newthread(L);
+	lua_pushvalue(L, 1);
+	lua_xmove(L, co, 1);
+	lua_pushcclosure(L, kernel_cowrap_aux, 1);
+	return 1;
+}
+
+/* the coroutine table is on top of the stack. */
+void
+kernel_wrap_coroutine(lua_State *L)
+{
+	if (!lua_istable(L, -1))
+		return;
+	lua_pushcfunction(L, kernel_cowrap);
+	lua_setfield(L, -2, "wrap");
+}
+
 /* ---- lua api (proc pointer lives in the state's extra space) ---- */
 
 /* the state a per-state record belongs to: the record sits immediately
@@ -3962,6 +4102,7 @@ kernel_costart(lua_State *from, lua_State *nw)
 	struct kproc *p = ((struct kextra *)lua_getextraspace(from))->p;
 
 	kx->p = p;
+	kx->preempted = 0;
 	memset(&kx->link, 0, sizeof kx->link);
 	if (p && p->coros.tqh_last)
 		TAILQ_INSERT_TAIL(&p->coros, kx, link);
@@ -4258,6 +4399,7 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 	 * to thread.run is descheduled normally.
 	 */
 	if (p && p->torture && L != p->co) {
+		((struct kextra *)lua_getextraspace(L))->preempted = 1;
 		lua_yield(L, 0);
 		return;		/* not reached */
 	}
@@ -4304,6 +4446,14 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 			p->hookforced = 1;
 		}
 	}
+	/* the resumer of a state that is not p->co is lua code that never
+	 * asked for this. kernel_cowrap reads the mark and resumes again
+	 * rather than reporting a coroutine that is not finished as
+	 * finished; a scheduler using coroutine.resume sees the yield
+	 * itself and handles it, which is what lib/thread.lua does.
+	 */
+	if (p && L != p->co)
+		((struct kextra *)lua_getextraspace(L))->preempted = 1;
 	lua_yield(L, 0);
 }
 
