@@ -489,6 +489,11 @@ lua_payload = files(
   'bin/ls.lua',
   'bin/seq.lua',
   'bin/smiley.lua',
+  # vi, and its ed/ engine and terminal (lib/ed/*). a full-screen program
+  # over the tty capability -- see lib/prog.lua and lib/caps.lua.
+  'bin/vi.lua',
+  'lib/ed/buffer.lua',
+  'lib/ed/terminfo.lua',
   'lib/caps.lua',
   'task/cons.lua',
   'lib/chan.lua',
@@ -695,7 +700,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'ports',
               'fb', 'fbprog',
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
-              'strictglobals', 'efigefs', 'nsfs']
+              'strictglobals', 'efigefs', 'nsfs', 'vi']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
