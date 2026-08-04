@@ -6739,6 +6739,175 @@ run_proc(struct kproc *p)
 #define TICK_SLOW_100NS  150000		/* 15ms, honoured accurately */
 #define TICK_IDLE_THRESHOLD 25		/* consecutive empty polls before backing off */
 
+/* one lap of dispatch on one cpu: both phases over its own queues,
+ * then the drain and the swap. Every cpu that schedules runs this and
+ * nothing else -- what the boot processor does around it (the device
+ * pumps, the timers, the firmware tick) is machine-wide work that an
+ * AP must not touch, not part of scheduling.
+ *
+ * Returns whether anything ran, which is what the caller's idle
+ * decision is made on.
+ */
+static int
+dispatch_lap(struct cpu *me)
+{
+	int ran = 0;
+
+	lock(&me->lock);
+	int budget = me->runq->n;
+
+	unlock(&me->lock);
+
+	for (int i = 0; i < budget; i++) {
+		struct kproc *p;
+
+		lock(&me->lock);
+		p = rq_take_high(me->runq);
+		unlock(&me->lock);
+		if (!p)
+			break;
+		/* outside the lock, and this is the rule the whole
+		 * scheme rests on: a resume runs lua, which can send,
+		 * which takes the ipc lock and then some cpu's runq
+		 * lock. Holding this across it would invert that order
+		 * and deadlock against any other cpu doing the same.
+		 */
+		if (run_proc(p))
+			ran = 1;
+		if (p->status == READY) {
+			lock(&me->lock);
+			rq_add(me->donq, p);
+			unlock(&me->lock);
+		}
+	}
+
+	/* phase two is bounded for the same reason phase one is, and
+	 * it is the bound that makes the lap terminate at all. a proc
+	 * woken mid-lap joins the current runq (see make_ready), so
+	 * two procs feeding each other messages hand phase two a fresh
+	 * proc every time it takes one. an unbounded drain never
+	 * reaches the top of the loop again, and expire_timers,
+	 * pump_eth and pump_serial all live there -- one busy pair
+	 * stops every timer on the machine, in every proc, whether or
+	 * not it has anything to do with the pair.
+	 *
+	 * the floor is what keeps the bound from being expensive: see
+	 * LAPSPILL.
+	 */
+	lock(&me->lock);
+	int spill = me->runq->n < LAPSPILL ? LAPSPILL : me->runq->n;
+
+	unlock(&me->lock);
+
+	for (int i = 0; i < spill; i++) {
+		struct kproc *p;
+
+		lock(&me->lock);
+		p = rq_take_any(me->runq);
+		unlock(&me->lock);
+		if (!p)
+			break;
+		if (run_proc(p))
+			ran = 1;
+		if (p->status == READY) {
+			lock(&me->lock);
+			rq_add(me->donq, p);
+			unlock(&me->lock);
+		}
+	}
+
+	/* whatever the bound left behind was woken this lap and has
+	 * not run: it goes onto the set that becomes the next runq,
+	 * not the one that becomes the next donq. leaving it where it
+	 * lies would park it a full lap behind the procs that already
+	 * had a turn, and a lap with nothing else runnable would go to
+	 * the idle sleep with work in hand.
+	 */
+	lock(&me->lock);
+	for (;;) {
+		struct kproc *p = rq_take_any(me->runq);
+
+		if (!p)
+			break;
+		rq_add(me->donq, p);
+	}
+	unlock(&me->lock);
+
+	/* the lap is over: what ran becomes what runs next. procs
+	 * woken from here on join the new runq and so get a turn in
+	 * the next lap rather than being lost.
+	 */
+	{
+		struct rqset *t;
+
+		lock(&me->lock);
+		t = me->runq;
+		me->runq = me->donq;
+		me->donq = t;
+		unlock(&me->lock);
+	}
+
+	return ran;
+}
+
+/* what an application processor runs, and the whole of it.
+ *
+ * The boot processor's loop is the same two phases wrapped in
+ * machine-wide work: the device pumps, expire_timers, the firmware
+ * tick, the boot payload. None of that is an AP's business. On
+ * -Dplatform=efi it could not be even if it were wanted -- TPL is one
+ * big cooperative lock (docs/uefi-notes.md) and an AP calling firmware
+ * is undefined -- and this platform inherits that division rather than
+ * inventing one.
+ *
+ * The idle is a real sleep, ended by the reschedule ipi that make_ready
+ * sends when it puts work on this cpu's queue. It is not a new "wait
+ * for the next thing" primitive: it is the same shape efi_shim.c's
+ * wait already has, given the one wakeup source an AP has.
+ */
+void
+kernel_run_ap(void)
+{
+	struct cpu *me = cpu_self();
+
+	lock(&me->lock);
+	me->dispatching = 1;
+	unlock(&me->lock);
+
+	while (nlive > 0) {
+		me->nlaps++;
+		if (dispatch_lap(me)) {
+			me->ndispatch++;
+			continue;
+		}
+
+		/* nothing to run. Publish that under the lock, because
+		 * make_ready reads it under the same lock to decide
+		 * whether to send the ipi -- that is what makes it
+		 * impossible to sleep just after someone decided we did
+		 * not need waking.
+		 */
+		lock(&me->lock);
+		if (me->runq->n + me->donq->n > 0) {
+			unlock(&me->lock);
+			continue;
+		}
+		me->idle = 1;
+		unlock(&me->lock);
+
+		me->nidle++;
+		platform_cpu_idle();
+
+		lock(&me->lock);
+		me->idle = 0;
+		unlock(&me->lock);
+	}
+
+	lock(&me->lock);
+	me->dispatching = 0;
+	unlock(&me->lock);
+}
+
 void
 kernel_run(void)
 {
@@ -6762,7 +6931,8 @@ kernel_run(void)
 	cpu_self()->dispatching = 1;
 
 	while (nlive > 0) {
-		int ran = 0;
+		struct cpu *me = cpu_self();
+		int ran;
 
 		cpu_self()->nlaps++;
 
@@ -6844,101 +7014,7 @@ kernel_run(void)
 		 * per-lap marker, so nothing here is sized against MAXPROCS
 		 * and nothing scans.
 		 */
-		struct cpu *me = cpu_self();
-
-		lock(&me->lock);
-		int budget = me->runq->n;
-
-		unlock(&me->lock);
-
-		for (int i = 0; i < budget; i++) {
-			struct kproc *p;
-
-			lock(&me->lock);
-			p = rq_take_high(me->runq);
-			unlock(&me->lock);
-			if (!p)
-				break;
-			/* outside the lock, and this is the rule the whole
-			 * scheme rests on: a resume runs lua, which can send,
-			 * which takes the ipc lock and then some cpu's runq
-			 * lock. Holding this across it would invert that order
-			 * and deadlock against any other cpu doing the same.
-			 */
-			if (run_proc(p))
-				ran = 1;
-			if (p->status == READY) {
-				lock(&me->lock);
-				rq_add(me->donq, p);
-				unlock(&me->lock);
-			}
-		}
-
-		/* phase two is bounded for the same reason phase one is, and
-		 * it is the bound that makes the lap terminate at all. a proc
-		 * woken mid-lap joins the current runq (see make_ready), so
-		 * two procs feeding each other messages hand phase two a fresh
-		 * proc every time it takes one. an unbounded drain never
-		 * reaches the top of the loop again, and expire_timers,
-		 * pump_eth and pump_serial all live there -- one busy pair
-		 * stops every timer on the machine, in every proc, whether or
-		 * not it has anything to do with the pair.
-		 *
-		 * the floor is what keeps the bound from being expensive: see
-		 * LAPSPILL.
-		 */
-		lock(&me->lock);
-		int spill = me->runq->n < LAPSPILL ? LAPSPILL : me->runq->n;
-
-		unlock(&me->lock);
-
-		for (int i = 0; i < spill; i++) {
-			struct kproc *p;
-
-			lock(&me->lock);
-			p = rq_take_any(me->runq);
-			unlock(&me->lock);
-			if (!p)
-				break;
-			if (run_proc(p))
-				ran = 1;
-			if (p->status == READY) {
-				lock(&me->lock);
-				rq_add(me->donq, p);
-				unlock(&me->lock);
-			}
-		}
-
-		/* whatever the bound left behind was woken this lap and has
-		 * not run: it goes onto the set that becomes the next runq,
-		 * not the one that becomes the next donq. leaving it where it
-		 * lies would park it a full lap behind the procs that already
-		 * had a turn, and a lap with nothing else runnable would go to
-		 * the idle sleep with work in hand.
-		 */
-		lock(&me->lock);
-		for (;;) {
-			struct kproc *p = rq_take_any(me->runq);
-
-			if (!p)
-				break;
-			rq_add(me->donq, p);
-		}
-		unlock(&me->lock);
-
-		/* the lap is over: what ran becomes what runs next. procs
-		 * woken from here on join the new runq and so get a turn in
-		 * the next lap rather than being lost.
-		 */
-		{
-			struct rqset *t;
-
-			lock(&me->lock);
-			t = me->runq;
-			me->runq = me->donq;
-			me->donq = t;
-			unlock(&me->lock);
-		}
+		ran = dispatch_lap(me);
 
 		if (!ran) {
 			/* everyone blocked: sleep until a key, a frame, or

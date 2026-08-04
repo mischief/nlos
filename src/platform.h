@@ -183,6 +183,11 @@ unsigned platform_ncpu(void);
  */
 void platform_wake_cpu(unsigned i);
 
+/* sleep this cpu until an interrupt. Returns when one arrives, which
+ * for an AP means the reschedule ipi and nothing else.
+ */
+void platform_cpu_idle(void);
+
 /* <arch>/uart.c */
 void	uart_takeover(void);	/* wrest the wire port from the firmware */
 void	uart_init(void);

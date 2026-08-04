@@ -23,6 +23,12 @@ int	kernel_spawn_file(const char *path);	/* returns pid or -1 */
 int	kernel_spawn_buffer(const char *code, size_t len);
 void	kernel_run(void);			/* until all procs die */
 
+/* the dispatch loop for a cpu that is not the boot processor: the same
+ * two phases, none of the machine-wide work. Returns when the machine
+ * does.
+ */
+void	kernel_run_ap(void);
+
 /* checked capability, write/append only (read is ambient): does
  * whoever's currently resumed hold a right to the disk port? used
  * from stdio.c's fopen, which has no lua_State to check a right

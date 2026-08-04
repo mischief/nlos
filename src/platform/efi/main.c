@@ -120,3 +120,11 @@ platform_wake_cpu(unsigned i)
 {
 	(void)i;
 }
+
+/* never reached: efi has one cpu and only the boot processor's loop,
+ * which sleeps through firmware's WaitForEvent instead.
+ */
+void
+platform_cpu_idle(void)
+{
+}

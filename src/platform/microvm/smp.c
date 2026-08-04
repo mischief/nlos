@@ -221,3 +221,14 @@ platform_wake_cpu(unsigned i)
 	if (c && c != cpu_self())
 		intr_resched(c->apicid);
 }
+
+/* sleep until an interrupt. sti before hlt is one instruction pair by
+ * architectural guarantee -- an interrupt arriving between them is
+ * held until after the hlt -- so a wakeup sent just before this cannot
+ * be missed.
+ */
+void
+platform_cpu_idle(void)
+{
+	__asm__ volatile ("sti; hlt");
+}
