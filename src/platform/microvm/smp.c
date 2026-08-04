@@ -30,6 +30,7 @@
 #include "platform.h"
 #include "smp.h"
 #include "cpu.h"
+#include "kernel.h"
 #include "machine.h"
 
 /* the boot stack in boot.S is 64K, and an AP does the same work on
@@ -114,11 +115,11 @@ fwcfg_ncpus(void)
  * whatever state a SIPI leaves, which is not enabled -- publishes
  * itself, and parks.
  *
- * The park is hlt with interrupts disabled, which is a cpu that will
- * never wake. That is correct for now and is the thing the next commit
- * replaces: an idle cpu has to be woken by an IPI when work arrives,
- * and until there is work to send it, a wakeable idle loop would only
- * be a spin with extra steps.
+ * Then it runs the scheduler. kernel_run_ap is the same two dispatch
+ * phases the boot processor runs, over this cpu's own queues, with
+ * none of the machine-wide work: no device pumps, no timers, no
+ * firmware. It returns when the machine does, and then this cpu has
+ * nothing left to do.
  */
 void
 ap_main(unsigned idx)
@@ -127,11 +128,14 @@ ap_main(unsigned idx)
 
 	lapic_init();
 
-	/* publish last: the BSP takes this as "cpu idx is up and its
-	 * struct is filled in", so everything above has to have
-	 * happened first. Release pairs with the BSP's acquire.
+	/* publish before scheduling, not after: the BSP is waiting on
+	 * this to decide the cpu came up, and kernel_run_ap does not
+	 * return until the machine is finished. Release pairs with the
+	 * BSP's acquire.
 	 */
 	atomic_store_explicit(&online, idx, memory_order_release);
+
+	kernel_run_ap();
 
 	for (;;)
 		__asm__ volatile ("cli; hlt");

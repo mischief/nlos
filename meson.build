@@ -879,6 +879,39 @@ foreach t : microvm_tests
   )
 endforeach
 
+# the same payloads on a machine with more than one cpu. This is where
+# the scheduler, the ipc lock and the reschedule ipi are actually under
+# contention rather than merely present: everything above runs them on
+# one cpu, which exercises the ordering and none of the racing.
+#
+# Two shapes because they fail differently. Two cpus is the smallest
+# machine where a wakeup can cross, and four is where a proc's home is
+# usually not the sender's.
+microvm_smp_tests = [
+  ['hello', []],
+  ['rng', []],
+  ['idle', []],
+  ['blk', ['--blk']],
+  ['p9mount', ['--9p']],
+  ['p9par', ['--9p']],
+  ['eth', ['--net']],
+  ['tcp', ['--netecho']],
+  ['gefssrv', ['--gefscommit']],
+]
+
+foreach n : ['2', '4']
+  foreach t : microvm_smp_tests
+    test('smp' + n + '-' + t[0], microvm_boottest,
+      args: [luaos_microvm_elf,
+        files('test/boot/microvm_' + t[0] + '.lua'),
+        '--smp=' + n] + t[1],
+      protocol: 'tap',
+      timeout: 90,
+      is_parallel: true,
+    )
+  endforeach
+endforeach
+
 foreach t : shared_tests
   test('microvm-' + t[0], microvm_boottest,
     args: [luaos_microvm_elf, files('test/boot/shared_' + t[0] + '.lua')] + t[1],
