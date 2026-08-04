@@ -82,7 +82,7 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 /* floor on phase two's dispatch bound -- see kernel_run.
  *
  * the bound is what ends a lap at all, because a mid-lap wakeup joins
- * the current cpu_self()->runq and two procs feeding each other hand phase two a
+ * the current runq and two procs feeding each other hand phase two a
  * fresh proc every time it takes one. sized to amortise rather than
  * merely to terminate: everything between laps costs a fixed toll, one
  * port-i/o trap on microvm and three firmware calls on efi, and a bound
@@ -469,8 +469,8 @@ static int nlive;
  */
 static int nextpid;
 
-/* who's running right now is cpu_self()->current: run_proc sets it
- * before every lua_resume and clears it after. plain C code with no
+/* who's running right now is cpu_self()->current, which run_proc sets
+ * before every lua_resume and clears after. plain C code with no
  * lua_State (stdio.c's fopen, called via liolib.c with no proc
  * identity threaded through) uses this to find out who's asking --
  * the only way to check a capability from a context where self(L)
@@ -5895,7 +5895,7 @@ reprioritize(struct kproc *p, int nrunnable)
  * are irregular where laps were not. that is why the chunked decay above
  * had to come first.
  */
-/* the two dispatch sets. cpu_self()->runq holds procs still to run this lap, cpu_self()->donq
+/* the two dispatch sets. runq holds procs still to run this lap, donq
  * those that have already had their turn; they swap at the end of a lap.
  */
 
@@ -6001,7 +6001,7 @@ make_ready(struct kproc *p)
 	/* a proc already waiting its turn keeps the lap it was in. one
 	 * arriving fresh joins the current lap, which is how a mid-lap
 	 * wakeup can still get a turn this lap -- if the lap's remaining
-	 * budget reaches it, and the next lap's opening cpu_self()->runq if not.
+	 * budget reaches it, and the next lap's opening runq if not.
 	 */
 	rq_add(keep ? keep : cpu_self()->runq, p);
 }
@@ -6263,7 +6263,7 @@ kernel_run(void)
 		 * machine. that matters because policy is exactly the part we
 		 * expect to get wrong -- see AGENTS.md.
 		 *
-		 * plan 9 cannot do this: runproc() scans cpu_self()->runq[] from the top
+		 * plan 9 cannot do this: runproc() scans runq[] from the top
 		 * and takes the first thing it finds, with no aging, so a
 		 * high-basepri proc starves a low one indefinitely (which
 		 * PriEdf > PriKproc > PriNormal makes deliberate). it has
@@ -6282,7 +6282,7 @@ kernel_run(void)
 		 * and is bounded too, by how many were waiting when it
 		 * started or by LAPSPILL, whichever is larger.
 		 *
-		 * "already had its turn" is membership in cpu_self()->donq rather than a
+		 * "already had its turn" is membership in donq rather than a
 		 * per-lap marker, so nothing here is sized against MAXPROCS
 		 * and nothing scans.
 		 */
@@ -6301,7 +6301,7 @@ kernel_run(void)
 
 		/* phase two is bounded for the same reason phase one is, and
 		 * it is the bound that makes the lap terminate at all. a proc
-		 * woken mid-lap joins the current cpu_self()->runq (see make_ready), so
+		 * woken mid-lap joins the current runq (see make_ready), so
 		 * two procs feeding each other messages hand phase two a fresh
 		 * proc every time it takes one. an unbounded drain never
 		 * reaches the top of the loop again, and expire_timers,
@@ -6326,8 +6326,8 @@ kernel_run(void)
 		}
 
 		/* whatever the bound left behind was woken this lap and has
-		 * not run: it goes onto the set that becomes the next cpu_self()->runq,
-		 * not the one that becomes the next cpu_self()->donq. leaving it where it
+		 * not run: it goes onto the set that becomes the next runq,
+		 * not the one that becomes the next donq. leaving it where it
 		 * lies would park it a full lap behind the procs that already
 		 * had a turn, and a lap with nothing else runnable would go to
 		 * the idle sleep with work in hand.
@@ -6341,7 +6341,7 @@ kernel_run(void)
 		}
 
 		/* the lap is over: what ran becomes what runs next. procs
-		 * woken from here on join the new cpu_self()->runq and so get a turn in
+		 * woken from here on join the new runq and so get a turn in
 		 * the next lap rather than being lost.
 		 */
 		{
@@ -6381,8 +6381,8 @@ kernel_run(void)
 /* disk gates write/append only (read is ambient, see stdio.c's
  * fopen): does whoever is currently resumed hold any right to
  * diskport? used from fopen, which has no lua_State at all --
- * liolib.c's io.open calls it as plain C, so cpu_self()->current is the
- * only way to learn who's asking.
+ * liolib.c's io.open calls it as plain C, so cpu_self()->current is
+ * the only way to learn who's asking.
  */
 static int
 proc_has_port(struct kproc *p, struct kport *port)
