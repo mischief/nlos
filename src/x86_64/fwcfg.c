@@ -97,3 +97,23 @@ fwcfg_load(const char *name, char **buf, size_t *len)
 	}
 	return -1;
 }
+
+/* the numeric keys, which predate the file directory and are still
+ * where the machine's own shape is reported. Selecting a key and
+ * reading is the whole protocol; the signature check is the same one
+ * fwcfg_load makes, for the same reason.
+ */
+int
+fwcfg_key(unsigned key, void *buf, size_t len)
+{
+	char sig[4];
+
+	outw(SEL_PORT, FW_CFG_SIGNATURE);
+	fwcfg_readn(sig, 4);
+	if (memcmp(sig, "QEMU", 4) != 0)
+		return -1;
+
+	outw(SEL_PORT, (unsigned short)key);
+	fwcfg_readn(buf, len);
+	return 0;
+}

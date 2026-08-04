@@ -152,6 +152,12 @@ microvm_main(unsigned long start_info)
 	 */
 	uart_irq_enable();
 
+	/* after intr_init, because starting a cpu is an IPI and the
+	 * local APIC has to be enabled to send one; before anything
+	 * else, because the cpus are what the rest of this runs on.
+	 */
+	smp_init();
+
 	kernel_clock_init();
 
 	if (fs_init() != 0)

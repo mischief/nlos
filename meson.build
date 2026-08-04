@@ -63,6 +63,11 @@ if arch == 'x86_64'
     'src/x86_64/fwcfg.c',
     'src/x86_64/math.c',
   )
+  if platform == 'microvm'
+    # the only configuration with more than one cpu; everything else
+    # takes lock.h's uniprocessor path.
+    arch_args += '-DNCPU=8'
+  endif
   if platform == 'efi'
     arch_src += files('src/x86_64/uart.c')
   else
@@ -78,6 +83,8 @@ if arch == 'x86_64'
       'src/platform/microvm/pci.c',
       'src/platform/microvm/tsc.c',
       'src/platform/microvm/pmm.c',
+      'src/platform/microvm/smp.c',
+      'src/platform/microvm/smp_trampoline.S',
       'src/platform/microvm/uart.c',
       'src/platform/microvm/reset.c',
       'src/platform/microvm/efi_shim.c',
@@ -860,6 +867,7 @@ microvm_tests = [
   ['tcp', ['--netecho']],
   ['tcpbench', ['--net']],
   ['idle', []],
+  ['smp', ['--smp=2']],
 ]
 
 foreach t : microvm_tests

@@ -24,6 +24,17 @@ void	platform_stall_us(unsigned long us);
 void	lapic_init(void);
 void	lapic_timer_arm_periodic(unsigned long long period_100ns);
 void	lapic_timer_rearm(void);
+unsigned lapic_id(void);
+void	lapic_eoi(void);
+
+/* the universal start-up algorithm; see lapic.c. entry must be a 4K
+ * page below 1MB, which is what the target begins executing in real
+ * mode.
+ */
+void	lapic_startap(unsigned apicid, unsigned long entry);
+
+/* smp.c -- start the other cpus, if this machine has any and can. */
+void	smp_init(void);
 
 /* i8259.c / i8253.c -- and only ever on a machine that has neither. */
 void	pic_init(void);

@@ -83,3 +83,14 @@ out:
 		BS->WaitForEvent(1, &ST->ConIn->WaitForKey, &index);
 	return EFI_SUCCESS;
 }
+
+/* one cpu, always. EFI's other processors are reachable only through
+ * EFI_MP_SERVICES_PROTOCOL, and an AP started that way still may not
+ * call firmware -- which is most of what this platform does. So the
+ * question is not open here the way it is on microvm.
+ */
+unsigned
+platform_ncpu(void)
+{
+	return 1;
+}

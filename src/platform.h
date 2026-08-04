@@ -172,6 +172,11 @@ void platform_meminfo(unsigned long long *total, unsigned long long *avail);
 void *platform_chunk_alloc(size_t n);
 void platform_chunk_free(void *p, size_t n);
 
+/* how many cpus are running this kernel. One everywhere except
+ * microvm on x86_64, and one there too until smp_init finds more.
+ */
+unsigned platform_ncpu(void);
+
 /* <arch>/uart.c */
 void	uart_takeover(void);	/* wrest the wire port from the firmware */
 void	uart_init(void);
@@ -181,6 +186,12 @@ void	uart_tx(const char *s, unsigned long n);
 
 /* <arch>/fwcfg.c */
 int	fwcfg_load(const char *name, char **buf, size_t *len);
+
+/* a fw_cfg numeric key rather than a named file: the small fixed set
+ * qemu has always had, of which smp.c wants NB_CPUS. Returns 0 on
+ * success, -1 if there is no fw_cfg here.
+ */
+int	fwcfg_key(unsigned key, void *buf, size_t len);
 
 /* <arch>/reloc.c -- called from the entry stub before efi_main */
 void	self_relocate(char *base);

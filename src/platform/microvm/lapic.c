@@ -27,7 +27,19 @@
 #define REG_ID		0x020
 #define REG_EOI		0x0B0
 #define REG_SVR		0x0F0
+#define REG_ICR_LO	0x300
+#define REG_ICR_HI	0x310
 #define REG_LVT_TIMER	0x320
+
+/* the interrupt command register, which is how one cpu says anything
+ * to another. The high half carries the destination apic id and must
+ * be written first; writing the low half is what sends.
+ */
+#define ICR_INIT	0x00500		/* delivery mode 101 */
+#define ICR_STARTUP	0x00600		/* delivery mode 110 */
+#define ICR_ASSERT	0x04000
+#define ICR_LEVEL	0x08000
+#define ICR_DELIVS	0x01000		/* read-only: still dispatching */
 
 #define SVR_ENABLE	0x100
 
@@ -111,13 +123,74 @@ lapic_eoi(void)
 	lapic_write(REG_EOI, 0);
 }
 
-/* who a message-signalled interrupt should be addressed to. One cpu
- * runs here, so this is always the boot processor's id -- but it is
- * read rather than assumed to be 0, since nothing guarantees that and
- * an MSI aimed at an id no cpu has is delivered to no one.
+/* which cpu is asking. On the boot processor this is also who a
+ * message-signalled interrupt should be addressed to: devices stay
+ * pointed at the BSP, so an MSI's destination is this and not the id
+ * of whichever cpu happened to configure the device.
+ *
+ * It is read rather than assumed to be 0 because nothing guarantees
+ * that, and an MSI aimed at an id no cpu has is delivered to no one.
  */
 unsigned
 lapic_id(void)
 {
 	return lapic_read(REG_ID) >> 24;
+}
+
+/* wait for the last IPI to be dispatched.
+ *
+ * The MP spec (B.4) requires this and says why: the APIC neither
+ * retries nor guarantees delivery for INIT and STARTUP, so the only
+ * evidence a command left is the delivery-status bit going clear. It
+ * is bounded because a cpu that will never accept is not a reason to
+ * stop booting -- the caller's own timeout is what reports that.
+ */
+static void
+lapic_ipi_wait(void)
+{
+	for (int i = 0; i < 1000; i++) {
+		if ((lapic_read(REG_ICR_LO) & ICR_DELIVS) == 0)
+			return;
+		platform_stall_us(10);
+	}
+}
+
+/* the universal start-up algorithm, MP spec appendix B.4, example
+ * B-1: INIT, wait, then two STARTUPs carrying the page the target is
+ * to begin executing at.
+ *
+ * The second STARTUP is not belt and braces. A STARTUP may be issued
+ * only once after a reset or an INIT, so if the first one is accepted
+ * the second is ignored -- and if the first was lost, the second is
+ * the one that works. Sending exactly two is what the algorithm says
+ * and is cheaper than deciding which case happened.
+ *
+ * The INIT is asserted and then deasserted, both at level. qemu comes
+ * up without the deassert, which is how it went in first -- but a
+ * level-triggered assert with no matching deassert is a cpu held in
+ * reset on hardware that takes the level seriously, and this is meant
+ * to run on some of that eventually. plan9front's lapicstartap sends
+ * both; two register writes is not a thing to be clever about.
+ */
+void
+lapic_startap(unsigned apicid, unsigned long entry)
+{
+	unsigned hi = apicid << 24;
+
+	lapic_write(REG_ICR_HI, hi);
+	lapic_write(REG_ICR_LO, ICR_INIT | ICR_LEVEL | ICR_ASSERT);
+	lapic_ipi_wait();
+
+	lapic_write(REG_ICR_HI, hi);
+	lapic_write(REG_ICR_LO, ICR_INIT | ICR_LEVEL);
+	lapic_ipi_wait();
+
+	platform_stall_us(10000);	/* the spec's 10ms */
+
+	for (int i = 0; i < 2; i++) {
+		lapic_write(REG_ICR_HI, hi);
+		lapic_write(REG_ICR_LO, ICR_STARTUP | (entry >> 12));
+		lapic_ipi_wait();
+		platform_stall_us(200);
+	}
 }

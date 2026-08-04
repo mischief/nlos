@@ -3013,6 +3013,13 @@ api_stats(lua_State *L)
 	 */
 	lua_pushstring(L, platform_arch());
 	lua_setfield(L, -2, "arch");
+	/* how many cpus came up. This is the only way to ask from
+	 * inside: an AP that failed to start leaves nothing behind for
+	 * a proc to notice, so the count has to be reported rather than
+	 * inferred.
+	 */
+	lua_pushinteger(L, (lua_Integer)platform_ncpu());
+	lua_setfield(L, -2, "cpus");
 	return 1;
 }
 

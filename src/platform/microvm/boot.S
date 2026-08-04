@@ -24,6 +24,12 @@ pvh_note:
 
 	.section .bss
 	.align 4096
+	/* the page tables, the two gdts and their pointers are shared
+	 * with smp_trampoline.S: an AP identity-maps the same memory
+	 * and runs in the same two modes on the way up, so building it
+	 * a second set would only be a second thing to keep in step.
+	 */
+	.globl	pml4
 pml4:		.skip 4096
 pdpt:		.skip 4096
 /* four contiguous 2MB-page PDs -- one alloc so build_pagetables' single
@@ -44,10 +50,12 @@ boot_stack_top:
 
 	.section .rodata
 	.align 16
+	.globl	gdt32
 gdt32:
 	.quad	0			/* null */
 	.quad	0x00cf9a000000ffff	/* 32-bit code, base 0, limit 4G */
 	.quad	0x00cf92000000ffff	/* 32-bit data, base 0, limit 4G */
+	.globl	gdt32_end
 gdt32_end:
 
 gdt32_ptr:
@@ -61,6 +69,7 @@ gdt64:
 	.quad	0x00cf92000000ffff	/* 64-bit data */
 gdt64_end:
 
+	.globl	gdt64_ptr
 gdt64_ptr:
 	.word	gdt64_end - gdt64 - 1
 	.quad	gdt64

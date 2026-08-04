@@ -51,6 +51,7 @@ local elf, payload = arg[1], arg[2]
 local want9p, wantnet, wantecho, wantblk = false, false, false, false
 local wantgefs, wantgefscommit, wantgefsgpt = false, false, false
 local wantpci, wantpci0 = false, false
+local wantsmp = 1
 
 for i = 3, #arg do
 	if arg[i] == "--9p" then
@@ -77,6 +78,8 @@ for i = 3, #arg do
 	elseif arg[i] == "--pci0" then
 		wantpci = true
 		wantpci0 = true
+	elseif arg[i]:match("^%-%-smp=%d+$") then
+		wantsmp = tonumber(arg[i]:match("%d+"))
 	end
 end
 
@@ -383,6 +386,7 @@ local cmd = table.concat({
 	machine,
 	table.concat(ports, " "),
 	"-enable-kvm -cpu host -m 256",
+	wantsmp > 1 and ("-smp " .. wantsmp) or "",
 	"-kernel " .. q(elf),
 	payload ~= "-" and
 	    ("-fw_cfg name=opt/org.luaos.test,file=" .. q(payload)) or "",
