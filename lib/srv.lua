@@ -64,6 +64,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local sema = require("sync.sema")
 
 local M = {}
 
@@ -438,54 +439,42 @@ function M.serve(backend, port, opts)
 		end
 	end
 
-	-- buffered to the worker count so a finishing worker never blocks
-	-- handing its slot back, which would deadlock it against a loop
-	-- that is itself waiting for a slot.
-	local done = thread.chancreate(workers)
-	local inflight = 0
+	-- the window IS the permits: a worker holds one for as long as it
+	-- runs, so there is no count to keep in step with anything and no
+	-- way to be inside the window without holding one. The version
+	-- this replaces carried its own counter and a reaping loop, and a
+	-- comment about the deadlock waiting for whoever got the buffering
+	-- wrong.
+	local slots = sema.new(workers)
 
-	local function reap(block)
-		if block and inflight > 0 then
-			done:recv()
-			inflight = inflight - 1
-		end
-		while inflight > 0 do
-			local got = done:nbrecv()
-
-			if not got then
-				break
-			end
-			inflight = inflight - 1
-		end
+	local function inflight()
+		return workers - slots:free()
 	end
 
 	while true do
-		reap(false)
-
 		local ok, m = sys.tryrecv(port)
 
 		if ok then
-			-- at capacity: wait for a worker rather than spawning
-			-- past the window
-			if inflight >= workers then
-				reap(true)
-			end
-			inflight = inflight + 1
+			-- at capacity this parks until a worker hands one
+			-- back, which is the whole of "do not spawn past the
+			-- window".
+			slots:acquire()
 			thread.spawn(function()
 				-- dispatch already answers errors to the
 				-- client; this only keeps one failed request
 				-- from taking the slot with it
 				pcall(dispatch, S, m)
-				done:send(true)
+				slots:release()
 			end)
 		elseif sys.hungup(port) then
 			-- clients are gone, but requests already taken off
-			-- the port still have replies owed to them
-			while inflight > 0 do
-				reap(true)
+			-- the port still have replies owed to them. Taking
+			-- every permit is how you wait for every worker.
+			for _ = 1, workers do
+				slots:acquire()
 			end
 			return
-		elseif inflight > 0 then
+		elseif inflight() > 0 then
 			-- workers are runnable, so parking the whole proc on
 			-- the port would stop them. thread.yield gives them the
 			-- cpu without parking: this loop goes to the back of

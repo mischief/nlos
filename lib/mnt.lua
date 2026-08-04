@@ -50,6 +50,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
+local once = require("sync.once")
 local dev = require("dev")
 
 local M = {}
@@ -92,19 +93,12 @@ function M.new(right)
 	-- dev.check before any traffic and the server need not be answering
 	-- yet at mount time.
 	--
-	-- `opening` is what makes "on first use" safe when the first use is
-	-- several threads at once. Establishing parks -- it is a round trip
-	-- to the server -- so every thread that arrives while the first one
-	-- is waiting also finds no session and opens one of its own. Each
-	-- session has a fid space of its own, which is the point of them,
-	-- so the last assignment wins and every fid the others minted names
-	-- nothing. It does not heal: ns caches the root handle it walked
-	-- from, so a mount used concurrently the first time stays broken
-	-- afterwards for readers that are perfectly serial. Measured, six
-	-- threads on a cold mount: six sessions, and every read from then
-	-- on answered nil.
-	local session
-	local opening
+	-- Several threads touching a cold mount at once must still open
+	-- ONE session -- each has a fid space of its own, so the last
+	-- assignment would win and every fid the others minted would name
+	-- nothing, permanently, since the namespace caches the root handle
+	-- it walked from. sync.once is that, and carries the story.
+	local session = once.new()
 
 	local function establish(msg)
 		local reply = thread.replyport()
@@ -138,53 +132,14 @@ function M.new(right)
 		end
 	end
 
-	-- one session, however many threads ask for it first.
-	--
-	-- Finding `opening` unset and setting it need nothing between them:
-	-- a thread is not switched away from except where it parks, and
-	-- neither the test nor chancreate does. The waiting happens
-	-- afterwards, on the channel, which is where a thread may park --
-	-- and it is the park that made this necessary in the first place,
-	-- since establishing a session is a round trip.
-	--
-	-- A failed establish leaves both nil and wakes everyone, so a
-	-- waiter retries rather than inheriting the failure: the server
-	-- being unreachable for one caller's round trip is not a verdict on
-	-- the mount.
 	local function getsession()
-		while true do
-			if session then
-				return session
-			end
-
-			local ch, mine
-
-			if opening then
-				ch = opening
-			else
-				ch = thread.chancreate(0)
-				opening, mine = ch, true
-			end
-			if not mine then
-				ch:recv()	-- until the opener is done
-			else
-				local ok, s = pcall(establish,
-				    { op = "session" })
-
-				session = ok and s or nil
-				opening = nil
-				ch:close()	-- wake every waiter
-				if not ok then
-					error(s, 0)
-				end
-				return session
-			end
-		end
+		return session:get(function()
+			return establish({ op = "session" })
+		end)
 	end
 
 	local function rpc(msg)
-		getsession()
-
+		local sess = getsession()
 		local reply = thread.replyport()
 
 		msg.seq = nextseq()
@@ -227,7 +182,7 @@ function M.new(right)
 		-- this matters more than it looks. the ESP is a server proc
 		-- now, so it is every proc's filesystem; without this its
 		-- death parked the entire machine with no diagnostic.
-		local ok, res = pcall(thread.call, session, msg, reply)
+		local ok, res = pcall(thread.call, sess, msg, reply)
 
 		if not ok then
 			dev.error(dev.Eio)	-- right closed, or not a right
@@ -261,8 +216,13 @@ function M.new(right)
 	-- forever.
 	local fidmt = {
 		__gc = function(h)
-			if h.fid and session then
-				pcall(sys.send, session,
+			-- peek, not get: a handle collected before anything
+			-- ever established a session has nothing to clunk,
+			-- and asking would open one in order to tear it down.
+			local sess = session:peek()
+
+			if h.fid and sess then
+				pcall(sys.send, sess,
 				    { op = "clunk", fid = h.fid })
 				h.fid = nil
 			end
@@ -347,9 +307,11 @@ function M.new(right)
 	-- the metatable is a backstop for a mount dropped without being
 	-- unmounted, since the collector is then the only thing that knows.
 	function B.close()
-		if session then
-			pcall(sys.close, session)
-			session = nil
+		local sess = session:peek()
+
+		if sess then
+			pcall(sys.close, sess)
+			session:reset()
 		end
 	end
 
@@ -358,8 +320,10 @@ function M.new(right)
 	-- fire and forget, matching dev.clunk's "never fails". no reply
 	-- means no round trip, which is what makes it safe from __gc.
 	function B.clunk(h)
-		if h.fid and session then
-			pcall(sys.send, session, { op = "clunk", fid = h.fid })
+		local sess = session:peek()
+
+		if h.fid and sess then
+			pcall(sys.send, sess, { op = "clunk", fid = h.fid })
 			h.fid = nil
 		end
 	end
