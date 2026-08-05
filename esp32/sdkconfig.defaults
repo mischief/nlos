@@ -51,3 +51,9 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 # peripheral probe that has no business running here does not merely
 # answer no, it can hang before the kernel starts.
 CONFIG_LUAOS_BOARD_TDECK=y
+
+# Keep a 1bpp copy of the framebuffer, so fb.unload1 -- and so the
+# ZMODEM screenshot in task/shot.lua -- can read the panel back. The
+# glass itself cannot be read: the display's SDO is not routed. 9600
+# bytes for this 320x240 panel, against 8MB of PSRAM.
+CONFIG_LUAOS_FB_SHADOW=y

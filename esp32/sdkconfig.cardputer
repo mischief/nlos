@@ -24,3 +24,8 @@ CONFIG_LUAOS_BOARD_CARDPUTER=y
 # tools/screenshot-esp32.lua -- work at all. 64800 bytes of internal
 # SRAM. Drop this line when the memory matters more than the feedback.
 CONFIG_LUAOS_FB_SHADOW=y
+
+# Ship the embedded modules as stripped bytecode. See
+# main/Kconfig.projbuild: it is memory against the debugger line
+# numbers, and this board has no PSRAM to spare.
+CONFIG_LUAOS_PRECOMPILE=y

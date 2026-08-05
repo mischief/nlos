@@ -18,7 +18,7 @@
 
 #include <sdkconfig.h>
 
-#if CONFIG_LUAOS_BOARD_CARDPUTER
+#if CONFIG_LUAOS_BOARD_CARDPUTER || CONFIG_LUAOS_BOARD_TDECK
 
 #include <string.h>
 
@@ -29,7 +29,11 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 
+#include "platform.h"
+#include "esp32.h"
 #include "lcd.h"
+
+#if CONFIG_LUAOS_BOARD_CARDPUTER
 
 #define LCD_HOST	SPI3_HOST
 #define LCD_W		240
@@ -43,6 +47,37 @@
 #define LCD_PCLK_HZ	(40 * 1000 * 1000)
 #define LCD_GAP_X	40
 #define LCD_GAP_Y	53
+
+/* the Cardputer owns its bus: nothing else is on SPI3. */
+#define LCD_BUS_SHARED	0
+
+#else /* CONFIG_LUAOS_BOARD_TDECK */
+
+/* A whole 320x240 panel, and no gap: the Cardputer's 240x135 is a
+ * window onto a larger controller, which is what its offsets correct
+ * for. This one uses the full frame, so the same driver needs none.
+ */
+#define LCD_HOST	TDECK_SPI_HOST
+#define LCD_W		320
+#define LCD_H		240
+#define LCD_SCK		TDECK_SPI_SCK
+#define LCD_MOSI	TDECK_SPI_MOSI
+#define LCD_CS		TDECK_TFT_CS
+#define LCD_DC		TDECK_TFT_DC
+
+/* no reset line of its own: the panel is tied to the board reset, and
+ * esp_lcd takes -1 to mean exactly that.
+ */
+#define LCD_RST		(-1)
+#define LCD_BL		TDECK_TFT_BL
+#define LCD_PCLK_HZ	(40 * 1000 * 1000)
+#define LCD_GAP_X	0
+#define LCD_GAP_Y	0
+
+/* the card and the radio share this bus, so tdeck.c owns it. */
+#define LCD_BUS_SHARED	1
+
+#endif
 
 /* One transfer's worth of RGB565, in DMA-capable internal memory.
  *
@@ -113,6 +148,11 @@ luaos_lcd_present(void)
 	};
 	esp_lcd_panel_dev_config_t dev_cfg = {
 		.reset_gpio_num = LCD_RST,
+		/* RGB on both boards. The T-Deck's TFT_eSPI setup says
+		 * TFT_BGR, but clm drives this panel through esp_lcd with
+		 * RGB and works -- the two libraries do not mean the same
+		 * thing by the flag, and the working code wins.
+		 */
 		.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
 		.bits_per_pixel = 16,
 	};
@@ -126,8 +166,18 @@ luaos_lcd_present(void)
 		return present;
 	probed = 1;
 
+	/* on a board where the bus is ours, set it up; where it is
+	 * shared, tdeck.c has done it (or will have, for whichever
+	 * driver probes first) and initialising it twice fails.
+	 */
+#if LCD_BUS_SHARED
+	(void)bus;
+	if (esp_tdeck_spi_init() != 0)
+		return 0;
+#else
 	if (spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO) != ESP_OK)
 		return 0;
+#endif
 	if (esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST,
 	    &io_cfg, &io) != ESP_OK)
 		return 0;
@@ -141,6 +191,10 @@ luaos_lcd_present(void)
 	 * shows a mirrored negative rather than nothing.
 	 */
 	esp_lcd_panel_invert_color(panel, true);
+	/* native portrait to landscape. Both boards want the same
+	 * transform; only the gap differs, because the Cardputer's panel
+	 * is a window onto the same 240x320 controller.
+	 */
 	esp_lcd_panel_swap_xy(panel, true);
 	esp_lcd_panel_mirror(panel, true, false);
 	esp_lcd_panel_set_gap(panel, LCD_GAP_X, LCD_GAP_Y);
@@ -175,8 +229,20 @@ luaos_lcd_shadow(int on)
 	if (!present && on)
 		return -1;
 	if (on && shadow == NULL) {
+		/* PSRAM by preference: nothing here is touched by DMA and
+		 * nothing reads it on a hot path -- it is written on a draw
+		 * and read only when a screenshot asks -- so it has no
+		 * claim on internal sram. On the T-Deck that is 9600 bytes
+		 * of the scarce pool handed back; where there is no PSRAM
+		 * the fallback is the only option and the buffer is small.
+		 */
+#if CONFIG_SPIRAM
 		shadow = heap_caps_malloc(SHADOW_BYTES,
-		    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+		    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+		if (shadow == NULL)
+			shadow = heap_caps_malloc(SHADOW_BYTES,
+			    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 		if (shadow == NULL)
 			return -1;
 		memset(shadow, 0, SHADOW_BYTES);
@@ -227,6 +293,49 @@ luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
 	return 0;
 }
 
+/* the shadow's own representation, handed over as-is.
+ *
+ * unload() expands one bit to four bytes because that is the shared fb
+ * protocol's layout, and a caller that wants bits back then packs them
+ * again in lua: 960 bytes of garbage per row to produce 30. For a
+ * screen that is 130KB of churn on a machine with 61KB free, which is
+ * what stopped a screenshot fitting alongside zmodem. This skips both
+ * conversions.
+ *
+ * MSB first, which is PBM's bit order. Returns bytes written, or -1.
+ */
+int
+luaos_lcd_unload1(int x, int y, int w, int h, unsigned char *out)
+{
+	int row, col, n = 0;
+
+	if (!present || shadow == NULL)
+		return -1;
+	if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
+	    x + w > LCD_W || y + h > LCD_H)
+		return -1;
+
+	for (row = 0; row < h; row++) {
+		unsigned char byte = 0;
+		int nbit = 0;
+
+		for (col = 0; col < w; col++) {
+			size_t bit = (size_t)(y + row) * LCD_W + x + col;
+
+			byte = (unsigned char)(byte << 1) |
+			    (unsigned char)((shadow[bit >> 3] >> (bit & 7)) & 1);
+			if (++nbit == 8) {
+				out[n++] = byte;
+				byte = 0;
+				nbit = 0;
+			}
+		}
+		if (nbit > 0)			/* pad the row to a byte */
+			out[n++] = (unsigned char)(byte << (8 - nbit));
+	}
+	return n;
+}
+
 int
 luaos_lcd_width(void)
 {
@@ -261,7 +370,6 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 
 	for (row = 0; row < h; row += BAND_ROWS) {
 		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
-
 		if (esp_lcd_panel_draw_bitmap(panel, x, y + row, x + w,
 		    y + row + n, band) != ESP_OK)
 			return -1;
@@ -320,6 +428,13 @@ luaos_lcd_shadow(int on)
 
 int
 luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
+{
+	(void)x; (void)y; (void)w; (void)h; (void)out;
+	return -1;
+}
+
+int
+luaos_lcd_unload1(int x, int y, int w, int h, unsigned char *out)
 {
 	(void)x; (void)y; (void)w; (void)h; (void)out;
 	return -1;

@@ -250,7 +250,123 @@ esp_kbd_read(void)
 	return c;
 }
 
-#else /* !CONFIG_LUAOS_BOARD_CARDPUTER */
+#elif CONFIG_LUAOS_BOARD_TDECK
+
+/* the T-Deck's keyboard is a microcontroller of its own -- an ESP32-C3
+ * on i2c at 0x55 -- so almost nothing is left to do here. A one-byte
+ * read hands back the ascii of the last key, or zero for none: the
+ * scanning, the debounce and the modifier handling all happen on the
+ * far side. Contrast kbd.c's Cardputer half, which drives a 74HC138
+ * and owns all three.
+ *
+ * Polled from the idle path rather than driven off TDECK_KB_INT. The
+ * interrupt exists and would work, but an i2c read cannot happen in an
+ * isr -- it would only set a flag for this same poll to notice -- and
+ * one register read every 8ms costs less than the machinery would. If
+ * the board ever sleeps between keys that trade changes, and the pin is
+ * why it can.
+ */
+
+#include <driver/i2c_master.h>
+#include <esp_timer.h>
+
+#include "esp32.h"
+#include "kbd.h"
+
+static i2c_master_dev_handle_t kb;
+static int probed;
+static int present;
+static unsigned long irqs;
+
+static char ring[16];
+static unsigned rhead, rtail;
+
+int
+esp_kbd_present(void)
+{
+	i2c_master_bus_config_t bus = {
+		.i2c_port = -1,
+		.sda_io_num = TDECK_I2C_SDA,
+		.scl_io_num = TDECK_I2C_SCL,
+		.clk_source = I2C_CLK_SRC_DEFAULT,
+		.glitch_ignore_cnt = 7,
+		.flags.enable_internal_pullup = true,
+	};
+	i2c_device_config_t dev = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = TDECK_KB_ADDR,
+		.scl_speed_hz = 100000,
+	};
+	i2c_master_bus_handle_t bh;
+
+	if (probed)
+		return present;
+	probed = 1;
+
+	/* the keyboard's own controller boots off the switched rail, so
+	 * this has to come first or it simply does not answer.
+	 */
+	if (esp_tdeck_power_on() != 0)
+		return 0;
+	if (i2c_new_master_bus(&bus, &bh) != ESP_OK)
+		return 0;
+	if (i2c_master_bus_add_device(bh, &dev, &kb) != ESP_OK)
+		return 0;
+	present = 1;
+	return 1;
+}
+
+#define KBD_POLL_US 8000
+
+int
+esp_kbd_poll(void)
+{
+	static int64_t last_us;
+	int64_t now = esp_timer_get_time();
+	uint8_t v = 0;
+	unsigned next;
+
+	if (!present)
+		return 0;
+	if (now - last_us < KBD_POLL_US)
+		return 0;
+	last_us = now;
+
+	/* a short timeout: this runs on the idle path, and a keyboard
+	 * that has stopped answering must not stall the machine.
+	 */
+	if (i2c_master_receive(kb, &v, 1, 20) != ESP_OK || v == 0)
+		return 0;
+
+	next = (rhead + 1) % sizeof ring;
+	if (next == rtail)
+		return 0;		/* full; drop rather than block */
+	ring[rhead] = (char)v;
+	rhead = next;
+	irqs++;
+	return 1;
+}
+
+unsigned long
+esp_kbd_irqs(void)
+{
+	return irqs;
+}
+
+int
+esp_kbd_read(void)
+{
+	int c;
+
+	if (rtail == rhead)
+		return 0;
+	c = (unsigned char)ring[rtail];
+	rtail = (rtail + 1) % sizeof ring;
+	return c;
+}
+
+#else /* neither board */
+
 
 int
 esp_kbd_poll(void)

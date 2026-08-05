@@ -25,21 +25,13 @@
 #include <freertos/task.h>
 #include <sdmmc_cmd.h>
 
+#include "esp32.h"
 #include "blk.h"
 
-/* T-Deck wiring, from ~/code/c/clm/esp32/firmware/board_tdeck.c, which
- * is the tested source for this board. One SPI bus is shared by the SD
- * card, the display and the LoRa radio, so every chip select has to be
- * driven high before the bus comes up or a second peripheral answers
- * over the card.
+/* the wiring, the power rail and the shared SPI bus all live in
+ * esp32.h and tdeck.c: the display and the LoRa radio are on this same
+ * bus, so whichever driver probes first brings it up.
  */
-#define TDECK_POWERON_GPIO	10	/* the peripheral power rail */
-#define TDECK_SPI_SCK		40
-#define TDECK_SPI_MISO		38
-#define TDECK_SPI_MOSI		41
-#define TDECK_SD_CS		39
-#define TDECK_TFT_CS		12
-#define TDECK_RADIO_CS		9
 
 /* Conservative on purpose. clm settles at 800kHz with the note that the
  * shared bus is fussy, and a card that enumerates but corrupts under
@@ -63,59 +55,6 @@ static int present;
  */
 static void *dma;
 
-static int
-board_power_on(void)
-{
-	gpio_config_t pwr = {
-		.pin_bit_mask = 1ULL << TDECK_POWERON_GPIO,
-		.mode = GPIO_MODE_OUTPUT,
-	};
-
-	if (gpio_config(&pwr) != ESP_OK)
-		return -1;
-	if (gpio_set_level(TDECK_POWERON_GPIO, 1) != ESP_OK)
-		return -1;
-
-	/* the rail feeds the card, the display and the keyboard's own
-	 * C3, which has to boot before it answers. clm waits 500ms and
-	 * so do we; this runs once, at probe.
-	 */
-	vTaskDelay(pdMS_TO_TICKS(500));
-	return 0;
-}
-
-static int
-bus_init(void)
-{
-	gpio_config_t cs = {
-		.pin_bit_mask = (1ULL << TDECK_SD_CS) | (1ULL << TDECK_TFT_CS) |
-		    (1ULL << TDECK_RADIO_CS),
-		.mode = GPIO_MODE_OUTPUT,
-	};
-	spi_bus_config_t bus = {
-		.mosi_io_num = TDECK_SPI_MOSI,
-		.miso_io_num = TDECK_SPI_MISO,
-		.sclk_io_num = TDECK_SPI_SCK,
-		.quadwp_io_num = -1,
-		.quadhd_io_num = -1,
-		.max_transfer_sz = ESP_BLK_MAXSEC * 512,
-	};
-
-	if (gpio_config(&cs) != ESP_OK)
-		return -1;
-
-	/* deselect all three before the bus exists, so only the card
-	 * answers once it does.
-	 */
-	gpio_set_level(TDECK_SD_CS, 1);
-	gpio_set_level(TDECK_TFT_CS, 1);
-	gpio_set_level(TDECK_RADIO_CS, 1);
-
-	if (spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO) != ESP_OK)
-		return -1;
-	return 0;
-}
-
 int
 esp_blk_present(void)
 {
@@ -127,7 +66,7 @@ esp_blk_present(void)
 		return present;
 	probed = 1;
 
-	if (board_power_on() != 0 || bus_init() != 0)
+	if (esp_tdeck_spi_init() != 0)
 		return 0;
 
 	host.slot = SPI2_HOST;

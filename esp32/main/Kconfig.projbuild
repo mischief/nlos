@@ -36,6 +36,24 @@ config LUAOS_BOARD_CARDPUTER
 
 endchoice
 
+config LUAOS_PRECOMPILE
+	bool "ship embedded lua as stripped bytecode"
+	default n
+	help
+	  Compile every embedded module with luac -s instead of shipping
+	  source. Measured at 11703 resident bytes per chunk against 14894
+	  from source, and it loads about 16x faster -- but the bigger win
+	  is the parse peak, which is what actually fails first: loading
+	  from source needs the source, the parser's state and the
+	  resulting prototypes live at once.
+
+	  It costs the debugger's line numbers in those modules, so a
+	  traceback from lib/ names a chunk and not a line. That is why it
+	  is a choice and not the default.
+
+	  Modules that cannot be parsed on this machine at all are always
+	  precompiled regardless -- see PRECOMPILED in main/CMakeLists.txt.
+
 config LUAOS_FB_SHADOW
 	bool "keep a copy of the framebuffer, so fb.unload works"
 	default n

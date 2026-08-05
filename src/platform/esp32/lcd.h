@@ -21,6 +21,11 @@ int luaos_lcd_present(void);		/* probe once; brings up the panel */
  */
 int luaos_lcd_shadow(int on);
 int luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out);
+
+/* the same rectangle as packed 1bpp, MSB first -- the shadow's own
+ * layout, so nothing expands it to BGRx and packs it again.
+ */
+int luaos_lcd_unload1(int x, int y, int w, int h, unsigned char *out);
 int luaos_lcd_width(void);
 int luaos_lcd_height(void);
 

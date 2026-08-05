@@ -44,6 +44,7 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/kbd.c
     ${LUAOS_ROOT}/src/platform/esp32/font.c
     ${LUAOS_ROOT}/src/platform/esp32/lcd.c
+    ${LUAOS_ROOT}/src/platform/esp32/tdeck.c
     ${LUAOS_ROOT}/src/platform/esp32/main.c
     ${LUAOS_ROOT}/src/platform/esp32/vfs.c
     ${LUAOS_ROOT}/src/xtensa/machine.c
@@ -95,6 +96,7 @@ set(LUAOS_PAYLOAD "${LUAOS_ROOT}/boot/esp32.lua"
 # require them and there is nowhere else for them to come from.
 set(EMBED_FILES
     lib/thread.lua
+    lib/console.lua
     lib/stdout.lua
     lib/ps.lua
     lib/tap.lua
@@ -104,13 +106,54 @@ set(EMBED_FILES
     task/cons.lua
     task/power.lua
     task/fb.lua
+    task/shot.lua
 )
+
+# Some modules ship as stripped bytecode rather than source.
+#
+# Loading from source needs the source, the parser's state and the
+# resulting prototypes live at once, and that peak is what fails first
+# on a board with no PSRAM: lib/zmodem.lua is 27595 bytes and require
+# answered "not enough memory" with 62KB free. luac -s is 12716 and
+# skips the parser entirely. Measured more generally at 11703 resident
+# bytes per chunk against 14894, and about 16x faster to load.
+#
+# Portable because the header says so: host and guest are both Lua 5.4.8
+# and both are 4-byte instructions, 8-byte integers, 8-byte numbers.
+# Bytecode does not encode pointer width, which is the only thing that
+# differs between them.
+#
+# The cost is the debugger's line numbers in these modules, so a
+# traceback names a chunk and not a line. Hence a short always-list plus
+# an opt-in for the rest, rather than doing it to everything by default.
+find_program(LUAC_EXE NAMES luac5.4 luac REQUIRED)
+
+set(PRECOMPILED lib/zmodem.lua)
+if(CONFIG_LUAOS_PRECOMPILE)
+    list(APPEND PRECOMPILED ${EMBED_FILES})
+    list(REMOVE_DUPLICATES PRECOMPILED)
+endif()
 
 set(embed_args /boot/esp32.lua=${LUAOS_PAYLOAD})
 set(embed_deps ${LUAOS_PAYLOAD})
+
+foreach(f ${PRECOMPILED})
+    string(REPLACE "/" "_" flat ${f})
+    set(out ${CMAKE_CURRENT_BINARY_DIR}/${flat}c)
+    add_custom_command(
+        OUTPUT ${out}
+        COMMAND ${LUAC_EXE} -s -o ${out} ${LUAOS_ROOT}/${f}
+        DEPENDS ${LUAOS_ROOT}/${f}
+        VERBATIM)
+    list(APPEND embed_args /${f}=${out})
+    list(APPEND embed_deps ${out})
+endforeach()
+
 foreach(f ${EMBED_FILES})
-    list(APPEND embed_args /${f}=${LUAOS_ROOT}/${f})
-    list(APPEND embed_deps ${LUAOS_ROOT}/${f})
+    if(NOT ${f} IN_LIST PRECOMPILED)
+        list(APPEND embed_args /${f}=${LUAOS_ROOT}/${f})
+        list(APPEND embed_deps ${LUAOS_ROOT}/${f})
+    endif()
 endforeach()
 
 add_custom_command(

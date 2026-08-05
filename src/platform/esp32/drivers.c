@@ -91,8 +91,23 @@ open_kbd(lua_State *L)
 void
 platform_boot_extra_modules(lua_State *L)
 {
-	if (!esp_kbd_present())
+	/* say so either way, the way init reports every other device.
+	 * A keyboard that did not answer is otherwise indistinguishable
+	 * from one whose module nobody happened to require, and on the
+	 * T-Deck the difference is a peripheral rail that came up late.
+	 */
+	if (!esp_kbd_present()) {
+		static const char no[] = "kbd: not present, no keyboard "
+		    "this boot\n";
+
+		console_write(no, sizeof no - 1);
 		return;
+	}
+	{
+		static const char yes[] = "kbd: present\n";
+
+		console_write(yes, sizeof yes - 1);
+	}
 
 	luaL_requiref(L, "los.platform.kbd", open_kbd, 0);
 	lua_pop(L, 1);
@@ -174,8 +189,20 @@ cons_claim_input(lua_State *L)
 	return 0;
 }
 
+/* cons.raw(on) -- stop translating \n on the way out, so a binary
+ * stream survives. task/cons.lua calls this from rawon/rawoff where the
+ * platform offers it.
+ */
+static int
+cons_raw(lua_State *L)
+{
+	console_setraw(lua_toboolean(L, 1));
+	return 0;
+}
+
 static const luaL_Reg conslib[] = {
 	{ "write", cons_write },
+	{ "raw", cons_raw },
 	{ "claim_input", cons_claim_input },
 	{ NULL, NULL }
 };
@@ -436,6 +463,41 @@ fb_scroll(lua_State *L)
 	    "cannot do -- redraw instead");
 }
 
+/* fb.unload1(x,y,w,h) -> packed 1bpp, MSB first.
+ *
+ * Not part of the shared fb protocol: an efi framebuffer has colour and
+ * no bit plane to hand back. task/fb.lua offers the op only where the
+ * platform has this, and a screenshot here is the reason -- see lcd.c.
+ */
+static int
+fb_unload1(lua_State *L)
+{
+	lua_Integer x = luaL_checkinteger(L, 1);
+	lua_Integer y = luaL_checkinteger(L, 2);
+	lua_Integer w = luaL_checkinteger(L, 3);
+	lua_Integer h = luaL_checkinteger(L, 4);
+	size_t need;
+	luaL_Buffer b;
+	char *out;
+	int n;
+
+	checkrect(L, x, y, w, h);
+	need = (size_t)((w + 7) / 8) * (size_t)h;
+	if (need == 0) {
+		lua_pushliteral(L, "");
+		return 1;
+	}
+	out = luaL_buffinitsize(L, &b, need);
+	n = luaos_lcd_unload1((int)x, (int)y, (int)w, (int)h,
+	    (unsigned char *)out);
+	if (n < 0)
+		return luaL_error(L, "fb.unload1: no copy kept -- "
+		    "this panel cannot be read, build with "
+		    "CONFIG_LUAOS_FB_SHADOW");
+	luaL_pushresultsize(&b, (size_t)n);
+	return 1;
+}
+
 static const luaL_Reg fb_lib[] = {
 	{ "modes", fb_modes },
 	{ "mode", fb_mode },
@@ -443,6 +505,7 @@ static const luaL_Reg fb_lib[] = {
 	{ "fill", fb_fill },
 	{ "load", fb_load },
 	{ "unload", fb_unload },
+	{ "unload1", fb_unload1 },
 	{ "scroll", fb_scroll },
 	{ NULL, NULL },
 };
