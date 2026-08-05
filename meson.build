@@ -212,6 +212,7 @@ else
 
   embed_files = [
     'lib/thread.lua',
+    'lib/console.lua',
     'task/cons.lua',
     'task/wire.lua',
     'task/power.lua',
