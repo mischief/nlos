@@ -390,6 +390,9 @@ if platform == 'efi'
       '-nostdlib',
       '-Wl,-Bsymbolic',
       '-Wl,-znocombreloc',
+      # do not emit a build-id: pe.ld discards .note.* (a flat binary has
+      # nowhere to keep it), and generating one only to drop it warns.
+      '-Wl,--build-id=none',
       '-Wl,-T,' + pe_ld,
     ],
     link_depends: files('src/platform/efi/pe.ld'),

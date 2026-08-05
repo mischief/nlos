@@ -4,6 +4,20 @@
  */
 ENTRY(_start)
 
+/* two loadable segments, split read-execute from read-write, so the ELF
+ * intermediate carries the same permission boundary the PE header
+ * describes (src/<arch>/header.S) rather than one segment ld maps RWX and
+ * warns about. The image is objcopied to a flat binary, so this changes
+ * no bytes -- only how the discarded ELF groups its sections -- but it is
+ * the honest shape, and self-relocation only ever writes the RW half (the
+ * note below on __data_start).
+ */
+PHDRS
+{
+	text PT_LOAD FLAGS(5);	/* R+X */
+	data PT_LOAD FLAGS(6);	/* R+W */
+}
+
 SECTIONS
 {
 	. = 0;
@@ -11,32 +25,32 @@ SECTIONS
 
 	.header : {
 		KEEP(*(.pe_header))
-	}
+	} :text
 
 	. = 0x1000;
 
 	.text : {
 		*(.text)
 		*(.text.*)
-	}
+	} :text
 
 	.rodata : {
 		*(.rodata)
 		*(.rodata.*)
-	}
+	} :text
 
 	.rela : {
 		__rela_start = .;
 		*(.rela.dyn)
 		*(.rela*)
 		__rela_end = .;
-	}
+	} :text
 
-	.dynamic : { *(.dynamic) }
-	.dynsym : { *(.dynsym) }
-	.dynstr : { *(.dynstr) }
-	.hash : { *(.hash) }
-	.gnu.hash : { *(.gnu.hash) }
+	.dynamic : { *(.dynamic) } :text
+	.dynsym : { *(.dynsym) } :text
+	.dynstr : { *(.dynstr) } :text
+	.hash : { *(.hash) } :text
+	.gnu.hash : { *(.gnu.hash) } :text
 
 	/* everything above is read-only at runtime, everything below is
 	 * written -- .got and the .data.rel.ro the relocations land in
@@ -58,13 +72,13 @@ SECTIONS
 		*(.data.*)
 		*(.got)
 		*(.got.plt)
-	}
+	} :data
 
 	.bss : {
 		*(.bss)
 		*(.bss.*)
 		*(COMMON)
-	}
+	} :data
 
 	. = ALIGN(0x1000);
 	__reloc_start = .;
@@ -73,7 +87,7 @@ SECTIONS
 		KEEP(*(.dummy_reloc))
 		/* pad to a full page so SizeOfRawData never points past EOF */
 		. = ALIGN(0x1000);
-	}
+	} :data
 
 	. = ALIGN(0x1000);
 	__image_end = .;
