@@ -11,6 +11,20 @@ local prog = require("prog")
 
 local M = {}
 
+-- resolve a filename against the program's cwd, so `vi foo` in /n/gefs
+-- edits /n/gefs/foo, not /foo. The namespace has no notion of a working
+-- directory -- a bare name is rooted at / -- so the cwd the launcher put
+-- in the ABI message (prog.ctx.cwd) has to be applied here, exactly as
+-- the posix sliver in lib/prog.lua does for a ported utility.
+local function resolve(path)
+	local ctx = prog.ctx
+
+	if not ctx then
+		return path
+	end
+	return prog.abspath(ctx, path)
+end
+
 function M.new(opts)
 	local self = {
 		lines = {},
@@ -63,6 +77,7 @@ function M:load(filename)
 	if not self.file then
 		return false, "no filename"
 	end
+	self.file = resolve(self.file)
 	local N = prog.ns()
 
 	if not N then
@@ -88,6 +103,7 @@ function M:write(filename, addr1, addr2)
 	if not fn then
 		return false, "no filename"
 	end
+	fn = resolve(fn)
 	self.file = fn
 	local N = prog.ns()
 
@@ -429,7 +445,7 @@ function M:exec(input)
 		local fn = rest:match("^%s*(.+)") or self.file
 		if not fn then return self:error("no filename") end
 		local N = prog.ns()
-		local data = N and N:readfile(fn)
+		local data = N and N:readfile(resolve(fn))
 		if not data then return self:error(fn .. ": No such file or directory") end
 		local new = splitlines(data)
 		self:insert_after(addr2, new)

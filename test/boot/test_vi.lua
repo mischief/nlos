@@ -17,7 +17,7 @@ local thread = require("los.thread")
 local ns = require("ns")
 local tap = require("tap")
 
-tap.plan(8)
+tap.plan(11)
 
 local N = ns.new()
 local espcaps = sys.granted()
@@ -94,9 +94,10 @@ local function terminal(bursts)
 	return port, serve
 end
 
--- run vi over a scripted terminal against file `path`, returning true once
--- it exits. the report burst answers detect_size; the rest is the script.
-local function run_vi(path, script)
+-- run vi over a scripted terminal against file `path`, from `cwd`,
+-- returning true once it exits. the report burst answers detect_size; the
+-- rest is the script.
+local function run_vi(path, script, cwd)
 	local report = "\27[24;80R"
 	local port, serve = terminal({ report, table.unpack(script) })
 	local errport = sys.newport()
@@ -108,7 +109,7 @@ local function run_vi(path, script)
 		name = "vi",
 		args = { "vi", path },
 		env = { PATH = "/bin" },
-		cwd = "/",
+		cwd = cwd or "/",
 		nsdesc = N:describe(),
 		stderr = { __right = errport },
 		tty = { __right = port },
@@ -196,5 +197,18 @@ local ok4 = run_vi("/vitest4.txt", { "ihi", "\3", ":wq\r" })
 tap.ok(ok4, "vi exited after using Ctrl-C to leave insert mode")
 tap.is(N:readfile("/vitest4.txt"), "hi\n",
     "Ctrl-C left insert mode so :wq wrote the inserted text")
+
+-- ---- a relative filename resolves against the cwd, not / ----
+-- `vi rel.txt` from /bin writes /bin/rel.txt: the namespace has no cwd, so
+-- buffer must apply the one the launcher passed. This is the bug where an
+-- edit in /n/gefs landed in /. /bin is an existing directory (the ESP has
+-- no runtime mkdir), which is all this needs.
+local ok5 = run_vi("virel.txt", { "ifrom cwd", "\3", ":wq\r" }, "/bin")
+
+tap.ok(ok5, "vi exited after editing a relative path from a cwd")
+tap.is(N:readfile("/bin/virel.txt"), "from cwd\n",
+    "a bare filename resolved against the cwd, not the root")
+tap.is(N:readfile("/virel.txt"), nil,
+    "and did not land in / as it did before")
 
 tap.done()
