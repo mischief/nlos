@@ -11,6 +11,7 @@
  * a card partitioned on the desktop is a test of the whole stack.
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include <sdkconfig.h>
@@ -25,6 +26,7 @@
 #include <freertos/task.h>
 #include <sdmmc_cmd.h>
 
+#include "platform.h"
 #include "esp32.h"
 #include "blk.h"
 
@@ -92,6 +94,23 @@ esp_blk_present(void)
 	    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
 	if (dma == NULL)
 		return 0;
+
+	/* say what answered, the way kbd does. A capacity cannot be
+	 * guessed -- it comes back from the card's own CSD, so printing
+	 * it is evidence the card enumerated rather than that the pins
+	 * were configured. Without it "blksrv: pid 2" is equally true of
+	 * a driver that found nothing and a card that is really there.
+	 */
+	{
+		char m[80];
+		unsigned long long mb = (unsigned long long)card.csd.capacity *
+		    card.csd.sector_size / (1024 * 1024);
+		int n = snprintf(m, sizeof m,
+		    "blk: %lluMB, %d sectors of %d bytes\n", mb,
+		    card.csd.capacity, card.csd.sector_size);
+
+		console_write(m, (size_t)n);
+	}
 
 	present = 1;
 	return 1;

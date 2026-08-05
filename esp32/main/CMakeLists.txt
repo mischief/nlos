@@ -106,6 +106,15 @@ set(EMBED_FILES
     task/power.lua
     task/fb.lua
     task/shot.lua
+
+    # the block device and what it needs to be served. Only the T-Deck
+    # has a card, and only that board starts blksrv -- esp_blk_present
+    # is a stub elsewhere -- but EMBED_FILES is one list for the
+    # platform, and flash is the abundant thing here.
+    lib/dev.lua
+    lib/srv.lua
+    lib/blkfs.lua
+    task/blksrv.lua
 )
 
 # Some modules ship as stripped bytecode rather than source.
