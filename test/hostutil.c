@@ -575,6 +575,34 @@ l_serial(lua_State *L)
 	return 1;
 }
 
+/* readable(fd [, timeout]) -> true | false
+ *
+ * Whether a read would return without blocking. serial() hands back a
+ * blocking line on purpose (see there: a timeout is a zero-length read
+ * and stdio cannot tell that from eof), which leaves a caller no way to
+ * ask for something a guest might never say -- and the report explaining
+ * why a transfer failed is exactly that. select answers it without
+ * touching the stream.
+ */
+static int
+l_readable(lua_State *L)
+{
+	int fd = (int)luaL_checkinteger(L, 1);
+	double timeout = luaL_optnumber(L, 2, 0.0);
+	struct timeval tv;
+	fd_set r;
+	int n;
+
+	FD_ZERO(&r);
+	FD_SET(fd, &r);
+	tv.tv_sec = (time_t)timeout;
+	tv.tv_usec = (suseconds_t)((timeout - (double)tv.tv_sec) * 1e6);
+
+	n = select(fd + 1, &r, NULL, NULL, &tv);
+	lua_pushboolean(L, n > 0);
+	return 1;
+}
+
 /* fileno(file) -> fd, so a receiver spawned with spawn() can be given
  * this very descriptor rather than opening the port a second time.
  */
@@ -590,6 +618,7 @@ l_fileno(lua_State *L)
 static const luaL_Reg hostutil[] = {
 	{ "serial", l_serial },
 	{ "fileno", l_fileno },
+	{ "readable", l_readable },
 	{ "connect_tcp", l_connect_tcp },
 	{ "connect_unix", l_connect_unix },
 	{ "send", l_send },

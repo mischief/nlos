@@ -1,168 +1,175 @@
 #!/usr/bin/env lua5.4
--- screenshot-esp32.lua [PORT] [OUT.pbm] -- read the panel back over the
--- serial repl and write a PBM.
+-- screenshot-esp32.lua [PORT] [OUT.pbm] [--draw TEXT] -- read the panel
+-- back over ZMODEM and write a PBM.
 --
--- The panel itself cannot be read. The Cardputer's LCD connector is
--- eight pins (RST, RS, MOSI, SCK, CS, BL, 3V3, GND) and the ST7789's
--- SDO is routed nowhere, so there is no path back from the glass --
--- verified from the M5StampS3 schematic, not assumed. What this reads
--- is the copy CONFIG_LUAOS_FB_SHADOW keeps, which is one bit per pixel:
--- a screenshot shows shape, not colour.
+-- The panel itself cannot be read. Neither board routes the display's
+-- SDO anywhere -- verified from the schematics, not assumed -- so there
+-- is no path back from the glass. What this reads is the copy
+-- CONFIG_LUAOS_FB_SHADOW keeps, which is one bit per pixel: a
+-- screenshot shows shape, not colour. Hence PBM, which is exactly that.
 --
--- PBM because that is exactly what the data is. A PPM would triple the
--- file to carry two colours.
+-- The guest does the work, in task/shot.lua; this only asks and
+-- receives. So the size comes from the panel rather than from here --
+-- 240x135 on a Cardputer, 320x240 on a T-Deck -- and adding a board
+-- does not touch this file.
 --
--- One character per pixel on the wire, not hex. unload speaks BGRx
--- because that is the shared fb protocol, so a row is 960 bytes -- as
--- hex that is 1920 characters per row and 259200 for a screen, which at
--- 115200 baud is half a minute of serial and a great deal of per-byte
--- lua. Sampling one channel and sending '#' or '.' is 240 per row, and
--- it survives the USB-Serial-JTAG console's LF translation the same way
--- hex would.
+-- ZMODEM rather than printing the pixels. The console is the only line
+-- out, and a guest that free-runs a dump into it blocks forever once
+-- the USB-Serial-JTAG buffer fills with nobody draining: a host that
+-- times out mid-dump leaves the guest stuck in print() until a power
+-- cycle, measured the hard way. ZMODEM is paced by the receiver, and
+-- moves a 320x240 screen in about a second where a character per pixel
+-- took the better part of a minute.
 --
--- Sent as several short lines on purpose: the console's readline
--- truncates a long one, and a truncated program fails as a syntax error
--- inside the guest where you cannot see it. Keep each under ~180
--- characters.
---
--- And the host asks for ONE ROW AT A TIME rather than letting the guest
--- print the screen. A free-running dump is 32400 characters, and
--- USB-Serial-JTAG blocks the writer once its buffer fills with nobody
--- draining -- so a host that times out mid-dump leaves the guest stuck
--- in print() forever, unreachable until a power cycle. Measured the
--- hard way. Request/response cannot do that: the guest writes one line
--- and goes back to waiting.
---
---	lua5.4 tools/screenshot-esp32.lua /dev/ttyACM1 /tmp/shot.pbm
+--	HOSTUTIL_SO=build/hostutil.so \
+--	    lua5.4 tools/screenshot-esp32.lua /dev/ttyACM0 /tmp/shot.pbm
 
-local port = arg[1] or "/dev/ttyACM1"
+local HOSTUTIL = os.getenv("HOSTUTIL_SO")
+
+if not HOSTUTIL then
+	io.stderr:write("HOSTUTIL_SO is not set " ..
+	    "(build it: ninja -C build hostutil.so)\n")
+	os.exit(1)
+end
+
+local hu = assert(package.loadlib(HOSTUTIL, "luaopen_hostutil"))()
+local port = arg[1] or "/dev/ttyACM0"
 local out = arg[2] or "/tmp/shot.pbm"
+local draw, rows
 
--- --draw "TEXT" clears the screen and writes TEXT before capturing, in
--- the SAME serial session. Two sessions is one open too many: see the
--- DTR/RTS note below.
-local draw = nil
-
-for i = 3, #arg do
+for i = 1, #arg do
 	if arg[i] == "--draw" then
 		draw = arg[i + 1] or "lua-os"
+	elseif arg[i] == "--rows" then
+		rows = tonumber(arg[i + 1])
 	end
 end
 
-local W, H = 240, 135
+-- One connection for the whole session, commands and transfer alike.
+--
+-- Not tidiness. socat asserts DTR/RTS when it attaches, and on a native
+-- USB-Serial-JTAG those are the reset strap -- measured as rst:0x15
+-- (USB_UART_CHIP_RESET) mid-session, which reboots the board, wipes the
+-- shadow and loses whatever was typed before it. A second opener is a
+-- second chance to reset, so lrz is handed this very descriptor rather
+-- than opening the port for itself.
+local f = assert(hu.serial(port, 115200))
+local fd = hu.fileno(f)
 
-local py = os.getenv("IDF_PYTHON") or
-    (os.getenv("HOME") .. "/.espressif/python_env/idf6.0_py3.13_env/bin/python")
+local function say(line, settle)
+	f:write(line, "\r\n")
 
-local prog = {
-	"G=sys.granted() F=G.fb R=thread.rpc",
-	"function ROW(y) local d=R(F,{op=\"unload\",r={x=0,y=y,w=" .. W ..
-	    ",h=1}}).ok local t={} for i=1," .. (W * 4) ..
-	    ",4 do t[#t+1]=d:byte(i)>0 and \"#\" or \".\" end return table.concat(t) end",
-}
+	-- before reading anything back. The stream is read/write, and C
+	-- wants the direction change separated by a flush whatever the
+	-- buffering; skip it and a later read blocks forever on a line
+	-- that is working perfectly.
+	f:flush()
+	os.execute("sleep " .. (settle or "0.4"))
+end
+
+say("")
 
 if draw then
-	table.insert(prog, 2, "FT=require(\"los.font\")")
-	table.insert(prog, 3, "R(F,{op=\"fill\",r={x=0,y=0,w=" .. W ..
-	    ",h=" .. H .. "},color=0})")
-	table.insert(prog, 4, "P,PW,PH=FT.render(" ..
-	    string.format("%q", draw) .. ",0xffffff,0)")
-	table.insert(prog, 5,
-	    "R(F,{op=\"load\",r={x=6,y=10,w=PW,h=PH},data=P})")
+	say("FT=require(\"los.font\") M=thread.rpc(fb,{op=\"mode\"}).ok")
+	say("thread.rpc(fb,{op=\"fill\",r={x=0,y=0,w=M.w,h=M.h},color=0})")
+	say("P,PW,PH=FT.render(" .. string.format("%q", draw) ..
+	    ",0xffffff,0)")
+	say("thread.rpc(fb,{op=\"load\",r={x=6,y=10,w=PW,h=PH},data=P})")
 end
 
-local lines = {}
+-- lrz writes to the current directory under the name the sender gave
+-- and cannot be told otherwise, so ask for a name of our choosing and
+-- move it afterwards.
+local tmp = ".shot-esp32.pbm"
 
-for _, l in ipairs(prog) do
-	lines[#lines + 1] = string.format("%q", l .. "\n")
-end
+os.remove(tmp)
 
--- Opening the port must not assert DTR/RTS. On USB-Serial-JTAG those
--- are the reset and boot lines, and pyserial raises them on open by
--- default -- which resets the board, wipes the shadow and unbinds the
--- functions this just defined. That is why a capture in its own
--- connection came back empty while the same thing inline worked.
-local script = ([[
-import serial, sys, time
+-- --rows N captures the top N rows only.
+--
+-- For the board that cannot manage a whole screen: the image and the
+-- sender have to be resident at once, and on a Cardputer (no PSRAM,
+-- ~107KB free) a full 240x135 does not fit -- it takes the console proc
+-- down with it, which costs the only line out. Sixteen rows transfer
+-- there without trouble. Not a workaround to keep: see the memory
+-- notes on task/shot.lua.
+say(("shot(%q%s)"):format(tmp, rows and (", " .. rows) or ""), "0.5")
 
-# Default open, control lines asserted: that is what a USB-Serial-JTAG
-# console expects, and deasserting DTR/RTS silences it entirely.
-s = serial.Serial(%q, 115200, timeout=2)
-time.sleep(0.5); s.reset_input_buffer()
+local pid = hu.spawn({ "lrz", "-y" },
+    { stdin = fd, stdout = fd, stderr = 2 })
 
-for line in [%s]:
-    s.write(line.encode())
-    time.sleep(0.4)
-    s.read(s.in_waiting or 0)
-
-sys.stdout.write("SHOT-BEGIN\n")
-for y in range(%d):
-    s.reset_input_buffer()
-    s.write(("print(ROW(%%d))\n" %% y).encode())
-    got = b""
-    deadline = time.time() + 5
-    # one row, then stop: the guest is back at its prompt either way,
-    # so a lost row costs a row and not the machine.
-    while time.time() < deadline:
-        got += s.read(4096)
-        if got.count(b"\n") >= 2:
-            break
-    for ln in got.decode("utf-8", "replace").replace("\r", "").split("\n"):
-        ln = ln.strip()
-        if len(ln) == %d and set(ln) <= set("#."):
-            sys.stdout.write(ln + "\n")
-            break
-sys.stdout.write("SHOT-END\n")
-]]):format(port, table.concat(lines, ", "), H, W)
-
-local f = assert(io.open("/tmp/.shot-drive.py", "w"))
-
-f:write(script)
-f:close()
-
-local p = assert(io.popen(py .. " /tmp/.shot-drive.py 2>&1"))
-local text = p:read("a"):gsub("\r", "")
-
-p:close()
-
-local body = text:match("SHOT%-BEGIN\n(.-)SHOT%-END")
-
-if not body then
-	io.stderr:write("no complete capture. tail of what came back:\n" ..
-	    text:sub(-500) .. "\n")
+if not pid then
+	io.stderr:write("cannot run lrz (install lrzsz)\n")
 	os.exit(1)
 end
 
--- Only full-width rows count. A short line is the console having
--- wrapped or the guest having raised, and taking it would skew every
--- row after it -- so it is dropped loudly rather than quietly.
-local rows = {}
+-- A screen is about 10KB and moves at ~114KB/s, so this is slack for a
+-- guest that is busy rather than for a transfer that is slow. If it
+-- expires the transfer has failed and waiting longer will not mend it.
+local deadline = os.time() + 20
+local rc
 
-for line in body:gmatch("[^\n]+") do
-	line = line:gsub("%s", "")
-	if #line == W and line:match("^[#.]+$") then
-		rows[#rows + 1] = line
-	elseif #line > 0 and line ~= ">" then
-		io.stderr:write("skipped: " .. line:sub(1, 70) .. "\n")
+while os.time() < deadline do
+	rc = hu.poll(pid)
+	if rc then
+		break
+	end
+	os.execute("sleep 0.2")
+end
+
+local timedout = not rc
+
+if timedout then
+	hu.kill(pid)
+	io.stderr:write("lrz did not finish within 20s\n")
+end
+
+-- the guest reports its own result and says why when it failed, which
+-- is worth surfacing: "no receiver" and "not enough memory" are
+-- different problems and both look like an empty file from out here.
+-- Read it on the timeout path too -- that is the case where the reason
+-- is least obvious and most wanted.
+for _ = 1, 3 do
+	if not hu.readable(fd, 1.0) then
+		break
+	end
+
+	local l = f:read("l")
+
+	if not l then
+		break
+	end
+	l = l:gsub("%c", "")
+	if l:match("shot:") then
+		io.stderr:write(l, "\n")
 	end
 end
 
-if #rows == 0 then
-	io.stderr:write("no usable scanlines\n")
+local fh = io.open(tmp, "rb")
+
+if timedout or not fh then
+	if fh then
+		fh:close()
+	end
+	os.remove(tmp)
+	io.stderr:write("no file received\n")
 	os.exit(1)
 end
-if #rows ~= H then
-	io.stderr:write(("warning: %d scanlines, want %d\n"):format(#rows, H))
+
+local data = fh:read("a")
+
+fh:close()
+os.remove(tmp)
+
+local w, h = data:match("^P4\n(%d+) (%d+)\n")
+
+if not w then
+	io.stderr:write("not a PBM: " ..
+	    string.format("%q", data:sub(1, 16)) .. "\n")
+	os.exit(1)
 end
 
 local o = assert(io.open(out, "wb"))
 
--- P1: ink is 1, which PBM renders black -- so glyphs come out dark on
--- white, the readable way round rather than the screen's way round.
-o:write(("P1\n%d %d\n"):format(W, #rows))
-for _, row in ipairs(rows) do
-	o:write((row:gsub("#", "1 "):gsub("%.", "0 ")), "\n")
-end
+o:write(data)
 o:close()
-
-print(("wrote %s (%dx%d)"):format(out, W, #rows))
+print(("%s: %sx%s, %d bytes"):format(out, w, h, #data))
