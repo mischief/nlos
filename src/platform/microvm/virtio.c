@@ -9,6 +9,7 @@
  * desc/avail/used allocation addressed by page number.
  */
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "microvm.h"
@@ -29,6 +30,12 @@
  * the device reads the same memory concurrently. On x86 the hardware
  * ordering is already strong enough, so a compiler barrier is the whole
  * requirement here.
+ *
+ * A second cpu does not change that, and it is worth saying why rather
+ * than re-deriving it every time: what these order is this cpu against
+ * the DEVICE. Another cpu is never the other party, because a queue has
+ * exactly one driver -- see the note above virtio_submit -- so there is
+ * no cpu-to-cpu pairing here for a stronger fence to protect.
  */
 #define barrier() __asm__ volatile ("" ::: "memory")
 
@@ -258,6 +265,18 @@ virtio_desc_set(struct virtio_dev *d, unsigned qi, uint16_t i,
 	q->desc[i].next = next >= 0 ? (uint16_t)next : 0;
 }
 
+/* One driver proc per device, and that is what makes the queues safe
+ * with no lock in them.
+ *
+ * The descriptor free list, the avail ring and last_used_idx all have a
+ * single writer, and it is not the boot cpu -- it is whichever cpu the
+ * owning proc is running on, which changes. The invariant is ownership,
+ * not placement: los.platform.eth and the rest are opened into the one
+ * driver proc's lua_State (see spawn_driver), everyone else reaches the
+ * device by sending to that proc, and a proc is one thread of control
+ * on one cpu at a time. Granting one of these modules to a second proc
+ * would break this and nothing would report it.
+ */
 void
 virtio_submit(struct virtio_dev *d, unsigned qi, uint16_t head)
 {
@@ -327,7 +346,14 @@ virtio_poll_used(struct virtio_dev *d, unsigned qi, uint16_t *id, uint32_t *len)
 static struct virtio_dev *irq_devs[VIRTIO_MAX_DEVS];
 static int irq_last_gsi = -1;
 static int irq_msi;
-static volatile unsigned long irq_taken;
+
+/* written only by virtio_isr, which is a boot-cpu handler: lines are
+ * routed to apic id 0 and the msi-x table entries name the boot cpu
+ * too. Read by virtio_irq_count from a driver proc on any cpu, so the
+ * load wants to be atomic rather than merely volatile -- relaxed,
+ * because it is a statistic and orders nothing.
+ */
+static atomic_ulong irq_taken;
 
 void virtio_isr(void);
 
@@ -356,7 +382,8 @@ virtio_isr(void)
 		 * we return.
 		 */
 		if (d->t->isr_ack(d)) {
-			irq_taken++;
+			atomic_fetch_add_explicit(&irq_taken, 1,
+			    memory_order_relaxed);
 			claimed = 1;
 		}
 	}
@@ -366,7 +393,8 @@ virtio_isr(void)
 	 * many devices are registered.
 	 */
 	if (!claimed && irq_msi)
-		irq_taken++;
+		atomic_fetch_add_explicit(&irq_taken, 1,
+		    memory_order_relaxed);
 
 	/* the line to end, which is whichever was routed last: with one
 	 * device per line and a shared handler there is no way to tell
@@ -400,7 +428,7 @@ virtio_msi_route(int vector)
 unsigned long
 virtio_irq_count(void)
 {
-	return irq_taken;
+	return atomic_load_explicit(&irq_taken, memory_order_relaxed);
 }
 
 void

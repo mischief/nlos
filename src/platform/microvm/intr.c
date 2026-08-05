@@ -32,6 +32,16 @@
 
 /* the tick, owned here rather than by either timer, because
  * timer_ticks()'s caller must not care which one is running.
+ *
+ * One writer, on the boot cpu, and it stays that way by construction:
+ * the PIT is one device, and lapic_init leaves every cpu's LVT_TIMER
+ * masked, so an AP's local timer never fires. timer_arm_periodic is
+ * called once, from boot. This is the machine clock rather than a
+ * per-cpu count -- efi_shim compares it across a wait -- and arming it
+ * per cpu would make it count laps of nothing in particular.
+ *
+ * Do not confuse it with platform_ticks(), which is rdtsc and is
+ * genuinely per cpu.
  */
 static volatile unsigned long long ticks;
 static int have_apic = -1;	/* -1 until probed */

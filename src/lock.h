@@ -41,13 +41,18 @@
  * ("the two passes below are one critical section ... when a lock
  * arrives it goes around both") was written in anticipation of.
  *
- * Nothing here masks interrupts. A lock that an interrupt handler also
- * takes needs that, and this kernel has none: an isr bumps a counter
- * or fills a single-producer ring, and the scheduler polls it at the
- * top of a lap. Keeping it that way is cheaper than making every lock
- * pay for a case that does not exist. The one place that does need to
- * shut an isr out -- uart.c's ring drain -- masks IF directly and says
- * so, and is on the boot cpu at both ends.
+ * Nothing here masks interrupts, and the two are separate questions
+ * rather than one: this lock excludes the OTHER cpus, and masking IF
+ * excludes THIS cpu's own handler. A lock an isr also takes needs
+ * both, and gets them by masking around the lock at the call site --
+ * uart.c's rx ring is the one place, and does exactly that. Building
+ * the masking in here instead would make every other lock pay for it.
+ *
+ * An earlier version of this comment said that case did not exist,
+ * because the ring had one producer and one consumer and both were on
+ * the boot cpu. Running procs on the other cpus ended that: uart_poll
+ * fills the ring from run_proc, and console_getchar drains it from the
+ * cons proc, and neither is pinned anywhere.
  */
 
 #include "machine.h"

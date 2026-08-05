@@ -25,6 +25,7 @@
 
 #include "microvm.h"
 #include "platform.h"
+#include "lock.h"
 
 #define COM1 0x3f8
 #define COM1_GSI 4	/* the ISA assignment, and vmd keeps it too */
@@ -43,14 +44,51 @@
 #define LSR_DR	 0x01	/* data ready */
 #define LSR_THRE 0x20	/* transmit holding empty */
 
-/* single producer (the handler), single consumer (uart_rx), so head and
- * tail each have one writer and no lock is needed. A power of two, so
- * the wrap is a mask.
+/* the ring is not single-producer/single-consumer and has not been
+ * since procs began running on more than one cpu. Both ends have two
+ * callers now:
+ *
+ *	fill	uart_isr on the boot cpu, and uart_poll -- which
+ *		run_proc calls on a deadline, so it runs on whichever
+ *		cpu is running a proc
+ *	drain	pump_serial on the boot cpu, and console_getchar,
+ *		reached from the cons proc wherever that is scheduled
+ *
+ * So head and tail each have several writers, and masking IF is no
+ * longer enough on its own: cli shuts out this cpu's own handler and
+ * says nothing about the others. Both are needed and both are here --
+ * the lock against the other cpus, IF off so that the local handler
+ * cannot arrive while this cpu holds it and spin forever waiting for
+ * itself.
+ *
+ * A power of two, so the wrap is a mask.
  */
 #define RXRING 256
 
-static volatile unsigned char rxring[RXRING];
-static volatile unsigned int rxhead, rxtail;
+static struct lock rxlk = LOCK_INIT;
+static unsigned char rxring[RXRING];
+static unsigned int rxhead, rxtail;
+
+/* not volatile: every access is inside rxlk, and the lock's acquire and
+ * release are what order them. volatile would order nothing extra and
+ * would only suggest that something outside the lock reads these.
+ */
+
+static inline unsigned long
+intr_save(void)
+{
+	unsigned long flags;
+
+	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
+	return flags;
+}
+
+static inline void
+intr_restore(unsigned long flags)
+{
+	if (flags & 0x200)	/* IF: only re-enable if it was already on */
+		__asm__ volatile ("sti" ::: "memory");
+}
 
 static inline unsigned char
 inb(unsigned short port)
@@ -113,18 +151,16 @@ uart_irq_enable(void)
 	outb(COM1 + IER, IER_RX_AVAIL);
 }
 
-/* drain the hardware fifo into the ring.
+/* drain the hardware fifo into the ring. Call with rxlk held and IF
+ * off; every caller below does that and nothing else may call it.
  *
- * The ring has one consumer and, by design, one producer. This is that
- * producer, and it must run either in the isr or with interrupts off --
- * never both at once. Two contexts reading the fifo and advancing
- * rxhead together interleave the bytes: typing "ps" at the console
- * echoed back "sp".
- *
- * Call it from the isr, or through drain_masked below. Nowhere else.
+ * Two contexts reading the fifo and advancing rxhead together
+ * interleave the bytes: typing "ps" at the console echoed back "sp".
+ * That was one cpu racing its own handler, and is the reason the rule
+ * exists; a second cpu breaks it the same way for a different reason.
  */
 static void
-uart_drain(void)
+uart_drain_locked(void)
 {
 	while (inb(COM1 + LSR) & LSR_DR) {
 		unsigned char c = inb(COM1 + RBR);
@@ -137,24 +173,6 @@ uart_drain(void)
 	}
 }
 
-/* the same drain for everyone who is not the isr. uart_poll, from the
- * scheduler loop, runs with the uart interrupt live and so races it
- * without this; uart_rx's own fallback runs only before the interrupt is
- * routed, where there is nothing to race, and takes this for the shape
- * rather than the masking. uart_poll was the frequent one, which is why
- * the reordering showed up under load.
- */
-static void
-drain_masked(void)
-{
-	unsigned long flags;
-
-	__asm__ volatile ("pushfq; popq %0; cli" : "=r" (flags) : : "memory");
-	uart_drain();
-	if (flags & 0x200)	/* IF: only re-enable if it was already on */
-		__asm__ volatile ("sti");
-}
-
 void
 uart_isr(void)
 {
@@ -162,40 +180,55 @@ uart_isr(void)
 	 * fifo drain below is what stops it raising again immediately.
 	 */
 	(void)inb(COM1 + IIR);
-	uart_drain();
+	/* an interrupt gate clears IF, so this cpu cannot arrive here
+	 * while it holds rxlk. The lock is against the other cpus.
+	 */
+	lock(&rxlk);
+	uart_drain_locked();
+	unlock(&rxlk);
 	intr_eoi(COM1_GSI);
 }
 
+/* run_proc calls this on a deadline, from whatever cpu is running a
+ * proc, with the uart interrupt live.
+ */
 void
 uart_poll(void)
 {
-	drain_masked();
+	unsigned long flags = intr_save();
+
+	lock(&rxlk);
+	uart_drain_locked();
+	unlock(&rxlk);
+	intr_restore(flags);
 }
 
 int
 uart_rx(void)
 {
-	if (rxtail == rxhead) {
-		/* nothing buffered. Before the interrupt is routed, look
-		 * at the port anyway: bytes that arrived that early are
-		 * sitting in the fifo with no interrupt coming for them.
-		 *
-		 * Once it is routed the isr is the only filler needed, and
-		 * this costs more than it looks: uart_drain opens with an
-		 * inb on the LSR, which is a port-i/o trap, and pump_serial
-		 * calls this every lap of the scheduler. Paid per lap it
-		 * was 2.5us on a 4us cross-proc round trip -- most of the
-		 * cost of an ipc, spent asking a uart with nothing to say.
-		 */
-		if (!rx_irq_on)
-			drain_masked();
-		if (rxtail == rxhead)
-			return -1;
+	unsigned long flags = intr_save();
+	int c = -1;
+
+	lock(&rxlk);
+	/* nothing buffered. Before the interrupt is routed, look at the
+	 * port anyway: bytes that arrived that early are sitting in the
+	 * fifo with no interrupt coming for them.
+	 *
+	 * Once it is routed the isr is the only filler needed, and this
+	 * costs more than it looks: uart_drain_locked opens with an inb on
+	 * the LSR, which is a port-i/o trap, and pump_serial calls this
+	 * every lap of the scheduler. Paid per lap it was 2.5us on a 4us
+	 * cross-proc round trip -- most of the cost of an ipc, spent
+	 * asking a uart with nothing to say.
+	 */
+	if (rxtail == rxhead && !rx_irq_on)
+		uart_drain_locked();
+	if (rxtail != rxhead) {
+		c = rxring[rxtail];
+		rxtail = (rxtail + 1) % RXRING;
 	}
-
-	unsigned char c = rxring[rxtail];
-
-	rxtail = (rxtail + 1) % RXRING;
+	unlock(&rxlk);
+	intr_restore(flags);
 	return c;
 }
 
