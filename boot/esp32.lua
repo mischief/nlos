@@ -43,6 +43,87 @@ if ok then
 	end
 end
 
+-- shot("name.pbm") -- send the screen to the host over ZMODEM.
+--
+-- Lazy on purpose: lib/zmodem.lua is 27KB of source and its compiled
+-- form is resident in this proc once required, which on a board with no
+-- PSRAM is memory a repl should not spend until asked.
+--
+-- The screen comes back as a P4 PBM because that is exactly what the
+-- driver keeps: CONFIG_LUAOS_FB_SHADOW is one bit per pixel, so a
+-- screenshot is shape and not colour, and a PPM would triple the file
+-- to carry two of them. fb.unload hands out BGRx (the shared protocol's
+-- layout), so a row is 960 bytes in and 30 bytes out -- built a row at
+-- a time so the whole 129600-byte expansion never exists at once.
+--
+-- ZMODEM rather than printing hex: the console is the only line out,
+-- and a guest that free-runs a dump into it blocks forever once the
+-- USB-Serial-JTAG buffer fills with nobody draining. ZMODEM has its own
+-- flow control, so the transfer is paced by the receiver.
+-- shot("name.pbm" [, rows]) -- send the screen to the host over
+-- ZMODEM, from a proc of its own.
+--
+-- Spawned rather than run here: lib/zmodem.lua is ~30KB resident and
+-- the image another 4KB, against a repl that is already 63KB on a board
+-- with ~120KB free. Doing it in this proc measured "not enough memory"
+-- every time; doing it in a proc that exits afterwards costs the same
+-- memory for the length of the transfer and hands it straight back.
+--
+-- Receive it with: lrz -y  (see tools/screenshot-esp32.lua)
+-- the framebuffer's right, for driving the panel from the repl:
+--	thread.rpc(fb, {op="fill", r={0,0,320,240}, color=0xffffff})
+-- Named rather than granted: this proc already holds it, and shot()
+-- below is built on the same handle.
+if caps.fb then
+	_G.fb = caps.fb
+end
+
+_G.shot = function(name, rows)
+	local f = io.open("/task/shot.lua")
+
+	if not f then
+		return nil, "no /task/shot.lua"
+	end
+
+	local src = f:read("a")
+
+	f:close()
+
+	local pid, right = sys.spawn(src, { name = "shot" })
+
+	-- rights are copied rather than moved, so ours stay ours.
+	sys.send(right, {
+		cons = { __right = caps.cons },
+		fb = { __right = caps.fb },
+		name = name,
+		rows = rows,
+		done = { __right = sys.SELF },
+	})
+	sys.close(right)
+
+	-- hear the death as well as the reply. A sender that raises never
+	-- sends anything, and without this the wait below is indefinite --
+	-- so a crashed child and a stalled transfer look identical from
+	-- here, which is how an unbound global read like a protocol bug.
+	sys.monitor(pid)
+
+	-- Wait. Not politeness: while the transfer runs this proc must not
+	-- ask cons for a line, or the shell and the sender both take from
+	-- the same keyboard and the receiver's headers land in the repl --
+	-- "unexpected symbol near '*'", which is a ZMODEM frame being
+	-- parsed as lua.
+	while true do
+		local m = thread.recv(sys.SELF)
+
+		if type(m) == "table" and m.exit == pid then
+			return nil, "shot died: " .. tostring(m.reason or
+			    m.exitmsg)
+		elseif type(m) == "table" and m.ok ~= nil then
+			return m.ok, m.err
+		end
+	end
+end
+
 print(_VERSION .. " on esp32")
 if ok then
 	print("mach-lite kernel + plan9 furniture. ps, stats, stack(pid)" ..
