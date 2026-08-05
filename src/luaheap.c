@@ -4,6 +4,16 @@
 #include <stdint.h>
 #include <string.h>
 
+/* the platform's param.h sets the scale where there is one. The host
+ * bench and unit test link this file with no platform at all, so the
+ * defaults below stand in for them.
+ */
+#if defined(__has_include)
+#if __has_include("param.h")
+#include "param.h"
+#endif
+#endif
+
 #include "luaheap.h"
 
 /* lua's own alignment requirement is LUAI_MAXALIGN, which is the widest
@@ -52,7 +62,14 @@ static const size_t classes[] = {
  * this size, back when each proc had its own heap. The 128 is slack for
  * headers we do not control rather than a tuned figure.
  */
-#define CHUNK_BYTES (8 * 1024 - 128)
+#ifndef LUAHEAP_CHUNK
+#define LUAHEAP_CHUNK (8 * 1024)
+#endif
+#ifndef LUAHEAP_LARGE_CACHED
+#define LUAHEAP_LARGE_CACHED 4
+#endif
+
+#define CHUNK_BYTES (LUAHEAP_CHUNK - 128)
 
 struct chunk {
 	struct chunk *next;
@@ -91,7 +108,7 @@ struct large {
 #define LARGE_GRAIN   512
 #define LARGE_MAXSIZE (64 * 1024)	/* kernel.c's MAXMSG; above, don't cache */
 #define NLARGECLASS   (LARGE_MAXSIZE / LARGE_GRAIN)
-#define LARGE_CACHED  4
+#define LARGE_CACHED  LUAHEAP_LARGE_CACHED
 
 struct luaheap {
 	const struct luaheap_ops *ops;
@@ -251,6 +268,8 @@ drain_bump(struct luaheap *h)
 	h->bumpleft = 0;
 }
 
+static size_t release_largefree(struct luaheap *h);
+
 /* take a fresh chunk and make it the bump region. */
 static int
 newchunk(struct luaheap *h, size_t need)
@@ -262,6 +281,8 @@ newchunk(struct luaheap *h, size_t need)
 		want = roundup(need + sizeof *c, ALIGN);
 
 	c = h->ops->chunk_alloc(h->ud, want);
+	if (!c && release_largefree(h))
+		c = h->ops->chunk_alloc(h->ud, want);
 	if (!c)
 		return 0;
 	c->size = want;
@@ -332,6 +353,8 @@ large_alloc(struct luaheap *h, size_t n)
 	}
 
 	l = h->ops->chunk_alloc(h->ud, want);
+	if (!l && release_largefree(h))
+		l = h->ops->chunk_alloc(h->ud, want);
 	if (!l)
 		return 0;
 	l->size = want;
@@ -341,6 +364,54 @@ large_alloc(struct luaheap *h, size_t n)
 	h->nlarges++;
 	h->large_asked += n;
 	return (char *)l + sizeof *l;
+}
+
+/* hand every cached large block back to the chunk source.
+ *
+ * The cache in largefree exists so a repeated request of one size does
+ * not go back to the allocator, and on a machine with room that is a
+ * clear win. On one without, it is memory the rest of the system cannot
+ * see: measured on an esp32 with 386KB total as 113KB unused inside the
+ * heap while malloc had 32KB left, which is a proc dying of "not enough
+ * memory" beside a heap holding a third of the machine.
+ *
+ * Sizing the cache per platform (LUAHEAP_LARGE_CACHED) is the standing
+ * fix; this is the pressure valve for the peak that tuning cannot see
+ * coming, called when the chunk source says no rather than on a
+ * schedule. Removing it and re-measuring puts the screenshot back to
+ * dying of "not enough memory", so it is load-bearing and not
+ * insurance. Returns bytes released, so a caller can tell whether
+ * retrying is worth anything.
+ */
+static size_t
+release_largefree(struct luaheap *h)
+{
+	size_t freed = 0;
+
+	for (size_t ci = 0; ci < NLARGECLASS; ci++) {
+		while (h->largefree[ci]) {
+			void *ptr = h->largefree[ci];
+			struct large *l = (struct large *)((char *)ptr -
+			    sizeof(struct large));
+			struct large **pp = &h->larges;
+
+			h->largefree[ci] = *(void **)ptr;
+			h->nlargefree[ci]--;
+
+			/* a cached block kept its place on h->larges, so
+			 * releasing it for real means unlinking it here.
+			 */
+			while (*pp && *pp != l)
+				pp = &(*pp)->next;
+			if (!*pp)
+				continue;
+			*pp = l->next;
+			h->mapped -= l->size;
+			freed += l->size;
+			h->ops->chunk_free(h->ud, l, l->size);
+		}
+	}
+	return freed;
 }
 
 static void

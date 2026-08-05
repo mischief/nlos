@@ -20,3 +20,45 @@
  */
 #define MAXPROCS	128
 #define MAXPORTS	2048
+
+/* luaheap's granularity, for the same reason and at the same scale.
+ *
+ * The shared heap asks its source for one chunk at a time and carves
+ * small blocks out of it, so a chunk is the smallest thing that can be
+ * held on behalf of a proc that only needed a few hundred bytes. At the
+ * 8KB used elsewhere that is 8KB of internal sram committed to whoever
+ * allocated first, on a machine with 386KB in total.
+ *
+ * The large-block cache is the sharper edge: four blocks per size class
+ * across 128 classes is unbounded in any way that matters here.
+ * Measured before this: 113KB sitting unused inside the heap while
+ * malloc had 32KB left and a proc was dying of "not enough memory".
+ * One per class still spares the repeated same-size request -- which is
+ * what the cache is for -- without the heap becoming where the memory
+ * went.
+ */
+#include <sdkconfig.h>
+
+#if CONFIG_SPIRAM
+
+/* A board with PSRAM, where the chunk size decides which memory the
+ * heap lives in rather than how much of it is wasted.
+ *
+ * CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL serves any allocation at or below
+ * its threshold (4096) from internal sram, so a chunk under that never
+ * reaches PSRAM however much is fitted. The T-Deck ran its whole Lua
+ * heap out of internal sram for exactly this reason -- 8MB present and
+ * none of it used -- because the 2KB below was tuned on the Cardputer,
+ * which has no PSRAM at all. Above the threshold the same tuning is
+ * pointless: chunks come from the 8MB and the tail of one costs
+ * nothing worth counting.
+ */
+#define LUAHEAP_CHUNK		(8 * 1024)
+#define LUAHEAP_LARGE_CACHED	4
+
+#else
+
+#define LUAHEAP_CHUNK		(2 * 1024)
+#define LUAHEAP_LARGE_CACHED	1
+
+#endif

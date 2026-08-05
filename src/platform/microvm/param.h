@@ -7,3 +7,10 @@
  */
 #define MAXPROCS	4096
 #define MAXPORTS	32768
+
+/* luaheap's granularity. Machines with room keep the larger chunk and
+ * the deeper large-block cache: both trade memory held for allocations
+ * avoided, which is the right trade when memory is not the constraint.
+ */
+#define LUAHEAP_CHUNK		(8 * 1024)
+#define LUAHEAP_LARGE_CACHED	4
