@@ -25,6 +25,14 @@
 -- inside the guest where you cannot see it. Keep each under ~180
 -- characters.
 --
+-- And the host asks for ONE ROW AT A TIME rather than letting the guest
+-- print the screen. A free-running dump is 32400 characters, and
+-- USB-Serial-JTAG blocks the writer once its buffer fills with nobody
+-- draining -- so a host that times out mid-dump leaves the guest stuck
+-- in print() forever, unreachable until a power cycle. Measured the
+-- hard way. Request/response cannot do that: the guest writes one line
+-- and goes back to waiting.
+--
 --	lua5.4 tools/screenshot-esp32.lua /dev/ttyACM1 /tmp/shot.pbm
 
 local port = arg[1] or "/dev/ttyACM1"
@@ -51,9 +59,6 @@ local prog = {
 	"function ROW(y) local d=R(F,{op=\"unload\",r={x=0,y=y,w=" .. W ..
 	    ",h=1}}).ok local t={} for i=1," .. (W * 4) ..
 	    ",4 do t[#t+1]=d:byte(i)>0 and \"#\" or \".\" end return table.concat(t) end",
-	"function SHOT() print(\"SHOT-BEGIN\") for y=0," .. (H - 1) ..
-	    " do print(ROW(y)) end print(\"SHOT-END\") end",
-	"SHOT()",
 }
 
 if draw then
@@ -79,26 +84,36 @@ end
 -- connection came back empty while the same thing inline worked.
 local script = ([[
 import serial, sys, time
-s = serial.Serial()
-s.port = %q
-s.baudrate = 115200
-s.timeout = 2
-s.dtr = False
-s.rts = False
-s.open()
+
+# Default open, control lines asserted: that is what a USB-Serial-JTAG
+# console expects, and deasserting DTR/RTS silences it entirely.
+s = serial.Serial(%q, 115200, timeout=2)
 time.sleep(0.5); s.reset_input_buffer()
+
 for line in [%s]:
     s.write(line.encode())
     time.sleep(0.4)
     s.read(s.in_waiting or 0)
-buf = b""
-deadline = time.time() + 90
-while time.time() < deadline:
-    buf += s.read(4096)
-    if b"SHOT-END" in buf:
-        break
-sys.stdout.write(buf.decode("utf-8", "replace"))
-]]):format(port, table.concat(lines, ", "))
+
+sys.stdout.write("SHOT-BEGIN\n")
+for y in range(%d):
+    s.reset_input_buffer()
+    s.write(("print(ROW(%%d))\n" %% y).encode())
+    got = b""
+    deadline = time.time() + 5
+    # one row, then stop: the guest is back at its prompt either way,
+    # so a lost row costs a row and not the machine.
+    while time.time() < deadline:
+        got += s.read(4096)
+        if got.count(b"\n") >= 2:
+            break
+    for ln in got.decode("utf-8", "replace").replace("\r", "").split("\n"):
+        ln = ln.strip()
+        if len(ln) == %d and set(ln) <= set("#."):
+            sys.stdout.write(ln + "\n")
+            break
+sys.stdout.write("SHOT-END\n")
+]]):format(port, table.concat(lines, ", "), H, W)
 
 local f = assert(io.open("/tmp/.shot-drive.py", "w"))
 
