@@ -73,7 +73,22 @@ tap.ok(seen[pids[1]] == 6 and seen[pids[2]] == 6,
 
 -- a run-to-completion scheduler gives exactly one switch. anything
 -- preempting gives many.
+--
+-- Only on one cpu. Arrival order is evidence of interleaving only
+-- while there is one queue to interleave in: with two cpus the
+-- children run at the same time on different ones, each yielding to an
+-- empty queue and returning at once, so its six sends land in a burst
+-- and the order says nothing about whether they overlapped. Asserting
+-- it there would be asserting that smp does not work.
+--
+-- What still holds on any machine is that both ran and both finished,
+-- and the two assertions above check that.
 tap.diag("child switches in the message order: " .. switches)
-tap.ok(switches > 1, "the two children interleaved rather than ran in turn")
+if sys.stats().cpus > 1 then
+	tap.ok(true, "interleaving is a uniprocessor question, not asked here")
+else
+	tap.ok(switches > 1,
+	    "the two children interleaved rather than ran in turn")
+end
 
 tap.done()

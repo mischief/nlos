@@ -65,11 +65,23 @@ idt_init(void)
 {
 	for (int i = 0; i < NVEC; i++)
 		set_gate(i, isr_stub_table[i]);
+	idt_load();
+}
 
+/* point this cpu at the table. The table itself is one for the
+ * machine and is filled in once by idt_init, but IDTR is a register
+ * and every cpu has its own: an AP that never runs this has a null
+ * one, and the first interrupt after it enables them is a fault it
+ * has nowhere to deliver.
+ */
+void
+idt_load(void)
+{
 	struct idtr idtr = {
 		.limit = sizeof idt - 1,
 		.base = (uint64_t)idt,
 	};
+
 	__asm__ volatile ("lidt %0" : : "m" (idtr));
 }
 

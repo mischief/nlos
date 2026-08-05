@@ -868,6 +868,7 @@ microvm_tests = [
   ['tcpbench', ['--net']],
   ['idle', []],
   ['smp', ['--smp=2']],
+  ['spin', []],
 ]
 
 foreach t : microvm_tests
@@ -897,6 +898,7 @@ microvm_smp_tests = [
   ['eth', ['--net']],
   ['tcp', ['--netecho']],
   ['gefssrv', ['--gefscommit']],
+  ['spin', []],
 ]
 
 foreach n : ['2', '4']

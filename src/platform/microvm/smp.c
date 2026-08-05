@@ -126,6 +126,12 @@ ap_main(unsigned idx)
 {
 	cpu_claim(&cpus[idx], idx);
 
+	/* this cpu's own IDTR, before anything can interrupt it. The
+	 * table is the machine's and is already built; the register is
+	 * per cpu and starts null.
+	 */
+	idt_load();
+
 	lapic_init();
 
 	/* publish before scheduling, not after: the BSP is waiting on
@@ -169,27 +175,32 @@ startap(unsigned idx, unsigned apicid)
 	return -1;
 }
 
-/* called from microvm_main once the interrupt controller is up and
- * before anything wants a second cpu.
+/* the boot processor claims cpu 0, and must do so before anything
+ * calls cpu_self() -- which is nearly everything, since that is where
+ * the current proc lives. Separate from starting the other cpus
+ * because the two want opposite positions in boot: this has to be
+ * early, and that has to be late.
  */
 void
 smp_init(void)
 {
-	unsigned want;
-
-	/* the boot processor claims cpu 0 whatever happens next: on a
-	 * machine with no apic, or with one cpu, everything above still
-	 * reaches its per-cpu state through cpu_self().
-	 */
 	cpu_claim(&cpus[0], 0);
+}
+
+/* start the other cpus. Called once the machine has a proc to run;
+ * see the comment at the call site for why that matters.
+ */
+void
+smp_start_aps(void)
+{
+	unsigned want;
 
 	/* no LAPIC is no IPI, and so no way to start anything. That is
 	 * OpenBSD vmd, where vmm masks CPUID_APIC out -- see intr.c.
 	 * It is a uniprocessor by construction, not by configuration.
 	 */
-	if (!intr_have_apic()) {
+	if (!intr_have_apic())
 		return;
-	}
 
 	/* the vector every cpu will be woken through, installed in the
 	 * shared idt before any cpu can be sent one.
@@ -226,13 +237,29 @@ platform_wake_cpu(unsigned i)
 		intr_resched(c->apicid);
 }
 
-/* sleep until an interrupt. sti before hlt is one instruction pair by
- * architectural guarantee -- an interrupt arriving between them is
- * held until after the hlt -- so a wakeup sent just before this cannot
- * be missed.
+/* sleep until an interrupt.
+ *
+ * Entered with interrupts off, which is what makes the sleep safe: sti
+ * does not take effect until after the instruction following it, so an
+ * interrupt made pending at any point since they were disabled -- the
+ * queue check included -- is delivered only once the hlt has begun,
+ * and ends it. Enabling them any earlier reopens the window the caller
+ * disabled them to close.
  */
 void
 platform_cpu_idle(void)
 {
 	__asm__ volatile ("sti; hlt");
+}
+
+void
+platform_intr_off(void)
+{
+	__asm__ volatile ("cli" ::: "memory");
+}
+
+void
+platform_intr_on(void)
+{
+	__asm__ volatile ("sti" ::: "memory");
 }

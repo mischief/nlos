@@ -11,6 +11,7 @@
  *   given to proc 0
  */
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -489,16 +490,36 @@ static struct lock ipclock = LOCK_INIT;
  * -- so ipcowner stayed set, every later acquire was a no-op, and the
  * suite passed by not locking at all.
  */
-static struct cpu *ipcowner;
+/* atomic because it is read by a cpu that does not hold the lock --
+ * that is the whole of ipclock_enter's fast path -- while another cpu
+ * writes it. Relaxed is enough: the only value any cpu acts on is its
+ * own struct cpu, and a cpu is the only writer of that value, so a read
+ * that races can be stale but can never be wrongly equal to me.
+ *
+ * ipcdepth needs none of that. It is touched only by the owner, and by
+ * definition there is exactly one.
+ */
+static _Atomic(struct cpu *) ipcowner;
 static int ipcdepth;
 
+/* does this cpu hold it. Not lock.h's holding(), which answers for the
+ * machine: under smp another cpu holding the ipc lock is the ordinary
+ * case and says nothing about whether this one may touch the tables.
+ */
+static int
+ipcheld(void)
+{
+	return atomic_load_explicit(&ipcowner, memory_order_relaxed) ==
+	    cpu_self();
+}
+
 /* the contract the inner helpers assert. Named after OpenBSD's
- * MUTEX_ASSERT_LOCKED (mutex(9)), and live on every platform: lock.h
- * keeps the held flag even where NCPU is 1, so efi, aarch64 and
- * riscv64 -- which run this same file -- check it too.
+ * MUTEX_ASSERT_LOCKED (mutex(9)), and live on every platform: the
+ * owner is recorded even where NCPU is 1, so efi, aarch64 and riscv64
+ * -- which run this same file -- check it too.
  */
 #define IPC_ASSERT_LOCKED() do {					\
-	if (!holding(&ipclock)) {					\
+	if (!ipcheld()) {						\
 		char b_[96];						\
 		snprintf(b_, sizeof b_, "ipclock not held: %s",		\
 		    __func__);						\
@@ -511,12 +532,12 @@ ipclock_enter(void)
 {
 	struct cpu *me = cpu_self();
 
-	if (ipcowner == me) {
+	if (atomic_load_explicit(&ipcowner, memory_order_relaxed) == me) {
 		ipcdepth++;
 		return;
 	}
 	lock(&ipclock);
-	ipcowner = me;
+	atomic_store_explicit(&ipcowner, me, memory_order_relaxed);
 	ipcdepth = 1;
 }
 
@@ -525,7 +546,7 @@ ipclock_leave(void)
 {
 	if (--ipcdepth > 0)
 		return;
-	ipcowner = 0;
+	atomic_store_explicit(&ipcowner, 0, memory_order_relaxed);
 	unlock(&ipclock);
 }
 
@@ -647,7 +668,7 @@ static unsigned int brokeseq;
 static void wake_senders(struct kport *port);
 static int reprioritize(struct kproc *p, int nrunnable);
 static int count_runnable(struct cpu *c);
-static void rq_init(void);
+static void rq_init(struct cpu *c);
 static void rq_del(struct kproc *p);
 static void rq_add(struct rqset *set, struct kproc *p);
 static struct kproc *rq_take_high(struct rqset *set);
@@ -3458,6 +3479,29 @@ api_stats(lua_State *L)
 	 */
 	lua_pushinteger(L, (lua_Integer)platform_ncpu());
 	lua_setfield(L, -2, "cpus");
+	/* and what each of them is doing. A count alone cannot tell a
+	 * machine dispatching on two cpus from one that started a second
+	 * cpu and left it parked -- which is exactly what this branch
+	 * did for several commits, with a passing test for it.
+	 */
+	lua_newtable(L);
+	for (unsigned i = 0; cpu_at(i); i++) {
+		struct cpu *c = cpu_at(i);
+
+		lua_createtable(L, 0, 5);
+		lua_pushinteger(L, (lua_Integer)c->apicid);
+		lua_setfield(L, -2, "apicid");
+		lua_pushboolean(L, c->dispatching);
+		lua_setfield(L, -2, "dispatching");
+		lua_pushinteger(L, (lua_Integer)c->nlaps);
+		lua_setfield(L, -2, "laps");
+		lua_pushinteger(L, (lua_Integer)c->ndispatch);
+		lua_setfield(L, -2, "dispatched");
+		lua_pushinteger(L, (lua_Integer)c->nidle);
+		lua_setfield(L, -2, "idles");
+		lua_rawseti(L, -2, (lua_Integer)i + 1);
+	}
+	lua_setfield(L, -2, "cpu");
 	return 1;
 }
 
@@ -5231,19 +5275,46 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	{
 		struct cpu *best = 0;
+		int bestload = 0;
 		unsigned i;
 
 		for (i = 0; cpu_at(i); i++) {
 			struct cpu *c = cpu_at(i);
+			int load;
 
 			if (!c->dispatching)
 				continue;
-			if (!best || c->runq->n + c->donq->n <
-			    best->runq->n + best->donq->n)
+			/* the proc a cpu is running counts. Queue length
+			 * alone reads the spawning cpu as empty -- it is
+			 * running the spawner, which is on no queue -- so
+			 * a burst of spawns from one busy cpu onto an
+			 * otherwise idle machine kept tying at zero and
+			 * taking the first cpu every time. Counting it
+			 * took four spinners from 1/2/1/0 across four
+			 * cpus to one each.
+			 */
+			load = c->runq->n + c->donq->n + (c->current ? 1 : 0);
+			if (!best || load < bestload) {
 				best = c;
+				bestload = load;
+			}
 		}
 		p->home = best ? best->idx : 0;
 	}
+
+	/* except a driver, which runs on the boot processor and nowhere
+	 * else. These are the procs holding the raw device rights, and
+	 * "the bsp stays the io engine" is what lets every device path
+	 * here keep its single-consumer argument: interrupts are routed
+	 * to apic 0 (ioapic.c), the uart ring's producer is that cpu's
+	 * isr, and virtio's ordering comment reasons about one cpu
+	 * against one device.
+	 *
+	 * Left to placement, blksrv drew an AP and gefs read back blocks
+	 * that failed their checksums.
+	 */
+	if (priv != PRIV_NONE && priv != PRIV_BOOT)
+		p->home = 0;
 
 	/* before lua_newstate, which allocates through kalloc, which
 	 * reaches this proc's heap and nothing else's.
@@ -5934,7 +6005,7 @@ int
 kernel_init(void)
 {
 	calibrate_reductions();	/* kernel_clock_init already ran in efi_main */
-	rq_init();		/* before any proc exists to be dispatched */
+	rq_init(cpu_self());	/* before any proc exists to be dispatched */
 	uart_init();
 	/* boot, before any proc exists: the lock is uncontended and is
 	 * taken for the contract rather than for the contention.
@@ -6411,25 +6482,29 @@ reprioritize(struct kproc *p, int nrunnable)
 
 
 static void
-rq_init(void)
+rq_init(struct cpu *c)
 {
-	/* every cpu, not just this one: placement in proc_new reads the
-	 * queue lengths of all of them to pick the least loaded, and an
-	 * AP's runq pointer being null would be a fault before any AP
-	 * had run a single proc.
+	/* each cpu initialises its own, on itself, before it says it is
+	 * dispatching. It cannot be done for all of them at boot: a cpu
+	 * is not visible to cpu_at() until it has started, and the APs
+	 * start long after kernel_init runs. Doing it there left an AP's
+	 * runq pointer null, and a null runq reads its length from low
+	 * memory -- which is identity mapped, so there is no fault, just
+	 * a garbage queue and a #GP some instructions later.
+	 *
+	 * The ordering against placement is what makes this safe:
+	 * proc_new only places on a cpu that has published
+	 * `dispatching`, and this runs before that publication, so a
+	 * queue is never seen by another cpu until it exists.
 	 */
-	for (unsigned n = 0; cpu_at(n); n++) {
-		struct cpu *c = cpu_at(n);
-
-		for (int s = 0; s < 2; s++) {
-			for (int i = 0; i < NRQ; i++)
-				TAILQ_INIT(&c->rq[s].q[i]);
-			c->rq[s].mask = 0;
-			c->rq[s].n = 0;
-		}
-		c->runq = &c->rq[0];
-		c->donq = &c->rq[1];
+	for (int s = 0; s < 2; s++) {
+		for (int i = 0; i < NRQ; i++)
+			TAILQ_INIT(&c->rq[s].q[i]);
+		c->rq[s].mask = 0;
+		c->rq[s].n = 0;
 	}
+	c->runq = &c->rq[0];
+	c->donq = &c->rq[1];
 }
 
 static int
@@ -6522,6 +6597,23 @@ make_ready(struct kproc *p)
 	 * the one nesting lock.h's order allows (ipc -> cpu runq).
 	 */
 	lock(&c->lock);
+	/* p may be running on c at this very moment, which is a case that
+	 * cannot arise on one cpu: there, the only proc that runs is the
+	 * one doing the sending. Enqueueing it here would put it on a
+	 * bucket while dispatch_lap still holds it, and dispatch_lap
+	 * enqueues it again when the resume returns -- one proc on two
+	 * buckets, and a run queue that no longer terminates.
+	 *
+	 * So leave it to the cpu running it. Marking it READY is enough:
+	 * dispatch_lap requeues on exactly that, and it clears current
+	 * under this same lock, so one of the two always sees the other.
+	 */
+	if (c->current == p) {
+		p->status = READY;
+		p->pri = reprioritize(p, count_runnable(c) + 1);
+		unlock(&c->lock);
+		return;
+	}
 	if (keep)
 		rq_del(p);		/* pri is about to change; rebucket */
 	p->status = READY;
@@ -6616,8 +6708,6 @@ run_proc(struct kproc *p)
 
 		int nres = 0;
 
-		cpu_self()->current = p;
-
 		unsigned long long t0 = platform_ticks();
 
 		p->resumed = t0;
@@ -6634,7 +6724,6 @@ run_proc(struct kproc *p)
 
 		p->cputime += platform_ticks() - t0;
 		p->resumed = 0;
-		cpu_self()->current = 0;
 
 		/* a proc can run a full hook window (200k insns) before
 		 * yielding; drain the 16-byte fifo now so it can't overflow
@@ -6763,6 +6852,11 @@ dispatch_lap(struct cpu *me)
 
 		lock(&me->lock);
 		p = rq_take_high(me->runq);
+		/* published under the lock and for the whole resume, so
+		 * that make_ready can see this proc is in hand and leave
+		 * the requeue below to do the enqueueing.
+		 */
+		me->current = p;
 		unlock(&me->lock);
 		if (!p)
 			break;
@@ -6774,11 +6868,15 @@ dispatch_lap(struct cpu *me)
 		 */
 		if (run_proc(p))
 			ran = 1;
-		if (p->status == READY) {
-			lock(&me->lock);
+		/* clearing current and deciding to requeue are one step:
+		 * split them and a wakeup landing in between is either
+		 * lost or enqueued twice.
+		 */
+		lock(&me->lock);
+		me->current = 0;
+		if (p->status == READY && !p->onq)
 			rq_add(me->donq, p);
-			unlock(&me->lock);
-		}
+		unlock(&me->lock);
 	}
 
 	/* phase two is bounded for the same reason phase one is, and
@@ -6804,16 +6902,17 @@ dispatch_lap(struct cpu *me)
 
 		lock(&me->lock);
 		p = rq_take_any(me->runq);
+		me->current = p;	/* as phase one; see there */
 		unlock(&me->lock);
 		if (!p)
 			break;
 		if (run_proc(p))
 			ran = 1;
-		if (p->status == READY) {
-			lock(&me->lock);
+		lock(&me->lock);
+		me->current = 0;
+		if (p->status == READY && !p->onq)
 			rq_add(me->donq, p);
-			unlock(&me->lock);
-		}
+		unlock(&me->lock);
 	}
 
 	/* whatever the bound left behind was woken this lap and has
@@ -6870,12 +6969,16 @@ kernel_run_ap(void)
 {
 	struct cpu *me = cpu_self();
 
+	rq_init(me);		/* before anything can place a proc here */
+
 	lock(&me->lock);
 	me->dispatching = 1;
 	unlock(&me->lock);
 
 	while (nlive > 0) {
 		me->nlaps++;
+		if (ipcheld())	/* see kernel_run; the same check */
+			platform_abort("ipclock held across a lap");
 		if (dispatch_lap(me)) {
 			me->ndispatch++;
 			continue;
@@ -6886,17 +6989,29 @@ kernel_run_ap(void)
 		 * whether to send the ipi -- that is what makes it
 		 * impossible to sleep just after someone decided we did
 		 * not need waking.
+		 *
+		 * The lock settles who decides; it does not close the
+		 * window. This cpu dispatches with interrupts on, so an
+		 * ipi sent the instant after the lock is dropped would be
+		 * taken here as an ordinary interrupt, handled, and lost
+		 * -- and the sleep below would then never end, with work
+		 * already sitting on this queue. So interrupts go off
+		 * before the queue is looked at and stay off into
+		 * platform_cpu_idle(), which re-enables them as it goes
+		 * to sleep.
 		 */
+		platform_intr_off();
 		lock(&me->lock);
 		if (me->runq->n + me->donq->n > 0) {
 			unlock(&me->lock);
+			platform_intr_on();
 			continue;
 		}
 		me->idle = 1;
 		unlock(&me->lock);
 
 		me->nidle++;
-		platform_cpu_idle();
+		platform_cpu_idle();	/* returns with interrupts on */
 
 		lock(&me->lock);
 		me->idle = 0;
@@ -6941,11 +7056,15 @@ kernel_run(void)
 		 * before returning to here. This catches the release
 		 * that a lua error longjmped past, which is the failure
 		 * mode the lua-facing acquisitions have and which no
-		 * amount of reading finds reliably. It is a real check on
-		 * one cpu, which is the point -- the whole existing suite
-		 * exercises it.
+		 * amount of reading finds reliably.
+		 *
+		 * It asks whether this cpu holds it, not whether anyone
+		 * does. Another cpu holding it here is the ordinary case,
+		 * and asking lock.h's holding() reported that as a leak
+		 * -- a panic that arrives at random on a machine that is
+		 * working correctly.
 		 */
-		if (holding(&ipclock))
+		if (ipcheld())
 			platform_abort("ipclock held across a lap");
 
 		/* drain the periodic timer's signal. nothing is paced

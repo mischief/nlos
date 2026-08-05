@@ -134,6 +134,7 @@ microvm_main(unsigned long start_info)
 	if (claim_memory(start_info) == 0)
 		pmm_add(FALLBACK_BASE, FALLBACK_LEN);
 	idt_init();
+	smp_init();		/* cpu 0, before anything calls cpu_self() */
 	intr_init();	/* mask every line before enabling anything */
 
 	/* boot.S entered with interrupts off and nothing turned them back
@@ -151,12 +152,6 @@ microvm_main(unsigned long start_info)
 	 * the last step, so nothing can fire into a half-built machine.
 	 */
 	uart_irq_enable();
-
-	/* after intr_init, because starting a cpu is an IPI and the
-	 * local APIC has to be enabled to send one; before anything
-	 * else, because the cpus are what the rest of this runs on.
-	 */
-	smp_init();
 
 	kernel_clock_init();
 
@@ -214,6 +209,19 @@ microvm_main(unsigned long start_info)
 		kernel_log("boot: no fw_cfg payload and no embedded one -- nothing to run");
 		machine_reset();
 	}
+
+	/* the other cpus last, and after the first proc exists.
+	 *
+	 * An AP goes straight into the dispatch loop, whose condition is
+	 * that the machine has live procs. Started any earlier there are
+	 * none, so it falls out of the loop at once and parks for good --
+	 * which is what happened, and cost nothing but every proc
+	 * landing on cpu 0 with no error anywhere to say why.
+	 *
+	 * It still has to be after intr_init, since starting a cpu is an
+	 * IPI and needs the local APIC.
+	 */
+	smp_start_aps();
 
 	kernel_run();
 

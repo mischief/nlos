@@ -128,3 +128,17 @@ void
 platform_cpu_idle(void)
 {
 }
+
+/* nothing to close a window against with one cpu, and firmware owns the
+ * interrupt state here in any case -- TPL is efi's one big lock, and
+ * clearing IF underneath it is not ours to do.
+ */
+void
+platform_intr_off(void)
+{
+}
+
+void
+platform_intr_on(void)
+{
+}

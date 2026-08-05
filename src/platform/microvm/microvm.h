@@ -44,8 +44,15 @@ void	intr_resched(unsigned apicid);
 void	resched_isr(void);
 void	isr_resched(void);
 
-/* smp.c -- start the other cpus, if this machine has any and can. */
+/* smp.c. smp_init claims cpu 0 for the boot processor and must run
+ * before anything calls cpu_self(); smp_start_aps starts the rest and
+ * must run after the machine has a proc, since an AP goes straight
+ * into the dispatch loop and that loop ends when there is nothing to
+ * run.
+ */
+void	idt_load(void);	/* this cpu's IDTR; the table is shared */
 void	smp_init(void);
+void	smp_start_aps(void);
 
 /* i8259.c / i8253.c -- and only ever on a machine that has neither. */
 void	pic_init(void);

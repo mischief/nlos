@@ -185,8 +185,21 @@ void platform_wake_cpu(unsigned i);
 
 /* sleep this cpu until an interrupt. Returns when one arrives, which
  * for an AP means the reschedule ipi and nothing else.
+ *
+ * Must be called with interrupts off -- platform_intr_off() -- and
+ * re-enables them itself, atomically with going to sleep. That is the
+ * whole contract: an AP dispatches with interrupts on, so a wakeup sent
+ * between "my queue is empty" and the sleep would otherwise be taken as
+ * an ordinary interrupt, handled, and lost, leaving the cpu asleep with
+ * work already on its queue.
  */
 void platform_cpu_idle(void);
+
+/* interrupts off and on for this cpu. Used only to close that window;
+ * this is not a general critical section and nothing here nests.
+ */
+void platform_intr_off(void);
+void platform_intr_on(void);
 
 /* <arch>/uart.c */
 void	uart_takeover(void);	/* wrest the wire port from the firmware */
