@@ -3951,6 +3951,7 @@ extern int luaopen_los_inet(lua_State *L);		/* inet.c: checksum */
 extern int luaopen_los_crc(lua_State *L);		/* crc.c: crc16/crc32 */
 extern int luaopen_los_font(lua_State *L);		/* font.c: glyphs */
 extern int luaopen_ssh_crypto_native(lua_State *L);	/* native.c */
+extern int luaopen_gefs_native(lua_State *L);	/* gefs_native.c */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
@@ -4669,6 +4670,15 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_ssh_crypto_native);
 	lua_setfield(p->L, -2, "crypto.native");
+
+	/* gefs.native (src/gefs_native.c): metrohash64, which lib/gefs
+	 * checksums every block with. Ambient for the same reason as the
+	 * two around it -- a pure function of the string handed to it,
+	 * reaching nothing -- and lib/gefs/hash.lua picks it up on its own
+	 * if it is there, falling back to its own Lua otherwise.
+	 */
+	lua_pushcfunction(p->L, luaopen_gefs_native);
+	lua_setfield(p->L, -2, "gefs.native");
 
 	/* los.inet (src/inet.c), ambient for the same reason as the one
 	 * above: the internet checksum is arithmetic on a string the

@@ -1103,10 +1103,36 @@ test('tcb-lossy', lua_interp,
 # granularity and mid-block through a coroutine that yields inside a
 # write and is abandoned. What this cannot say is that a served volume is
 # wired to the block driver, which is test/boot/microvm_gefs.lua's job.
+
+# src/gefs_native.c built for the host, so the host test exercises the
+# SAME hash the guest does rather than a second implementation that
+# merely agrees with it. lib/gefs/hash.lua has no fallback any more.
+#
+# Named `gefs` rather than `gefs/native` because lua's last searcher
+# takes a.b to a.so and calls luaopen_a_b -- so gefs.so answers
+# require("gefs.native") through luaopen_gefs_native, with no build
+# subdirectory to arrange. require("gefs") itself still finds
+# lib/gefs/init.lua, because the lua-path searcher runs before this one.
+#
+# LUA_CPATH is appended rather than set, so a caller's own is kept.
+gefs_host_env = environment()
+if lua54_dep.found()
+  gefs_native_host = shared_module('gefs',
+    ['src/gefs_native.c'],
+    name_prefix: '',
+    dependencies: lua54_dep,
+    native: true,
+    build_by_default: true,
+  )
+  gefs_host_env.append('LUA_CPATH',
+    meson.current_build_dir() / '?.so', separator: ';')
+endif
+
 test('gefs-host', lua_interp,
   args: [files('test/host_gefs.lua')],
   protocol: 'tap',
   timeout: 120,
+  env: gefs_host_env,
 )
 
 # lib/p9serve.lua is the 9P server over a dev backend -- the bridge

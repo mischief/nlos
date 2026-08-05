@@ -26,6 +26,7 @@ local groups = {}
 -- dir, so nothing here knows which machine it is on.
 groups.kernel = {
 	"src/native.c",
+	"src/gefs_native.c",
 	"src/debug.c",
 	"src/dirs.c",
 	"src/inet.c",
