@@ -3935,6 +3935,16 @@ static const luaL_Reg kapi[] = {
 	{ NULL, NULL }
 };
 
+/* the counters are indexed by position in the table above, so a table
+ * that outgrew them would run off the end of calls[] into whatever
+ * follows it in struct kproc. los_sys_open checks this too, but only
+ * when a proc opens los.sys, and reports it by killing that proc. The
+ * size is known right here, so say it right here: adding the 65th
+ * syscall should fail the build rather than the machine.
+ */
+_Static_assert(sizeof kapi / sizeof kapi[0] - 1 <= NSYSCALL,
+    "NSYSCALL too small for kapi");
+
 extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
 extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
 extern int luaopen_los_inet(lua_State *L);		/* inet.c: checksum */
