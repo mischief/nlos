@@ -65,7 +65,14 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 #define MAXMSGRIGHTS	8	/* rights per message */
 #define MAXWATCH	8	/* monitors per proc */
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
-#define MAXGRANTS	8	/* named capabilities the kernel hands a proc */
+/* named capabilities the kernel hands a proc. The boot payload gets one
+ * per enabled driver plus disk and sched: cons wire esp power p9 blk eth
+ * ip tcp dhcpd fb = 11, + 2 = 13 at most, so 8 silently dropped everything
+ * past the eighth. dhcpd was the first over the line once efi grew a block
+ * driver (the eth stack sits above it in the table), which read as DHCP
+ * being broken when the grant was simply missing. 16 leaves headroom.
+ */
+#define MAXGRANTS	16
 #define MAXTIMERS	32	/* outstanding one-shot timers, machine-wide */
 /* floor on phase two's dispatch bound -- see kernel_run.
  *
@@ -1004,15 +1011,27 @@ right_drop(struct right *r)
 }
 
 /* grant a named capability: take a right the ordinary way (first free
- * slot) and record what it was called, so lua can look the handle up
- * by name. a NULL port or a full table is a no-op, which is exactly
- * the "this capability doesn't exist this boot" case.
+ * slot) and record what it was called, so lua can look the handle up by
+ * name. a NULL port is a no-op, which is exactly the "this capability
+ * doesn't exist this boot" case. a full table is NOT that -- it is a
+ * capability that exists and was dropped -- so it warns rather than
+ * vanishing, since that is a raised MAXGRANTS away and reads to a client
+ * as the device being broken (see the dhcpd overflow it hid).
  */
 static void
 grant_named(struct kproc *p, const char *name, struct kport *port, int recv)
 {
-	if (!port || p->ngrants >= MAXGRANTS)
+	if (!port)
 		return;
+	if (p->ngrants >= MAXGRANTS) {
+		char msg[96];
+
+		snprintf(msg, sizeof msg,
+		    "grant: '%s' dropped, MAXGRANTS(%d) reached", name,
+		    MAXGRANTS);
+		kernel_log(msg);
+		return;
+	}
 
 	int h = right_new(p, port, recv);
 
