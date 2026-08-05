@@ -17,7 +17,7 @@ local thread = require("los.thread")
 local ns = require("ns")
 local tap = require("tap")
 
-tap.plan(6)
+tap.plan(8)
 
 local N = ns.new()
 local espcaps = sys.granted()
@@ -186,5 +186,15 @@ local ok3 = run_vi("/vitest3.txt", { ":s/quick/slow/\r", ":wq\r" })
 tap.ok(ok3, "vi exited after an ex substitution")
 tap.is(N:readfile("/vitest3.txt"), "the slow brown fox\n",
     ":s/quick/slow/ ran through the ex engine and wrote the result")
+
+-- ---- Ctrl-C leaves insert mode, like Escape ----
+-- "ihi\3:wq\r" -- insert "hi", Ctrl-C (\3) instead of Escape to return to
+-- normal mode, then :wq. The efi serial console defers a bare Esc, so this
+-- is the instant path a person actually uses there.
+local ok4 = run_vi("/vitest4.txt", { "ihi", "\3", ":wq\r" })
+
+tap.ok(ok4, "vi exited after using Ctrl-C to leave insert mode")
+tap.is(N:readfile("/vitest4.txt"), "hi\n",
+    "Ctrl-C left insert mode so :wq wrote the inserted text")
 
 tap.done()

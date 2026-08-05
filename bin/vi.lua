@@ -236,7 +236,12 @@ end
 local function insert_key(key)
 	local line = buf.lines[buf.cur] or ""
 
-	if key == "escape" then
+	-- Ctrl-C leaves insert mode like Escape. On the efi serial console the
+	-- firmware defers a bare Esc while it waits to see whether it begins an
+	-- arrow-key sequence, so Esc there is slow; Ctrl-C is a single control
+	-- byte delivered at once, and it is what vim falls back to for the same
+	-- reason. Esc still works everywhere (instantly over ssh).
+	if key == "escape" or key == "\3" then
 		mode = "normal"
 		if cx > 1 then cx = cx - 1 end
 		return true
@@ -288,7 +293,9 @@ end
 
 -- Command mode key handling
 local function command_key(key)
-	if key == "escape" then
+	-- Ctrl-C cancels the line like Escape -- instant where the efi console
+	-- defers a bare Esc (see insert_key).
+	if key == "escape" or key == "\3" then
 		mode = "normal"; cmd_buf = ""
 	elseif key == "\r" or key == "\n" then
 		mode = "normal"
