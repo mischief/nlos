@@ -25,4 +25,7 @@ require("console").new({
 	write = platform.write,
 	keyport = RAWKBD,
 	claim_input = platform.claim_input,
+	-- only where the device rewrites bytes on the way out; see
+	-- lib/console.lua's rawon.
+	raw = platform.raw,
 }):run()

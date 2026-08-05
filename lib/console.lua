@@ -2,6 +2,7 @@
 --
 -- the line editor, getch, and the tty protocol a program consumes --
 -- {op="write"}, {op="log"}, {op="readline"}, {op="read"}, {op="getch"},
+-- {op="readraw"},
 -- {op="rawon"}/{op="rawoff"} -- are all bytes-in, bytes-out and care
 -- nothing for the wire underneath. so they live here, and the device is
 -- injected:
@@ -148,11 +149,14 @@ function Console:serve()
 			end
 		elseif m.op == "rawon" or m.op == "rawoff" then
 			-- there is no cooked line state here to toggle: getch
-			-- already bypasses the readline editor, and io.write is the
-			-- same bytes either way. accepted (rather than ignored as
-			-- unknown) so a program drives every console through one
-			-- protocol -- see the ssh/webterm consoles, which DO have a
-			-- mode to switch.
+			-- already bypasses the readline editor. io.write is
+			-- usually the same bytes either way -- but not on a device
+			-- that rewrites them, and esp32's turns \n into \r\n,
+			-- which corrupts any binary stream carrying 0x0a. So a
+			-- device that has something to switch gets told.
+			if io.raw then
+				io.raw(m.op == "rawon")
+			end
 		elseif m.op == "getch" then
 			-- "" rather than nil on a timeout: sys.send carries one
 			-- value and a reader wants to tell "nothing yet" from a
@@ -161,6 +165,29 @@ function Console:serve()
 
 			if m.reply and m.reply.__right then
 				sys.send(m.reply.__right, c or "")
+			end
+		elseif m.op == "readraw" then
+			-- bulk sibling of getch, for a reader moving bytes
+			-- rather than keystrokes. Same bytes, one reply.
+			--
+			-- getch costs a message round trip per byte, and a
+			-- file transfer is not a keyboard: measured at about
+			-- 1KB/s on a line running at 115200, which is the
+			-- round trips and not the link. Waiting once for the
+			-- first byte and then taking whatever else is already
+			-- queued turns a subpacket into one reply.
+			local t = {}
+			local c = self:getch(m.timeout or 1000)
+
+			while c and c ~= "" do
+				t[#t + 1] = c
+				if #t >= (m.n or 1024) then
+					break
+				end
+				c = self:getch(0)
+			end
+			if m.reply and m.reply.__right then
+				sys.send(m.reply.__right, table.concat(t))
 			end
 		elseif m.op == "readline" then
 			sys.send(m.reply.__right, self:readline(m.prompt))

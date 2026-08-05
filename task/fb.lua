@@ -32,7 +32,20 @@
 -- the boot, since nothing re-grants PRIV_FB.
 
 local sys = require("los.sys")
-local thread = require("los.thread")
+
+-- No los.thread: this loop has no concurrency, and on a proc with no
+-- threads thread.recv is exactly the tryrecv/block below -- for which
+-- it costs ~24KB resident. See task/power.lua.
+local function recv(h)
+	while true do
+		local ok, m = sys.tryrecv(h)
+
+		if ok then
+			return m
+		end
+		sys.block(h)
+	end
+end
 local platform = require("los.platform.fb")
 
 local function rect(r)
@@ -71,6 +84,17 @@ function ops.load(m)
 	return true
 end
 
+-- only where the device has a bit plane to hand back: a screenshot on
+-- a 1bpp shadow otherwise costs a 32x expansion to BGRx and a repack
+-- in lua. platform.unload1 is absent on a colour framebuffer.
+if platform.unload1 then
+	function ops.unload1(m)
+		local x, y, w, h = rect(m.r)
+
+		return platform.unload1(x, y, w, h)
+	end
+end
+
 function ops.unload(m)
 	local x, y, w, h = rect(m.r)
 
@@ -86,7 +110,7 @@ function ops.scroll(m)
 end
 
 while true do
-	local m = thread.recv(sys.SELF)
+	local m = recv(sys.SELF)
 	local fn = ops[m.op]
 
 	if not fn then
