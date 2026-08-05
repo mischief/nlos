@@ -154,7 +154,13 @@ proc.spawn(LINE .. GEN .. [[
 
 local mine = line(up, down)
 local check = checker()
-local rx = zmodem.receiver({ sink = check.sink, outmax = 16384 })
+-- escctl off at this end only, which makes the two rounds negotiate
+-- differently: round one is the minimal escape set, and in round two
+-- the child's receiver asks for ESCCTL and our sender has to honour it.
+-- A port drops nothing, so neither is needed here -- what is being
+-- checked is that the negotiation happens.
+local rx = zmodem.receiver({ sink = check.sink, outmax = 16384,
+    escctl = false })
 local t0 = sys.uptime_ms()
 local files, err = zmodem.drive(rx, mine)
 local ms = sys.uptime_ms() - t0
@@ -178,7 +184,7 @@ tap.diag(("%d bytes in %dms, %d KiB/s"):format(check.bytes, ms,
 -- ---- round two: we send, the child receives and checks ----
 
 local tx = zmodem.sender({ name = "host.bin", size = SIZE, read = gen },
-    { blocksize = BLOCK, outmax = 16384 })
+    { blocksize = BLOCK, outmax = 16384, escctl = false })
 
 t0 = sys.uptime_ms()
 

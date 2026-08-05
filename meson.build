@@ -1043,6 +1043,31 @@ test('zmodem-protocol', lua_interp,
   timeout: 60,
 )
 
+# and against lrzsz, where there is one on the host. This is the only
+# test with a peer that has never seen our code -- everything else wires
+# our sender to our receiver, which proves the two agree and not that
+# either is right. It earned its place immediately: ESCCTL turned out to
+# be a promise about what you send rather than a preference about what
+# you accept, and a peer in that mode silently discards the control
+# characters you leave raw.
+#
+# Optional on purpose. Nothing in the guest depends on lrzsz, and socat
+# is here only because lrzsz wants its stdio on a pipe pair while
+# hostutil hands out sockets.
+sz_prog = find_program('lsz', 'sz', required: false)
+rz_prog = find_program('lrz', 'rz', required: false)
+socat_prog = find_program('socat', required: false)
+
+if have_hostutil and sz_prog.found() and rz_prog.found() and socat_prog.found()
+  test('zmodem-lrzsz', lua_interp,
+    args: [files('test/host_lrzsz.lua')],
+    protocol: 'tap',
+    timeout: 120,
+    env: {'HOSTUTIL_SO': hostutil.full_path()},
+    depends: hostutil,
+  )
+endif
+
 test('tcb-statemachine', lua_interp,
   args: [files('test/host_tcb.lua')],
   protocol: 'tap',

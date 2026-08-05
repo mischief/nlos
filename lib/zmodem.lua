@@ -153,24 +153,45 @@ end
 
 -- ---- escaping ----
 --
--- ZDLE has to be escaped or framing is ambiguous. The control set is
--- escaped too, unconditionally: XON/XOFF and the telnet IAC-adjacent
--- bytes are what a line in the middle can eat, and a decoder accepts
--- the escaped form whether or not it asked for it, so escaping costs
--- ~2% on binary data and removes a whole class of "works on this
--- link". Not done: lrzsz also escapes CR after '@', which guards a
--- telnet peculiarity our transports do not have.
+-- ZDLE has to be escaped or framing is ambiguous, and so do the bytes a
+-- line in the middle eats: XON/XOFF and their high halves. That is the
+-- minimum, and it is what goes out by default.
+--
+-- ESCCTL is the other setting: every control character escaped, which
+-- is 64 of the 256 byte values and so about 25% more wire on binary
+-- data. It is not merely defensive, and this is the part that is easy
+-- to get wrong -- **a peer in ESCCTL mode DISCARDS unescaped control
+-- characters on the way in**. So the mode is a promise about what we
+-- send, not a preference about what we accept: advertising ESCCTL in
+-- ZRINIT and then sending a header with a raw NUL in it means the peer
+-- reads a header two bytes short and never answers. `sz -e` sets it
+-- from its own command line and drops our bytes whatever we advertised,
+-- which is exactly how this was found.
+--
+-- Decoding is unconditional either way: an escaped byte is unambiguous,
+-- so a peer that escapes more than we asked for costs nothing.
+--
+-- Not done: lrzsz also escapes CR after '@', which guards a telnet
+-- peculiarity none of our transports have.
 
-local escmap = {}
+local escmaps = { [false] = {}, [true] = {} }
 
 for _, b in ipairs({ 0x18, 0x10, 0x11, 0x13, 0x90, 0x91, 0x93 }) do
-	escmap[string.char(b)] = string.char(ZDLE, b ~ 0x40)
+	escmaps[false][string.char(b)] = string.char(ZDLE, b ~ 0x40)
+end
+for b = 0, 255 do
+	if b & 0x60 == 0 then
+		escmaps[true][string.char(b)] = string.char(ZDLE, b ~ 0x40)
+	end
 end
 
-local ESCPAT = "[\24\16\17\19\144\145\147]"
+local escpats = {
+	[false] = "[\24\16\17\19\144\145\147]",
+	[true] = "[\0-\31\128-\159]",
+}
 
-local function esc(s)
-	return (s:gsub(ESCPAT, escmap))
+local function esc(s, all)
+	return (s:gsub(escpats[all], escmaps[all]))
 end
 
 local function pos4(n)
@@ -204,21 +225,21 @@ local function hexhdr(typ, f)
 	return table.concat(out)
 end
 
-local function binhdr(typ, f, use32)
+local function binhdr(typ, f, use32, all)
 	local body = string.char(typ) .. f
 
 	if use32 then
 		local c = crc32of(body)
 
-		return "\42\24\67" .. esc(body .. pos4(c))
+		return "\42\24\67" .. esc(body .. pos4(c), all)
 	end
 
 	local c = crc16of(body)
 
-	return "\42\24\65" .. esc(body .. string.char(c >> 8, c & 0xff))
+	return "\42\24\65" .. esc(body .. string.char(c >> 8, c & 0xff), all)
 end
 
-local function subpkt(data, term, use32)
+local function subpkt(data, term, use32, all)
 	local body = data .. string.char(term)
 	local tail
 
@@ -229,7 +250,7 @@ local function subpkt(data, term, use32)
 
 		tail = string.char(c >> 8, c & 0xff)
 	end
-	return esc(data) .. string.char(ZDLE, term) .. esc(tail)
+	return esc(data, all) .. string.char(ZDLE, term) .. esc(tail, all)
 end
 
 -- eight CANs and eight backspaces: the abort every zmodem implementation
@@ -687,7 +708,7 @@ local function recvfile(m, file, use32)
 		file.received = pos
 	end
 
-	m:emit(binhdr(ZRPOS, pos4(0), use32))
+	m:emit(binhdr(ZRPOS, pos4(0), use32, m.escall))
 	while true do
 		if tries > m.retries then
 			return nil, "too many retries receiving " .. file.name
@@ -700,7 +721,7 @@ local function recvfile(m, file, use32)
 				-- a frame from before our last ZRPOS; say
 				-- again where we actually are
 				tries = tries + 1
-				m:emit(binhdr(ZRPOS, pos4(pos), use32))
+				m:emit(binhdr(ZRPOS, pos4(pos), use32, m.escall))
 				goto continue
 			end
 			tries = 0
@@ -708,14 +729,14 @@ local function recvfile(m, file, use32)
 				local d, term = m:subpacket()
 
 				if d == nil then
-					m:emit(binhdr(ZRPOS, pos4(pos), use32))
+					m:emit(binhdr(ZRPOS, pos4(pos), use32, m.escall))
 					break
 				end
 				put(d)
 				if term == ZCRCQ then
-					m:emit(binhdr(ZACK, pos4(pos), use32))
+					m:emit(binhdr(ZACK, pos4(pos), use32, m.escall))
 				elseif term == ZCRCW then
-					m:emit(binhdr(ZACK, pos4(pos), use32))
+					m:emit(binhdr(ZACK, pos4(pos), use32, m.escall))
 					break
 				elseif term ~= ZCRCG then
 					break	-- ZCRCE: frame ended
@@ -728,7 +749,7 @@ local function recvfile(m, file, use32)
 				return true
 			end
 			tries = tries + 1
-			m:emit(binhdr(ZRPOS, pos4(pos), use32))
+			m:emit(binhdr(ZRPOS, pos4(pos), use32, m.escall))
 		elseif typ == ZCAN or f == "cancelled" then
 			return nil, "cancelled"
 		elseif typ == ZFIN then
@@ -736,7 +757,7 @@ local function recvfile(m, file, use32)
 		else
 			-- timeout, or a frame with nothing to say here
 			tries = tries + 1
-			m:emit(binhdr(ZRPOS, pos4(pos), use32))
+			m:emit(binhdr(ZRPOS, pos4(pos), use32, m.escall))
 		end
 		::continue::
 	end
@@ -748,10 +769,13 @@ local function recvbody(m)
 	-- a zero window is "stream, do not wait for me". The buffer is
 	-- Lua's problem, not the line's, so there is nothing to pace
 	-- against and an ack per window would only cost round trips.
-	local can = CANFDX | CANOVIO | ESCCTL
+	local can = CANFDX | CANOVIO
 
 	if m.crc32 then
 		can = can | CANFC32
+	end
+	if m.escall then
+		can = can | ESCCTL
 	end
 
 	local flags = string.char(0, 0, 0, can)
@@ -805,6 +829,14 @@ local function recvbody(m)
 			m.files = files
 			return files
 		elseif typ == ZSINIT then
+			-- TESCCTL says the sender escapes every control
+			-- character, which means its reader discards the
+			-- ones we leave raw. Match it or it never sees our
+			-- next header.
+			if sbyte(f, 4) & ESCCTL ~= 0 then
+				m.escall = true
+			end
+
 			local d = m:subpacket()
 
 			if d ~= nil then
@@ -855,8 +887,8 @@ local function sendfile(m, file, use32, bufsize)
 	local tries = 0
 	local pos
 
-	m:emit(binhdr(ZFILE, string.char(0, 0, 0, ZCBIN), use32))
-	m:emit(subpkt(info, ZCRCW, use32))
+	m:emit(binhdr(ZFILE, string.char(0, 0, 0, ZCBIN), use32, m.escall))
+	m:emit(subpkt(info, ZCRCW, use32, m.escall))
 	while true do
 		if tries > m.retries then
 			return nil, "no answer to ZFILE"
@@ -879,8 +911,8 @@ local function sendfile(m, file, use32, bufsize)
 			-- chased each other one frame apart forever.
 			tries = tries + 1
 			m:emit(binhdr(ZFILE, string.char(0, 0, 0, ZCBIN),
-			    use32))
-			m:emit(subpkt(info, ZCRCW, use32))
+			    use32, m.escall))
+			m:emit(subpkt(info, ZCRCW, use32, m.escall))
 		else
 			tries = tries + 1
 		end
@@ -899,7 +931,7 @@ local function sendfile(m, file, use32, bufsize)
 		local acked = pos
 		local restart = false
 
-		m:emit(binhdr(ZDATA, pos4(pos), use32))
+		m:emit(binhdr(ZDATA, pos4(pos), use32, m.escall))
 		while pos < total do
 			local n = m.blocksize
 
@@ -927,7 +959,7 @@ local function sendfile(m, file, use32, bufsize)
 			elseif bufsize > 0 and pos - acked >= bufsize then
 				term = ZCRCQ
 			end
-			m:emit(subpkt(chunk, term, use32))
+			m:emit(subpkt(chunk, term, use32, m.escall))
 			m.bytes = pos
 
 			if term == ZCRCG then
@@ -975,7 +1007,7 @@ local function sendfile(m, file, use32, bufsize)
 	local again = false
 
 	tries = 0
-	m:emit(binhdr(ZEOF, pos4(total), use32))
+	m:emit(binhdr(ZEOF, pos4(total), use32, m.escall))
 	while not again do
 		if tries > m.retries then
 			return nil, "no answer to ZEOF"
@@ -995,7 +1027,7 @@ local function sendfile(m, file, use32, bufsize)
 			return nil, "cancelled"
 		elseif typ == nil then
 			tries = tries + 1
-			m:emit(binhdr(ZEOF, pos4(total), use32))
+			m:emit(binhdr(ZEOF, pos4(total), use32, m.escall))
 		else
 			tries = tries + 1
 		end
@@ -1035,6 +1067,12 @@ local function sendbody(m)
 	local use32 = m.crc32 and (rxflags & CANFC32) ~= 0
 
 	m.crc32 = use32
+	-- the receiver's demand, not a preference: a receiver in ESCCTL
+	-- mode throws away unescaped control characters, so this is the
+	-- one negotiated field that can only be turned on.
+	if rxflags & ESCCTL ~= 0 then
+		m.escall = true
+	end
 
 	for _, file in ipairs(m.tosend) do
 		local ok, err = sendfile(m, file, use32, bufsize)
@@ -1076,6 +1114,11 @@ local function newmach(body, opts)
 		blocksize = opts.blocksize or 8192,
 		outmax = opts.outmax or 32768,
 		crc32 = opts.crc32 ~= false,
+		-- default on: correct against any peer, including one that
+		-- was told to escape from its own command line. Turn it off
+		-- for a line that is known clean -- a port, a socket -- and
+		-- get the 25% back.
+		escall = opts.escctl ~= false,
 		sink = opts.sink,
 	}, Mach)
 
