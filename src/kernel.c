@@ -5352,21 +5352,27 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		p->home = best ? best->idx : 0;
 	}
 
-	/* except a driver, which runs on the boot processor and nowhere
-	 * else. These are the procs holding the raw device rights, and
-	 * "the bsp stays the io engine" keeps every device path on the
-	 * cpu its interrupts are routed to (apic 0, see ioapic.c).
+	/* A driver says it belongs on the boot processor, which is where
+	 * its device's interrupts are routed (apic 0, see ioapic.c).
 	 *
-	 * The honest reason is narrower than the slogan, and is a debt
-	 * rather than a design: left to placement, blksrv drew an AP and
-	 * gefs read back blocks that failed their checksums. Pinning made
-	 * it stop. What was actually racing was never established, and
-	 * the two invariants this comment used to name have since been
-	 * fixed to hold on any cpu -- the uart ring takes a lock, and a
-	 * virtio queue is safe because one proc owns the device rather
-	 * than because that proc is here. So this is a workaround for
-	 * something still unexplained in the blk path, and should be
-	 * removed by finding it, not by trying the placement again.
+	 * This is a statement of intent and nothing more: it cannot
+	 * currently change any placement, because spawn_driver runs
+	 * before smp_start_aps and so the loop above had one cpu to
+	 * choose from anyway. It is kept because that ordering is not a
+	 * rule anyone wrote down, and a driver spawned later would
+	 * otherwise be placed by load like anything else.
+	 *
+	 * It is NOT what makes device paths safe, and an earlier version
+	 * of this comment said it was. The two invariants that used to
+	 * be cited -- the uart ring's producer, and virtio's ordering
+	 * argument -- have both been fixed to hold on any cpu: the ring
+	 * takes a lock, and a queue is safe because exactly one proc owns
+	 * the device, not because that proc is here.
+	 *
+	 * Nor did it ever work around the gefs checksum failures. That
+	 * was several procs interleaving inside one unlocked filesystem
+	 * through srv.serve's session loops, it needed no second cpu, and
+	 * it is fixed in lib/srv.lua.
 	 */
 	if (priv != PRIV_NONE && priv != PRIV_BOOT)
 		p->home = 0;

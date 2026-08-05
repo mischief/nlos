@@ -703,14 +703,18 @@ ioapic sends everything to apic id 0 and MSI-X entries name the boot
 cpu. So do the device pumps, `expire_timers`, and everything that
 touches firmware. APs run the scheduler and nothing else.
 
-Driver procs are pinned there too — `proc_new` sets `p->home = 0` for
-anything privileged — and that one is a debt wearing a slogan. Left to
-placement, blksrv drew an AP and gefs read back blocks that failed
-their checksums; pinning stopped it and nobody established what was
-racing. Both invariants originally cited for it have since been fixed
-to hold on any cpu, so the reason it works is not the reason written
-down at the time. Remove it by finding the bug, not by retrying the
-placement.
+Driver procs say they belong there too — `proc_new` sets `p->home = 0`
+for anything privileged — but that line cannot currently change any
+placement: `spawn_driver` runs before `smp_start_aps`, so there is one
+cpu to choose from when a driver is made, and `p->home` is never
+reassigned afterwards. What pins drivers today is the boot order, and
+nothing states it as a rule. Nothing else depends on it either: the
+device-path invariants that used to be credited to it hold on any cpu
+now.
+
+So drivers on the boot cpu is a design preference — their interrupts
+land there — rather than a correctness requirement, and if the ordering
+ever changes it should be re-examined rather than defended.
 
 **What is per driver rather than per cpu**, and the distinction has
 bitten once: a virtio queue is safe with no lock because exactly one
@@ -743,13 +747,6 @@ always does.
 ## Known debts — do not report these as discoveries
 
 Structural, worth fixing:
-
-- **Driver procs are pinned to the boot cpu to hide a race nobody
-  found.** `proc_new` forces `p->home = 0` for privileged procs because
-  blksrv on an AP made gefs read blocks that failed their checksums.
-  The device-path invariants originally blamed have since been fixed to
-  hold anywhere, so the pinning is now load-bearing for an unknown
-  reason. See "More than one cpu" above.
 
 - **TCP/UDP connections are integers, not rights.** Every other
   authority arrives as a right; a connection is a small integer in a
