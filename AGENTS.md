@@ -682,12 +682,21 @@ re-enters through `api_close`. The physical allocator has one lock; the
 malloc counters are relaxed atomics. The lock order is in `src/lock.h`
 and is the whole discipline.
 
-Each proc has its own `luaheap`, and a second cpu is what decided that:
-one heap for the machine measured 27% less memory, but would need a
-lock on every Lua allocation, which is the most frequent thing here.
-A per-proc heap needs none, because a proc runs on one cpu at a time
-and its heap is touched only while it runs. The chunk source under it
-is shared and locked, and is asked for more only a few times per proc.
+The `luaheap` arrangement follows `NCPU`, and neither setting takes a
+lock — the only combination that would need one is shared-and-parallel,
+which is the one never picked. At `NCPU > 1` each proc has its own,
+because a shared heap would need a lock on every Lua allocation, the
+most frequent thing here; a per-proc heap needs none, since a proc runs
+on one cpu at a time. At `NCPU == 1` there is a single machine-wide
+heap, because per-proc heaps cost real memory for nothing: measured on
+efi with 26 procs, 50021 bytes mapped per proc against 40879, waste
+30.3% against 14.7%, 232KB in total, with `lua_live` identical — the
+whole difference is chunk tails. That is what makes it matter on esp32,
+which is compile-time uniprocessor and where memory binds.
+
+`NCPU` rather than `platform_ncpu()` on purpose: the running count is
+not known when the first proc is made, because `smp_start_aps()` runs
+after it deliberately.
 
 **What stays on the boot cpu.** Device interrupts, by routing: the
 ioapic sends everything to apic id 0 and MSI-X entries name the boot
