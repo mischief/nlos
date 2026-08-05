@@ -282,6 +282,7 @@ else
     'lib/sync/lock.lua',
     'lib/tap.lua',
     'lib/ps.lua',
+    'lib/zmodem.lua',
   ]
   embed_args = ['/boot/microvm.lua=' +
       (boot_payload.startswith('/') ? boot_payload
@@ -567,6 +568,7 @@ lua_payload = files(
   'lib/thread.lua',
   'lib/webterm.lua',
   'task/wire.lua',
+  'lib/zmodem.lua',
 )
 
 # a prebuilt gefs volume with one file, for the disk's second partition.
@@ -665,7 +667,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'ports',
               'fb', 'fbprog',
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
-              'strictglobals', 'efigefs', 'nsfs', 'vi']
+              'strictglobals', 'efigefs', 'nsfs', 'vi', 'zmodem']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
@@ -1027,6 +1029,20 @@ test('tcp4-codec', lua_interp,
 # reaches instead is everything a real peer will not do on request: a
 # simultaneous open, a reset acknowledging nothing, an acknowledgment of
 # a segment never sent, a SYN arriving inside an open connection.
+# lib/zmodem.lua is sans-io in the same way tcb.lua is: the line is a
+# pair of buffers, so a sender and a receiver can be wired to each other
+# here with no port, no wire and no clock. What that buys is the cases a
+# real link will not perform on request -- a byte corrupted at a chosen
+# offset, a peer that stops answering, a cancel -- plus the crc check
+# vectors, which is what pins the framing to zmodem.h rather than to our
+# own agreement with ourselves. test/boot/test_zmodem.lua runs the same
+# code between two procs over real ports.
+test('zmodem-protocol', lua_interp,
+  args: [files('test/host_zmodem.lua')],
+  protocol: 'tap',
+  timeout: 60,
+)
+
 test('tcb-statemachine', lua_interp,
   args: [files('test/host_tcb.lua')],
   protocol: 'tap',

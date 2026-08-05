@@ -3906,6 +3906,7 @@ static const luaL_Reg kapi[] = {
 extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
 extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
 extern int luaopen_los_inet(lua_State *L);		/* inet.c: checksum */
+extern int luaopen_los_crc(lua_State *L);		/* crc.c: crc16/crc32 */
 extern int luaopen_ssh_crypto_native(lua_State *L);	/* native.c */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
@@ -4634,6 +4635,13 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_los_inet);
 	lua_setfield(p->L, -2, "los.inet");
+
+	/* los.crc (src/crc.c), ambient on the same argument: two check
+	 * polynomials over a string the caller already has, reaching
+	 * nothing. lib/zmodem.lua has both in Lua and falls back to them.
+	 */
+	lua_pushcfunction(p->L, luaopen_los_crc);
+	lua_setfield(p->L, -2, "los.crc");
 	/* los.fs is the whole of raw ESP access -- enumeration, metadata
 	 * and file data. it is registered for exactly two procs: the esp
 	 * server task, which serves the disk to everyone else over a port
