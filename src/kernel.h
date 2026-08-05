@@ -5,6 +5,8 @@
  * queues, rights are per-proc handles onto ports.
  */
 
+#include <stddef.h>
+
 /* the TSC epoch and rate. must run before anything measures a duration
  * or logs a line; efi_main calls it first. costs 100ms of BS->Stall.
  */
@@ -18,7 +20,7 @@ void	kernel_log(const char *s);
 
 int	kernel_init(void);
 int	kernel_spawn_file(const char *path);	/* returns pid or -1 */
-int	kernel_spawn_buffer(const char *code, unsigned long len);
+int	kernel_spawn_buffer(const char *code, size_t len);
 void	kernel_run(void);			/* until all procs die */
 
 /* checked capability, write/append only (read is ambient): does

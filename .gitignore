@@ -16,3 +16,10 @@ OVMF_VARS.fd
 
 # agent worktrees and session state
 .claude/
+
+# idf.py generates these next to the project: the merged config it is
+# actually building with, and its backup. The inputs are
+# sdkconfig.defaults and the per-board overlays beside it.
+esp32/sdkconfig
+esp32/sdkconfig.old
+esp32/*.sdkconfig

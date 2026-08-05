@@ -1,0 +1,21 @@
+# M5Stack Cardputer: ESP32-S3FN8, 8MB flash, and no PSRAM at all.
+# Layered over sdkconfig.defaults, which is the T-Deck:
+#
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.cardputer" build
+#
+# This is the tight machine, and the interesting one: with no PSRAM the
+# lua heaps come out of the same internal SRAM as everything else, so it
+# is where chunk sizing and bytecode stop being theoretical. Same silicon
+# family as the T-Deck otherwise, so nothing here is about the CPU.
+CONFIG_SPIRAM=n
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# The USB-C port is the native USB-Serial-JTAG, same as the T-Deck, so
+# the console setting in sdkconfig.defaults already suits -- this is the
+# /dev/ttyACM port and stdin has to be bound to it.
+
+# No SD wiring is established for this board (clm's board_cardputer.c
+# says "for now, no microSD"), and the display and keyboard are not
+# wired here yet either. So it probes nothing: see Kconfig.projbuild for
+# why that is a setting rather than a default.
+CONFIG_LUAOS_BOARD_CARDPUTER=y

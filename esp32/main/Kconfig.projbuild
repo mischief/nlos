@@ -1,0 +1,39 @@
+menu "lua-os board"
+
+# Which physical board this image is for.
+#
+# Not a cosmetic label: a peripheral's pins are board facts, and probing
+# for one that is not there is not harmless. Bringing up the T-Deck's
+# shared SPI bus on a machine without it hangs before the kernel starts
+# -- which is what the SD probe did to every qemu boot test, silently,
+# because a probe that answers "no" and a probe that never returns look
+# identical from outside.
+#
+# So the default is NONE: a board says what it has, and anything else
+# gets a machine with a console and nothing else.
+
+choice LUAOS_BOARD
+	prompt "Target board"
+	default LUAOS_BOARD_NONE
+
+config LUAOS_BOARD_NONE
+	bool "none -- emulator or a bare ESP32-S3"
+	help
+	  Console only. No peripheral probe runs, which is what makes
+	  this safe under qemu.
+
+config LUAOS_BOARD_TDECK
+	bool "LilyGo T-Deck"
+	help
+	  8MB octal PSRAM, 16MB flash, microSD on the SPI bus shared
+	  with the display and the LoRa radio.
+
+config LUAOS_BOARD_CARDPUTER
+	bool "M5Stack Cardputer"
+	help
+	  No PSRAM: the lua heaps come out of internal SRAM, so this is
+	  the tight machine. Display and keyboard are not wired yet.
+
+endchoice
+
+endmenu

@@ -1,0 +1,14 @@
+# qemu-esp32s3 emulates UART0 and not the USB-Serial-JTAG peripheral, so
+# the emulator needs the console on the uart. Layered over
+# sdkconfig.defaults:
+#
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.qemu" build
+#
+# Everything else -- PSRAM included -- stays as the board has it, so the
+# only difference between the two images is which pins the console is on.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# No board: qemu emulates none of the T-Deck peripherals, and the SD
+# probe hung every boot test before this existed.
+CONFIG_LUAOS_BOARD_NONE=y

@@ -161,15 +161,13 @@ inc = include_directories('include', 'src', 'lua', 'src/platform' / platform)
 # dirs.c/kernel.c/linit.c are firmware-blind (the platform seam is
 # platform.h + fs.h/efi.h, all resolved from the per-platform
 # include dir above); everything else is the platform's own.
-kernel_src = files(
-  'src/native.c',
-  'src/debug.c',
-  'src/dirs.c',
-  'src/inet.c',
-  'src/kernel.c',
-  'src/linit.c',
-  'src/luaheap.c',
-)
+# The shared source lists live in tools/sources.lua, which ESP-IDF's
+# cmake reads too: two build systems is the honest answer for esp32,
+# and one list is what stops them drifting apart unnoticed.
+sources_lua = files('tools/sources.lua')
+
+kernel_src = files(run_command(lua_interp, sources_lua, 'kernel', check: true)
+  .stdout().strip().split('\n'))
 if platform == 'efi'
   kernel_src += files(
     'src/platform/efi/blk.c',
@@ -299,48 +297,11 @@ else
   kernel_src += embedfs_src
 endif
 
-libc_src = files(
-  'src/libc/locale.c',
-  'src/libc/math.c',
-  'src/libc/stdio.c',
-  'src/libc/stdlib.c',
-  'src/libc/string.c',
-  'src/libc/time.c',
-  'src/libc/vsnprintf.c',
-)
+libc_src = files(run_command(lua_interp, sources_lua, 'libc', check: true)
+  .stdout().strip().split('\n'))
 
-lua_src = files(
-  'lua/lapi.c',
-  'lua/lauxlib.c',
-  'lua/lbaselib.c',
-  'lua/lcode.c',
-  'lua/lcorolib.c',
-  'lua/lctype.c',
-  'lua/ldblib.c',
-  'lua/ldebug.c',
-  'lua/ldo.c',
-  'lua/ldump.c',
-  'lua/lfunc.c',
-  'lua/lgc.c',
-  'lua/liolib.c',
-  'lua/llex.c',
-  'lua/lmathlib.c',
-  'lua/lmem.c',
-  'lua/loadlib.c',
-  'lua/lobject.c',
-  'lua/lopcodes.c',
-  'lua/lparser.c',
-  'lua/lstate.c',
-  'lua/lstring.c',
-  'lua/lstrlib.c',
-  'lua/ltable.c',
-  'lua/ltablib.c',
-  'lua/ltm.c',
-  'lua/lundump.c',
-  'lua/lutf8lib.c',
-  'lua/lvm.c',
-  'lua/lzio.c',
-)
+lua_src = files(run_command(lua_interp, sources_lua, 'lua', check: true)
+  .stdout().strip().split('\n'))
 
 pe_ld = meson.current_source_dir() / 'src/platform/efi/pe.ld'
 microvm_ld = meson.current_source_dir() / 'src/platform/microvm/microvm.ld'

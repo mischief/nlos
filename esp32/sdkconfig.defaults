@@ -1,0 +1,53 @@
+# T-Deck is an ESP32-S3-WROOM-1 N16R8: 16MB flash, 8MB octal PSRAM.
+# qemu-esp32s3 emulates neither PSRAM mode, so a qemu run gets internal
+# SRAM only and these settings simply find no chip -- which is why the
+# port must not require PSRAM to reach a repl.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+
+# malloc draws on PSRAM for anything big, which is what puts the lua
+# heaps there: src/luaheap.c allocates in ~8KB chunks, well over this
+# threshold, while the small fry that wants to stay fast stays internal.
+# Without it a proc costs ~52KB of the ~210KB of internal SRAM and the
+# third proc cannot finish its requires -- which is the state qemu is
+# permanently in, since it emulates no PSRAM at all.
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# The console is where the two target machines genuinely disagree, and
+# there is no single setting that serves both.
+#
+# On the T-Deck the console must be the native USB-Serial-JTAG: that is
+# the /dev/ttyACM port. Making UART0 primary and USB secondary looks
+# like it works -- the boot log still appears over USB, because output
+# goes to both -- but stdin stays bound to UART0, which no cable
+# reaches. Typing at the repl then does nothing and the host's write
+# blocks once the CDC buffer fills.
+#
+# qemu is the opposite: it emulates the uart and not the USB
+# peripheral, so a USB-primary image boot-loops there with no output at
+# all, not even from the second-stage bootloader -- which makes it look
+# like the app is at fault when nothing of ours has run yet.
+#
+# So this file is the board, and sdkconfig.qemu overrides it for the
+# emulator. See tools/README or the qemu target for the invocation.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# kernel_run never returns and does its own idle sleep, so the watchdog
+# has nothing to feed it. The scheduler yields to FreeRTOS on every idle
+# lap (idf_shim's WaitForEvent), which is what keeps the idle task alive.
+CONFIG_ESP_TASK_WDT_INIT=n
+
+# lua wants a real stack: the parser recurses, and a proc's first
+# require happens on app_main's.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# The board this image is for. See esp32/main/Kconfig.projbuild: a
+# peripheral probe that has no business running here does not merely
+# answer no, it can hang before the kernel starts.
+CONFIG_LUAOS_BOARD_TDECK=y
