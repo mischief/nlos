@@ -47,44 +47,85 @@ end
 -- tui (cf. ~/code/c/clm's tui.c, which tracks a cursor position and
 -- redraws; not needed here since there's nowhere to move the cursor
 -- to without ANSI support we don't assume the far end has).
-local function readline()
+-- messages that arrived on sys.SELF while readline was mid-line and are
+-- not its business: the serve loop drains them once the line is done, so
+-- a getch or a second reader that landed during editing is not lost.
+local deferred = {}
+
+-- read one edited line, prompt included. Waits on the keyboard AND the
+-- mailbox at once, so a write from another proc (a log line, sshd coming
+-- up) is shown as it arrives rather than frozen until Enter -- reprinting
+-- the prompt and the half-typed line after it, the way a readline library
+-- redisplays. No cursor addressing: this is a plain serial console with
+-- no assumed escape support, so the redraw is \r\n plus a reprint, the
+-- same primitives the backspace erase already uses.
+local function readline(prompt)
 	local buf = {}
 
 	local function erase(n)
 		platform.write(("\8 \8"):rep(n))
 	end
 
-	while true do
-		local c = readone()
+	local function redraw(msg)
+		platform.write("\r\n")
+		platform.write(msg)
+		if prompt then
+			platform.write(prompt)
+		end
+		platform.write(table.concat(buf))
+	end
 
-		if c == "\r" or c == "\n" then
-			platform.write("\n")
-			return table.concat(buf)
-		elseif c == "\4" then
-			if #buf == 0 then
-				return nil
+	if prompt then
+		platform.write(prompt)
+	end
+
+	while true do
+		local which, m = thread.alt({ { port = RAWKBD },
+		    { port = sys.SELF } })
+
+		if which ~= 1 then
+			-- a mailbox message mid-line: a write shows now; anything
+			-- else waits for the serve loop, so nothing is dropped.
+			if type(m) == "table" and
+			    (m.op == "write" or m.op == "log") then
+				redraw(m.data)
+			else
+				deferred[#deferred + 1] = m
 			end
-		elseif c == "\8" or c == "\127" then
-			if #buf > 0 then
-				table.remove(buf)
-				erase(1)
+		else
+			local c = m
+
+			if c == "\r" or c == "\n" then
+				platform.write("\n")
+				return table.concat(buf)
+			elseif c == "\4" then
+				if #buf == 0 then
+					return nil
+				end
+			elseif c == "\8" or c == "\127" then
+				if #buf > 0 then
+					table.remove(buf)
+					erase(1)
+				end
+			elseif c == "\21" then
+				-- ctrl-u: kill the whole line, clm's input_kill(0,
+				-- input_len) equivalent, minus the kill-buffer/yank
+				-- side (nothing here asked for ctrl-y).
+				erase(#buf)
+				buf = {}
+			elseif #c == 1 and c >= " " then
+				buf[#buf + 1] = c
+				platform.write(c)
 			end
-		elseif c == "\21" then
-			-- ctrl-u: kill the whole line, clm's input_kill(0,
-			-- input_len) equivalent, minus the kill-buffer/yank
-			-- side (nothing here asked for ctrl-y).
-			erase(#buf)
-			buf = {}
-		elseif #c == 1 and c >= " " then
-			buf[#buf + 1] = c
-			platform.write(c)
 		end
 	end
 end
 
 local function serve()
 	while true do
-		local m = thread.recv(sys.SELF)
+		-- messages readline set aside mid-line come first, so their order
+		-- relative to the rest of the mailbox is kept.
+		local m = table.remove(deferred, 1) or thread.recv(sys.SELF)
 
 		if m.op == "write" or m.op == "log" then
 			-- log lines arrive already stamped and tagged
@@ -117,7 +158,7 @@ local function serve()
 				sys.send(m.reply.__right, c or "")
 			end
 		elseif m.op == "readline" then
-			sys.send(m.reply.__right, readline())
+			sys.send(m.reply.__right, readline(m.prompt))
 		elseif m.op == "read" then
 			-- the ABI stream protocol (lib/prog.lua's PortStream), so
 			-- the console can BE a program's stdin. it is the same

@@ -185,6 +185,11 @@ local function absorb(s, m)
 	if m.op == "write" then
 		append(s, m.data)
 	elseif m.op == "readline" and type(m.reply) == "table" then
+		-- the prompt now rides in the readline request rather than a
+		-- write before it (see lib/thread.lua), so show it here.
+		if m.prompt then
+			append(s, tostring(m.prompt))
+		end
 		s.waiting = m.reply.__right
 	end
 end

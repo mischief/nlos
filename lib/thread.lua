@@ -1083,12 +1083,13 @@ local function sendwait(h, msg)
 end
 
 local function readline(consHandle, prompt)
-	if prompt and not sendwait(consHandle,
-	    { op = "write", data = prompt }) then
-		return nil
-	end
 	local reply = replyport()
 
+	-- the prompt rides in the readline request rather than a separate
+	-- write before it, so the console can reprint it when output from
+	-- another proc interrupts a half-typed line (see task/cons.lua's
+	-- redraw). every console that answers readline reads m.prompt.
+	--
 	-- a console that has gone away is EOF, exactly as ^d is. this is
 	-- load-bearing rather than tidy: a dead port DROPS silently (it
 	-- never raised, see api_send), so without this a reader whose
@@ -1097,7 +1098,7 @@ local function readline(consHandle, prompt)
 	-- that case -- it closes the session port and expects the shell to
 	-- end -- and dos's repl already treats a nil line as "session
 	-- over", so the whole teardown falls out of returning nil here.
-	if not sendwait(consHandle, { op = "readline",
+	if not sendwait(consHandle, { op = "readline", prompt = prompt,
 	    reply = { __right = reply } }) then
 		return nil
 	end
