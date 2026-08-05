@@ -62,7 +62,15 @@ tap.ok(hcpu > icpu,
     "a spinning proc accrues cpu over a blocked one (" .. hcpu ..
     " vs " .. icpu .. ")")
 tap.ok(hcpu > 500, "and it is most of wall time (" .. hcpu .. ")")
-tap.is(icpu, 0, "a proc that never ran accrues none")
+-- "never ran" is loose: a proc runs one slice to reach the recv it blocks
+-- in, and that startup shows in the 500ms decay window before decaying
+-- away -- single digits, and load-dependent (0 idle, 3 under a busy
+-- parallel suite), so a fixed threshold is the wrong shape. What holds
+-- regardless is that it stays a tiny fraction of a spinner pegged near
+-- 1000; asserting literally 0 was codifying a fast host's rounding.
+tap.ok(icpu * 10 < hcpu,
+    "a blocked proc accrues far less than a spinner (" .. icpu ..
+    " vs " .. hcpu .. ")")
 
 -- differentiation only happens under contention: a proc using LESS than
 -- an equal share clamps to the top however much it spins, which is plan
