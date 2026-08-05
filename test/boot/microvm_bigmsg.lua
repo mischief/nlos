@@ -482,25 +482,41 @@ end
 -- ---- and where all that ran ----
 --
 -- The point of the whole file. Every assertion above passes on one cpu,
--- so unless a child actually ran somewhere else, none of them asked the
--- question they exist to ask.
+-- so unless something actually ran somewhere else, none of them asked
+-- the question they exist to ask.
+--
+-- Asked of the cpus rather than of the procs. A proc reports the cpu it
+-- last RAN on, which is not known until it has run -- so sampling a
+-- freshly spawned child says "cpu0" for the honest reason that it has
+-- not been anywhere yet, and this test failed exactly that way under a
+-- loaded host while passing alone. What is wanted here is whether the
+-- work spread, and the dispatch counters answer that directly and at
+-- any time.
 local st = sys.stats()
 
-tap.diag("cpus: " .. tostring(st.cpus) .. "; " ..
+local desc = {}
+
+for i, c in ipairs(st.cpu or {}) do
+	desc[#desc + 1] = ("cpu%d=%d"):format(i - 1, c.dispatched or 0)
+end
+tap.diag("cpus: " .. tostring(st.cpus) .. "; dispatched " ..
+    table.concat(desc, " ") .. "; last ran " ..
     table.concat(kidhomes, " "))
 
 local elsewhere = 0
 
-for _, h in ipairs(kidhomes) do
-	if not h:match("cpu0$") then elsewhere = elsewhere + 1 end
+for i, c in ipairs(st.cpu or {}) do
+	if i > 1 and (c.dispatched or 0) > 0 then
+		elsewhere = elsewhere + 1
+	end
 end
 
 if st.cpus > 1 then
 	tap.ok(elsewhere > 0,
-	    "at least one child ran off the boot processor, so this was smp")
+	    "a cpu other than the boot processor ran procs, so this was smp")
 else
 	tap.ok(elsewhere == 0,
-	    "one cpu, so every child shared it")
+	    "one cpu, so everything shared it")
 end
 
 tap.done()

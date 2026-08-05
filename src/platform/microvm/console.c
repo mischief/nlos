@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 #include "platform.h"
+#include "microvm.h"
 
 /* bare \n becomes \r\n on the way out.
  *
@@ -23,6 +24,11 @@ console_write(const char *s, size_t n)
 {
 	size_t start = 0;
 
+	/* one line, not one segment: the loop below makes several calls
+	 * per string and another cpu's console_write must not land in
+	 * the middle of them.
+	 */
+	uart_txlock();
 	for (size_t i = 0; i < n; i++) {
 		if (s[i] != '\n')
 			continue;
@@ -33,6 +39,7 @@ console_write(const char *s, size_t n)
 	}
 	if (n > start)
 		uart_tx(s + start, n - start);
+	uart_txunlock();
 }
 
 int

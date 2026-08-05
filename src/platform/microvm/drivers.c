@@ -19,6 +19,8 @@
 
 extern void console_write(const char *s, unsigned long n);
 extern void uart_tx(const char *s, unsigned long n);
+extern void uart_txlock(void);
+extern void uart_txunlock(void);
 _Noreturn void machine_reset(void);
 void platform_stall_us(unsigned long us);
 
@@ -102,7 +104,12 @@ wire_write(lua_State *L)
 	size_t n;
 	const char *s = luaL_checklstring(L, 1, &n);
 
+	/* the wire's bytes are a protocol frame; nothing may be
+	 * interleaved into them by a console write on another cpu
+	 */
+	uart_txlock();
 	uart_tx(s, n);
+	uart_txunlock();
 	return 0;
 }
 

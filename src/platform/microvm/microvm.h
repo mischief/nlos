@@ -53,6 +53,8 @@ void	isr_resched(void);
 void	idt_load(void);	/* this cpu's IDTR; the table is shared */
 void	smp_init(void);
 void	smp_start_aps(void);
+void	uart_txlock(void);
+void	uart_txunlock(void);
 
 /* i8259.c / i8253.c -- and only ever on a machine that has neither. */
 void	pic_init(void);

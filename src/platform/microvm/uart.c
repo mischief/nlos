@@ -232,6 +232,32 @@ uart_rx(void)
 	return c;
 }
 
+/* transmit is not atomic and cannot be made atomic here: what counts as
+ * one write is the caller's question. console_write turns one string
+ * into several of these (it splits at newlines to insert the CR), and
+ * wire_write must not have anything inserted into its bytes at all. So
+ * the lock is exposed rather than taken here, and each caller brackets
+ * the run of writes that has to arrive unbroken.
+ *
+ * Two cpus writing at once without it do not garble a byte, they
+ * interleave whole ones -- "ok 2 - and the idhpc pt:a sgko ti t1 0i.s0"
+ * is two lines of TAP and dhcp output shuffled together, which is how
+ * this was found.
+ */
+static struct lock txlk = LOCK_INIT;
+
+void
+uart_txlock(void)
+{
+	lock(&txlk);
+}
+
+void
+uart_txunlock(void)
+{
+	unlock(&txlk);
+}
+
 void
 uart_tx(const char *s, unsigned long n)
 {
