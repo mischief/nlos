@@ -447,6 +447,39 @@ local repl_worker_src = [[
 		end,
 	})
 
+	-- help: without it a bare word that is not defined just errors, and
+	-- there was no way to discover dos() or halt() from the prompt. a word
+	-- that only explains itself -- no parens, no effect -- like ps and
+	-- stats. it lists only what is actually bound (tcp and resolve are nil
+	-- with no NIC), so it never names a word that would error if you typed
+	-- it, and a capability added here shows up without editing a recital.
+	_G.help = setmetatable({}, {
+		__tostring = function()
+			local words = {
+				{ "dos", "dos()", "the shell: run programs from /bin (help there lists them)" },
+				{ "halt", "halt()", "power the machine off" },
+				{ "ps", "ps", "the process table" },
+				{ "stats", "stats", "scheduler counters" },
+				{ "ports", "ports", "open ports" },
+				{ "resolve", "resolve(name)", "look a name up over dns" },
+				{ "tcp", "tcp", "the tcp capability" },
+				{ "udp", "udp", "the udp capability" },
+				{ "http", "http", "the http client" },
+			}
+			local out = {
+				"lua 5.4 repl -- any lua expression works. these words are built in",
+				"(a bare word explains itself; parens do the thing):",
+				"",
+			}
+			for _, w in ipairs(words) do
+				if rawget(_G, w[1]) ~= nil then
+					out[#out + 1] = ("  %-14s %s"):format(w[2], w[3])
+				end
+			end
+			return table.concat(out, "\n")
+		end,
+	})
+
 	local function evaluate(line)
 		local chunk, err = load("return " .. line, "=repl")
 		if not chunk then
