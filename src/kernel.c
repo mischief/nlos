@@ -5304,14 +5304,19 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 
 	/* except a driver, which runs on the boot processor and nowhere
 	 * else. These are the procs holding the raw device rights, and
-	 * "the bsp stays the io engine" is what lets every device path
-	 * here keep its single-consumer argument: interrupts are routed
-	 * to apic 0 (ioapic.c), the uart ring's producer is that cpu's
-	 * isr, and virtio's ordering comment reasons about one cpu
-	 * against one device.
+	 * "the bsp stays the io engine" keeps every device path on the
+	 * cpu its interrupts are routed to (apic 0, see ioapic.c).
 	 *
-	 * Left to placement, blksrv drew an AP and gefs read back blocks
-	 * that failed their checksums.
+	 * The honest reason is narrower than the slogan, and is a debt
+	 * rather than a design: left to placement, blksrv drew an AP and
+	 * gefs read back blocks that failed their checksums. Pinning made
+	 * it stop. What was actually racing was never established, and
+	 * the two invariants this comment used to name have since been
+	 * fixed to hold on any cpu -- the uart ring takes a lock, and a
+	 * virtio queue is safe because one proc owns the device rather
+	 * than because that proc is here. So this is a workaround for
+	 * something still unexplained in the blk path, and should be
+	 * removed by finding it, not by trying the placement again.
 	 */
 	if (priv != PRIV_NONE && priv != PRIV_BOOT)
 		p->home = 0;

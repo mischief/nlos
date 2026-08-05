@@ -650,9 +650,91 @@ cheap, and is what real schedulers use. It does attribute qemu and
 firmware overhead to whoever happened to be running, which is a known and
 accepted cost here.
 
+## More than one cpu
+
+Real on `-Dplatform=microvm`, and only there. `qemu -smp N` gives N
+vcpus, procs run on all of them at once, and the parallelism is
+measured from outside rather than asserted from within: four spinning
+procs take 1.70s at `-smp 1`, 0.99s at 2 and 0.65s at 4 — 1.85x and
+3.2x net of ~0.15s boot. Idle is still a real sleep, not a spin.
+
+Every other platform is a uniprocessor and stays one. efi is where
+firmware lives, and firmware under TPL is one big cooperative lock; on
+aarch64 and riscv64 nothing has been written. `NCPU` is 8 on microvm
+and 1 everywhere else, and at 1 `src/lock.h` compiles to compiler
+barriers — which is what lets `kernel.c` stay one arch-blind file with
+no `#ifdef` in it. The barrier is not nothing: it still stops the
+compiler hoisting a load out of a critical section, which is a bug on
+one cpu too.
+
+**What is per cpu.** `struct cpu` (`src/cpu.h`) holds the two run
+queues and the lock over them, the currently running proc, and the
+counters. A cpu finds its own through `cpu_self()`, which is `%gs` on
+microvm and "the only one" on efi. Both phases of the dispatch lap run
+per cpu over that cpu's own queues, so the progress guarantee is per cpu
+and survives unchanged.
+
+**What is shared, and how.** One lock over the whole IPC layer, taken
+at the outermost syscall entry and asserted — not taken — by the inner
+helpers, because they nest. It is recursive: allocating Lua objects
+under it can run the collector, `__gc` clunks handles, and that
+re-enters through `api_close`. The physical allocator has one lock; the
+malloc counters are relaxed atomics. Each proc has its own `luaheap`,
+allocated in `proc_new` and destroyed with the proc. The lock order is
+in `src/lock.h` and is the whole discipline.
+
+**What stays on the boot cpu.** Device interrupts, by routing: the
+ioapic sends everything to apic id 0 and MSI-X entries name the boot
+cpu. So do the device pumps, `expire_timers`, and everything that
+touches firmware. APs run the scheduler and nothing else.
+
+Driver procs are pinned there too — `proc_new` sets `p->home = 0` for
+anything privileged — and that one is a debt wearing a slogan. Left to
+placement, blksrv drew an AP and gefs read back blocks that failed
+their checksums; pinning stopped it and nobody established what was
+racing. Both invariants originally cited for it have since been fixed
+to hold on any cpu, so the reason it works is not the reason written
+down at the time. Remove it by finding the bug, not by retrying the
+placement.
+
+**What is per driver rather than per cpu**, and the distinction has
+bitten once: a virtio queue is safe with no lock because exactly one
+proc owns the device — the platform modules are opened into that one
+driver proc's `lua_State` — and a proc is one thread of control on one
+cpu at a time. It is *not* safe because it is on the boot cpu; it
+isn't. Granting one of those modules to a second proc would corrupt the
+rings and nothing would report it.
+
+Two invariants that reversed when procs began running on APs, both now
+fixed, both worth knowing because the reasoning that broke is the kind
+that looks safe:
+
+- the uart rx ring was single-producer/single-consumer with both ends
+  on the boot cpu. `run_proc` calls `uart_poll`, so it is filled from
+  whichever cpu is running a proc, and `console_getchar` drains it from
+  the cons proc wherever that is. `cli` excludes this cpu's handler and
+  says nothing about the others; it now takes a lock as well.
+- `srv.serve`'s "one worker" meant one loop, not one thread of control.
+  `ops.session` spawns a second serve on the same backend, so a gefs
+  server syncing on a tick had two coroutines inside an unlocked
+  filesystem. That one is cooperative-only and needed no second cpu —
+  see `lib/sync/lock.lua`'s header on invariants that span a park.
+
+Tests run at `-smp 2` and `-smp 4` as `smp2-*` / `smp4-*` in
+`meson.build`. `src/lock.h` is tested natively with `NCPU` forced past
+1, because the target never has enough cpus to contend and the host
+always does.
+
 ## Known debts — do not report these as discoveries
 
 Structural, worth fixing:
+
+- **Driver procs are pinned to the boot cpu to hide a race nobody
+  found.** `proc_new` forces `p->home = 0` for privileged procs because
+  blksrv on an AP made gefs read blocks that failed their checksums.
+  The device-path invariants originally blamed have since been fixed to
+  hold anywhere, so the pinning is now load-bearing for an unknown
+  reason. See "More than one cpu" above.
 
 - **TCP/UDP connections are integers, not rights.** Every other
   authority arrives as a right; a connection is a small integer in a
@@ -752,11 +834,6 @@ and the boundary vocabulary is supposed to be 9P. Either they are
 permanent infrastructure and stay in `lib/` held to the testing rules,
 or they are a demo and belong under `test/`. Unresolved — decide
 deliberately rather than by accretion.
-
-**Multiprocessing**, if ever: one Lua state pinned per AP, private
-allocator pools, ports become shared-memory rings, APs never call
-firmware, BSP stays the IO engine. Nothing blocks it; nothing requires
-it. Cooperative single-core with budgets is the plan of record.
 
 ## Before proposing a change, ask
 

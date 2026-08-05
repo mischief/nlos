@@ -5,7 +5,7 @@ that follow are the ones the code cannot state locally, because they
 are properties of how the two levels meet.
 
 The short version: the kernel preempts **procs**, so no proc can hold
-the machine. `thread.run` does not preempt **threads** — a thread runs
+its cpu. `thread.run` does not preempt **threads** — a thread runs
 until it parks, yields or exits, which is plan 9 libthread's contract.
 The hook cuts threads anyway, because that is the only way the proc can
 be descheduled, but nothing observes it: every level resumes what it
@@ -16,6 +16,13 @@ interrupted, at the instruction it interrupted.
     kernel_run (src/kernel.c)          picks a proc, resumes p->co
       └─ thread.run (lib/thread.lua)   picks a thread, resumes it
            └─ a thread
+
+One of these stacks per cpu. On microvm there may be several; every
+other platform has one. Nothing below the kernel notices: a proc runs
+on one cpu at a time, so a thread's world is unchanged, and the run
+queues and the lap are per cpu rather than per machine (`struct cpu`,
+`src/cpu.h`, and AGENTS.md's "More than one cpu"). Read "the cpu"
+below as this proc's cpu, not the machine's only one.
 
 The kernel owns procs; `thread.run` owns threads. Neither knows how the
 other decides. A proc that never calls `require("los.thread")` has no
@@ -127,7 +134,7 @@ one never escalates, so the common case pays nothing.
 
 This is what makes the containment real, and it is why nested
 coroutines are still preempted rather than exempted: without it, four
-lines — `coroutine.create` and a `resume` loop — hold the machine for
+lines — `coroutine.create` and a `resume` loop — hold their cpu for
 as long as the proc likes. `test_nesting.lua` spawns a separate proc
 that does exactly that and measures what everyone else still gets.
 What the walk-out costs a *correct* coroutine is handled above.
@@ -301,5 +308,10 @@ about one proc.
 ## What preemption still cannot do
 
 The hook fires between VM instructions, so it cannot interrupt a single
-long C call: `string.rep("x", 1e8)` holds the machine for as long as it
-takes. That needs an interrupt, which means leaving boot services.
+long C call: `string.rep("x", 1e8)` holds its cpu for as long as it
+takes. Interrupting that needs a real timer interrupt, which is a
+platform question rather than a scheduler one: efi has none to give,
+because the firmware owns interrupt state under TPL. microvm does, and
+does not use it for this — the hook is still what cuts a proc there, so
+the limit is the same on both. What differs is that on microvm the
+other cpus keep running.
