@@ -65,14 +65,6 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 #define MAXMSGRIGHTS	8	/* rights per message */
 #define MAXWATCH	8	/* monitors per proc */
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
-/* named capabilities the kernel hands a proc. The boot payload gets one
- * per enabled driver plus disk and sched: cons wire esp power p9 blk eth
- * ip tcp dhcpd fb = 11, + 2 = 13 at most, so 8 silently dropped everything
- * past the eighth. dhcpd was the first over the line once efi grew a block
- * driver (the eth stack sits above it in the table), which read as DHCP
- * being broken when the grant was simply missing. 16 leaves headroom.
- */
-#define MAXGRANTS	16
 #define MAXTIMERS	32	/* outstanding one-shot timers, machine-wide */
 /* floor on phase two's dispatch bound -- see kernel_run.
  *
@@ -286,6 +278,7 @@ struct right {
 struct grant {
 	const char *name;
 	int handle;
+	SLIST_ENTRY(grant) e;	/* on proc->grants; walked whole */
 };
 
 /* a proc waiting on a port. one record per (proc, port) pair, because a
@@ -388,8 +381,16 @@ struct kproc {
 	 * handful is one doing its work in a block.
 	 */
 	unsigned long long nresume;
-	struct grant grants[MAXGRANTS];
-	int ngrants;
+	/* named capabilities the kernel handed this proc, read by name
+	 * through sys.granted(). a list, not a fixed array: the boot payload
+	 * holds one per driver plus disk and sched -- a dozen-odd -- while
+	 * every other proc holds none, so an array sized for the former wasted
+	 * a quarter of this struct on the latter and, worse, silently dropped
+	 * grants once the driver set outgrew it (the dhcpd-missing bug).
+	 * appended at spawn, walked whole by sys.granted, freed at
+	 * proc_detach; never indexed, so a list costs nothing here.
+	 */
+	SLIST_HEAD(, grant) grants;
 	struct ktrace *trace;	/* line trace ring, or 0; see sys.set_trace */
 
 	/* how many times this proc has made each los.sys call, indexed by
@@ -1011,35 +1012,39 @@ right_drop(struct right *r)
 }
 
 /* grant a named capability: take a right the ordinary way (first free
- * slot) and record what it was called, so lua can look the handle up by
- * name. a NULL port is a no-op, which is exactly the "this capability
- * doesn't exist this boot" case. a full table is NOT that -- it is a
- * capability that exists and was dropped -- so it warns rather than
- * vanishing, since that is a raised MAXGRANTS away and reads to a client
- * as the device being broken (see the dhcpd overflow it hid).
+ * slot) and record what it was called, in the proc's grant list, so lua
+ * can look the handle up by name through sys.granted(). a NULL port is a
+ * no-op -- exactly the "this capability doesn't exist this boot" case.
+ * the list has no fixed ceiling on purpose: a fixed array here once
+ * silently dropped grants past its size, and a missing grant reads to a
+ * client as the device being broken (the dhcpd overflow).
  */
 static void
 grant_named(struct kproc *p, const char *name, struct kport *port, int recv)
 {
 	if (!port)
 		return;
-	if (p->ngrants >= MAXGRANTS) {
-		char msg[96];
-
-		snprintf(msg, sizeof msg,
-		    "grant: '%s' dropped, MAXGRANTS(%d) reached", name,
-		    MAXGRANTS);
-		kernel_log(msg);
-		return;
-	}
 
 	int h = right_new(p, port, recv);
 
 	if (h < 0)
 		return;
-	p->grants[p->ngrants].name = name;
-	p->grants[p->ngrants].handle = h;
-	p->ngrants++;
+
+	struct grant *g = malloc(sizeof *g);
+
+	if (!g) {
+		/* the right was taken; drop it rather than leave an anonymous
+		 * handle behind on an allocation that failed.
+		 */
+		struct right *r = right_slot(p, h);
+
+		if (r)
+			right_drop(r);
+		return;
+	}
+	g->name = name;
+	g->handle = h;
+	SLIST_INSERT_HEAD(&p->grants, g, e);
 }
 
 static struct right *
@@ -3670,11 +3675,12 @@ static int
 api_granted(lua_State *L)
 {
 	struct kproc *p = self(L);
+	struct grant *g;
 
-	lua_createtable(L, 0, p->ngrants);
-	for (int i = 0; i < p->ngrants; i++) {
-		lua_pushinteger(L, p->grants[i].handle);
-		lua_setfield(L, -2, p->grants[i].name);
+	lua_newtable(L);
+	SLIST_FOREACH(g, &p->grants, e) {
+		lua_pushinteger(L, g->handle);
+		lua_setfield(L, -2, g->name);
 	}
 	return 1;
 }
@@ -4859,6 +4865,17 @@ proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 	}
 	free(p->xrights);
 	p->xrights = 0;
+
+	/* free the named-grant list. the rights it named were dropped in the
+	 * loop above -- a grant is a right plus a name -- so only the list
+	 * nodes remain to release.
+	 */
+	while (!SLIST_EMPTY(&p->grants)) {
+		struct grant *g = SLIST_FIRST(&p->grants);
+
+		SLIST_REMOVE_HEAD(&p->grants, e);
+		free(g);
+	}
 
 	/* erlang-style DOWN: tell the watchers */
 	for (int i = 0; i < p->nwatch; i++) {
