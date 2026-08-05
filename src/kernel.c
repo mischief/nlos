@@ -590,11 +590,54 @@ static int nlive;
  * counted in kalloc, per proc, and never depended on the heap being
  * separate.
  *
- * What this buys back, incidentally: a proc that allocates hugely and
- * dies now returns those chunks, because its whole heap is destroyed
- * with it rather than dissolving into shared free lists.
+ * What the per-proc arrangement buys back, incidentally: a proc that
+ * allocates hugely and dies returns those chunks, because its whole
+ * heap is destroyed with it rather than dissolving into shared free
+ * lists. Where the heap is shared they dissolve, which is what they
+ * did before any of this and is the price of the 232KB.
+ *
+ * ---- and why both arrangements are still here ----
+ *
+ * The 27% is worth paying where there is a second cpu to spend it on,
+ * and is pure loss where there is not. efi, aarch64 and riscv64 cannot
+ * have one, and neither can esp32, which is the one that cares: it is
+ * a board where memory is the binding constraint.
+ *
+ * Measured on efi with 26 procs live, which is what that costs:
+ *
+ *	per-proc  1300552 bytes mapped, 50021/proc, 30.3% waste
+ *	shared    1062872 bytes mapped, 40879/proc, 14.7% waste
+ *
+ * 232KB, and lua_live is 907060 in both -- so, again, all of it is
+ * chunk tails.
+ *
+ * So the arrangement follows NCPU. Note what is NOT here: a lock. The
+ * only combination that needs one is shared-and-parallel, and that is
+ * the combination this never picks --
+ *
+ *	NCPU == 1   one heap, and one cpu, so nothing to lock
+ *	NCPU  > 1   one heap per proc, each touched only by the cpu
+ *		    running that proc, so nothing to lock
+ *
+ * which is why this is a memory question rather than a contention one.
+ *
+ * NCPU rather than platform_ncpu(), deliberately: the count is not
+ * known when the first proc is made. smp_start_aps() runs after it on
+ * purpose (see microvm/main.c -- an AP started before there is a proc
+ * falls straight out of the dispatch loop and parks for good), so a
+ * runtime test would hand the boot proc a shared heap and every later
+ * proc its own. NCPU is what the build can have, which is the question
+ * that stays true for the life of the machine. The cost is that a
+ * microvm image booted -smp 1 keeps per-proc heaps; it is a qemu guest
+ * with memory to spare, and the platform that cares is compile-time
+ * uniprocessor anyway.
  */
 static int nextpid;
+
+/* the machine-wide heap, when there is one. Null where NCPU > 1, and
+ * that is the test for whether a proc owns the heap it points at.
+ */
+static struct luaheap *shared_heap;
 
 /* who's running right now is cpu_self()->current, which run_proc sets
  * before every lua_resume and clears after. plain C code with no
@@ -3427,19 +3470,26 @@ api_stats(lua_State *L)
 	 */
 	struct luaheap_stats hs = { 0 }, one;
 
-	for (int i = 0; i < prochigh; i++) {
-		if (!procv[i] || !procv[i]->heap)
-			continue;
-		luaheap_stats(procv[i]->heap, &one);
-		hs.live += one.live;
-		hs.peak += one.peak;
-		hs.mapped += one.mapped;
-		hs.waste += one.waste;
-		hs.rounding += one.rounding;
-		hs.headers += one.headers;
-		hs.unused += one.unused;
-		hs.chunks += one.chunks;
-		hs.larges += one.larges;
+	/* one heap answers for the whole machine when there is one; the
+	 * per-proc loop would count it once per proc.
+	 */
+	if (shared_heap) {
+		luaheap_stats(shared_heap, &hs);
+	} else {
+		for (int i = 0; i < prochigh; i++) {
+			if (!procv[i] || !procv[i]->heap)
+				continue;
+			luaheap_stats(procv[i]->heap, &one);
+			hs.live += one.live;
+			hs.peak += one.peak;
+			hs.mapped += one.mapped;
+			hs.waste += one.waste;
+			hs.rounding += one.rounding;
+			hs.headers += one.headers;
+			hs.unused += one.unused;
+			hs.chunks += one.chunks;
+			hs.larges += one.larges;
+		}
 	}
 	lua_pushinteger(L, (lua_Integer)hs.live);
 	lua_setfield(L, -2, "lua_live");
@@ -4823,10 +4873,10 @@ proc_freestate(struct kproc *p)
 	/* after lua_close, never before: the finalizers it runs are
 	 * still allocating and freeing in this heap.
 	 */
-	if (p->heap) {
+	if (p->heap && p->heap != shared_heap) {
 		luaheap_destroy(p->heap);
-		p->heap = 0;
 	}
+	p->heap = 0;
 	/* lua_close frees every coroutine through kernel_cofree, so the
 	 * list is already empty; re-init rather than trust that, since a
 	 * reused slot would inherit whatever is left
@@ -5322,9 +5372,16 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		p->home = 0;
 
 	/* before lua_newstate, which allocates through kalloc, which
-	 * reaches this proc's heap and nothing else's.
+	 * reaches this proc's heap -- and, where there is one cpu, every
+	 * other proc's too. See the comment at shared_heap.
 	 */
-	p->heap = luaheap_new(&kalloc_ops, 0);
+	if (NCPU > 1) {
+		p->heap = luaheap_new(&kalloc_ops, 0);
+	} else {
+		if (!shared_heap)
+			shared_heap = luaheap_new(&kalloc_ops, 0);
+		p->heap = shared_heap;
+	}
 	if (!p->heap)
 		return -1;
 	p->L = lua_newstate(kalloc, p);
