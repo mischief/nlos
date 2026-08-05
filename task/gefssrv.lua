@@ -14,13 +14,16 @@
 -- sys.SELF and is consumed before the serve loop, which then answers the
 -- attach that mount sends next.
 --
--- One worker, always. The port is one thread of control with no locks
--- (see lib/gefs.lua and lib/gefsfs.lua): served one request at a time,
--- each runs to completion -- across its device yields -- before the next,
--- so the unlocked tree is never interleaved. A second worker would
--- corrupt it. Many clients may still send at once; they queue at the
--- port and are answered in turn, which is upstream gefs's single-mutator
--- funnel by another name.
+-- One worker, always. The tree has no locks of its own (see lib/gefs.lua
+-- and lib/gefsfs.lua), so it has to be served one request at a time, each
+-- running to completion -- across its device yields -- before the next.
+-- A second worker would corrupt it. Many clients may still send at once;
+-- they queue and are answered in turn, which is upstream gefs's
+-- single-mutator funnel by another name.
+--
+-- What delivers that is srv.serve's per-backend lock, not the port:
+-- srv hands each client its own session port with its own serve loop, so
+-- "one port" was never the same statement as "one thread of control".
 --
 -- Writes only reach the disk at a sync, so the volume is committed on a
 -- clock: srv.serve's tick calls the backend's sync between requests,
@@ -29,7 +32,8 @@
 -- is 9front gefs's runtasks timer and ctl "sync" in one, and the reason
 -- the tick runs in the serve loop rather than a thread of its own is the
 -- same one worker: a second thread syncing would interleave with a
--- request. Default 5s, as upstream; the spawner may ask for less.
+-- request, and the lock it would have to take is the one the request
+-- already holds. Default 5s, as upstream; the spawner may ask for less.
 
 local sys = require("los.sys")
 local thread = require("los.thread")

@@ -65,6 +65,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
 local sema = require("sync.sema")
+local lock = require("sync.lock")
 
 local M = {}
 
@@ -198,7 +199,8 @@ function ops.session(S)
 	-- makes arrives here.
 	thread.spawn(function()
 		M.serve(ro and dev.readonly(S.B) or S.B, recv,
-		    { establish = false, workers = S.workers })
+		    { establish = false, workers = S.workers,
+		      lock = S.lock })
 	end)
 
 	-- the second return is closed once the reply has been sent. the
@@ -237,7 +239,9 @@ function ops.readonly(S)
 			-- this loop never sees a hangup: we hold two rights to
 			-- the port ourselves, so nrights never falls to one.
 			-- it lives as long as the server proc.
-			M.serve(S.B, recv, { ro = true, workers = S.workers })
+			M.serve(S.B, recv,
+			    { ro = true, workers = S.workers,
+			      lock = S.lock })
 		end)
 	end
 	return { port = { __right = S.roport } }
@@ -258,6 +262,14 @@ local function newstate(backend, opts)
 		-- carried so a session serve started from ops.session gets
 		-- the same window the establishment serve was given
 		workers = opts and opts.workers or 0,
+		-- One worker means one thread of control over the backend,
+		-- and that has to hold across every loop reachable from this
+		-- one: ops.session spawns a second serve on the same backend,
+		-- so two loops end up calling into it, and a backend that is
+		-- mid-park in one of them is a backend the other must not
+		-- enter. The lock is made here and passed down, so all of
+		-- them queue on the same one.
+		lock = (opts and opts.lock) or lock.new(),
 		-- establishment unless told otherwise, so a plain
 		-- serve(backend, port) is what a server wants and only srv
 		-- itself makes the other kind
@@ -416,17 +428,41 @@ function M.serve(backend, port, opts)
 		-- timeout is the heartbeat. hangup is not a message the alt wakes
 		-- on, so it is tested after each tick -- the shutdown flush lands
 		-- there, at most one interval late.
+		-- One worker is one thread of control over the backend, and
+		-- one loop cannot deliver that by itself: ops.session spawns
+		-- a second serve on the same backend, so the tick fires in
+		-- this loop while a client request is being served in that
+		-- one. Both park constantly -- every block gefs reads is a
+		-- round trip -- and parking is exactly when the other loop
+		-- gets to run, so the two interleave inside an unlocked
+		-- filesystem. The lock is per backend, made in newstate and
+		-- passed down to every serve reachable from it.
+		--
+		-- Held across the call rather than around it, for the same
+		-- reason: what has to be indivisible is the whole request,
+		-- parks included.
+		local function serialized(fn, arg)
+			S.lock:lock()
+			local ok, err = pcall(fn, S, arg)
+			S.lock:unlock()
+			if not ok then
+				error(err, 0)
+			end
+		end
+
 		while true do
 			if tick then
 				local m, why = thread.recvtimeout(port, tick.ms)
 
 				if why then
-					tick.fn(S.B)
+					serialized(function(st)
+						tick.fn(st.B)
+					end)
 					if sys.hungup(port) then
 						return
 					end
 				else
-					dispatch(S, m)
+					serialized(dispatch, m)
 				end
 			else
 				local m, why = thread.await(port)
@@ -434,11 +470,16 @@ function M.serve(backend, port, opts)
 				if why then
 					return
 				end
-				dispatch(S, m)
+				serialized(dispatch, m)
 			end
 		end
 	end
 
+	-- Nothing here takes S.lock. Asking for a window is asking for
+	-- requests to overlap, so a backend given one must already be
+	-- reentrant, and serializing it would answer a question the caller
+	-- did not ask.
+	--
 	-- the window IS the permits: a worker holds one for as long as it
 	-- runs, so there is no count to keep in step with anything and no
 	-- way to be inside the window without holding one. The version
