@@ -30,6 +30,8 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "lua.h"
@@ -318,10 +320,17 @@ l_getpid(lua_State *L)
 	return 1;
 }
 
-/* spawn({argv...}) -> pid. stdin inherited, stdout/stderr to
+/* spawn({argv...} [, {stdin=fd, stdout=fd, stderr=fd}]) -> pid.
+ *
+ * Without the second argument: stdin inherited, stdout/stderr to
  * /dev/null -- matching subprocess.Popen(..., stdout=DEVNULL,
  * stderr=DEVNULL) in every test/test_*.py original. argv[1] is
  * looked up via PATH (execvp), same as Popen's own default.
+ *
+ * With it, the named descriptors are wired instead. That exists for
+ * serial(): a file-transfer program has to be handed the descriptor
+ * already open on the line rather than opening the port itself, which
+ * would reset the board.
  */
 static int
 l_spawn(lua_State *L)
@@ -346,12 +355,36 @@ l_spawn(lua_State *L)
 		return luaL_error(L, "fork: %s", strerror(errno));
 	}
 	if (pid == 0) {
-		int devnull = open("/dev/null", O_WRONLY);
+		static const char *const names[] = {
+			"stdin", "stdout", "stderr"
+		};
+		int wired[3] = { -1, -1, -1 };
 
-		if (devnull >= 0) {
-			dup2(devnull, STDOUT_FILENO);
-			dup2(devnull, STDERR_FILENO);
-			close(devnull);
+		if (lua_istable(L, 2)) {
+			for (int i = 0; i < 3; i++) {
+				if (lua_getfield(L, 2, names[i]) ==
+				    LUA_TNUMBER)
+					wired[i] = (int)lua_tointeger(L, -1);
+				lua_pop(L, 1);
+			}
+		}
+		for (int i = 0; i < 3; i++)
+			if (wired[i] >= 0)
+				dup2(wired[i], i);
+
+		/* only the streams left unwired are discarded, so asking
+		 * for stderr and nothing else still gets the diagnostics.
+		 */
+		if (wired[1] < 0 || wired[2] < 0) {
+			int devnull = open("/dev/null", O_WRONLY);
+
+			if (devnull >= 0) {
+				if (wired[1] < 0)
+					dup2(devnull, STDOUT_FILENO);
+				if (wired[2] < 0)
+					dup2(devnull, STDERR_FILENO);
+				close(devnull);
+			}
 		}
 		execvp(argv[0], argv);
 		_exit(127);
@@ -409,7 +442,154 @@ l_poll(lua_State *L)
 	return 1;
 }
 
+/* the close method lua's io library calls on our file handles. */
+static int
+l_closef(lua_State *L)
+{
+	luaL_Stream *s = (luaL_Stream *)luaL_checkudata(L, 1, LUA_FILEHANDLE);
+	int rc = s->f ? fclose(s->f) : 0;
+
+	s->f = 0;
+	return luaL_fileresult(L, rc == 0, NULL);
+}
+
+/* serial(path [, baud]) -> file
+ *
+ * A tty opened as a lua file, so read/write/lines/setvbuf are the ones
+ * already in io. The alternative has been driving a board through
+ * socat, which resets it: on an esp32 with native USB-Serial-JTAG the
+ * ROM reads DTR/RTS as the reset strap, and socat asserts them when it
+ * attaches. Measured as rst:0x15 (USB_UART_CHIP_RESET) in the middle
+ * of a session, which loses whatever was typed before it -- and, worse,
+ * looks like a protocol failure rather than a reboot. hupcl=0 does not
+ * help; that governs the drop at close, not the raise at open.
+ *
+ * Nothing about a tty forces this: picocom does not reset the board,
+ * and neither does a plain open of the same port -- both measured.
+ * Whatever socat does to the modem lines it does on top of opening,
+ * so simply not doing it is enough; no flag here is load-bearing.
+ *
+ * Holding the descriptor open for the whole session then lets a
+ * receiver like lrz be handed the very line the commands went out on.
+ *
+ * O_NONBLOCK on the open is the ordinary tty courtesy -- do not wait
+ * for carrier -- and is cleared straight after, because the only reads
+ * here go through stdio, which wants a blocking fd and gets its
+ * timeout from VMIN/VTIME instead.
+ *
+ * Raw, because this carries binary: no line discipline, no echo, no
+ * CR/LF translation. A ZMODEM subpacket containing 0x0a survives only
+ * if nothing on the host is helping.
+ */
+static int
+l_serial(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	lua_Integer baud = luaL_optinteger(L, 2, 115200);
+	speed_t sp;
+	struct termios t;
+	luaL_Stream *s;
+	int fd;
+
+	switch (baud) {
+	case 9600: sp = B9600; break;
+	case 19200: sp = B19200; break;
+	case 38400: sp = B38400; break;
+	case 57600: sp = B57600; break;
+	case 115200: sp = B115200; break;
+	case 230400: sp = B230400; break;
+	case 460800: sp = B460800; break;
+	case 921600: sp = B921600; break;
+	default:
+		return luaL_error(L, "unsupported baud %d", (int)baud);
+	}
+
+	/* O_NOCTTY: a tty opened by a test driver must not become the
+	 * driver's controlling terminal, or a hangup on the line kills it.
+	 */
+	fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
+	if (fd < 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+	if (tcgetattr(fd, &t) == 0) {
+		cfmakeraw(&t);
+		cfsetispeed(&t, sp);
+		cfsetospeed(&t, sp);
+		/* CLOCAL: ignore modem control, so a line with no carrier
+		 * still reads. HUPCL off so closing does not drop DTR --
+		 * that drop is a reset on the boards this drives.
+		 */
+		t.c_cflag |= CLOCAL | CREAD;
+		t.c_cflag &= ~(unsigned)HUPCL;
+		/* block until at least one byte rather than time out.
+		 * A VTIME expiry is a zero-length read, and stdio cannot
+		 * tell that from end of file -- it latches EOF and every
+		 * later read on the handle returns nil, so one quiet
+		 * second would retire the port for good. Lua's io has no
+		 * clearerr to undo it. Callers that need a deadline own
+		 * one already (the process running them).
+		 */
+		t.c_cc[VMIN] = 1;
+		t.c_cc[VTIME] = 0;
+		tcsetattr(fd, TCSANOW, &t);
+	}
+
+	/* raise DTR and RTS together.
+	 *
+	 * Not cosmetic: an esp32's USB-Serial-JTAG treats DTR as "a host
+	 * is attached" and stays silent without it, so a port opened with
+	 * the line low looks like a dead board. What resets the chip is
+	 * the ORDER -- the strap is a transition sequence, which is why
+	 * esptool toggles them one at a time and why socat rebooted the
+	 * board -- so setting both in one ioctl attaches without one.
+	 */
+	{
+		int bits = TIOCM_DTR | TIOCM_RTS;
+
+		ioctl(fd, TIOCMBIS, &bits);
+	}
+
+	s = (luaL_Stream *)lua_newuserdatauv(L, sizeof *s, 0);
+	s->closef = 0;
+	luaL_setmetatable(L, LUA_FILEHANDLE);
+	s->f = fdopen(fd, "r+");
+	if (!s->f) {
+		close(fd);
+		lua_pushnil(L);
+		lua_pushstring(L, "fdopen");
+		return 2;
+	}
+	/* unbuffered: a prompt that arrives without a newline must be
+	 * readable, and a command must go out when written.
+	 *
+	 * Callers must still f:flush() before reading after a write. The
+	 * stream is read/write, and C requires the direction change be
+	 * separated by a flush or a seek whatever the buffering -- skip it
+	 * and the read blocks forever on a line that is working fine.
+	 */
+	setvbuf(s->f, NULL, _IONBF, 0);
+	s->closef = l_closef;
+	return 1;
+}
+
+/* fileno(file) -> fd, so a receiver spawned with spawn() can be given
+ * this very descriptor rather than opening the port a second time.
+ */
+static int
+l_fileno(lua_State *L)
+{
+	luaL_Stream *s = (luaL_Stream *)luaL_checkudata(L, 1, LUA_FILEHANDLE);
+
+	lua_pushinteger(L, fileno(s->f));
+	return 1;
+}
+
 static const luaL_Reg hostutil[] = {
+	{ "serial", l_serial },
+	{ "fileno", l_fileno },
 	{ "connect_tcp", l_connect_tcp },
 	{ "connect_unix", l_connect_unix },
 	{ "send", l_send },
