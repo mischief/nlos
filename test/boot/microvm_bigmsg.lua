@@ -22,9 +22,10 @@
 -- question.
 
 local sys = require("los.sys")
+local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(6)
+tap.plan(7)
 
 -- period 251, coprime with every power of two and with the sizes
 -- below, so a payload that slipped by any whole number of machine
@@ -386,6 +387,96 @@ tap.ok(rbad == 0,
     ("%d round trips carrying a fresh right each, %d bytes"):format(RN, RSZ))
 if rbad ~= 0 then
 	tap.diag(("%d of %d were wrong; %s"):format(rbad, RN, tostring(rfirst)))
+end
+
+-- ---- 6. a server parked in altrecv, with concurrent callers ----
+--
+-- Everything above uses tryrecv and yield, which never blocks. Nothing
+-- real does that. A server built on los.thread parks in sys.altrecv --
+-- thread.run hands every waiting port to it, so one entry blocks and
+-- takes on behalf of all of them -- and that is the path gefssrv,
+-- blksrv and every mnt client actually wait on.
+--
+-- It is also the path where a bug does not announce itself. altrecv
+-- has to return both a message and which port it came from; hand back
+-- a message paired with the wrong port and a caller waiting on its own
+-- reply port is given somebody else's reply. That is indistinguishable
+-- from a block device returning the wrong block, which is what gefs
+-- reports.
+--
+-- So every reply here carries the sequence number of the request it
+-- answers, and each caller checks it got its own.
+
+local altcode = [[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+	local a = ...
+
+	thread.spawn(function()
+		for _ = 1, a.n do
+			local msg = thread.recv(sys.SELF)
+
+			local back = msg.reply.__right
+
+			while not sys.send(back,
+			    { seq = msg.seq, data = msg.data }) do
+				thread.yield()
+			end
+			sys.close(back)
+		end
+	end)
+	thread.run()
+]]
+
+local ATHREADS, APER, ASZ = 4, 25, 16000
+local alt = spawnkid(altcode, {
+	name = "bigalt",
+	arg = { n = ATHREADS * APER },
+})
+
+local altbad, altfirst = 0, nil
+
+local function altmain()
+	local done = thread.chancreate(ATHREADS)
+
+	for t = 1, ATHREADS do
+		thread.spawn(function()
+			for j = 1, APER do
+				local seq = (t - 1) * APER + j
+				local want = payload(seq, ASZ)
+				local reply = thread.replyport()
+				local res, why = thread.call(alt, { seq = seq,
+				    data = want, reply = { __right = reply } },
+				    reply)
+
+				if not res and not altfirst then
+					altfirst = ("caller %d seq %d: %s"):format(
+					    t, seq, tostring(why))
+				end
+
+				if type(res) ~= "table" or res.seq ~= seq or
+				    res.data ~= want then
+					altbad = altbad + 1
+					if not altfirst then
+						altfirst = ("caller %d wanted seq %d, got %s"):
+						    format(t, seq, res and tostring(res.seq) or "nil")
+					end
+				end
+			end
+			done:send(true)
+		end)
+	end
+	for _ = 1, ATHREADS do done:recv() end
+end
+
+thread.spawn(altmain)
+thread.run()
+
+tap.ok(altbad == 0,
+    ("%d callers x %d calls through a server parked in altrecv"):format(
+	ATHREADS, APER))
+if altbad ~= 0 then
+	tap.diag(("%d wrong; %s"):format(altbad, tostring(altfirst)))
 end
 
 -- ---- and where all that ran ----
