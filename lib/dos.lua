@@ -172,9 +172,8 @@ end
 local builtins = {}
 
 builtins["cd"] = function(sh, argv)
-	local target = argv[2] or self and "/" or "/"
-
-	target = argv[2] or "/"
+	-- no argument means home, which here is the root
+	local target = argv[2] or "/"
 	local p = target:sub(1, 1) == "/" and ns.clean(target) or
 	    ns.clean(sh.cwd .. "/" .. target)
 	local st = sh.ns:stat(p)
