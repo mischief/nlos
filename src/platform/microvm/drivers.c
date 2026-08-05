@@ -338,6 +338,23 @@ platform_have_p9(void)
 	return present;
 }
 
+/* com2 is the wire (com1 being console and keyboard both). There is no
+ * EFI System Partition here -- no firmware to have one -- so espsrv is
+ * not embedded either, and before this probe existed it was spawned
+ * anyway and died on the missing file, burning a pid every boot.
+ */
+int
+platform_have_wire(void)
+{
+	return 1;
+}
+
+int
+platform_have_esp(void)
+{
+	return 0;
+}
+
 /* ---- los.platform.eth: virtio-net, raw frames ----
  *
  * Frames and a mac address, and nothing above them. There is no

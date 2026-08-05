@@ -144,6 +144,21 @@ platform_have_p9(void)
 	return 0;
 }
 
+/* the firmware gives us com2 for the wire and the ESP for storage, which
+ * is the platform this pair of probes was originally written to assume.
+ */
+int
+platform_have_wire(void)
+{
+	return 1;
+}
+
+int
+platform_have_esp(void)
+{
+	return 1;
+}
+
 /* the switch in kernel.c's proc_new takes this address unconditionally
  * for PRIV_P9, which is never actually granted here (platform_have_p9
  * above is always 0) -- but the symbol still has to exist to link.

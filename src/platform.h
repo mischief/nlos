@@ -34,6 +34,23 @@ void	platform_boot_extra_modules(lua_State *L);
  */
 int	platform_have_p9(void);
 
+/* is there a second serial port to carry 9p, and an EFI System Partition
+ * to serve?
+ *
+ * These two were assumed universal for as long as every platform was a
+ * pc: task/wire.lua and task/espsrv.lua ran with .enabled = 1 and no
+ * probe. That assumption cost a pid and a pair of orphaned ports on
+ * every boot of any machine without them -- esp32 has neither, and
+ * microvm has no ESP -- and, worse, printed "proc load error" and
+ * "FAILED to start" on a boot that was perfectly healthy. A log that
+ * cries wolf every time is how a real fault goes unnoticed.
+ *
+ * So they are probes like the rest, and a platform that answers no says
+ * "not present" and spawns nothing.
+ */
+int	platform_have_wire(void);
+int	platform_have_esp(void);
+
 /* is there a virtio-net to hand raw frames to? microvm only: the efi
  * platform takes tcp and udp from the firmware instead and never sees a
  * frame.

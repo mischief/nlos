@@ -27,15 +27,20 @@
 #include "debug.h"
 #include "platform.h"
 
-/* bodies are heap-allocated, so what these cost statically is one pointer
- * each: 4096 procs and 32768 ports is 288KB of .bss, and a machine
- * running a dozen procs allocates a dozen bodies.
+/* MAXPROCS and MAXPORTS come from the platform's param.h, because what
+ * is headroom on a machine with gigabytes is a third of a board's ram.
  *
- * these are headroom rather than reachable counts. spawning until it
- * fails stops at about 960 procs, because each is a lua_State and the
- * heap runs out long before the tables do. dispatch and wakeups do not
- * scan, so the round trip is flat across the whole range (about 26k
- * cycles at 64 procs and at 8192).
+ * bodies are heap-allocated, so what these cost statically is one
+ * pointer each -- but that is per entry, in .bss, whether or not a proc
+ * ever exists. on a 32-bit target 4096 procs and 32768 ports is 144KB,
+ * measured against the esp32's 242KB of internal sram at heap_init.
+ *
+ * they are headroom rather than reachable counts: spawning until it
+ * fails stops at about 960 procs on efi, because each is a lua_State
+ * and the heap runs out long before the tables do. dispatch and wakeups
+ * do not scan, so the round trip is flat across the whole range (about
+ * 26k cycles at 64 procs and at 8192) -- which is exactly why a small
+ * platform can pick a small number and lose nothing but headroom.
  *
  * going further wants a two-level index rather than a flat one, which
  * would add an indirection to every serialize.
@@ -45,8 +50,15 @@
  * parent closes each handle and tracks children by pid through
  * sys.monitor. only the first NRIGHTS_INLINE cost anything per proc.
  */
-#define MAXPROCS	4096
-#define MAXPORTS	32768
+#include "param.h"
+
+#ifndef MAXPROCS
+#error "platform param.h must define MAXPROCS"
+#endif
+#ifndef MAXPORTS
+#error "platform param.h must define MAXPORTS"
+#endif
+
 #define MAXRIGHTS	512
 #define NRIGHTS_INLINE	8
 
@@ -572,6 +584,8 @@ static int have_p9;
 static int have_eth;
 static int have_fb;
 static int have_blk;
+static int have_wire;
+static int have_esp;
 
 /* cycles per millisecond, measured once at boot. platform_ticks() is a
  * raw hardware counter -- a tick count, not a time -- and its rate is
@@ -755,9 +769,9 @@ uptime_ms(void)
  *
  * deliberately a flat unsorted array scanned linearly, not a timing
  * wheel. a wheel buys O(1) insert at the cost of real bookkeeping, and
- * earns that at thousands of timers; MAXPROCS is 32, so there are a few
- * dozen at most and both things we do each lap (expire the due ones,
- * and nothing else) are one pass over a tiny array. sorting would buy
+ * earns that at thousands of timers; MAXTIMERS is 32, so that is the
+ * whole array and both things we do each lap (expire the due ones, and
+ * nothing else) are one pass over a tiny one. sorting would buy
  * nothing either, since insertion costs the same scan.
  *
  * resolution is the scheduler tick, ~10-15ms (see TICK_FAST_100NS and
@@ -2834,6 +2848,18 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "lua_mapped");
 	lua_pushinteger(L, (lua_Integer)hs.waste);
 	lua_setfield(L, -2, "lua_waste");
+	/* and where that waste is, because the three answer different
+	 * questions: rounding is the size classes being wrong for this
+	 * target, unused is the chunk size being wrong for this working
+	 * set, and headers is neither. Tuning one when the cost is in
+	 * another is the mistake this exists to prevent.
+	 */
+	lua_pushinteger(L, (lua_Integer)hs.rounding);
+	lua_setfield(L, -2, "lua_rounding");
+	lua_pushinteger(L, (lua_Integer)hs.headers);
+	lua_setfield(L, -2, "lua_headers");
+	lua_pushinteger(L, (lua_Integer)hs.unused);
+	lua_setfield(L, -2, "lua_unused");
 	/* the tsc calibration, so a benchmark can time with sys.ticks()
 	 * -- sub-nanosecond -- and still report real units. uptime_ms has
 	 * 1ms granularity, which is useless over a 20ms measurement.
@@ -5136,6 +5162,8 @@ kernel_init(void)
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
 	have_blk = platform_have_blk();
+	have_wire = platform_have_wire();
+	have_esp = platform_have_esp();
 	return 0;
 }
 
@@ -5236,14 +5264,15 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .what = "console", .enabled = 1, .capname = "cons" },
 		{ .path = "/task/wire.lua", .chunkname = "=wire",
 		  .priv = PRIV_WIRE, .devport = serport, .devrecv = 1,
-		  .what = "the 9p wire", .enabled = 1, .capname = "wire" },
+		  .what = "the 9p wire", .enabled = have_wire,
+		  .capname = "wire" },
 		/* the esp server: the only proc that reaches the disk
 		 * directly. it gets diskport at handle 1, so writes are
 		 * possible here and nowhere else.
 		 */
 		{ .path = "/task/espsrv.lua", .chunkname = "=esp",
 		  .priv = PRIV_ESP, .devport = diskport, .devrecv = 0,
-		  .what = "the esp filesystem", .enabled = 1,
+		  .what = "the esp filesystem", .enabled = have_esp,
 		  .capname = "esp" },
 		{ .path = "/task/power.lua", .chunkname = "=power",
 		  .priv = PRIV_POWER, .devport = 0, .devrecv = 0,
@@ -5866,8 +5895,9 @@ kernel_run(void)
 		 * high-basepri proc starves a low one indefinitely (which
 		 * PriEdf > PriKproc > PriNormal makes deliberate). it has
 		 * unbounded procs, so an exhaustive sweep would be O(nproc)
-		 * per decision. MAXPROCS being small is what buys us the
-		 * guarantee for free.
+		 * per decision. we pay nothing for the guarantee because a
+		 * lap is bounded by what was runnable when it started, not
+		 * by how many procs exist -- see the budget below.
 		 */
 		/* phase one takes the highest priority first, so an
 		 * interactive proc answers before a hog gets another turn.
