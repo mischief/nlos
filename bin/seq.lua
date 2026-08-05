@@ -1,4 +1,4 @@
--- ported from ~/code/lua/os/seq/seq.lua, UNCHANGED except this line
+-- ported from the host lua/os tree, UNCHANGED except this line
 -- SPDX-License-Identifier: ISC
 local unistd = require("posix.unistd")
 

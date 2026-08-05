@@ -30,8 +30,9 @@ void	vfs_embed_register(void);
 
 #if CONFIG_LUAOS_BOARD_TDECK
 
-/* T-Deck wiring. From ~/code/c/clm/esp32/firmware/board_tdeck.c and
- * ~/code/pio/tdeck (Pins.h, platformio.ini), which agree on all of it.
+/* T-Deck wiring. From clm's esp32 firmware (board_tdeck.c) and the
+ * LilyGo reference sketch (Pins.h, platformio.ini), which agree on all
+ * of it.
  * Here rather than in one driver because the bus and the power rail are
  * shared: the display, the microSD and the LoRa radio are on one SPI,
  * and the display, the card and the keyboard behind one power gate.

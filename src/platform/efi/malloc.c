@@ -191,3 +191,23 @@ platform_meminfo(unsigned long long *total, unsigned long long *avail)
 	if (avail)
 		*avail = a;
 }
+
+/* one kind of memory here, so the lua heap's chunks are ordinary
+ * allocations. See platform.h: the hook exists for the esp32, which has
+ * two and must be told which.
+ */
+void *platform_chunk_alloc(size_t n);
+void platform_chunk_free(void *p, size_t n);
+
+void *
+platform_chunk_alloc(size_t n)
+{
+	return malloc(n);
+}
+
+void
+platform_chunk_free(void *p, size_t n)
+{
+	(void)n;
+	free(p);
+}

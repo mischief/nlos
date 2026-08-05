@@ -15,6 +15,8 @@
  * comes with the toolchain already correct.
  */
 
+#include <sdkconfig.h>
+
 #include <esp_timer.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
@@ -63,4 +65,39 @@ platform_meminfo(unsigned long long *total, unsigned long long *avail)
 		*total = info.total_free_bytes + info.total_allocated_bytes;
 	if (avail)
 		*avail = info.total_free_bytes;
+}
+
+/* the lua heap's chunks, from PSRAM where the board has it.
+ *
+ * Asked for explicitly rather than inferred from the request size.
+ * CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL serves anything at or below its
+ * threshold (4096 by default) from internal sram, so a heap whose
+ * chunks are smaller than that never sees PSRAM however much is
+ * fitted -- which is exactly what happened: a chunk size tuned on the
+ * Cardputer, which has none, kept the T-Deck's entire lua heap in
+ * internal sram with 8MB sitting unused beside it. Naming the memory
+ * we want makes the chunk size a tuning decision again instead of a
+ * placement one.
+ *
+ * The fallback is not an error path: it is the board with no PSRAM,
+ * where heap_caps_malloc(MALLOC_CAP_SPIRAM) simply has nothing to give.
+ */
+void *
+platform_chunk_alloc(size_t n)
+{
+	void *p = 0;
+
+#if CONFIG_SPIRAM
+	p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+	if (!p)
+		p = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	return p;
+}
+
+void
+platform_chunk_free(void *p, size_t n)
+{
+	(void)n;
+	heap_caps_free(p);
 }

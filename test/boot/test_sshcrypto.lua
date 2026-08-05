@@ -1,6 +1,6 @@
 -- The SSH crypto primitives on real hardware, with timings.
 --
--- The KAT suite lives in the host-side tree (~/code/lua/ssh) and runs
+-- The KAT suite lives in the host-side ssh tree and runs
 -- under busted; this asks the different question that only a boot can
 -- answer -- does it run here, and how long does a handshake's worth of
 -- curve work actually take on this machine.

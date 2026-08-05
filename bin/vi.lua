@@ -1,4 +1,4 @@
--- vi - a visual editor, ported from ~/code/lua/os/ed/vi.lua.
+-- vi - a visual editor, ported from the host lua/os tree's ed/vi.lua.
 --
 -- The editor logic is unchanged; what the lua-os port swaps out is the
 -- two things that touched the host. The terminal is the console the

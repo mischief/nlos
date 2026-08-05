@@ -1,6 +1,6 @@
 -- the program ABI (lib/prog.lua) and the launcher (lib/dos.lua).
 --
--- the claim being tested: two real utilities from ~/code/lua/os run here
+-- the claim being tested: two real utilities from the host lua/os tree run here
 -- UNCHANGED. bin/seq.lua and bin/cat.lua differ from their originals only
 -- in the shebang line. if the posix sliver in prog.lua is right, they
 -- need no port at all.

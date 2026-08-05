@@ -1,6 +1,6 @@
 -- ML-KEM-768 and Keccak on the target.
 --
--- The known-answer suite lives in the host tree (~/code/lua/ssh), where
+-- The known-answer suite lives in the host ssh tree, where
 -- SHA3 is checked against openssl and every ciphertext is handed to
 -- OpenSSL to decapsulate. This asks the question only a boot can answer:
 -- does it run here, and what does a post-quantum handshake cost on this

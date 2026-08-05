@@ -1,7 +1,7 @@
 /* the Cardputer's ST7789, over IDF's esp_lcd.
  *
  * Pin map, orientation and the panel offsets are from
- * ~/code/c/clm/esp32/firmware/board_config.h, which is the tested
+ * clm's esp32 firmware (board_config.h), which is the tested
  * source for this board. The offsets are the part not to rederive: a
  * 240x135 panel sits inside the ST7789's 240x320 RAM, and in this
  * landscape orientation (swap_xy + mirror_x) that lands at

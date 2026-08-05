@@ -136,6 +136,22 @@ const char *platform_arch(void);
  */
 void platform_meminfo(unsigned long long *total, unsigned long long *avail);
 
+/* where the shared lua heap's chunks come from.
+ *
+ * malloc on a machine with one kind of memory, which is three of the
+ * four. On the esp32 it is a choice: a board with PSRAM has 8MB of it
+ * beside a few hundred KB of internal sram, and the lua heaps belong in
+ * the former. Asking here rather than letting a size threshold decide
+ * (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) is deliberate -- that coupling
+ * silently kept a whole heap out of PSRAM once, because the chunk size
+ * had been tuned on the board that has none.
+ *
+ * n is passed back to the free so an allocator that needs the size has
+ * it; malloc-based ones ignore it.
+ */
+void *platform_chunk_alloc(size_t n);
+void platform_chunk_free(void *p, size_t n);
+
 /* <arch>/uart.c */
 void	uart_takeover(void);	/* wrest the wire port from the firmware */
 void	uart_init(void);

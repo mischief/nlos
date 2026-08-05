@@ -2,7 +2,7 @@
  * eight columns, seven gpios read the rows, active low.
  *
  * Pin map, keymaps and the scan are from
- * ~/code/c/clm/esp32/firmware/board_cardputer.c, which is the tested
+ * clm's esp32 firmware (board_cardputer.c), which is the tested
  * source for this board. The grid arithmetic is the part worth not
  * rederiving: selects 4..7 address the odd x columns and 0..3 the even
  * ones, and y counts down from 3.

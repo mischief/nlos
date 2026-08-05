@@ -1,7 +1,7 @@
 /* the T-Deck's microSD slot as whole-disk sectors.
  *
  * Deliberately NOT esp_vfs_fat_sdspi_mount, which is what every esp32
- * project reaches for (~/code/pio/esp32-torrent and ~/code/c/clm both
+ * project reaches for (the esp32-torrent and clm firmwares both
  * do). That mounts FAT behind IDF's VFS and hands back a POSIX path.
  * What lua-os wants is one layer below it: sdmmc_card_init plus
  * sdmmc_read_sectors/sdmmc_write_sectors, which is exactly the surface

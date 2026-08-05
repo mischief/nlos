@@ -4094,15 +4094,14 @@ static void *
 kalloc_chunk(void *ud, size_t n)
 {
 	(void)ud;
-	return malloc(n);
+	return platform_chunk_alloc(n);
 }
 
 static void
 kalloc_free_chunk(void *ud, void *p, size_t n)
 {
 	(void)ud;
-	(void)n;
-	free(p);
+	platform_chunk_free(p, n);
 }
 
 static const struct luaheap_ops kalloc_ops = {
@@ -4655,7 +4654,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * be the only one. Contrast los.platform.rng, where the raw draw
 	 * IS the capability.
 	 *
-	 * src/native.c is a VERBATIM copy of ~/code/lua/ssh's src/native.c
+	 * src/native.c is a VERBATIM copy of the ssh tree's src/native.c
 	 * -- the host tree is where these are developed and where the RFC
 	 * vectors run against both the C and the Lua implementations, which
 	 * is where a disagreement would be caught. Keeping it byte for byte

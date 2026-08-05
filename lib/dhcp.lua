@@ -195,7 +195,7 @@ end
 -- ---- the client ----
 --
 -- everything above is a transport-free codec, ported unchanged from
--- ~/code/lua/init/net/dhcp.lua. this is the RFC 2131 four-way over a
+-- the host lua/init tree's net/dhcp.lua. this is the RFC 2131 four-way over a
 -- udp socket that has NO address yet -- udp.open(port, true), whose
 -- raw flag is what tells task/ip.lua to accept a datagram addressed to
 -- a machine that does not have an address to be addressed at.

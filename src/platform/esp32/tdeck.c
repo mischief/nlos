@@ -9,8 +9,8 @@
  * that wrong is not subtle: a second spi_bus_initialize fails the whole
  * probe, and a missed power rail makes every device look absent.
  *
- * Wiring from ~/code/c/clm/esp32/firmware/board_tdeck.c and
- * ~/code/pio/tdeck (Pins.h and platformio.ini), which agree.
+ * Wiring from clm's esp32 firmware (board_tdeck.c) and the LilyGo
+ * reference sketch (Pins.h and platformio.ini), which agree.
  */
 
 #include <sdkconfig.h>
