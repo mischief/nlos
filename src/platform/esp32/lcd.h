@@ -16,6 +16,11 @@
 #include <stdint.h>
 
 int luaos_lcd_present(void);		/* probe once; brings up the panel */
+/* unload needs a copy: this panel has no SDO wired, so nothing can be
+ * read back off it. Costs 64800 bytes of internal SRAM while on.
+ */
+int luaos_lcd_shadow(int on);
+int luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out);
 int luaos_lcd_width(void);
 int luaos_lcd_height(void);
 

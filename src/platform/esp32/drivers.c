@@ -19,6 +19,8 @@
 #include "blk.h"
 #include "kbd.h"
 #include "lcd.h"
+
+int luaopen_los_font(lua_State *L);	/* font.c */
 #include "efi.h"
 #include "esp32.h"
 #include "platform.h"
@@ -93,6 +95,13 @@ platform_boot_extra_modules(lua_State *L)
 		return;
 
 	luaL_requiref(L, "los.platform.kbd", open_kbd, 0);
+	lua_pop(L, 1);
+
+	/* los.font is not a device and holds no capability -- glyphs are
+	 * data. It is here rather than in kernel.c's module table only
+	 * because the table it draws from is this platform's for now.
+	 */
+	luaL_requiref(L, "los.font", luaopen_los_font, 0);
 	lua_pop(L, 1);
 }
 
@@ -397,8 +406,28 @@ fb_load(lua_State *L)
 static int
 fb_unload(lua_State *L)
 {
-	return luaL_error(L, "fb.unload: this panel cannot be read back");
+	lua_Integer x = luaL_checkinteger(L, 1);
+	lua_Integer y = luaL_checkinteger(L, 2);
+	lua_Integer w = luaL_checkinteger(L, 3);
+	lua_Integer h = luaL_checkinteger(L, 4);
+	size_t need = (size_t)w * (size_t)h * 4;
+	luaL_Buffer b;
+	char *out;
+
+	checkrect(L, x, y, w, h);
+	if (need == 0) {
+		lua_pushliteral(L, "");
+		return 1;
+	}
+	out = luaL_buffinitsize(L, &b, need);
+	if (luaos_lcd_unload((int)x, (int)y, (int)w, (int)h,
+	    (unsigned char *)out) != 0)
+		return luaL_error(L, "fb.unload: no copy kept -- "
+		    "this panel cannot be read, call fb.shadow(true) first");
+	luaL_pushresultsize(&b, need);
+	return 1;
 }
+
 
 static int
 fb_scroll(lua_State *L)

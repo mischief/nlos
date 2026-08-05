@@ -57,6 +57,26 @@
 
 static esp_lcd_panel_handle_t panel;
 static uint16_t *band;
+
+/* An optional copy of what was written, for unload().
+ *
+ * The panel cannot be read: the Cardputer schematic's LCD connector is
+ * eight pins -- RST, RS, MOSI, SCK, CS, BL, 3V3, GND -- and the
+ * ST7789's SDO is routed nowhere. So readback is impossible rather than
+ * merely unreliable, and the only honest unload is a copy we kept.
+ *
+ * ONE BIT per pixel, and that is a real limit worth stating: a
+ * screenshot shows shape, not colour. Ink is any pixel that is not
+ * black.
+ *
+ * It is one bit because full RGB565 measured 64800 bytes and killed the
+ * machine -- "proc 0 (cons) died: not enough memory" on a board with no
+ * PSRAM, where cons alone wants ~60KB for lib/thread.lua. At 4050 bytes
+ * this is affordable, and what it is for -- checking that glyphs landed
+ * where they should -- needs shape rather than hue.
+ */
+#define SHADOW_BYTES ((LCD_W * LCD_H + 7) / 8)
+static unsigned char *shadow;
 static int probed, present;
 
 /* ST7789 wants big-endian RGB565 on the wire. Doing the swap here means
@@ -138,7 +158,73 @@ luaos_lcd_present(void)
 	gpio_set_level(LCD_BL, 1);
 
 	present = 1;
+
+#if CONFIG_LUAOS_FB_SHADOW
+	/* a development build: keep what is written so unload works.
+	 * Failing here is not fatal -- the panel is still usable, only
+	 * unload is not.
+	 */
+	luaos_lcd_shadow(1);
+#endif
 	return 1;
+}
+
+int
+luaos_lcd_shadow(int on)
+{
+	if (!present && on)
+		return -1;
+	if (on && shadow == NULL) {
+		shadow = heap_caps_malloc(SHADOW_BYTES,
+		    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+		if (shadow == NULL)
+			return -1;
+		memset(shadow, 0, SHADOW_BYTES);
+	} else if (!on && shadow != NULL) {
+		heap_caps_free(shadow);
+		shadow = NULL;
+	}
+	return 0;
+}
+
+static inline void
+shadow_set(int x, int y, int ink)
+{
+	size_t bit = (size_t)y * LCD_W + x;
+
+	if (ink)
+		shadow[bit >> 3] |= (unsigned char)(1u << (bit & 7));
+	else
+		shadow[bit >> 3] &= (unsigned char)~(1u << (bit & 7));
+}
+
+/* white for ink, black for paper, as BGRx -- the layout load() takes.
+ * Not the colours that were drawn: see the shadow's comment.
+ */
+int
+luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
+{
+	int row, col;
+
+	if (!present || shadow == NULL)
+		return -1;
+	if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
+	    x + w > LCD_W || y + h > LCD_H)
+		return -1;
+
+	for (row = 0; row < h; row++)
+		for (col = 0; col < w; col++) {
+			size_t bit = (size_t)(y + row) * LCD_W + x + col;
+			int ink = (shadow[bit >> 3] >> (bit & 7)) & 1;
+			unsigned char *px = out + ((size_t)row * w + col) * 4;
+			unsigned char v = ink ? 0xff : 0x00;
+
+			px[0] = v;
+			px[1] = v;
+			px[2] = v;
+			px[3] = 0;
+		}
+	return 0;
 }
 
 int
@@ -164,6 +250,14 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 
 	for (i = 0; i < w * BAND_ROWS; i++)
 		band[i] = px;
+
+	if (shadow != NULL) {
+		int r, c, ink = (rgb & 0xffffffu) != 0;
+
+		for (r = 0; r < h; r++)
+			for (c = 0; c < w; c++)
+				shadow_set(x + c, y + r, ink);
+	}
 
 	for (row = 0; row < h; row += BAND_ROWS) {
 		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
@@ -198,6 +292,9 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 			uint32_t r = src[i * 4 + 2];
 
 			band[i] = rgb565((r << 16) | (g << 8) | b);
+			if (shadow != NULL)
+				shadow_set(x + i % w, y + row + i / w,
+				    (r | g | b) != 0);
 		}
 		if (esp_lcd_panel_draw_bitmap(panel, x, y + row, x + w,
 		    y + row + n, band) != ESP_OK)
@@ -212,6 +309,20 @@ int
 luaos_lcd_present(void)
 {
 	return 0;
+}
+
+int
+luaos_lcd_shadow(int on)
+{
+	(void)on;
+	return -1;
+}
+
+int
+luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
+{
+	(void)x; (void)y; (void)w; (void)h; (void)out;
+	return -1;
 }
 
 int

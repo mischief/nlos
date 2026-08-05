@@ -19,3 +19,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 # wired here yet either. So it probes nothing: see Kconfig.projbuild for
 # why that is a setting rather than a default.
 CONFIG_LUAOS_BOARD_CARDPUTER=y
+
+# Development: keep a framebuffer copy so fb.unload -- and so
+# tools/screenshot-esp32.lua -- work at all. 64800 bytes of internal
+# SRAM. Drop this line when the memory matters more than the feedback.
+CONFIG_LUAOS_FB_SHADOW=y
