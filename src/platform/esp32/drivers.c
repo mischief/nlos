@@ -18,6 +18,7 @@
 
 #include "blk.h"
 #include "kbd.h"
+#include "lcd.h"
 #include "efi.h"
 #include "esp32.h"
 #include "platform.h"
@@ -137,7 +138,7 @@ platform_have_blk(void)
 int
 platform_have_fb(void)
 {
-	return 0;
+	return luaos_lcd_present();
 }
 
 /* ---- los.platform.cons ---- */
@@ -288,6 +289,144 @@ luaopen_los_platform_blk(lua_State *L)
 	return 1;
 }
 
+/* ---- los.platform.fb: the ST7789, as rectangles ----
+ *
+ * The same surface efi's GOP backend gives, minus unload: reading
+ * pixels back would need either a shadow framebuffer (64800 bytes on a
+ * board with none to spare) or ST7789 readback over SPI, which is not
+ * reliable. It reports that rather than returning a plausible lie --
+ * fb.lua's clients get {err=}, and a layer that needs to save what a
+ * window covers will have to keep its own copy.
+ */
+
+static void
+checkrect(lua_State *L, lua_Integer x, lua_Integer y, lua_Integer w,
+    lua_Integer h)
+{
+	if (x < 0 || y < 0 || w < 0 || h < 0)
+		luaL_error(L, "negative rectangle");
+	if (x + w > luaos_lcd_width() || y + h > luaos_lcd_height())
+		luaL_error(L, "rectangle %dx%d at %d,%d is off a %dx%d screen",
+		    (int)w, (int)h, (int)x, (int)y,
+		    luaos_lcd_width(), luaos_lcd_height());
+}
+
+static void
+pushmode(lua_State *L)
+{
+	lua_createtable(L, 0, 4);
+	lua_pushinteger(L, 0);
+	lua_setfield(L, -2, "n");
+	lua_pushinteger(L, luaos_lcd_width());
+	lua_setfield(L, -2, "w");
+	lua_pushinteger(L, luaos_lcd_height());
+	lua_setfield(L, -2, "h");
+	/* the layout load() takes, not the panel's own: the panel is
+	 * RGB565 and lcd.c converts. Saying "bgrx" is what lets a client
+	 * written against efi work here unchanged.
+	 */
+	lua_pushstring(L, "bgrx");
+	lua_setfield(L, -2, "format");
+}
+
+static int
+fb_modes(lua_State *L)
+{
+	lua_createtable(L, 1, 0);
+	pushmode(L);
+	lua_rawseti(L, -2, 1);
+	return 1;
+}
+
+static int
+fb_mode(lua_State *L)
+{
+	pushmode(L);
+	return 1;
+}
+
+/* one fixed mode: the panel is 240x135 and has no others. */
+static int
+fb_setmode(lua_State *L)
+{
+	if (luaL_checkinteger(L, 1) != 0)
+		return luaL_error(L, "no such mode");
+	return 0;
+}
+
+static int
+fb_fill(lua_State *L)
+{
+	lua_Integer x = luaL_checkinteger(L, 1);
+	lua_Integer y = luaL_checkinteger(L, 2);
+	lua_Integer w = luaL_checkinteger(L, 3);
+	lua_Integer h = luaL_checkinteger(L, 4);
+	lua_Unsigned c = (lua_Unsigned)luaL_checkinteger(L, 5);
+
+	checkrect(L, x, y, w, h);
+	if (w == 0 || h == 0)
+		return 0;
+	if (luaos_lcd_fill((int)x, (int)y, (int)w, (int)h, (uint32_t)c) != 0)
+		return luaL_error(L, "fill failed");
+	return 0;
+}
+
+static int
+fb_load(lua_State *L)
+{
+	lua_Integer x = luaL_checkinteger(L, 1);
+	lua_Integer y = luaL_checkinteger(L, 2);
+	lua_Integer w = luaL_checkinteger(L, 3);
+	lua_Integer h = luaL_checkinteger(L, 4);
+	size_t n;
+	const char *pix = luaL_checklstring(L, 5, &n);
+	size_t need = (size_t)w * (size_t)h * 4;
+
+	checkrect(L, x, y, w, h);
+	if (n != need)
+		return luaL_error(L, "want %d bytes for %dx%d, got %d",
+		    (int)need, (int)w, (int)h, (int)n);
+	if (need == 0)
+		return 0;
+	if (luaos_lcd_load((int)x, (int)y, (int)w, (int)h,
+	    (const unsigned char *)pix) != 0)
+		return luaL_error(L, "load failed");
+	return 0;
+}
+
+static int
+fb_unload(lua_State *L)
+{
+	return luaL_error(L, "fb.unload: this panel cannot be read back");
+}
+
+static int
+fb_scroll(lua_State *L)
+{
+	return luaL_error(L, "fb.scroll: needs readback, which this panel "
+	    "cannot do -- redraw instead");
+}
+
+static const luaL_Reg fb_lib[] = {
+	{ "modes", fb_modes },
+	{ "mode", fb_mode },
+	{ "setmode", fb_setmode },
+	{ "fill", fb_fill },
+	{ "load", fb_load },
+	{ "unload", fb_unload },
+	{ "scroll", fb_scroll },
+	{ NULL, NULL },
+};
+
+int luaopen_los_platform_fb(lua_State *L);
+
+int
+luaopen_los_platform_fb(lua_State *L)
+{
+	luaL_newlib(L, fb_lib);
+	return 1;
+}
+
 /* ---- the modules this platform has no device for ----
  *
  * Empty tables rather than absent symbols: kernel.c registers each of
@@ -315,7 +454,6 @@ EMPTY_MODULE(los_efi)
 EMPTY_MODULE(los_platform_wire)
 EMPTY_MODULE(los_platform_p9)
 EMPTY_MODULE(los_platform_eth)
-EMPTY_MODULE(los_platform_fb)
 
 /* ---- the wire ----
  *

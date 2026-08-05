@@ -42,6 +42,7 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/fs.c
     ${LUAOS_ROOT}/src/platform/esp32/idf_shim.c
     ${LUAOS_ROOT}/src/platform/esp32/kbd.c
+    ${LUAOS_ROOT}/src/platform/esp32/lcd.c
     ${LUAOS_ROOT}/src/platform/esp32/main.c
     ${LUAOS_ROOT}/src/platform/esp32/vfs.c
     ${LUAOS_ROOT}/src/xtensa/machine.c
@@ -61,6 +62,7 @@ idf_component_register(
         ${LUAOS_ROOT}/lua
         ${CMAKE_CURRENT_BINARY_DIR}
     REQUIRES esp_psram esp_timer driver vfs esp_driver_usb_serial_jtag
+            esp_lcd
             sdmmc esp_driver_sdspi esp_driver_spi esp_driver_gpio
 )
 
@@ -100,6 +102,7 @@ set(EMBED_FILES
     lib/sync/lock.lua
     task/cons.lua
     task/power.lua
+    task/fb.lua
 )
 
 set(embed_args /boot/esp32.lua=${LUAOS_PAYLOAD})
