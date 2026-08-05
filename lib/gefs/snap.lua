@@ -500,9 +500,10 @@ end
 --------------------------------------------------------------------------
 -- the commit
 
-function Fs:sync()
+function Fs:sync(depth)
   if self.rdonly then error("filesystem is read only", 0) end
   local blksz = self.geom.blksz
+  depth = depth or 0
 
   self.qgen = self.qgen + 1
 
@@ -574,9 +575,25 @@ function Fs:sync()
   self:devsync()
 
   -- pass 4: only now is it safe to reuse what the old tree was holding
+  local reclaimed = sdl.hd.addr ~= -1 or ddl.hd.addr ~= -1
   self:freedl(ddl, false)
   self:freedl(sdl, true)
   self.snap.dirty = false
+
+  -- Pass 4 runs after the superblock, so the LogFree entries it appends
+  -- land past this generation's barrier -- and loadlog throws away
+  -- everything past the barrier the superblock names, because that is
+  -- how a commit that never finished is undone. So the reclamation is
+  -- only real once a later commit has put those entries in front of a
+  -- barrier a reload will accept.
+  --
+  -- Upstream gets away with this: it is a server that syncs again and
+  -- again, and its halt drains the epochs before its final sync. We are
+  -- as often a command that opens a volume, writes one file and exits,
+  -- and that stranded eight blocks every time it ran. So when there was
+  -- something to reclaim, commit once more. An idle sync -- nothing
+  -- deleted, nothing superseded -- still costs one.
+  if reclaimed and depth < 2 then self:sync(depth + 1) end
 end
 
 return M

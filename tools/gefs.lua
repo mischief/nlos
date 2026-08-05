@@ -16,6 +16,8 @@
 --      gefs fsck   disk.img [-fix]
 --      gefs salvage disk.img outdir [-b size] [-keep]
 --      gefs stat   disk.img
+--      gefs grow   disk.img [size] [-n arenas]
+--      gefs shrink disk.img
 
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 package.path = scriptdir .. "/../lib/?.lua;" .. package.path
@@ -47,8 +49,13 @@ usage: gefs command disk.img [args]
   salvage disk.img outdir         recover files from an image that will
                                   not open, without reading a superblock
   stat   disk.img                 report the superblock and the arenas
+  grow   disk.img [size]          extend the image to size (if given), then
+                                  add arenas to fill the device
+  shrink disk.img                 drop empty trailing arenas; the volume
+                                  shrinks, the image file is left as-is
 
   -s name   operate on a snapshot rather than main
+  -n count  grow: arenas to add (default 4)
   -fix      fsck: return leaked blocks to the free list
   -b size   salvage: the block size, if it cannot be worked out
   -keep     salvage: write damaged blocks out rather than zeroes
@@ -79,6 +86,9 @@ do
 		elseif arg[i] == "-l" then
 			i = i + 1
 			flags.len = tonumber(arg[i]) or usage()
+		elseif arg[i] == "-n" then
+			i = i + 1
+			flags.narena = tonumber(arg[i]) or usage()
 		else
 			args[#args + 1] = arg[i]
 		end
@@ -361,6 +371,74 @@ function cmds.stat()
 		used = used + fs.arenas[i].used
 	end
 	io.write(("space:      %d of %d bytes used (%.1f%%)\n"):format(used, size, 100 * used / size))
+end
+
+local function mib(n) return n / (1024 * 1024) end
+
+-- grow onto a bigger device. With a size, extend the image first -- a
+-- sparse write, the same one gefs.io.create uses -- then add arenas to
+-- fill it. A partition slice (-o/-l) is a fixed length and cannot be
+-- extended. Without a size, add arenas into whatever room the device
+-- already has. Fs:grow fills up to dev:size() and never calls resize, so
+-- no host truncate is needed here.
+function cmds.grow()
+	local size = tonumber(args[3])
+	if size ~= nil then
+		if flags.off then
+			die("cannot resize a partition slice; omit size or drop -o/-l")
+		end
+		local f = assert(io.open(img, "r+b"))
+		local cur = f:seek("end")
+		if size < cur then
+			f:close()
+			die("%s is already %d bytes", img, cur)
+		end
+		if size > cur then
+			f:seek("set", size - 1)
+			f:write("\0")
+			f:flush()
+		end
+		f:close()
+	end
+	local fs = openfs()
+	local was = fs.narena
+	local n, bytes = fs:grow({ narena = flags.narena })
+	io.write(("%d arenas -> %d, %.1f MiB added, image %.1f MiB\n")
+		:format(was, fs.narena, mib(bytes), mib(fs.dev:size())))
+	if n == 0 then
+		os.exit(1)
+	end
+end
+
+-- drop empty trailing arenas. The trees have to be mounted first, or the
+-- reachability sweep sees every block they own as nobody's. The volume
+-- shrinks; the image file is NOT truncated -- io.lua has no resize (a
+-- fixed block device cannot be cut, and there is no luaposix here to
+-- truncate a file), and a smaller volume on an oversized file is a
+-- correct, re-growable state.
+function cmds.shrink()
+	local fs = openfs()
+	local s = fs:btscan(fs.snap, string.pack(">I1", dat.Klabel))
+	local names = {}
+	for kv in s:iter() do
+		names[#names + 1] = kv.k:sub(2)
+	end
+	s:close()
+	for _, nm in ipairs(names) do
+		pcall(fs.mount, fs, nm)
+	end
+
+	local was = fs.narena
+	local n, bytes, why = fs:shrink({})
+	if n == 0 then
+		io.write(("nothing to drop: %s\n"):format(tostring(why)))
+		os.exit(1)
+	end
+	io.write(("%d arenas -> %d, %.1f MiB given back (image file unchanged)\n")
+		:format(was, fs.narena, mib(bytes)))
+	if why ~= nil then
+		io.write(("stopped at: %s\n"):format(why))
+	end
 end
 
 local fn = cmds[cmd]

@@ -958,14 +958,22 @@ function Fs:btupsert(t, msg)
 
     -- room for one more level than the tree has, since a split at the
     -- root grows it by one
+    -- Upstream calloc()s the path, so an entry victim() never touches
+    -- reads as zero: child 0, an empty message range, and POmod. That is
+    -- not incidental. A degenerate root -- one value, empty buffer -- is
+    -- descended through without victim() firing, and the zeroes are what
+    -- send the flush into the only child it has. Only the sentinel at
+    -- path[0] and the leaf at the far end are -1.
     local path = {}
     for i = 0, height + 1 do
-      path[i] = { idx = -1, midx = -1, lo = -1, hi = -1,
+      path[i] = { idx = 0, midx = 0, lo = 0, hi = 0, op = POmod,
                   npull = 0, pullsz = 0, sz = 0 }
     end
 
     local npath = 0
     path[npath].b = nil
+    path[npath].idx = -1
+    path[npath].midx = -1
     npath = npath + 1
 
     path[0].sz = sz
@@ -985,6 +993,12 @@ function Fs:btupsert(t, msg)
     end
 
     path[npath].b = b
+    path[npath].idx = -1
+    path[npath].midx = -1
+    path[npath].lo = -1
+    path[npath].hi = -1
+    path[npath].npull = 0
+    path[npath].pullsz = 0
     npath = npath + 1
 
     local rp = flush(self, t, path, npath)

@@ -32,6 +32,15 @@ end
 
 function Ram:size() return self.nbytes end
 
+-- Resizing the backing store, which is what a volume has to see before
+-- grow can use the space or shrink can give it back.
+function Ram:resize(n)
+  for bi in pairs(self.blocks) do
+    if bi * self.blksz >= n then self.blocks[bi] = nil end
+  end
+  self.nbytes = n
+end
+
 function Ram:read(off, len)
   assert(off >= 0 and off + len <= self.nbytes, "read outside the device")
   self.nread = self.nread + 1

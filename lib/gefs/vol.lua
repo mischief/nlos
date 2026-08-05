@@ -295,6 +295,215 @@ function M.ream(dev, opts)
 end
 
 --------------------------------------------------------------------------
+-- grow
+--
+-- Adding arenas to a volume whose device got bigger. This is 9front's
+-- growfs, except that it runs on a mounted volume rather than as a
+-- separate command, which it can because growing is purely additive: no
+-- block moves, no pointer is rewritten, and nothing existing is read.
+--
+-- The whole thing turns on one ordering. New arenas are invisible until
+-- narena says they exist, and narena only reaches disk in the superblock
+-- that sync() writes last. So a crash anywhere before that leaves the
+-- volume exactly as it was, with some initialised headers sitting in
+-- space no allocator will ever look at, and running grow again is safe.
+
+-- The superblock names every arena and must stay one block. Ask the
+-- packer rather than counting bytes here, so a format change cannot make
+-- this silently wrong.
+local function sbfits(fs, narena, blksz)
+  local bps = {}
+  for i = 1, narena do bps[i] = fs.arenabp[i] or dat.zb() end
+  local s = pack.packsb({
+    bufspc = fs.geom.bufspc, narena = narena,
+    snap = fs.snap, snapdl = fs.snapdl,
+    flag = fs.flag, nextqid = fs.nextqid,
+    nextgen = fs.nextgen, qgen = fs.qgen,
+    arenabp = bps,
+  }, blksz)
+  return #s <= blksz
+end
+
+-- Returns how many arenas were added, and how many bytes they hold.
+function Fs:grow(opts)
+  opts = opts or {}
+  if self.rdonly then error("grow: filesystem is read only", 0) end
+  local blksz = self.geom.blksz
+  local nnew = opts.narena or 4
+  if nnew < 1 then error("grow: asked for no arenas", 0) end
+
+  local sz = self.dev:size()
+  local last = self.arenas[self.narena]
+  local off = last.base + last.size + 2 * blksz
+
+  local eb = sz - sz % blksz - blksz    -- where the backup goes now
+
+  -- Step over the backup superblock rather than through it: until the
+  -- commit at the end of this function lands, that block is still the
+  -- volume's second chance, and one block is a cheap price for keeping
+  -- it whole. Only when it is in the way, though -- a volume opened
+  -- after the device grew already has its backup out at the new end,
+  -- and treating that as the floor would leave nowhere to build.
+  if self.sb1.bp.addr >= off and self.sb1.bp.addr < eb then
+    off = self.sb1.bp.addr + blksz
+  end
+
+  local avail = eb - off
+  if avail <= 0 then error("grow: the device has no room to grow into", 0) end
+
+  local asz = avail // nnew
+  asz = asz - (asz % blksz) - 2 * blksz
+  if asz <= 4 * blksz then
+    error(("grow: %d bytes is too little for %d arenas"):format(avail, nnew), 0)
+  end
+  if not sbfits(self, self.narena + nnew, blksz) then
+    error(("grow: %d arenas will not fit in the superblock")
+      :format(self.narena + nnew), 0)
+  end
+
+  -- pass 1: build the arenas. Nothing points at them yet, so a crash
+  -- here is indistinguishable from never having called grow.
+  local made = {}
+  for i = 1, nnew do
+    local a = {}
+    initarena(self, a, off, asz)
+    made[i] = a
+    off = off + asz + 2 * blksz
+  end
+  self:devsync()
+
+  -- pass 2: publish them, and move the backup superblock out to the new
+  -- end of the device. sync() writes the superblock that makes all of it
+  -- real, and until it returns none of this is on disk.
+  local base = self.narena
+  for i = 1, nnew do
+    local a = made[i]
+    self.arenas[base + i] = a
+    self.arenabp[base + i] = { addr = a.h0.bp.addr, hash = a.h0.bp.hash,
+      gen = -1 }
+  end
+  self.narena = base + nnew
+  for i = base + 1, self.narena do
+    local a = self.arenas[i]
+    self:loadarena(a, self.arenabp[i])
+    self:loadlog(a, a.loghd)
+  end
+
+  self.sb1 = blk.new(dat.Tsuper, eb, -1)
+  self.sb1.data = self.sb0.data
+  self:sync()
+
+  return nnew, nnew * asz
+end
+
+--------------------------------------------------------------------------
+-- shrink
+--
+-- The other direction, as far as it goes honestly. Only whole trailing
+-- arenas holding nothing at all are dropped: nothing is evacuated and
+-- nothing is rewritten, because relocating a block means rewriting the
+-- pointer that names it, that pointer carries the block's hash, and the
+-- parent holding it may belong to a snapshot that is not ours to
+-- rewrite. So a volume that has spread data into its last arenas cannot
+-- be shrunk, and says so by dropping nothing.
+--
+-- The ordering is grow's, reversed. The superblock naming fewer arenas
+-- goes down first and the device is cut afterwards, so a crash in
+-- between leaves a volume that is entirely correct and merely sitting on
+-- a device larger than it admits to -- which is where grow starts.
+
+-- Every block an arena still holds, or nil if it holds none of its own.
+-- Its headers and its allocation log do not count: those go with it.
+local function arenaresidue(fs, i, seen)
+  local blksz = fs.geom.blksz
+  local a = fs.arenas[i]
+
+  local own = { [a.base] = true, [a.base + blksz] = true }
+  local bp = a.loghd
+  while bp.addr ~= -1 and not own[bp.addr] do
+    own[bp.addr] = true
+    local ok, b = pcall(fs.getblk, fs, bp, 0)
+    if not ok then return "an unreadable log block" end
+    bp = b.logp
+  end
+
+  local fi = 1
+  for addr = a.base + 2 * blksz, a.base + a.size - blksz, blksz do
+    while a.free[fi] ~= nil and a.free[fi].off + a.free[fi].len <= addr do
+      fi = fi + 1
+    end
+    local r = a.free[fi]
+    local free = r ~= nil and addr >= r.off and addr < r.off + r.len
+    if not free and not own[addr] then
+      -- allocated and not the arena's own: either something reaches it,
+      -- or it is leaked and fsck should have it before we drop the
+      -- ground out from under it
+      return seen[addr] and ("a block in use at %d"):format(addr)
+        or ("a leaked block at %d"):format(addr)
+    end
+  end
+  return nil
+end
+
+-- Returns how many arenas were dropped, how many bytes that gave back,
+-- and why it stopped.
+function Fs:shrink(opts)
+  opts = opts or {}
+  if self.rdonly then error("shrink: filesystem is read only", 0) end
+  local blksz = self.geom.blksz
+  local keep = opts.keep or 1
+  if keep < 1 then error("shrink: a volume needs an arena", 0) end
+
+  -- Pending work can hold blocks anywhere, and deadlists settle in
+  -- sync()'s last pass. What is on disk after this is what we judge.
+  self:sync()
+
+  local check = require "gefs.check"
+  local fail = {}
+  local seen = check.reachable(self, fail)
+  if #fail > 0 then
+    error("shrink: the volume is not sound: " .. fail[1], 0)
+  end
+
+  local ndrop, why = 0, nil
+  while self.narena - ndrop > keep do
+    local i = self.narena - ndrop
+    if opts.max ~= nil and ndrop >= opts.max then why = "asked to stop" break end
+    why = arenaresidue(self, i, seen)
+    if why ~= nil then break end
+    ndrop = ndrop + 1
+  end
+  if ndrop == 0 then return 0, 0, why or "no arenas to spare" end
+
+  local bytes = 0
+  for i = self.narena - ndrop + 1, self.narena do
+    local a = self.arenas[i]
+    bytes = bytes + a.size + 2 * blksz
+    for addr = a.base, a.base + a.size + blksz, blksz do
+      self:cachedel(addr)
+    end
+    self.arenas[i] = nil
+    self.arenabp[i] = nil
+  end
+  self.narena = self.narena - ndrop
+
+  local last = self.arenas[self.narena]
+  local top = last.base + last.size + 2 * blksz
+  local canresize = self.dev.resize ~= nil
+  -- Without a device that can be cut the backup superblock stays where
+  -- open() will look for it, at the end of a device that keeps its size.
+  local sz = self.dev:size()
+  local eb = canresize and top or (sz - sz % blksz - blksz)
+
+  self.sb1 = blk.new(dat.Tsuper, eb, -1)
+  self.sb1.data = self.sb0.data
+  self:sync()
+  if canresize then self.dev:resize(top + blksz) end
+
+  return ndrop, bytes, why
+end
+
+--------------------------------------------------------------------------
 -- open
 
 function M.open(dev, opts)
