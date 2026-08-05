@@ -679,9 +679,15 @@ at the outermost syscall entry and asserted — not taken — by the inner
 helpers, because they nest. It is recursive: allocating Lua objects
 under it can run the collector, `__gc` clunks handles, and that
 re-enters through `api_close`. The physical allocator has one lock; the
-malloc counters are relaxed atomics. Each proc has its own `luaheap`,
-allocated in `proc_new` and destroyed with the proc. The lock order is
-in `src/lock.h` and is the whole discipline.
+malloc counters are relaxed atomics. The lock order is in `src/lock.h`
+and is the whole discipline.
+
+Each proc has its own `luaheap`, and a second cpu is what decided that:
+one heap for the machine measured 27% less memory, but would need a
+lock on every Lua allocation, which is the most frequent thing here.
+A per-proc heap needs none, because a proc runs on one cpu at a time
+and its heap is touched only while it runs. The chunk source under it
+is shared and locked, and is asked for more only a few times per proc.
 
 **What stays on the boot cpu.** Device interrupts, by routing: the
 ioapic sends everything to apic id 0 and MSI-X entries name the boot
