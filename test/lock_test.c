@@ -13,6 +13,7 @@
  */
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,19 +50,30 @@ diag(const char *fmt, ...)
 }
 
 #define NTHREAD	8
+#ifndef NITER
 #define NITER	20000
+#endif
 
 static struct lock l = LOCK_INIT;
 static unsigned long shared;		/* not atomic, on purpose */
 static unsigned long per[NTHREAD];
-static volatile int go;
+
+/* the start gate. It is atomic and not volatile: volatile stops the
+ * compiler caching a load, but it orders nothing between threads, so a
+ * plain read of it is a data race. Thread sanitizer reports one.
+ *
+ * Relaxed is enough. The gate only has to be seen. The lock below
+ * orders everything that must be ordered, and it is the thing under
+ * test, so the harness must not help it.
+ */
+static atomic_int go;
 
 static void *
 hammer(void *arg)
 {
 	long id = (long)arg;
 
-	while (!go)
+	while (!atomic_load_explicit(&go, memory_order_relaxed))
 		machine_relax();
 
 	for (int i = 0; i < NITER; i++) {
@@ -84,14 +96,14 @@ test_exclusion(void)
 
 	shared = 0;
 	memset(per, 0, sizeof per);
-	go = 0;
+	atomic_store_explicit(&go, 0, memory_order_relaxed);
 
 	for (long i = 0; i < NTHREAD; i++)
 		if (pthread_create(&th[i], 0, hammer, (void *)i) != 0) {
 			ok(0, "pthread_create");
 			return;
 		}
-	go = 1;
+	atomic_store_explicit(&go, 1, memory_order_relaxed);
 	for (int i = 0; i < NTHREAD; i++)
 		pthread_join(th[i], 0);
 
@@ -139,7 +151,7 @@ handoff(void *arg)
 {
 	long id = (long)arg;
 
-	while (!go)
+	while (!atomic_load_explicit(&go, memory_order_relaxed))
 		machine_relax();
 
 	for (int i = 0; i < NITER; i++) {
@@ -161,14 +173,14 @@ test_handoff(void)
 
 	memset(payload, 0, sizeof payload);
 	seen_bad = 0;
-	go = 0;
+	atomic_store_explicit(&go, 0, memory_order_relaxed);
 
 	for (long i = 0; i < NTHREAD; i++)
 		if (pthread_create(&th[i], 0, handoff, (void *)i) != 0) {
 			ok(0, "pthread_create");
 			return;
 		}
-	go = 1;
+	atomic_store_explicit(&go, 1, memory_order_relaxed);
 	for (int i = 0; i < NTHREAD; i++)
 		pthread_join(th[i], 0);
 

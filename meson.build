@@ -1088,6 +1088,42 @@ if host_arch in ['x86_64', 'aarch64', 'riscv64']
     native: true,
   )
   test('lock', lock_test, protocol: 'tap', timeout: 120)
+
+  # the same test under thread sanitizer, which sees the half the test
+  # above cannot.
+  #
+  # lock_test proves that increments are not lost. It cannot prove the
+  # memory order. A ticket lock with its acquire and release downgraded
+  # to relaxed still passes a counting test on x86, because the
+  # hardware orders stores anyway. The same lock loses updates on
+  # aarch64, where it does not. The publication case has the same blind
+  # spot for the same reason.
+  #
+  # tsan models C11 atomics. It derives happens-before from the lock's
+  # own acquire and release, stays quiet when they are correct, and
+  # reports the unprotected counter when they are not. That makes it a
+  # test of the ordering and not of this host.
+  #
+  # tsan is slow, so the iteration count is lower here. A race it finds
+  # is a property of the code, not of how long the test runs.
+  #
+  # The test is skipped, not failed, where libtsan is absent. It is a
+  # toolchain component, not a source dependency.
+  tsan_args = ['-DNCPU=8', '-DNITER=2000', '-fsanitize=thread', '-g']
+  if cc.has_link_argument('-fsanitize=thread')
+    lock_test_tsan = executable('lock_test_tsan',
+      ['test/lock_test.c'],
+      include_directories: include_directories('src', 'src' / host_arch),
+      c_args: tsan_args,
+      link_args: ['-fsanitize=thread'],
+      dependencies: thread_dep,
+      native: true,
+    )
+    # halt_on_error so a race is a failed test rather than a warning
+    # scrolling past a run that still reports ok.
+    test('lock-tsan', lock_test_tsan, protocol: 'tap', timeout: 300,
+      env: {'TSAN_OPTIONS': 'halt_on_error=1:exitcode=1'})
+  endif
 endif
 
 # the bench needs a real lua to allocate through, which is the host's
