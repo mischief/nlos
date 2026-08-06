@@ -93,6 +93,12 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
  * is this many round trips, ~0.1ms. the tick is 10ms.
  */
 #define LAPSPILL	64
+
+/* how much a proc must have allocated before its collector is stepped.
+ * Below this the step costs more than it can recover: a proc that did
+ * almost nothing in its slice has almost nothing to collect.
+ */
+#define GCSTEP_MIN	(16 * 1024)
 /* per-port queue ceiling. plan 9's pipes are Queues with a limit
  * (conf.pipeqsize, 256KB) and a writer that sleeps when it is reached;
  * ours had no bound at all, so a fast writer into a slow reader grew the
@@ -433,6 +439,17 @@ struct kproc {
 	size_t mem_used;	/* live bytes in this proc's lua heap */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
+	/* bytes lua has asked for since this proc's collector last ran.
+	 * The collector is stopped, so lua's own GCdebt no longer
+	 * decides when a step happens; this is what gc_step reads
+	 * instead, both to skip a proc that has done nothing and to size
+	 * the step. See gc_step for which collector actually uses the
+	 * size.
+	 *
+	 * Growth only: a free between steps means the proc is already
+	 * returning memory unaided, which is not a reason to collect.
+	 */
+	size_t gc_owed;
 	char name[32];		/* from chunkname, for ps/debugging */
 	/* scheduling feedback. cputime/reds are raw accumulators; cpu is
 	 * the decaying fair-share estimate derived from them.
@@ -5617,7 +5634,109 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	p->mem_used += nsize - real_osize;
 	if (p->mem_used > p->mem_peak)
 		p->mem_peak = p->mem_used;
+	p->gc_owed += nsize - real_osize;
 	return q;
+}
+
+/* where a lua warning goes. Without one of these lua drops them:
+ * luaE_warning does nothing when warnf is null, and lua_newstate leaves
+ * it null -- only luaL_newstate installs a default, and that is for the
+ * host tools rather than for procs.
+ *
+ * The one warning that matters here is an error inside a __gc handler.
+ * GCTM runs a finalizer under luaD_pcall and reports a failure through
+ * this path rather than raising, so with no warn function a finalizer
+ * that throws is invisible: no message, no counter, and the handle it
+ * was supposed to clunk stays open.
+ *
+ * `tocont` means lua will send the rest in further calls. Buffering to
+ * join them would need a per-state buffer for a case that does not
+ * arise -- luaE_warnerror sends one piece -- so each piece is logged as
+ * it comes and a split message reads as two lines.
+ */
+static void
+kernel_warn(void *ud, const char *msg, int tocont)
+{
+	struct kproc *p = ud;
+
+	char b[256];
+
+	(void)tocont;
+	snprintf(b, sizeof b, "lua: %s: %s",
+	    p && p->name[0] ? p->name : "?", msg);
+	kernel_log(b);
+}
+
+/* one collector step, called through lua_pcall.
+ *
+ * The protection is not decoration. A step allocates -- gray lists, the
+ * string table -- and an allocation that cannot be served raises
+ * LUA_ERRMEM after the emergency collection fails. Reached from plain C
+ * that error finds no handler, and luaD_throw's last resort is the
+ * panic function, which lua_newstate also leaves null, so it calls
+ * abort(): the whole machine, for one proc that ran out of memory.
+ * Inside lua_pcall the same error is this proc's error, which is what
+ * it was before the collector moved.
+ */
+static int
+gc_step_k(lua_State *L)
+{
+	int kb = (int)lua_tointeger(L, lua_upvalueindex(1));
+
+	lua_gc(L, LUA_GCSTEP, kb);
+	return 0;
+}
+
+/* run the collector for one proc, at the one place it is allowed to.
+ *
+ * The collector is stopped (see proc_new), so this is the only thing
+ * that advances it and the only place a __gc handler can run. That is
+ * the whole point: a __gc handler is arbitrary lua and clunking a
+ * handle is what those handlers are for, so it reaches api_close and
+ * port_unref on a port nobody named. Under the ipc buckets that needs
+ * every bucket, and a caller holding one may not ask for the wide form.
+ * Here nothing is held, so it may.
+ *
+ * What paces it is how often this runs, not the size passed to it.
+ * Lua defaults to the generational collector, and genstep does one
+ * minor collection per call whatever the debt says -- the size is read
+ * only to decide whether to promote to a major collection. So the
+ * residency floor is one safe-point interval of allocation, which for
+ * a tight allocation loop is a few hundred kilobytes. Real procs stay
+ * far below it; a synthetic loop that does nothing but build tables
+ * sits on it.
+ *
+ * The size is still computed and passed, because incstep does honour
+ * it -- it repeats singlestep until the debt is repaid -- so a state
+ * switched to the incremental collector is paced by this number. kalloc
+ * counts the bytes anyway for mem_used, so it costs an add.
+ */
+static void
+gc_step(struct kproc *p, lua_State *L)
+{
+	size_t kb;
+
+	if (!L || p->gc_owed < GCSTEP_MIN)
+		return;
+	if (!lua_checkstack(L, 3))
+		return;
+
+	kb = p->gc_owed / 1024;
+	p->gc_owed = 0;
+	if (kb > INT_MAX)
+		kb = INT_MAX;
+
+	lua_pushinteger(L, (lua_Integer)kb);
+	lua_pushcclosure(L, gc_step_k, 1);
+	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+		const char *e = lua_tostring(L, -1);
+		char b[256];
+
+		snprintf(b, sizeof b, "lua: %%s: gc: %%s", p->name,
+		    e ? e : "?");
+		kernel_log(b);
+		lua_pop(L, 1);
+	}
 }
 
 /* tear down a proc's state.
@@ -5950,6 +6069,28 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 	if (!lua_isyieldable(L))
 		return;
 
+	/* the second safe point, and the one that does the pacing.
+	 *
+	 * The point in dispatch_lap runs once a slice, and a proc can
+	 * allocate megabytes inside one slice -- measured at roughly a
+	 * megabyte of garbage held between steps, against 34KB with the
+	 * collector left to itself. Stepping harder there does not help,
+	 * because the garbage is made after the step and not before it.
+	 *
+	 * A count hook is a legal place for it. It fires between two vm
+	 * instructions, so no kernel c function is on the stack and no
+	 * bucket can be held -- the same property that makes the
+	 * dispatch point safe, established a different way. A finalizer
+	 * running from here cannot recurse into this hook either,
+	 * because GCTM clears allowhook around the call.
+	 *
+	 * After the yieldable test on purpose: that a yield would be
+	 * legal here is the cheapest evidence that this is ordinary lua
+	 * execution rather than a boundary.
+	 */
+	if (p)
+		gc_step(p, L);
+
 	/* torture: cut this thread between EVERY pair of instructions,
 	 * rather than wherever the quantum happens to land.
 	 *
@@ -6120,13 +6261,47 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	p->L = lua_newstate(kalloc, p);
 	if (!p->L)
 		return -1;
-
 	/* how far the heap may grow past what is live before the next
 	 * cycle. Lua's 200 means it doubles, which on a board with a few
 	 * hundred KB is most of the machine spent on garbage that has
 	 * already been collected once.
+	 *
+	 * Incremental rather than the default generational, and gc_step
+	 * depends on it: genstep does one minor collection per call and
+	 * ignores the step size it is given, where incstep loops until the
+	 * debt is paid and so honours it.
 	 */
 	lua_gc(p->L, LUA_GCINC, GCPAUSE, 0, 0);
+
+	lua_setwarnf(p->L, kernel_warn, p);
+
+	/* the collector runs where this kernel says and nowhere else.
+	 *
+	 * Left alone lua collects inside an allocation, whenever the debt
+	 * says so. That puts an arbitrary __gc handler in the middle of
+	 * whatever was allocating -- and clunking a handle is what those
+	 * handlers are for, so it reaches api_close and port_unref on a
+	 * port the allocating code never named. Under the ipc buckets
+	 * that needs every bucket, which a caller holding one may not
+	 * ask for.
+	 *
+	 * Stopping the collector makes that impossible rather than
+	 * merely avoided: with GCSTPUSR set luaC_condGC never steps, so
+	 * no allocation anywhere can run lua. gc_step then advances it,
+	 * from the one place where nothing is held.
+	 *
+	 * Two collections still happen unasked, and both are wanted. An
+	 * allocation failure runs an emergency collection, because
+	 * cantryagain consults gcstopem rather than gcstp, which keeps a
+	 * proc recoverable under memory pressure. And lua_close runs
+	 * every pending finalizer through GCTM directly, which is how a
+	 * dying proc's handles get clunked. Neither can run a finalizer
+	 * anywhere unsafe: an emergency collection sets gcemergency and
+	 * every finalizer path tests it, and lua_close is called with no
+	 * bucket held.
+	 */
+	lua_gc(p->L, LUA_GCSTOP);
+
 	/* stash the proc pointer where the kernel api finds it (self()).
 	 * set before the thread is created so lua_newthread copies it into
 	 * the coroutine's extra space too.
@@ -7797,6 +7972,21 @@ dispatch_lap(struct cpu *me)
 		 */
 		if (run_proc(p))
 			ran = 1;
+		/* the collector's safe point, and the only one.
+		 *
+		 * Here rather than inside run_proc because here nothing
+		 * is held -- no bucket, no schedlock -- and no c local
+		 * holds anything reachable only from lua. run_proc's
+		 * error paths carry lua_tostring results while they
+		 * build a traceback, which is exactly what a collection
+		 * must not run underneath.
+		 *
+		 * After the resume rather than before it, because a
+		 * proc that blocks and is never woken would not reach a
+		 * point before its next resume, and its garbage would
+		 * sit for as long as it stayed parked.
+		 */
+		gc_step(p, p->L);
 		/* clearing current and deciding to requeue are one step:
 		 * split them and a wakeup landing in between is either
 		 * lost or enqueued twice.
@@ -7848,6 +8038,21 @@ dispatch_lap(struct cpu *me)
 			break;
 		if (run_proc(p))
 			ran = 1;
+		/* the collector's safe point, and the only one.
+		 *
+		 * Here rather than inside run_proc because here nothing
+		 * is held -- no bucket, no schedlock -- and no c local
+		 * holds anything reachable only from lua. run_proc's
+		 * error paths carry lua_tostring results while they
+		 * build a traceback, which is exactly what a collection
+		 * must not run underneath.
+		 *
+		 * After the resume rather than before it, because a
+		 * proc that blocks and is never woken would not reach a
+		 * point before its next resume, and its garbage would
+		 * sit for as long as it stayed parked.
+		 */
+		gc_step(p, p->L);
 		lock(&schedlock);
 		me->current = 0;
 		p->oncpu = 0;
