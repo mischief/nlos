@@ -177,6 +177,25 @@ esp_wifi_bringup(void)
 	if (esp_wifi_start() != ESP_OK)
 		return -1;
 
+	/* The radio sleeps between beacons by default and wakes on the
+	 * AP's DTIM, which puts most of a beacon interval in front of
+	 * anything arriving for us. Measured over 25 pings on a 102400us
+	 * interval: 208/304/577ms min/avg/max asleep, against 25/44/163
+	 * awake.
+	 *
+	 * Awake, because this machine is a terminal: the latency is paid
+	 * by every keystroke over ssh and every 9p round trip, and a
+	 * board being used is a board on its cable. Somewhere to revisit
+	 * if it ever runs on its battery.
+	 *
+	 * What is left is not the beacon. A 25ms floor with 28ms of
+	 * deviation is this machine's own path -- the frame crosses eth,
+	 * ip and back through a cooperative scheduler -- plus whatever
+	 * the air retries.
+	 */
+	if (esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK)
+		return -1;
+
 	up = 1;
 	return 0;
 }
