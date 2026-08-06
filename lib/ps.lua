@@ -6,39 +6,127 @@ local sys = require("los.sys")
 
 local M = {}
 
--- one format for the heading and the rows, so a column cannot be
--- widened without its heading moving with it. Hand-spacing the heading
--- is what put everything from USED rightwards a column left of the
--- numbers under it.
+-- The columns, widest-useful first in `drop` order.
 --
--- %s throughout rather than %d: it formats integers identically at the
--- same width, and it is the only way one format string can serve both.
-local PSFMT = "%5s %-16s %9s %9s %3s %3s %4s %9s %s"
+-- A column is as wide as the widest thing in it, heading included, so a
+-- machine whose pids are one digit does not spend five characters
+-- saying so. That alone takes the line from 66 columns to about 50,
+-- which is what makes it readable on the 53-column panel.
+--
+-- `drop` orders what goes when it still does not fit: the lowest number
+-- leaves first. pid and name have no drop and never leave -- a row that
+-- cannot say which proc it describes is not worth printing. pri is
+-- first out because nothing dispatches on it yet.
+--
+-- `max` caps the two free-text columns. One proc with a long name would
+-- otherwise set the width for every row, and losing the tail of one
+-- name costs less than losing a whole column.
+local PSCOLS = {
+	{ head = "PID", key = "pid" },
+	{ head = "NAME", key = "name", left = true, max = 16 },
+	{ head = "USED", key = "used", drop = 7 },
+	{ head = "PEAK", key = "peak", drop = 3 },
+	{ head = "WT", key = "weight", drop = 2 },
+	{ head = "PRI", key = "pri", drop = 1 },
+	{ head = "CPU", key = "cpu", drop = 5 },
+	{ head = "RESUMES", key = "resumes", drop = 4 },
+	{ head = "WCHAN", key = "wchan", left = true, max = 12, drop = 6 },
+}
 
-local ps_mt = {}
-ps_mt.__tostring = function()
-	local lines = { string.format(PSFMT, "PID", "NAME", "USED", "PEAK",
-	    "WT", "PRI", "CPU", "RESUMES", "WCHAN") }
+-- cpu is per-mille of wall time, decayed from the tsc.
+--
+-- resumes is the count next to that rate: cpu says how much of the
+-- machine a proc is taking, resumes says in how many pieces. A server
+-- round-tripping on ipc shows a small cpu over a large count, and that
+-- ratio is what says whether a proc is working or waiting.
+local function psrows()
+	local rows = {}
+
 	for _, pid in ipairs(sys.procs()) do
 		-- one call per proc rather than one per column: name,
 		-- meminfo, priority and wchan are still there, but a row
 		-- built from them cost four kernel entries and grew one
 		-- more every time a column was added.
-		local s = sys.pidstat(pid)
-
-		-- cpu is per-mille of wall time, decayed from the tsc.
-		-- nothing dispatches on pri yet.
-		--
-		-- resumes is the count next to that rate: cpu says how much
-		-- of the machine a proc is taking, resumes says in how many
-		-- pieces. A server round-tripping on ipc shows a small cpu
-		-- over a large count, and that ratio is what says whether a
-		-- proc is working or waiting.
-		lines[#lines + 1] = string.format(PSFMT,
-		    s.pid, s.name, s.used, s.peak, s.weight, s.pri, s.cpu,
-		    s.resumes, s.wchan)
+		rows[#rows + 1] = sys.pidstat(pid)
 	end
-	return table.concat(lines, "\n")
+	return rows
+end
+
+-- width is the terminal's, or nil when nothing knows it -- in which
+-- case every column is kept and only the sizing applies.
+function M.psfmt(width)
+	local rows = psrows()
+	local cols, cells = {}, {}
+
+	for _, c in ipairs(PSCOLS) do
+		local w = #c.head
+		local column = {}
+
+		for i, s in ipairs(rows) do
+			local v = tostring(s[c.key] or "")
+
+			if c.max and #v > c.max then
+				v = v:sub(1, c.max)
+			end
+			column[i] = v
+			if #v > w then
+				w = #v
+			end
+		end
+		cols[#cols + 1] = c
+		cells[c] = column
+		c.width = w
+	end
+
+	-- drop until it fits, lowest drop first. A column with no drop
+	-- stays whatever happens, so this always terminates.
+	local function linewidth()
+		local n = -1	-- no trailing space after the last column
+
+		for _, c in ipairs(cols) do
+			n = n + c.width + 1
+		end
+		return n
+	end
+
+	while width and linewidth() > width do
+		local worst, at
+
+		for i, c in ipairs(cols) do
+			if c.drop and (not worst or c.drop < worst.drop) then
+				worst, at = c, i
+			end
+		end
+		if not worst then
+			break		-- only the columns that never leave
+		end
+		table.remove(cols, at)
+	end
+
+	local out = {}
+
+	for i = 0, #rows do
+		local line = {}
+
+		for _, c in ipairs(cols) do
+			local v = (i == 0) and c.head or cells[c][i]
+
+			line[#line + 1] = string.format(
+			    c.left and ("%-" .. c.width .. "s")
+			    or ("%" .. c.width .. "s"), v)
+		end
+		-- the last column is not padded: a trailing run of spaces
+		-- costs a wrapped line on a terminal exactly as wide as the
+		-- table, which is precisely the case this fits to.
+		out[#out + 1] = table.concat(line, " "):gsub("%s+$", "")
+	end
+	return table.concat(out, "\n")
+end
+
+-- the bare word in the repl, which has no width to offer.
+local ps_mt = {}
+ps_mt.__tostring = function()
+	return M.psfmt(nil)
 end
 M.ps = setmetatable({}, ps_mt)
 

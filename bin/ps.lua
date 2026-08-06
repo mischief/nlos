@@ -22,4 +22,12 @@ if not ok then
 	os.exit(1)
 end
 
-unistd.write(1, tostring(ps.ps) .. "\n")
+-- the terminal's width, so the table drops columns rather than wrapping
+-- every row. nil is the ordinary answer on a serial line, and means
+-- every column is kept -- see lib/console.lua's size op on why that is
+-- not guessed at.
+local prog = require("prog")
+local tty = prog.tty and prog.tty()
+local cols = tty and tty.size()
+
+unistd.write(1, ps.psfmt(cols) .. "\n")
