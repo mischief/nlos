@@ -17,14 +17,36 @@
 
 local sys = require("los.sys")
 
-local function recv()
+-- two ways to wait, and the difference matters.
+--
+-- recv parks: sys.block ends in lua_yield, which suspends whatever
+-- coroutine is running. That is right at the top level and right inside
+-- zmodem's driver, which calls line.read from OUTSIDE its coroutine.
+--
+-- spin does not park, because file.read IS called from inside that
+-- coroutine: a yield there goes to zmodem's resume rather than to the
+-- kernel, and the driver gets a wakeup it cannot read. The machine
+-- stays fair regardless -- the reduction budget preempts a spinning
+-- proc, so the server we are waiting on still runs.
+local function recv(h)
+	h = h or sys.SELF
 	while true do
-		local ok, m = sys.tryrecv(sys.SELF)
+		local ok, m = sys.tryrecv(h)
 
 		if ok then
 			return m
 		end
-		sys.block(sys.SELF)
+		sys.block(h)
+	end
+end
+
+local function spin(h)
+	while true do
+		local ok, m = sys.tryrecv(h)
+
+		if ok then
+			return m
+		end
 	end
 end
 
@@ -34,60 +56,84 @@ local job = recv()
 -- travels in a message is {__right = h}, not the handle.
 local cons, fb = job.cons.__right, job.fb.__right
 
-local function rpc(h, msg)
-	msg.reply = { __right = sys.SELF }
+-- one reply port per server: rows are fetched while the transfer runs,
+-- so fb and cons both have replies in flight and a single port would
+-- hand a reader whichever landed first. task/9pexport.lua keeps a
+-- replyport for the same reason.
+local fbport = sys.newport()
+local consport = sys.newport()
+
+local function rpc(h, port, msg, wait)
+	msg.reply = { __right = port }
 	sys.send(h, msg)
-	return recv()
+	return (wait or recv)(port)
 end
 
 -- ask the panel rather than assume it: this runs on a 240x135
 -- Cardputer and a 320x240 T-Deck, and a wrong width silently shears
 -- the image instead of failing.
-local mode = rpc(fb, { op = "mode" }).ok
+local mode = rpc(fb, fbport, { op = "mode" }).ok
 local W = mode.w
 local H = math.min(job.rows or mode.h, mode.h)
+local stride = (W + 7) // 8
+local header = ("P4\n%d %d\n"):format(W, H)
+local size = #header + H * stride
 
--- unload1 hands back the shadow's own bits, already packed the way PBM
--- wants them. unload would give 960 bytes per row for us to turn into
--- 30, and that garbage is what would not fit.
-local parts = { ("P4\n%d %d\n"):format(W, H) }
-
-for y = 0, H - 1 do
-	local r = rpc(fb, { op = "unload1", r = { x = 0, y = y, w = W, h = 1 } })
-
-	if not (r and r.ok) then
-		sys.send(cons, { op = "write", data = "shot: unload1 row " ..
-		    y .. ": " .. tostring(r and r.err) .. "\n" })
-		return
-	end
-	parts[#parts + 1] = r.ok
-
-	-- every row is a fresh reply table and a fresh string, and the
-	-- collector left to its own pacing runs behind that on a board
-	-- with no headroom. Stepping here keeps the garbage from being
-	-- live at the same time as the image it is being built into.
-	if y % 16 == 15 then
-		collectgarbage("step")
-	end
-end
-
--- PBM says 1 is BLACK; the shadow says 1 is lit. Inverting here rather
--- than in unload1, which hands back the bit plane as the device holds
--- it and should not know what a netpbm file is.
+-- PBM says 1 is BLACK, the shadow says 1 is lit. Inverted here rather
+-- than in unload1, which hands back the plane as the device holds it.
 local inv = {}
 
 for i = 0, 255 do
 	inv[string.char(i)] = string.char(~i & 0xff)
 end
 
-for i = 2, #parts do
-	parts[i] = parts[i]:gsub(".", inv)
+-- the image is never built. read() takes an offset so that a body can
+-- be larger than memory: a row is fetched when the bytes about to go on
+-- the wire fall in it, and only the current one is kept. ZRPOS can
+-- rewind, which a plain generator could not serve -- but a row is
+-- always recomputable from the panel.
+local cached, cachedy = nil, -1
+
+local function row(y)
+	if y ~= cachedy then
+		local r = rpc(fb, fbport,
+		    { op = "unload1", r = { x = 0, y = y, w = W, h = 1 } },
+		    spin)
+
+		if not (r and r.ok) then
+			error("unload1 row " .. y .. ": " ..
+			    tostring(r and r.err), 0)
+		end
+		cached = (r.ok:gsub(".", inv))
+		cachedy = y
+	end
+	return cached
 end
 
-local pbm = table.concat(parts)
+local function readat(off, n)
+	local out = {}
+	local got = 0
 
-parts = nil
-collectgarbage()
+	while got < n and off + got < size do
+		local at = off + got
+
+		if at < #header then
+			local take = math.min(n - got, #header - at)
+
+			out[#out + 1] = header:sub(at + 1, at + take)
+			got = got + take
+		else
+			local b = at - #header
+			local y = b // stride
+			local within = b % stride
+			local take = math.min(n - got, stride - within)
+
+			out[#out + 1] = row(y):sub(within + 1, within + take)
+			got = got + take
+		end
+	end
+	return table.concat(out)
+end
 
 local zmodem = require("zmodem")
 
@@ -106,7 +152,7 @@ local line = {
 	-- gave up mid-transfer, so it read as a protocol fault rather
 	-- than as the cost of asking.
 	read = function(ms)
-		local d = rpc(cons, { op = "readraw", n = 2048,
+		local d = rpc(cons, consport, { op = "readraw", n = 512,
 		    timeout = ms and math.max(ms, 1) or 1000 })
 
 		if type(d) ~= "string" or d == "" then
@@ -116,12 +162,13 @@ local line = {
 		return d
 	end,
 }
-local m = zmodem.sender({ { name = job.name or "screen.pbm", data = pbm } })
+local m = zmodem.sender({ { name = job.name or "screen.pbm",
+    size = size, read = readat } })
 local res, err = zmodem.drive(m, line)
 
 sys.send(cons, { op = "rawoff" })
 sys.send(cons, { op = "write", data = ("shot: %s %s %d bytes\n"):format(
-    res and "ok" or "failed", res and "" or tostring(err), #pbm) })
+    res and "ok" or "failed", res and "" or tostring(err), size) })
 sys.send(cons, { op = "write", data = ("shot: out=%d in=%d\n"):format(
     nout, nin) })
 
