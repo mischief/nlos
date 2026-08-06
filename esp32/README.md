@@ -30,13 +30,13 @@ Everything else lives on the flash filesystem below.
 
 ## Prerequisites
 
-ESP-IDF v6.0, on `PATH`:
+ESP-IDF v6.1, on `PATH`:
 
     . $IDF_PATH/export.sh
 
-Built and tested against v6.0-beta1. The radio driver reaches
-`esp_private/wifi.h`, which moved in 6.0, so an earlier IDF needs that
-include changed.
+Built and tested against v6.1-beta1. The radio driver reaches
+`esp_private/wifi.h`, which moved in 6.0, so an IDF older than that
+needs the include changed.
 
 `export.sh` refuses if the system `python3` is not the version IDF built
 its virtualenv against. Either re-run IDF's `install.sh`, or put a

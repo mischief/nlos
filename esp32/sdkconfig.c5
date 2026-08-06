@@ -2,8 +2,12 @@
 #
 # Layered over sdkconfig.defaults, which describes the T-Deck:
 #
-#   idf.py -B build-c5 -DIDF_TARGET=esp32c5 \
+#   idf.py -B build-c5 -DSDKCONFIG=build-c5.sdkconfig \
 #       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.c5" build
+#
+# The chip, overriding the S3 the defaults name. A board file that does
+# not say which chip it is for gets whichever one was configured last.
+CONFIG_IDF_TARGET="esp32c5"
 #
 # The chip is RISC-V rather than xtensa, which the kernel does not care
 # about: src/platform/esp32 is written against IDF's API and not the

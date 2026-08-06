@@ -2,6 +2,17 @@
 # qemu-esp32s3 emulates neither PSRAM mode, so a qemu run gets internal
 # SRAM only and these settings simply find no chip -- which is why the
 # port must not require PSRAM to reach a repl.
+# The chip, named here and not left to idf.py's default.
+#
+# Without this a fresh build directory is configured for the original
+# esp32: it compiles, links and produces an image, and the first sign of
+# trouble is esptool refusing to flash a chip it does not match. The
+# target used to arrive from a sdkconfig left over from an earlier
+# build, which is not a thing a clean checkout has.
+#
+# esp32/sdkconfig.c5 names its own, as any other board file must.
+CONFIG_IDF_TARGET="esp32s3"
+
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
 # The app shares the flash with a filesystem: see esp32/partitions.csv
