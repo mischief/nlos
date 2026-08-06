@@ -82,6 +82,11 @@ local function terminal(bursts)
 					sys.send(m.reply.__right, b or "")
 				elseif m.op == "write" then
 					writes[#writes + 1] = m.data
+				elseif m.op == "size" then
+					-- a serial line does not know its own
+					-- size; answer that so vi asks with
+					-- CSI 6n, the path this terminal scripts.
+					sys.send(m.reply.__right, {})
 				end
 				-- rawon/rawoff need no answer
 			else
