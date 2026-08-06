@@ -42,7 +42,6 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/fs.c
     ${LUAOS_ROOT}/src/platform/esp32/idf_shim.c
     ${LUAOS_ROOT}/src/platform/esp32/kbd.c
-    ${LUAOS_ROOT}/src/platform/esp32/font.c
     ${LUAOS_ROOT}/src/platform/esp32/lcd.c
     ${LUAOS_ROOT}/src/platform/esp32/tdeck.c
     ${LUAOS_ROOT}/src/platform/esp32/main.c

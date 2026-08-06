@@ -30,6 +30,7 @@ groups.kernel = {
 	"src/dirs.c",
 	"src/inet.c",
 	"src/crc.c",
+	"src/font.c",
 	"src/kernel.c",
 	"src/linit.c",
 	"src/luaheap.c",

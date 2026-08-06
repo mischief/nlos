@@ -3907,6 +3907,7 @@ extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
 extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
 extern int luaopen_los_inet(lua_State *L);		/* inet.c: checksum */
 extern int luaopen_los_crc(lua_State *L);		/* crc.c: crc16/crc32 */
+extern int luaopen_los_font(lua_State *L);		/* font.c: glyphs */
 extern int luaopen_ssh_crypto_native(lua_State *L);	/* native.c */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
@@ -4642,6 +4643,16 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_los_crc);
 	lua_setfield(p->L, -2, "los.crc");
+
+	/* los.font (src/font.c), ambient on the same argument as the three
+	 * above: glyphs are data, not a device. render() rasterises a
+	 * string the caller already has into a pixel rectangle and reaches
+	 * nothing -- the authority to put those pixels on a screen is
+	 * los.platform.fb, which is the owned capability. A framebuffer
+	 * console (lib/fbcons.lua) is one renderer plus that one right.
+	 */
+	lua_pushcfunction(p->L, luaopen_los_font);
+	lua_setfield(p->L, -2, "los.font");
 	/* los.fs is the whole of raw ESP access -- enumeration, metadata
 	 * and file data. it is registered for exactly two procs: the esp
 	 * server task, which serves the disk to everyone else over a port

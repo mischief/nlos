@@ -20,7 +20,6 @@
 #include "kbd.h"
 #include "lcd.h"
 
-int luaopen_los_font(lua_State *L);	/* font.c */
 #include "efi.h"
 #include "esp32.h"
 #include "platform.h"
@@ -110,13 +109,6 @@ platform_boot_extra_modules(lua_State *L)
 	}
 
 	luaL_requiref(L, "los.platform.kbd", open_kbd, 0);
-	lua_pop(L, 1);
-
-	/* los.font is not a device and holds no capability -- glyphs are
-	 * data. It is here rather than in kernel.c's module table only
-	 * because the table it draws from is this platform's for now.
-	 */
-	luaL_requiref(L, "los.font", luaopen_los_font, 0);
 	lua_pop(L, 1);
 }
 

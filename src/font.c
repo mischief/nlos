@@ -7,14 +7,13 @@
  * an ordinary BGRx rectangle of the kind fb.load already takes.
  *
  * In C because of where the data lives. The glyph table is 3072 bytes
- * of .rodata, which on this chip is mapped from flash and costs no RAM
- * at all -- the same reason embedfs is free. The same table as lua
- * strings would be ~95 TString objects plus a table, several KB of
- * internal SRAM, in every proc that required it. On a board with no
- * PSRAM that is the scarce pool.
+ * of .rodata, mapped read-only and costing no RAM at all -- the same
+ * reason embedfs is free. The same table as lua strings would be ~95
+ * TString objects plus a table, several KB, in every proc that required
+ * it. On esp32, where .rodata is flash and there is no PSRAM, that is
+ * the scarce pool -- which is why this is C and not a lua module, on
+ * every platform.
  */
-
-#include <sdkconfig.h>
 
 #include <stddef.h>
 #include <stdint.h>
