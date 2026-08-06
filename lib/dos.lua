@@ -588,6 +588,19 @@ end
 function Sh:run(line)
 	local stages = {}
 
+	-- a lone ! is a pipe as well.
+	--
+	-- The T-Deck's keyboard cannot type |: its symbol layer is
+	-- # * @ / ( ) ? _ : ! , ; + " - . \ and the digits, and that is
+	-- all there is. Without a second spelling, a pipeline cannot be
+	-- entered at the panel at all.
+	--
+	-- It must stand alone, with space on both sides. The split below
+	-- does not know about quoting, so a ! taken anywhere it appears
+	-- would cut `echo "hi!"` in half -- and unlike |, ! is a
+	-- character people write in ordinary text.
+	line = line:gsub("%s+!%s+", "|")
+
 	for part in (line .. "|"):gmatch("([^|]*)|") do
 		stages[#stages + 1] = part
 	end
