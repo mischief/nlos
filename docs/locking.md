@@ -44,17 +44,36 @@ moved outside rather than made narrow:
   and the messages in it hold references to other ports.
 - `release_inflight`, for the same reason one level up.
 
-## Nothing allocates Lua memory under a bucket
+## An allocation cannot run Lua
 
-This is the rule the whole arrangement rests on.
+This was a rule to obey. It is now a property of the build, and the
+difference matters: a rule is something a reader has to know and
+nothing checks.
 
-A Lua allocation can run the collector. The collector runs a `__gc`
-handler. A `__gc` handler is arbitrary Lua, and clunking a handle is
-what those handlers are *for*, so it comes back through `api_close` ->
-`right_drop` -> `port_unref` on some other port. That is a second
-bucket, chosen by a hash, with no order to it.
+The hazard it addressed: a Lua allocation can run the collector, the
+collector runs a `__gc` handler, and a `__gc` handler is arbitrary Lua.
+Clunking a handle is what those handlers are *for*, so it comes back
+through `api_close` -> `right_drop` -> `port_unref` on some other port
+-- a second bucket, chosen by a hash, with no order to it.
 
-So the allocating halves of the ipc calls live outside the lock:
+`proc_new` calls `lua_gc(L, LUA_GCSTOP)`. With `GCSTPUSR` set,
+`luaC_condGC` never steps, so no allocation anywhere can reach a
+finalizer. `gc_step` advances the collector instead, from two places
+that hold nothing: `dispatch_lap` after `run_proc` returns, and the
+count hook between two VM instructions.
+
+Two collections still happen without being asked, and neither can run
+a finalizer where it would be unsafe. An allocation failure collects
+and retries, because `cantryagain` consults `gcstopem` and not
+`gcstp`; it runs in emergency mode, which sets `gcemergency`, and
+every finalizer path tests that. And `lua_close` runs the pending
+finalizers directly through `GCTM`, which is how a dying proc's
+handles get clunked -- `proc_freestate` is called with no bucket held,
+deliberately.
+
+The allocating halves of the ipc calls still live outside the lock.
+That is no longer required for correctness, but it is where the
+contention went, so it stays:
 
     send     serialize        (no lock; mints in-flight references)
              port_push_owned  (one bucket; queue insert and wakeup)
@@ -135,10 +154,16 @@ than as a race found later.
 
 The buckets are recursive: owner plus depth, per bucket.
 
-The original reason was the `__gc` re-entry above, and that reason is
-still live wherever a wide region deserializes -- `call_k` and the
-`alt` paths do. There is also a deliberate nesting: `msg_dispose` takes
-the wide lock from inside `altrecv_take`, which already holds it.
+The original reason was the `__gc` re-entry above, and stopping the
+collector retired it: nothing arbitrary re-enters any more. What is
+left is nesting this kernel writes itself, which is auditable rather
+than open-ended -- `msg_dispose` takes the wide lock from inside
+`altrecv_take`, which already holds it, and `port_unref` reaches
+itself through `port_flush` and `release_inflight`.
+
+Whether that is enough to make the buckets non-recursive has not been
+tried. `port_unref`'s self-recursion is real and would need answering
+first.
 
 The pitfall, because it passes the whole test suite: a bucket whose
 owner is set but whose leave is missed is never released, and every

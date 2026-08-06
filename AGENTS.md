@@ -713,11 +713,13 @@ That is the one global run queue, and it is the next piece of work.
 
 **What is shared, and how.** The ipc layer has eight locks, hashed on
 the port index; a caller that names one port takes one, and a caller
-that can reach a port it cannot name takes all eight. Nothing may
-allocate Lua memory holding one, because the collector runs a `__gc`
-handler that clunks a handle and reaches another port. `docs/locking.md`
-is that discipline in full — the wide/narrow split, the wake protocol,
-and the three assertion tiers — and it is worth reading before touching
+that can reach a port it cannot name takes all eight. An allocation
+under one used to be able to reach another, through the collector
+running a `__gc` handler that clunks a handle; the collector is stopped
+now and runs only at two points that hold nothing, so it cannot.
+`docs/locking.md` is the discipline in full — the wide/narrow split,
+the wake protocol, the three assertion tiers, and where the collector
+is allowed to run — and it is worth reading before touching
 `kernel.c`'s ipc paths. The physical allocator has one lock; the malloc
 counters are relaxed atomics. The lock order is in `src/lock.h`.
 
