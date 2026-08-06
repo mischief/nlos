@@ -78,18 +78,20 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 #define MAXDEPTH	16
 /* rights per message.
  *
- * Sixteen because a namespace shares this budget with whatever else the
- * message carries, and neither half is small. A description holds one
- * right per mounted server -- the filesystem, /net, /dev -- and a
- * program is spawned with those plus its three streams, the screen, the
- * terminal and the network. Eight fits a machine with one mount and
- * stops fitting when a second device becomes a file, which is the
- * direction the design goes.
+ * A namespace shares this budget with whatever else the message
+ * carries, and neither half is small. A description holds one right per
+ * mounted server -- the filesystem, /net, /dev -- and a program is
+ * spawned with those plus its three streams, the screen, the terminal
+ * and the network.
  *
- * The cost is three bytes a slot in the queued message and the same on
- * the writer's stack.
+ * So the ceiling is pushed by ordinary design: every device that
+ * becomes a file adds a right to every spawn message on the machine.
+ * Thirty-two leaves room for that rather than for today's count, and
+ * the room is cheap -- three bytes a slot, in a struct kmsg that is
+ * malloc'd per in-flight message and may carry 64KB of payload, and the
+ * same again on the serializer's stack.
  */
-#define MAXMSGRIGHTS	16
+#define MAXMSGRIGHTS	32
 #define MAXWATCH	8	/* monitors per proc */
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
 #define MAXTIMERS	32	/* outstanding one-shot timers, machine-wide */
