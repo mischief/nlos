@@ -311,10 +311,45 @@ if not sok then
 	print("svc: " .. tostring(serr))
 end
 
+-- dos(): hand the console to the launcher, as init.lua does it on the
+-- other platforms. Same name and same shape, so a session on this board
+-- is the one you already know.
+--
+-- It matters more here than there. task/fbsh.lua is the only other dos
+-- shell and task/fbterm.lua starts it, which wants a framebuffer and a
+-- keyboard -- so on a board with neither the lua repl is the whole of
+-- the machine's interface, and without this there is no way to run a
+-- program by name at all.
+--
+-- Runs in this proc, so the repl below is blocked inside the call until
+-- you type exit and there is one reader of the console throughout. Two
+-- procs reading it is what makes a shell eat the repl's input, which is
+-- why the panel terminal has a proc of its own.
+--
+-- Parens, like halt: a bare __tostring must never do something this
+-- consequential.
+_G.dos = setmetatable({}, {
+	__tostring = function()
+		return "dos: type dos() to start the launcher"
+	end,
+	__call = function()
+		local N = require("ns").current()
+
+		if not N then
+			return "dos: no namespace to run programs from"
+		end
+		require("dos").start({ ns = N, cons = caps.cons,
+		    fb = caps.fb },
+		    "lua-os. programs live in /bin; type exit to " ..
+		    "return to lua.\n")
+		return "back at the lua repl"
+	end,
+})
+
 print(_VERSION .. " on esp32")
 if ok then
 	print("mach-lite kernel + plan9 furniture. ps, stats, stack(pid)" ..
-	    (caps.power and ", halt()" or ""))
+	    ", dos()" .. (caps.power and ", halt()" or ""))
 else
 	print("mach-lite kernel. ps unavailable: " .. tostring(magic))
 end
