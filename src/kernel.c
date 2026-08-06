@@ -7470,14 +7470,33 @@ reprioritize(struct kproc *p, int nrunnable)
  *
  * That argument was dismissed here on the grounds that the ipc lock was
  * always held longer, so this one could not contend first. Splitting
- * the ipc lock ended it: on microvm_pairs at -smp 8 schedlock is 89.1%
- * contended with 25380 Mcycles spinning, against the ipc buckets' 465.
- * It is the ceiling now. Below eight cpus it is not -- the same test is
- * flat from one to four -- so this is a real problem at one width and
- * not yet at the others.
+ * the ipc lock ended it: on microvm_pairs at -smp 8 this lock is 90%
+ * contended against the ipc buckets' 4%. It is the ceiling now. Below
+ * eight cpus it is not -- the same test is flat from one to four -- so
+ * this is a real problem at one width and not yet at the others.
  *
- * plan 9 has the next step as well: it locks each priority queue
- * separately rather than the whole set.
+ * What costs is the number of acquisitions, not the work under them.
+ * Timing the critical sections says the lock is held for 2000 Mcycles
+ * of the ~5400 a run takes, while the cpus spin for 19000 between them:
+ * a section is around 44 cycles of work on one cpu and around 260 when
+ * eight are passing the line about, and it is that handoff that is
+ * being paid nearly six million times. Proportional backoff in the spin
+ * was tried and measured nothing, which is the same finding from the
+ * other side -- the waiters are not the problem, the traffic is.
+ *
+ * So dispatch_phase folds the requeue of the proc just run into the
+ * same acquisition as the take of the next one, and reads its bound
+ * there too. That took a run from 7.67M acquisitions to 5.90M and 27845
+ * Mcycles of spinning to 19100, for 1.66s to 1.38s of wall clock. What
+ * is left is about seven acquisitions per round trip: one per dispatch,
+ * one per make_ready, one per proc_block, and the lap boundary.
+ *
+ * Splitting the lock is the next step and there are two shapes for it.
+ * plan 9's is to lock each priority queue separately rather than the
+ * whole set, which does nothing for a workload whose procs all sit in
+ * one bucket -- this one. The other is per-cpu queues, which is what
+ * made the ipc side cheap, and which is exactly what the top of this
+ * comment gives up on purpose.
  *
  * `runq` is the lap in progress, `donq` what has already had a turn,
  * and dispatch_lap swaps them. schedlock guards both, and also every
@@ -7927,43 +7946,71 @@ run_proc(struct kproc *p)
  * Returns whether anything ran, which is what the caller's idle
  * decision is made on.
  */
+/* one phase of a lap: take procs by `take` until the bound runs out or
+ * the queue is empty, running each one.
+ *
+ * Both phases are this loop; they differ in how they choose (priority
+ * or not) and in what bounds them. The bound is read at the first
+ * acquisition rather than in one of its own, and the requeue of the
+ * proc just run happens in the same acquisition as the take of the
+ * next one -- so a phase costs one acquisition per proc plus one to
+ * find the queue empty, rather than two per proc plus two of its own.
+ * That halving is the point: at -smp 8 this lock is contended on nine
+ * acquisitions in ten and it is the acquisitions, not the work done
+ * under them, that cost. See the note over schedlock.
+ *
+ * Returns whether anything ran.
+ */
 static int
-dispatch_lap(struct cpu *me)
+dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 {
-	int ran = 0;
+	struct kproc *prev = 0;
+	int budget = -1, i = 0, ran = 0;
 
-	lock(&schedlock);
-	int budget = runq->n;
-
-	unlock(&schedlock);
-
-	for (int i = 0; i < budget; i++) {
-		struct kproc *p;
+	for (;;) {
+		struct kproc *p = 0;
 
 		lock(&schedlock);
-		p = rq_take_high(runq);
+		if (budget < 0) {
+			budget = runq->n;
+			if (budget < floor)
+				budget = floor;
+		}
+		/* clearing current and deciding to requeue are one step:
+		 * split them and a wakeup landing in between is either
+		 * lost or enqueued twice.
+		 */
+		if (prev) {
+			me->current = 0;
+			prev->oncpu = 0;
+			if (prev->status == READY && !prev->onq)
+				rq_add(donq, prev);
+			prev = 0;
+		}
 		/* a proc somebody is reading is put aside rather than run:
 		 * see proc_freeze. Taken and set aside under the one lock,
 		 * so it cannot be resumed between the two.
 		 */
-		if (p && p->frozen) {
+		while (i < budget && (p = take(runq)) && p->frozen) {
 			rq_add(donq, p);
-			unlock(&schedlock);
-			continue;
+			i++;
 		}
+		if (i >= budget)
+			p = 0;
 		/* published under the lock and for the whole resume, so
 		 * that make_ready can see this proc is in hand and leave
-		 * the requeue below to do the enqueueing.
+		 * the requeue above to do the enqueueing.
 		 */
 		if (p) {
 			if (p->oncpu)
 				platform_abort("proc dispatched on two cpus");
 			p->oncpu = me->idx + 1;
+			i++;
 		}
 		me->current = p;
 		unlock(&schedlock);
 		if (!p)
-			break;		/* another cpu got there first */
+			break;		/* bound spent, or another cpu got there first */
 		/* outside the lock, and this is the rule the whole
 		 * scheme rests on: a resume runs lua, which can send,
 		 * which takes the ipc lock and then this one. Holding
@@ -7987,17 +8034,21 @@ dispatch_lap(struct cpu *me)
 		 * sit for as long as it stayed parked.
 		 */
 		gc_step(p, p->L);
-		/* clearing current and deciding to requeue are one step:
-		 * split them and a wakeup landing in between is either
-		 * lost or enqueued twice.
-		 */
-		lock(&schedlock);
-		me->current = 0;
-		p->oncpu = 0;
-		if (p->status == READY && !p->onq)
-			rq_add(donq, p);
-		unlock(&schedlock);
+		prev = p;
 	}
+	return ran;
+}
+
+static int
+dispatch_lap(struct cpu *me)
+{
+	int ran = 0;
+
+	/* phase one is bounded by how many were waiting when it started,
+	 * so it cannot spin on procs it keeps waking.
+	 */
+	if (dispatch_phase(me, rq_take_high, 0))
+		ran = 1;
 
 	/* phase two is bounded for the same reason phase one is, and
 	 * it is the bound that makes the lap terminate at all. a proc
@@ -8012,54 +8063,8 @@ dispatch_lap(struct cpu *me)
 	 * the floor is what keeps the bound from being expensive: see
 	 * LAPSPILL.
 	 */
-	lock(&schedlock);
-	int spill = runq->n < LAPSPILL ? LAPSPILL : runq->n;
-
-	unlock(&schedlock);
-
-	for (int i = 0; i < spill; i++) {
-		struct kproc *p;
-
-		lock(&schedlock);
-		p = rq_take_any(runq);
-		if (p && p->frozen) {	/* as phase one; see there */
-			rq_add(donq, p);
-			unlock(&schedlock);
-			continue;
-		}
-		if (p) {
-			if (p->oncpu)
-				platform_abort("proc dispatched on two cpus");
-			p->oncpu = me->idx + 1;
-		}
-		me->current = p;
-		unlock(&schedlock);
-		if (!p)
-			break;
-		if (run_proc(p))
-			ran = 1;
-		/* the collector's safe point, and the only one.
-		 *
-		 * Here rather than inside run_proc because here nothing
-		 * is held -- no bucket, no schedlock -- and no c local
-		 * holds anything reachable only from lua. run_proc's
-		 * error paths carry lua_tostring results while they
-		 * build a traceback, which is exactly what a collection
-		 * must not run underneath.
-		 *
-		 * After the resume rather than before it, because a
-		 * proc that blocks and is never woken would not reach a
-		 * point before its next resume, and its garbage would
-		 * sit for as long as it stayed parked.
-		 */
-		gc_step(p, p->L);
-		lock(&schedlock);
-		me->current = 0;
-		p->oncpu = 0;
-		if (p->status == READY && !p->onq)
-			rq_add(donq, p);
-		unlock(&schedlock);
-	}
+	if (dispatch_phase(me, rq_take_any, LAPSPILL))
+		ran = 1;
 
 	/* the lap ends when runq is empty, and whichever cpu empties it
 	 * says so. With one queue that is the only workable boundary: a
