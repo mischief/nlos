@@ -722,8 +722,12 @@ static int trace_arm(struct kproc *p, int n);
 static unsigned int brokeseq;
 static void wake_senders(struct kport *port);
 static int reprioritize(struct kproc *p, int nrunnable);
-static int count_runnable(struct cpu *c);
-static void rq_init(struct cpu *c);
+static int count_runnable(void);
+/* the scheduler lock, defined with the queues it guards. Declared here
+ * because the freeze path above the scheduler takes it too.
+ */
+static struct lock schedlock;
+static void rq_init(void);
 static void rq_del(struct kproc *p);
 static void rq_add(struct rqset *set, struct kproc *p);
 static struct kproc *rq_take_high(struct rqset *set);
@@ -3778,7 +3782,7 @@ push_wchan(lua_State *L, struct kproc *p)
  * proc is running by definition, and it is the one you most want to
  * sample. So the target is held still instead.
  *
- * Freeze first, THEN wait. Setting frozen stops dispatch from resuming
+ * Freeze first, then wait. Setting frozen stops dispatch from resuming
  * it again; waiting for it to stop being some cpu's `current` is what
  * makes the stack quiet. In that order there is no window -- the other
  * order lets it be re-dispatched between the check and the walk.
@@ -3787,20 +3791,26 @@ push_wchan(lua_State *L, struct kproc *p)
  * hook cuts one every quantum, so it stops being current within a
  * quantum whatever it is doing.
  *
- * And the wait YIELDS rather than spins, which is what keeps two
+ * And the wait yields rather than spins, which is what keeps two
  * readers from deadlocking on each other: a reader that yields is no
  * longer running, so the proc it is waiting for is free to stop.
  */
-/* one lock, and it is the target's home cpu's: a proc runs only there,
- * so that is the lock that publishes whether it is running, and the one
- * make_ready already takes to decide the same thing.
+/* one lock, and it is the scheduler's: that is where `current` is
+ * published, and the one make_ready already takes to decide the same
+ * thing. Every cpu is asked, because there is one run queue for the
+ * machine and so a proc can be on any of them. p->home says where it
+ * last ran, which is a report and not an answer.
  */
-static struct cpu *
-proc_cpu(struct kproc *p)
+static int
+proc_running(struct kproc *p)
 {
-	struct cpu *c = cpu_at(p->home);
+	for (unsigned i = 0; i < platform_ncpu(); i++) {
+		struct cpu *c = cpu_at(i);
 
-	return c ? c : cpu_at(0);
+		if (c && c->current == p)
+			return 1;
+	}
+	return 0;
 }
 
 /* returns whether the target is running right now; frozen is raised
@@ -3810,25 +3820,36 @@ proc_cpu(struct kproc *p)
 static int
 proc_freeze(struct kproc *p)
 {
-	struct cpu *c = proc_cpu(p);
 	int running;
 
-	lock(&c->lock);
+	lock(&schedlock);
 	p->frozen++;
-	running = c->current == p;
-	unlock(&c->lock);
+	running = proc_running(p);
+	unlock(&schedlock);
 	return running;
 }
 
 static void
 proc_thaw(struct kproc *p)
 {
-	struct cpu *c = proc_cpu(p);
-
-	lock(&c->lock);
+	lock(&schedlock);
 	if (p->frozen > 0)
 		p->frozen--;
-	unlock(&c->lock);
+	unlock(&schedlock);
+}
+
+/* the same question, asked again after a yield, when the freeze is
+ * already ours.
+ */
+static int
+proc_still_running(struct kproc *p)
+{
+	int running;
+
+	lock(&schedlock);
+	running = proc_running(p);
+	unlock(&schedlock);
+	return running;
 }
 
 /* ---- the shape every cross-proc syscall takes ----
@@ -3885,7 +3906,7 @@ proc_hold(lua_State *L, int argn, struct kproc **out, lua_KContext ctx)
 	if (ctx == 0) {
 		if (proc_freeze(p))
 			return HOLD_WAIT;
-	} else if (proc_cpu(p)->current == p) {
+	} else if (proc_still_running(p)) {
 		return HOLD_WAIT;
 	}
 	return HOLD_HELD;
@@ -3893,19 +3914,18 @@ proc_hold(lua_State *L, int argn, struct kproc **out, lua_KContext ctx)
 
 /* sys.stack(pid) -> { {source=, line=, name=, what=}, ... }
  *
- * a traceback of ANOTHER proc, held still first: see proc_freeze above.
+ * a traceback of another proc, held still first: see proc_freeze above.
  * lua_getstack/lua_getinfo on a suspended coroutine are ordinary
  * read-only debug API, and once the target cannot be resumed they are
  * as quiet as they were when one cpu made that true for free.
  *
- * two rules make it safe, and both were learned the hard way elsewhere
- * in this kernel:
+ * two rules make it safe:
  *
- * 1. NOTHING is pushed onto the target's stack. the "Sln" info string is
+ * 1. Nothing is pushed onto the target's stack. the "Sln" info string is
  *    push-free (unlike "f" or "L"), and every result table is built on
- *    the CALLER's state. leave the target unbalanced and it resumes into
+ *    the caller's state. leave the target unbalanced and it resumes into
  *    garbage.
- * 2. NO lua code runs in the target. luaL_traceback would allocate in
+ * 2. No lua code runs in the target. luaL_traceback would allocate in
  *    the target's heap, charged to its mem_limit -- exactly why
  *    kernel_run skips it on LUA_ERRMEM -- and stringifying a value could
  *    invoke __tostring, which in this system has been known to power the
@@ -3920,7 +3940,7 @@ proc_hold(lua_State *L, int argn, struct kproc **out, lua_KContext ctx)
 #define MAXFRAMES	64
 
 /* the walk, as a lua function so it can be called protected: it
- * allocates in the CALLER's state to build the result, so it can raise
+ * allocates in the caller's state to build the result, so it can raise
  * on a caller at its memory limit -- and a raise that escaped would
  * leave the target frozen, which is a proc that never runs again.
  */
@@ -4115,7 +4135,7 @@ set_trace_k(lua_State *L, int status, lua_KContext ctx)
 		    "with opts.trace", p->id);
 
 	/* held for the arm itself, and only for that. This is the one
-	 * cross-proc call that WRITES: trace_arm frees and reallocates a
+	 * cross-proc call that writes: trace_arm frees and reallocates a
 	 * ring the target's line hook is putting entries into, so doing it
 	 * to a running proc frees memory out from under a writer.
 	 *
@@ -4127,7 +4147,7 @@ set_trace_k(lua_State *L, int status, lua_KContext ctx)
 		if (ctx == 0) {
 			if (proc_freeze(p))
 				return lua_yieldk(L, 0, 1, set_trace_k);
-		} else if (proc_cpu(p)->current == p) {
+		} else if (proc_still_running(p)) {
 			return lua_yieldk(L, 0, 1, set_trace_k);
 		}
 	}
@@ -4577,7 +4597,7 @@ api_priority(lua_State *L)
 	if (!p)
 		return luaL_error(L, "no such proc");
 	lua_pushinteger(L, p->weight);
-	lua_pushinteger(L, reprioritize(p, count_runnable(cpu_at(p->home))));
+	lua_pushinteger(L, reprioritize(p, count_runnable()));
 	lua_pushinteger(L, (lua_Integer)p->cpu);
 	return 3;
 }
@@ -4638,7 +4658,7 @@ api_pidstat(lua_State *L)
 	 */
 	lua_pushinteger(L, (lua_Integer)p->cputime);
 	lua_setfield(L, -2, "cputime");
-	lua_pushinteger(L, reprioritize(p, count_runnable(cpu_at(p->home))));
+	lua_pushinteger(L, reprioritize(p, count_runnable()));
 	lua_setfield(L, -2, "pri");
 	lua_pushinteger(L, (lua_Integer)p->cpu);
 	lua_setfield(L, -2, "cpu");
@@ -5586,68 +5606,30 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	TAILQ_INIT(&p->coros);
 	p->hookforced = 0;
-	/* which cpu will run it, decided once and here.
+	/* No placement. There is one run queue for the machine, so
+	 * whichever cpu looks next runs this proc, and it is not tied
+	 * to that one either -- the next time it is runnable, whichever
+	 * cpu looks next takes it again.
 	 *
-	 * Least loaded by queue length, which is the cheapest thing that
-	 * is not "always cpu 0" and is chosen for that rather than for
-	 * being good: a proc's cost is not known at spawn, so any
-	 * placement rule is a guess. What keeps a bad guess from being
-	 * permanent is that a proc can be moved later -- the heap moves
-	 * with it, which is why the heap is per proc and not per cpu.
+	 * There used to be a least-loaded scan here, plus a rule
+	 * pinning drivers to the boot cpu. Both are gone with the
+	 * per-cpu queues they served. Placement at spawn is a guess
+	 * made before the proc has done anything, and with p->home
+	 * never reassigned it was a guess that lasted forever: procs
+	 * spawned during boot were all placed when the machine had one
+	 * cpu, so they stayed on it no matter what the other cpus were
+	 * doing.
+	 *
+	 * p->home survives as a record of where it last RAN, set by
+	 * run_proc, which is plan 9's `affinity` rather than a
+	 * placement. Nothing reads it to make a decision today; it is
+	 * there because "which cpu is this actually running on" is the
+	 * question the smp tests ask, and because soft affinity, if it
+	 * is ever wanted, is a use of exactly this field (port/proc.c's
+	 * runproc, whose first pass prefers a proc that last ran here
+	 * and whose second takes anything).
 	 */
-	{
-		struct cpu *best = 0;
-		int bestload = 0;
-		unsigned i;
-
-		for (i = 0; cpu_at(i); i++) {
-			struct cpu *c = cpu_at(i);
-			int load;
-
-			if (!c->dispatching)
-				continue;
-			/* the proc a cpu is running counts. Queue length
-			 * alone reads the spawning cpu as empty -- it is
-			 * running the spawner, which is on no queue -- so
-			 * a burst of spawns from one busy cpu onto an
-			 * otherwise idle machine kept tying at zero and
-			 * taking the first cpu every time. Counting it
-			 * took four spinners from 1/2/1/0 across four
-			 * cpus to one each.
-			 */
-			load = c->runq->n + c->donq->n + (c->current ? 1 : 0);
-			if (!best || load < bestload) {
-				best = c;
-				bestload = load;
-			}
-		}
-		p->home = best ? best->idx : 0;
-	}
-
-	/* A driver says it belongs on the boot processor, which is where
-	 * its device's interrupts are routed (apic 0, see ioapic.c).
-	 *
-	 * This is a statement of intent and nothing more: it cannot
-	 * currently change any placement, because spawn_driver runs
-	 * before smp_start_aps and so the loop above had one cpu to
-	 * choose from anyway. It is kept because that ordering is not a
-	 * rule anyone wrote down, and a driver spawned later would
-	 * otherwise be placed by load like anything else.
-	 *
-	 * It is NOT what makes device paths safe, and an earlier version
-	 * of this comment said it was. The two invariants that used to
-	 * be cited -- the uart ring's producer, and virtio's ordering
-	 * argument -- have both been fixed to hold on any cpu: the ring
-	 * takes a lock, and a queue is safe because exactly one proc owns
-	 * the device, not because that proc is here.
-	 *
-	 * Nor did it ever work around the gefs checksum failures. That
-	 * was several procs interleaving inside one unlocked filesystem
-	 * through srv.serve's session loops, it needed no second cpu, and
-	 * it is fixed in lib/srv.lua.
-	 */
-	if (priv != PRIV_NONE && priv != PRIV_BOOT)
-		p->home = 0;
+	p->home = 0;
 
 	/* before lua_newstate, which allocates through kalloc, which
 	 * reaches this proc's heap -- and, where there is one cpu, every
@@ -6345,7 +6327,7 @@ int
 kernel_init(void)
 {
 	calibrate_reductions();	/* kernel_clock_init already ran in efi_main */
-	rq_init(cpu_self());	/* before any proc exists to be dispatched */
+	rq_init();		/* before any proc exists to be dispatched */
 	uart_init();
 	/* boot, before any proc exists: the lock is uncontended and is
 	 * taken for the contract rather than for the contention.
@@ -6821,30 +6803,49 @@ reprioritize(struct kproc *p, int nrunnable)
  */
 
 
+/* the run queues: one pair for the machine, not one pair per cpu.
+ *
+ * Any cpu takes the next runnable proc from the same place, so a proc
+ * is never stuck behind a busy cpu while another idles, and there is no
+ * placement decision to make at spawn. That decision is the one that
+ * cannot be made well: it is made before the proc has done anything,
+ * and nothing revisits it.
+ *
+ * This is plan 9's arrangement -- port/proc.c's `Schedq runq[Nrq]` is
+ * global there too -- rather than the per-cpu queues and work stealing
+ * of OpenBSD's kern_sched.c. The usual argument for per-cpu queues is
+ * keeping cpus off one lock on the hottest path, and that argument is
+ * weak here: every send and every wakeup already passes through the
+ * single ipc lock, held longer than anything done under this one. This
+ * cannot become the bottleneck without that being one first.
+ *
+ * If it ever does contend, plan 9 has the next step as well: it locks
+ * each priority queue separately rather than the whole set.
+ *
+ * `runq` is the lap in progress, `donq` what has already had a turn,
+ * and dispatch_lap swaps them. schedlock guards both, and also every
+ * cpu's current/idle/dispatching -- readers of those are always
+ * deciding something about these queues at the same time.
+ */
+static struct lock schedlock = LOCK_INIT;
+static struct rqset schedq[2];
+static struct rqset *runq, *donq;
+
 static void
-rq_init(struct cpu *c)
+rq_init(void)
 {
-	/* each cpu initialises its own, on itself, before it says it is
-	 * dispatching. It cannot be done for all of them at boot: a cpu
-	 * is not visible to cpu_at() until it has started, and the APs
-	 * start long after kernel_init runs. Doing it there left an AP's
-	 * runq pointer null, and a null runq reads its length from low
-	 * memory -- which is identity mapped, so there is no fault, just
-	 * a garbage queue and a #GP some instructions later.
-	 *
-	 * The ordering against placement is what makes this safe:
-	 * proc_new only places on a cpu that has published
-	 * `dispatching`, and this runs before that publication, so a
-	 * queue is never seen by another cpu until it exists.
+	/* once, for the machine, before any proc exists. Nothing per
+	 * cpu has to be set up, which is what lets a cpu join the
+	 * scheduler at any point in the boot -- or never.
 	 */
 	for (int s = 0; s < 2; s++) {
 		for (int i = 0; i < NRQ; i++)
-			TAILQ_INIT(&c->rq[s].q[i]);
-		c->rq[s].mask = 0;
-		c->rq[s].n = 0;
+			TAILQ_INIT(&schedq[s].q[i]);
+		schedq[s].mask = 0;
+		schedq[s].n = 0;
 	}
-	c->runq = &c->rq[0];
-	c->donq = &c->rq[1];
+	runq = &schedq[0];
+	donq = &schedq[1];
 }
 
 static int
@@ -6921,79 +6922,102 @@ rq_take_any(struct rqset *set)
 static void
 make_ready(struct kproc *p)
 {
-	struct cpu *c = cpu_at(p->home);
-
 	/* caller holds ipclock.
 	 * CONTEXT: proc_new, wake_receivers, wake_senders.
 	 */
 	IPC_ASSERT_LOCKED();
 	struct rqset *keep = p->onq;
 
-	if (!c)			/* the cpu it was placed on went away */
-		c = cpu_at(0);
-	/* the target cpu's lock, not this one's: the caller is whichever
-	 * cpu is sending, and the queues being changed belong to the cpu
-	 * that will run p. Taken while holding the ipc lock, which is
-	 * the one nesting lock.h's order allows (ipc -> cpu runq).
+	/* one lock, and no cpu to choose: whichever looks next takes
+	 * it. Nested inside the ipc lock, which is the one nesting
+	 * lock.h's order allows (ipc -> sched).
 	 */
-	lock(&c->lock);
-	/* p may be running on c at this very moment, which is a case that
-	 * cannot arise on one cpu: there, the only proc that runs is the
-	 * one doing the sending. Enqueueing it here would put it on a
-	 * bucket while dispatch_lap still holds it, and dispatch_lap
-	 * enqueues it again when the resume returns -- one proc on two
-	 * buckets, and a run queue that no longer terminates.
+	lock(&schedlock);
+
+	/* p may be running right now on another cpu, which is a case
+	 * that cannot arise on one cpu: there, the only proc running is
+	 * the one doing the sending. Enqueueing it would put it on a
+	 * bucket while that cpu's dispatch_lap still holds it, and
+	 * dispatch_lap enqueues it again when the resume returns -- one
+	 * proc on two buckets, and a run queue that no longer
+	 * terminates.
 	 *
-	 * So leave it to the cpu running it. Marking it READY is enough:
-	 * dispatch_lap requeues on exactly that, and it clears current
-	 * under this same lock, so one of the two always sees the other.
+	 * So leave it to the cpu running it. Marking it READY is
+	 * enough: dispatch_lap requeues on exactly that, and it clears
+	 * current under this same lock, so one of the two always sees
+	 * the other.
 	 */
-	if (c->current == p) {
-		p->status = READY;
-		p->pri = reprioritize(p, count_runnable(c) + 1);
-		unlock(&c->lock);
-		return;
+	for (unsigned i = 0; i < platform_ncpu(); i++) {
+		struct cpu *c = cpu_at(i);
+
+		if (c && c->current == p) {
+			p->status = READY;
+			p->pri = reprioritize(p, count_runnable() + 1);
+			unlock(&schedlock);
+			return;
+		}
 	}
+
 	if (keep)
 		rq_del(p);		/* pri is about to change; rebucket */
 	p->status = READY;
 	/* +1 because p has just been taken off its bucket and so is not in
 	 * the count, but it is runnable and the fair share has to include it
 	 */
-	p->pri = reprioritize(p, count_runnable(c) + 1);
+	p->pri = reprioritize(p, count_runnable() + 1);
 	/* a proc already waiting its turn keeps the lap it was in. one
 	 * arriving fresh joins the current lap, which is how a mid-lap
 	 * wakeup can still get a turn this lap -- if the lap's remaining
 	 * budget reaches it, and the next lap's opening runq if not.
 	 */
-	rq_add(keep ? keep : c->runq, p);
+	rq_add(keep ? keep : runq, p);
 
-	/* it has work now; if it went to sleep without any, wake it.
-	 * Read under the lock, so it cannot have decided to sleep
+	/* somebody has to look, so wake one sleeper. One, not all: the
+	 * others would find the queue empty and go back to sleep having
+	 * cost an ipi each, and if there is more work than one cpu's
+	 * worth, the next make_ready wakes the next one.
+	 *
+	 * Chosen under the lock, so a cpu cannot have decided to sleep
 	 * between this test and the queue it would have found empty --
 	 * the idle path sets the flag with this same lock held, and for
 	 * that reason.
 	 */
-	int wake = c->idle && c != cpu_self();
+	unsigned wake = ~0u;
 
-	unlock(&c->lock);
+	for (unsigned i = 0; i < platform_ncpu(); i++) {
+		struct cpu *c = cpu_at(i);
 
-	if (wake)
-		platform_wake_cpu(c->idx);
+		if (c && c->idle && c != cpu_self()) {
+			wake = i;
+			break;
+		}
+	}
+
+	unlock(&schedlock);
+
+	if (wake != ~0u)
+		platform_wake_cpu(wake);
 }
 
 static int
-count_runnable(struct cpu *c)
+count_runnable(void)
 {
-	/* the proc being resumed is on neither set -- dispatch takes it off
-	 * before running it and puts it back after -- so it has to be
-	 * counted here, or a proc asking about its own fair share leaves
-	 * itself out of the divisor.
+	/* a proc being resumed is on neither set -- dispatch takes it
+	 * off before running it and puts it back after -- so the ones
+	 * in hand have to be counted here, or a proc asking about its
+	 * own fair share leaves itself out of the divisor. With one
+	 * queue for the machine that means every cpu's, not one's.
 	 */
-	int running = c->current && c->current->status == READY &&
-	    !c->current->onq;
+	int running = 0;
 
-	return c->runq->n + c->donq->n + running;
+	for (unsigned i = 0; i < platform_ncpu(); i++) {
+		struct cpu *c = cpu_at(i);
+
+		if (c && c->current && c->current->status == READY &&
+		    !c->current->onq)
+			running++;
+	}
+	return runq->n + donq->n + running;
 }
 
 /* run the proc's sys.atexit handlers, LIFO, on the main state -- p->co
@@ -7047,6 +7071,13 @@ run_proc(struct kproc *p)
 	for (int w = 0; w < p->weight; w++) {
 		ran = 1;
 		cpu_self()->ndispatch++;
+		/* where it ran, recorded rather than decided -- nothing
+		 * placed it here, this cpu simply took it. Written
+		 * outside schedlock because only the cpu running p
+		 * writes it, and a reader racing it gets the previous
+		 * cpu, which was equally true a moment ago.
+		 */
+		p->home = cpu_self()->idx;
 		p->nresume++;
 
 		int nres = 0;
@@ -7185,23 +7216,23 @@ dispatch_lap(struct cpu *me)
 {
 	int ran = 0;
 
-	lock(&me->lock);
-	int budget = me->runq->n;
+	lock(&schedlock);
+	int budget = runq->n;
 
-	unlock(&me->lock);
+	unlock(&schedlock);
 
 	for (int i = 0; i < budget; i++) {
 		struct kproc *p;
 
-		lock(&me->lock);
-		p = rq_take_high(me->runq);
+		lock(&schedlock);
+		p = rq_take_high(runq);
 		/* a proc somebody is reading is put aside rather than run:
 		 * see proc_freeze. Taken and set aside under the one lock,
 		 * so it cannot be resumed between the two.
 		 */
 		if (p && p->frozen) {
-			rq_add(me->donq, p);
-			unlock(&me->lock);
+			rq_add(donq, p);
+			unlock(&schedlock);
 			continue;
 		}
 		/* published under the lock and for the whole resume, so
@@ -7209,14 +7240,14 @@ dispatch_lap(struct cpu *me)
 		 * the requeue below to do the enqueueing.
 		 */
 		me->current = p;
-		unlock(&me->lock);
+		unlock(&schedlock);
 		if (!p)
-			break;
+			break;		/* another cpu got there first */
 		/* outside the lock, and this is the rule the whole
 		 * scheme rests on: a resume runs lua, which can send,
-		 * which takes the ipc lock and then some cpu's runq
-		 * lock. Holding this across it would invert that order
-		 * and deadlock against any other cpu doing the same.
+		 * which takes the ipc lock and then this one. Holding
+		 * this across it would invert that order and deadlock
+		 * against any other cpu doing the same.
 		 */
 		if (run_proc(p))
 			ran = 1;
@@ -7224,11 +7255,11 @@ dispatch_lap(struct cpu *me)
 		 * split them and a wakeup landing in between is either
 		 * lost or enqueued twice.
 		 */
-		lock(&me->lock);
+		lock(&schedlock);
 		me->current = 0;
 		if (p->status == READY && !p->onq)
-			rq_add(me->donq, p);
-		unlock(&me->lock);
+			rq_add(donq, p);
+		unlock(&schedlock);
 	}
 
 	/* phase two is bounded for the same reason phase one is, and
@@ -7244,64 +7275,62 @@ dispatch_lap(struct cpu *me)
 	 * the floor is what keeps the bound from being expensive: see
 	 * LAPSPILL.
 	 */
-	lock(&me->lock);
-	int spill = me->runq->n < LAPSPILL ? LAPSPILL : me->runq->n;
+	lock(&schedlock);
+	int spill = runq->n < LAPSPILL ? LAPSPILL : runq->n;
 
-	unlock(&me->lock);
+	unlock(&schedlock);
 
 	for (int i = 0; i < spill; i++) {
 		struct kproc *p;
 
-		lock(&me->lock);
-		p = rq_take_any(me->runq);
+		lock(&schedlock);
+		p = rq_take_any(runq);
 		if (p && p->frozen) {	/* as phase one; see there */
-			rq_add(me->donq, p);
-			unlock(&me->lock);
+			rq_add(donq, p);
+			unlock(&schedlock);
 			continue;
 		}
 		me->current = p;
-		unlock(&me->lock);
+		unlock(&schedlock);
 		if (!p)
 			break;
 		if (run_proc(p))
 			ran = 1;
-		lock(&me->lock);
+		lock(&schedlock);
 		me->current = 0;
 		if (p->status == READY && !p->onq)
-			rq_add(me->donq, p);
-		unlock(&me->lock);
+			rq_add(donq, p);
+		unlock(&schedlock);
 	}
 
-	/* whatever the bound left behind was woken this lap and has
-	 * not run: it goes onto the set that becomes the next runq,
-	 * not the one that becomes the next donq. leaving it where it
-	 * lies would park it a full lap behind the procs that already
-	 * had a turn, and a lap with nothing else runnable would go to
-	 * the idle sleep with work in hand.
+	/* the lap ends when runq is empty, and whichever cpu empties it
+	 * says so. With one queue that is the only workable boundary: a
+	 * cpu cannot swap on its own schedule without handing the others
+	 * procs that already had a turn.
+	 *
+	 * A first version counted the cpus inside a lap and let the last
+	 * one out swap. It livelocked, and the measurement is why it was
+	 * caught: laps went from 60 at -smp 1 to ~200000 each at -smp 4.
+	 * Cpus finishing early re-enter immediately, so "all of them are
+	 * out at once" almost never held, the swap kept being deferred,
+	 * and every cpu churned empty laps over a runq whose contents
+	 * were all sitting in donq.
+	 *
+	 * What still has to be true is that donq drains: a proc there
+	 * runs again only after a swap. runq shrinks on every take, and
+	 * the only thing that refills it is a mid-lap wakeup -- so two
+	 * procs feeding each other can hold the lap open, which is the
+	 * same case phase two's bound exists for, and the bound is what
+	 * returns this cpu to kernel_run either way.
 	 */
-	lock(&me->lock);
-	for (;;) {
-		struct kproc *p = rq_take_any(me->runq);
+	lock(&schedlock);
+	if (runq->n == 0 && donq->n > 0) {
+		struct rqset *t = runq;
 
-		if (!p)
-			break;
-		rq_add(me->donq, p);
+		runq = donq;
+		donq = t;
 	}
-	unlock(&me->lock);
-
-	/* the lap is over: what ran becomes what runs next. procs
-	 * woken from here on join the new runq and so get a turn in
-	 * the next lap rather than being lost.
-	 */
-	{
-		struct rqset *t;
-
-		lock(&me->lock);
-		t = me->runq;
-		me->runq = me->donq;
-		me->donq = t;
-		unlock(&me->lock);
-	}
+	unlock(&schedlock);
 
 	return ran;
 }
@@ -7326,11 +7355,9 @@ kernel_run_ap(void)
 {
 	struct cpu *me = cpu_self();
 
-	rq_init(me);		/* before anything can place a proc here */
-
-	lock(&me->lock);
+	lock(&schedlock);
 	me->dispatching = 1;
-	unlock(&me->lock);
+	unlock(&schedlock);
 
 	while (nlive > 0) {
 		me->nlaps++;
@@ -7358,26 +7385,26 @@ kernel_run_ap(void)
 		 * to sleep.
 		 */
 		platform_intr_off();
-		lock(&me->lock);
-		if (me->runq->n + me->donq->n > 0) {
-			unlock(&me->lock);
+		lock(&schedlock);
+		if (runq->n + donq->n > 0) {
+			unlock(&schedlock);
 			platform_intr_on();
 			continue;
 		}
 		me->idle = 1;
-		unlock(&me->lock);
+		unlock(&schedlock);
 
 		me->nidle++;
 		platform_cpu_idle();	/* returns with interrupts on */
 
-		lock(&me->lock);
+		lock(&schedlock);
 		me->idle = 0;
-		unlock(&me->lock);
+		unlock(&schedlock);
 	}
 
-	lock(&me->lock);
+	lock(&schedlock);
 	me->dispatching = 0;
-	unlock(&me->lock);
+	unlock(&schedlock);
 }
 
 void
@@ -7400,7 +7427,9 @@ kernel_run(void)
 	    BS->SetTimer(tick, TimerPeriodic, TICK_FAST_100NS) != EFI_SUCCESS)
 		tick = 0;
 
+	lock(&schedlock);
 	cpu_self()->dispatching = 1;
+	unlock(&schedlock);
 
 	while (nlive > 0) {
 		struct cpu *me = cpu_self();

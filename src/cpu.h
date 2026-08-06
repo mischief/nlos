@@ -41,13 +41,18 @@ struct cpu {
 	unsigned idx;			/* 0 is the boot processor, always */
 	unsigned apicid;		/* what the hardware calls it */
 
-	/* the run queues, and the lock over them. Another cpu takes
-	 * this to wake a proc that belongs here, which is the only
-	 * cross-cpu scheduler operation there is.
+	/* NO run queues here, and that is the design: there is one pair
+	 * for the machine, so any cpu takes the next runnable proc
+	 * rather than only the ones placed on it. See the comment over
+	 * the queues in kernel.c -- this is plan 9's arrangement, whose
+	 * runq[Nrq] in port/proc.c is global for the same reason.
+	 *
+	 * What is left here is what genuinely belongs to a cpu: which
+	 * proc it is running, whether it dispatches at all, and its
+	 * counters. All of it is guarded by kernel.c's one scheduler
+	 * lock, because everything that reads these is deciding
+	 * something about the queues in the same breath.
 	 */
-	struct lock lock;
-	struct rqset rq[2];
-	struct rqset *runq, *donq;
 
 	/* who is running right now, or null. Read by plain C with no
 	 * lua_State to find out who is asking; written by run_proc
