@@ -177,15 +177,42 @@ local function backend()
 		return { name = "mouse", size = #latest, dir = false }
 	end
 
+	-- one reader at a time.
+	--
+	-- Two programs reading this would each get some of a drag and
+	-- neither would get all of it -- a stroke split between them, a
+	-- button press seen by whichever asked first. That is not a
+	-- failure either can detect: both look like a mouse that
+	-- stutters. Refusing the second open turns it into an error with
+	-- a name, which is why plan 9's mouse is exclusive too.
+	--
+	-- Held by the handle rather than counted, so a program that dies
+	-- without closing still frees it: the server clunks every fid of
+	-- a session that goes away.
+	local owner = nil
+
 	function B.open(h, mode)
 		if mode and mode ~= "r" then
 			dev.error(dev.Eperm)
 		end
-		-- the sequence it opened at, so the first read answers with
-		-- the current position rather than waiting for the pointer
-		-- to move. A program that opens the mouse wants to know
-		-- where it is.
-		return { path = h.path, seen = seq - 1 }
+		if isroot(h) then
+			return { path = h.path }
+		end
+		if owner then
+			dev.error("mouse in use")
+		end
+		-- a handle of its own, as every other backend's open
+		-- returns: the walked one may be shared and the open one
+		-- carries state.
+		--
+		-- seen is the sequence it opened at, so the first read
+		-- answers with the current position rather than waiting
+		-- for the pointer to move. A program that opens the mouse
+		-- wants to know where it is.
+		local fh = { path = h.path, seen = seq - 1, reader = true }
+
+		owner = fh
+		return fh
 	end
 
 	-- read blocks until there is something this handle has not seen.
@@ -231,7 +258,10 @@ local function backend()
 		dev.error(dev.Eperm)
 	end
 
-	function B.clunk()
+	function B.clunk(h)
+		if h and h.reader and owner == h then
+			owner = nil
+		end
 	end
 
 	return B
