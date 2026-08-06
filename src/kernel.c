@@ -6950,7 +6950,31 @@ pump_devkbd(void)
 
 	if (!devkbdport)
 		return;
-	while ((c = platform_kbd_read()) >= 0) {
+
+	/* Read before locking, so a lap with no key pressed -- which is
+	 * nearly every lap -- takes no lock at all. This runs from the
+	 * scheduler on every pass, unlike a pump woken by an interrupt.
+	 */
+	c = platform_kbd_read();
+	if (c < 0)
+		return;
+
+	/* One bucket rather than all eight. The narrow form's two
+	 * obligations are met: this touches one port, and port_push
+	 * allocates no lua memory.
+	 *
+	 * The wide form is not free on a uniprocessor build, which is
+	 * where this code runs. Each bucket costs an atomic pair, a
+	 * 64-bit counter and a machine_cycles() read, and the release
+	 * costs another read and a 64-bit add -- so taking all eight is
+	 * sixteen cycle-counter reads to deliver one keystroke.
+	 *
+	 * Held across the drain rather than taken per keystroke: the
+	 * reader is woken by the push, and nothing is gained by letting
+	 * it in between two bytes of one burst.
+	 */
+	ipclock_enter_port(devkbdport);
+	do {
 		/* serialized one-char string, as pump_keyboard sends: a
 		 * port carries serialized values and the reader
 		 * deserializes whatever arrives.
@@ -6959,7 +6983,8 @@ pump_devkbd(void)
 
 		msg[5] = (unsigned char)c;
 		port_push(devkbdport, msg, sizeof msg, 0, 0);
-	}
+	} while ((c = platform_kbd_read()) >= 0);
+	ipclock_leave_port(devkbdport);
 }
 
 static void
