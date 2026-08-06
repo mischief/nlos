@@ -4250,6 +4250,16 @@ static const struct luaheap_ops kalloc_ops = {
 };
 
 
+/* print(), for a proc that has not redirected it. See src/coreg.h: this
+ * is what lua_writestring becomes, so an unredirected diagnostic
+ * reaches the console rather than a stdio that may discard it.
+ */
+void
+kernel_stdout(const char *s, size_t n)
+{
+	console_write(s, n);
+}
+
 /* lua allocator with per-proc accounting. note lua's convention: when
  * ptr is NULL, osize carries the object type, not a size. luaheap is
  * given a real size instead, and depends on it being one -- that is

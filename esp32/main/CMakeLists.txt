@@ -130,6 +130,7 @@ set(EMBED_FILES
     lib/romfs.lua
     lib/fbcons.lua
     task/fbterm.lua
+    task/fbsh.lua
     lib/caps.lua
     lib/prog.lua
     lib/draw.lua

@@ -41,8 +41,6 @@ end
 
 local console = require("console")
 local fbcons = require("fbcons")
-local dos = require("dos")
-local ns = require("ns")
 
 local con = console.new(fbcons.new({
 	fb = fb,
@@ -58,34 +56,34 @@ thread.spawn(function()
 	con:serve()
 end)
 
--- The namespace the shell looks programs up in.
+-- The shell runs in a proc of its own.
 --
--- Mounted rather than faked. An unprivileged proc has no io.open
--- (kernel_strip_io: files come through a mount, not through ambient
--- authority), and on this platform the files live in the app image
--- with no server in front of them -- so lib/romfs.lua serves the image
--- as a local dev backend, the way lib/procfs.lua serves the process
--- table, and this is an ordinary read-only mount over it.
-local N = ns.new()
-local mok, merr = N:mount("/", require("romfs").new(), "romfs")
+-- lib/console.lua serves on this proc's mailbox, and a shell waits on
+-- its own mailbox for the exit notice of every program it starts. Both
+-- in one proc means two consumers of one port: the console takes the
+-- notice, does not recognise it, and drops it, and the shell waits for
+-- a program that has already gone. task/cons.lua and its shells are
+-- separate procs on the other platforms for the same reason.
+local f = io and io.open and io.open("/task/fbsh.lua")
+local src = f and f:read("a")
 
-if not mok then
-	say("fbterm: mount failed: " .. tostring(merr) .. "\n")
+if f then
+	f:close()
+end
+if not src then
+	src = require("los.rom").read("/task/fbsh.lua")
 end
 
-thread.spawn(function()
-	local sh = dos.new({
-		ns = N,
-		cons = consright,
-		fb = fb,
-	})
-	local ok, err = xpcall(function()
-		sh:repl("> ")
-	end, debug.traceback)
+if src then
+	local _, sh = sys.spawn(src, { name = "fbsh" })
 
-	if not ok then
-		say("fbterm: shell died: " .. tostring(err) .. "\n")
-	end
-end)
+	sys.send(sh, {
+		cons = { __right = consright },
+		fb = { __right = fb },
+	})
+	sys.close(sh)
+else
+	say("fbterm: no /task/fbsh.lua\n")
+end
 
 thread.run()

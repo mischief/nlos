@@ -1,6 +1,26 @@
 #ifndef COREG_H
 #define COREG_H
 
+#include <stddef.h>
+
+/* where a proc's print() goes before anything redirects it.
+ *
+ * Lua writes to stdout by default. On a platform whose stdio silently
+ * discards output when nobody is draining the port, that turns every
+ * unredirected diagnostic into nothing at all -- and the ones that
+ * matter most are the unredirected ones: lib/thread prints a thread's
+ * error and drops it, so a proc whose shell died looked exactly like a
+ * proc that was idle.
+ *
+ * kernel_stdout goes to the machine console, which every platform
+ * implements and which does not drop. lib/stdout.lua still overrides
+ * _G.print where a proc wants its output on a port instead.
+ */
+void kernel_stdout(const char *s, size_t n);
+
+#define lua_writestring(s, l)	kernel_stdout((s), (l))
+#define lua_writeline()		kernel_stdout("\n", 1)
+
 /* every lua_State a proc owns, on a list the kernel can walk.
  *
  * injected into lua through LUA_USER_H (lua/lua.h), which is what that
