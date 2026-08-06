@@ -1140,6 +1140,19 @@ test('gefs-host', lua_interp,
   env: gefs_host_env,
 )
 
+# lib/fat is the filesystem the esp32 flash partition and the microSD
+# card both carry, and lib/fatfs.lua is what puts it behind a mount. The
+# format itself has its own suite upstream; this covers the part that
+# only exists here -- that the port loads under our loader, and that the
+# dev backend over it reads, writes and lists what it should. What this
+# cannot say is that a served volume is wired to the flash driver, which
+# is the boot test's job.
+test('fat-host', lua_interp,
+  args: [files('test/host_fat.lua')],
+  protocol: 'tap',
+  timeout: 60,
+)
+
 # lib/p9serve.lua is the 9P server over a dev backend -- the bridge
 # task/9pexport.lua serves gefs (and any other backend) to a real 9p
 # client with. Pure Lua over lib/ninep's codec, so the host drives it
