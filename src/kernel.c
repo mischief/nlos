@@ -1974,6 +1974,23 @@ wait_reap(struct kproc *p)
 	atomic_store_explicit(&p->woken, 0, memory_order_relaxed);
 }
 
+/* how the claim goes, reported through sys.stats().lock.ipc.
+ *
+ * Losing is the interesting number. It counts the times two ports
+ * reached one alt-blocked proc at once, which is a real property of a
+ * workload and not only a test hook: it says how much of an alt set is
+ * genuinely live at the same moment.
+ *
+ * It is also the only way to know the losing branch runs at all. It is
+ * reachable on more than one cpu and never on one, so a suite that
+ * exercises it by accident stops doing so the moment scheduling shifts,
+ * and nothing would say. Measured by making the loss abort: the whole
+ * suite passed, smp2 and smp4 variants included, so at that commit the
+ * branch had never once executed. test/boot/microvm_claim.lua asserts
+ * this counter is nonzero for that reason.
+ */
+static atomic_ullong claim_won, claim_lost;
+
 /* take the right to wake this proc, or find that another port already
  * has. See kproc.woken.
  */
@@ -1982,8 +1999,13 @@ wake_claim(struct kproc *p)
 {
 	int expect = 0;
 
-	return atomic_compare_exchange_strong_explicit(&p->woken, &expect, 1,
-	    memory_order_acq_rel, memory_order_relaxed);
+	if (atomic_compare_exchange_strong_explicit(&p->woken, &expect, 1,
+	    memory_order_acq_rel, memory_order_relaxed)) {
+		atomic_fetch_add_explicit(&claim_won, 1, memory_order_relaxed);
+		return 1;
+	}
+	atomic_fetch_add_explicit(&claim_lost, 1, memory_order_relaxed);
+	return 0;
 }
 
 static void
@@ -4002,6 +4024,10 @@ api_stats(lua_State *L)
 		lua_setfield(L, -2, "spin");
 		lua_pushinteger(L, (lua_Integer)held);
 		lua_setfield(L, -2, "held");
+		lua_pushinteger(L, (lua_Integer)claim_won);
+		lua_setfield(L, -2, "claimwon");
+		lua_pushinteger(L, (lua_Integer)claim_lost);
+		lua_setfield(L, -2, "claimlost");
 		lua_setfield(L, -2, "ipc");
 
 		lua_createtable(L, 0, 3);

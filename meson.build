@@ -885,6 +885,8 @@ microvm_tests = [
   ['smp', ['--smp=2']],
   ['spin', []],
   ['pairs', []],
+  ['claim', []],
+  ['altpending', []],
   ['bigmsg', []],
   ['sample', []],
 ]
@@ -919,6 +921,8 @@ microvm_smp_tests = [
   ['gefspar', ['--gefs']],
   ['spin', []],
   ['pairs', []],
+  ['claim', []],
+  ['altpending', []],
   ['bigmsg', []],
   ['sample', []],
 ]
