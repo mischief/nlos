@@ -55,9 +55,16 @@ end
 -- what is under a directory, as paths relative to it. ls is not in
 -- stock lua, so this shells out; the alternative is luaposix, which the
 -- rest of the tree does without.
+-- A source that names nothing is a mistake, and it is refused here.
+--
+-- find says so on stderr and exits non-zero for a directory that is not
+-- there, so the status is kept rather than discarded. Without this the
+-- image is built, checks clean, flashes, and the board comes up with an
+-- empty /bin -- a wrong path costs a boot to discover instead of a
+-- line.
 local function walkdir(dir)
 	local out = {}
-	local p = io.popen(("find %q -type f -printf '%%P\\n' 2>/dev/null"):format(dir))
+	local p = io.popen(("find %q -type f -printf '%%P\\n'"):format(dir))
 
 	if not p then
 		die("cannot list " .. dir)
@@ -67,7 +74,16 @@ local function walkdir(dir)
 			out[#out + 1] = line
 		end
 	end
-	p:close()
+
+	local ok, how, code = p:close()
+
+	if not ok then
+		die(("%s: find %s %s"):format(dir, tostring(how),
+		    tostring(code)))
+	end
+	if #out == 0 then
+		die(dir .. ": no files under it")
+	end
 	table.sort(out)
 	return out
 end

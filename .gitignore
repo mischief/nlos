@@ -1,5 +1,4 @@
 build*/
-luaos.img
 
 # build output, never source
 *.efi
@@ -23,3 +22,8 @@ OVMF_VARS.fd
 esp32/sdkconfig
 esp32/sdkconfig.old
 esp32/*.sdkconfig
+
+# the flash filesystem image, built by tools/mkfatimg.lua from bin/ and
+# etc/. Output, and flashed separately from the firmware -- see
+# esp32/README.md.
+*.img
