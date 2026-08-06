@@ -78,7 +78,12 @@
  */
 #define LCD_RST		(-1)
 #define LCD_BL		TDECK_TFT_BL
-#define LCD_PCLK_HZ	(40 * 1000 * 1000)
+/* Above the vendor's 27MHz and clm's 40MHz, below the ST7789's ~62MHz
+ * write ceiling. The shared bus is short here, and a faster pixel clock
+ * is what makes a scroll's full-frame move quick. The SD sets its own
+ * clock, so this does not touch it.
+ */
+#define LCD_PCLK_HZ	(60 * 1000 * 1000)
 #define LCD_GAP_X	0
 #define LCD_GAP_Y	0
 
