@@ -19,24 +19,65 @@
 -- glyphs come from los.font, which is data rather than a device. This
 -- file is the only place that knows a screen has lines.
 
+local sys = require("los.sys")
 local thread = require("los.thread")
+
+-- how far a tab advances. Eight, like every other terminal.
+local TABSTOP = 8
+
+-- a draw, without waiting for it to finish.
+--
+-- task/fb.lua answers ops that only return true when asked to and not
+-- otherwise, so a console that does not need the answer should not pay
+-- a round trip per glyph. Parking when the queue is full is what keeps
+-- that from becoming an unbounded backlog: the writer waits for room
+-- rather than dropping or spinning.
+local function post(h, msg)
+	while true do
+		local ok, why = sys.send(h, msg)
+
+		if ok or why ~= "full" then
+			return
+		end
+		thread.parksend(h)
+	end
+end
 
 local M = {}
 local Cons = {}
 
 Cons.__index = Cons
 
--- one message per row rather than per glyph. A row of 53 cells at 6x12
--- is 15264 bytes of BGRx, which is one fb.load and one SPI transfer;
--- the same row drawn a character at a time is 53 of each, and the round
--- trips dominate exactly as they did for the console's bulk read.
-function Cons:paintrow(y)
-	local line = self.grid[y + 1] or ""
-	local pix, w, h = self.font.render(line ..
-	    string.rep(" ", self.cols - #line), self.fg, self.bg)
+-- one message per changed SPAN, which is usually one cell.
+--
+-- A whole row is 53 cells at 6x12, or 15264 bytes of BGRx, and a blit
+-- costs several copies of what it carries. Repainting the row for each
+-- character typed spends about 30KB on one keystroke, which is what
+-- made typing visibly slow. A span of one cell is 288 bytes.
+--
+-- from and to are cell columns, `to` exclusive. The row is padded so a
+-- span past the end of the text erases what was there.
+function Cons:paintspan(y, from, to)
+	if to <= from then
+		return
+	end
 
-	thread.rpc(self.fb, { op = "load",
-	    r = { x = 0, y = y * self.ch, w = w, h = h }, data = pix })
+	local line = self.grid[y + 1] or ""
+
+	if #line < to then
+		line = line .. string.rep(" ", to - #line)
+	end
+
+	local pix, w, h = self.font.render(line:sub(from + 1, to),
+	    self.fg, self.bg)
+
+	post(self.fb, { op = "load",
+	    r = { x = from * self.cw, y = y * self.ch, w = w, h = h },
+	    data = pix })
+end
+
+function Cons:paintrow(y)
+	self:paintspan(y, 0, self.cols)
 end
 
 function Cons:repaint()
@@ -45,20 +86,21 @@ function Cons:repaint()
 	end
 end
 
--- the cursor is drawn as a filled cell, and undrawn by repainting the
--- row under it. No blink: a timer for it would need a thread of its
--- own, and a solid block is legible without one.
+-- the cursor is a filled cell, undrawn by repainting the one cell it
+-- covered. No blink: a timer for it would need a thread of its own, and
+-- a solid block is legible without one.
 function Cons:cursor(on)
 	if self.curon == on then
 		return
 	end
 	self.curon = on
 	if on then
-		thread.rpc(self.fb, { op = "fill", r = { x = self.col * self.cw,
+		post(self.fb, { op = "fill", r = { x = self.col * self.cw,
 		    y = self.row * self.ch, w = self.cw, h = self.ch },
 		    color = self.fg })
 	else
-		self:paintrow(self.row)
+		-- just the cell it was drawn over
+		self:paintspan(self.row, self.col, self.col + 1)
 	end
 end
 
@@ -72,6 +114,7 @@ function Cons:scroll()
 	-- (see src/platform/esp32/lcd.c). The grid is the only copy of
 	-- what is on the glass, so moving it up means drawing it again.
 	self:repaint()
+	self.dirty = true
 end
 
 function Cons:putc(c)
@@ -92,8 +135,18 @@ function Cons:putc(c)
 			self.col = self.col - 1
 		end
 		return
+	elseif c == "\t" then
+		-- to the next multiple of TABSTOP, writing spaces so the
+		-- cells are cleared rather than skipped over
+		local stop = math.min(self.col - self.col % TABSTOP +
+		    TABSTOP, self.cols)
+
+		while self.col < stop do
+			self:putc(" ")
+		end
+		return
 	elseif c < " " then
-		return		-- no tabs, no bell: not a vt yet
+		return		-- no bell, no escape sequences: not a vt yet
 	end
 
 	local line = self.grid[self.row + 1]
@@ -115,21 +168,31 @@ function Cons:putc(c)
 	end
 end
 
--- Painted once per write() rather than once per character: a prompt is
--- one write of several bytes, and repainting its row for each of them
--- is the difference between a console that keeps up and one that does
--- not.
+-- Painted once per write rather than once per character, and only over
+-- the columns that changed. A prompt is one write of several bytes; a
+-- line of typing is one character per write, and either way this sends
+-- one message for the span it touched.
 function Cons:write(s)
-	local first = self.row
+	local first, firstcol = self.row, self.col
 
 	self:cursor(false)
+	self.dirty = nil
 	for i = 1, #s do
 		self:putc(s:sub(i, i))
 	end
-	-- scroll() already repainted everything, and comparing rows is how
-	-- this tells that from an ordinary write that stayed put.
-	if self.row >= first then
-		for y = first, self.row do
+	if self.dirty then
+		-- the scroll repainted the grid as it stood; anything
+		-- written after it lands on the row the cursor ended on,
+		-- and that row still needs drawing.
+		self:paintrow(self.row)
+	elseif self.row == first then
+		local from = math.min(firstcol, self.col)
+		local to = math.max(firstcol, self.col)
+
+		self:paintspan(first, from, math.max(to, from + 1))
+	else
+		self:paintspan(first, firstcol, self.cols)
+		for y = first + 1, self.row do
 			self:paintrow(y)
 		end
 	end
