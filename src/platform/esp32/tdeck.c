@@ -18,6 +18,7 @@
 #if CONFIG_LUAOS_BOARD_TDECK
 
 #include <driver/gpio.h>
+#include <driver/i2c_master.h>
 #include <driver/spi_common.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -26,6 +27,8 @@
 
 static int powered;
 static int bused;
+static int i2ced;
+static i2c_master_bus_handle_t i2cbus;
 
 int
 esp_tdeck_power_on(void)
@@ -93,6 +96,44 @@ esp_tdeck_spi_init(void)
 	    ESP_OK)
 		return -1;
 	bused = 1;
+	return 0;
+}
+
+/* the i2c bus, shared the way the spi one above is.
+ *
+ * The keyboard's C3 is at 0x55 and the touch controller at 0x5d, on
+ * the same two pins. i2c_new_master_bus fails for the second caller,
+ * so a driver creating its own bus works only if it is the one that
+ * runs first -- and which that is depends on probe order, which is why
+ * this is here and not in whichever driver got here first.
+ *
+ * Hands back the bus rather than a device: an address is the caller's
+ * business, the wires are not.
+ */
+int
+esp_tdeck_i2c(i2c_master_bus_handle_t *out)
+{
+	i2c_master_bus_config_t cfg = {
+		.i2c_port = -1,
+		.sda_io_num = TDECK_I2C_SDA,
+		.scl_io_num = TDECK_I2C_SCL,
+		.clk_source = I2C_CLK_SRC_DEFAULT,
+		.glitch_ignore_cnt = 7,
+		.flags.enable_internal_pullup = true,
+	};
+
+	if (!i2ced) {
+		/* the keyboard's controller and the touch panel both sit
+		 * behind the switched rail, so it goes up first.
+		 */
+		if (esp_tdeck_power_on() != 0)
+			return -1;
+		if (i2c_new_master_bus(&cfg, &i2cbus) != ESP_OK)
+			return -1;
+		i2ced = 1;
+	}
+	if (out)
+		*out = i2cbus;
 	return 0;
 }
 

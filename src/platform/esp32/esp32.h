@@ -68,6 +68,14 @@ int	esp_tdeck_power_on(void);
  */
 int	esp_tdeck_spi_init(void);
 
+/* the shared i2c bus, on the same terms: the keyboard at 0x55 and the
+ * touch controller at 0x5d are on one pair of pins, and only the first
+ * caller may create it. Powers the rail first, since both devices are
+ * behind it. Fills *out with the bus; a caller adds its own address.
+ */
+struct i2c_master_bus_t;
+int	esp_tdeck_i2c(struct i2c_master_bus_t **out);
+
 #endif
 
 #endif

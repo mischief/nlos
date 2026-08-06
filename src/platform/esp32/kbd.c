@@ -284,14 +284,6 @@ static unsigned rhead, rtail;
 int
 esp_kbd_present(void)
 {
-	i2c_master_bus_config_t bus = {
-		.i2c_port = -1,
-		.sda_io_num = TDECK_I2C_SDA,
-		.scl_io_num = TDECK_I2C_SCL,
-		.clk_source = I2C_CLK_SRC_DEFAULT,
-		.glitch_ignore_cnt = 7,
-		.flags.enable_internal_pullup = true,
-	};
 	i2c_device_config_t dev = {
 		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
 		.device_address = TDECK_KB_ADDR,
@@ -303,12 +295,10 @@ esp_kbd_present(void)
 		return present;
 	probed = 1;
 
-	/* the keyboard's own controller boots off the switched rail, so
-	 * this has to come first or it simply does not answer.
+	/* the bus belongs to tdeck.c, which also raises the rail the
+	 * keyboard's controller boots off. One address on it is ours.
 	 */
-	if (esp_tdeck_power_on() != 0)
-		return 0;
-	if (i2c_new_master_bus(&bus, &bh) != ESP_OK)
+	if (esp_tdeck_i2c(&bh) != 0)
 		return 0;
 	if (i2c_master_bus_add_device(bh, &dev, &kb) != ESP_OK)
 		return 0;
