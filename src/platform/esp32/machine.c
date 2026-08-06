@@ -82,6 +82,36 @@ platform_meminfo(unsigned long long *total, unsigned long long *avail)
 		*avail = info.total_free_bytes;
 }
 
+/* the C heap, for sys.stats.
+ *
+ * The other platforms count this in their own malloc; here the
+ * allocator is IDF's, which keeps the same figures already. Every
+ * capability, not just internal SRAM as above: what this answers is
+ * how much C allocation the machine is holding, and a lua heap chunk
+ * in PSRAM is as much of that as a port message in SRAM.
+ *
+ * peak is derived rather than tracked: IDF records the low-water mark
+ * of free memory, so the most that was ever allocated is the pool
+ * minus that. total_allocs it does not keep, and 0 says so.
+ */
+void
+kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
+    unsigned long *total)
+{
+	multi_heap_info_t info;
+
+	heap_caps_get_info(&info, MALLOC_CAP_8BIT);
+	if (live)
+		*live = info.total_allocated_bytes;
+	if (peak)
+		*peak = info.total_free_bytes + info.total_allocated_bytes -
+		    info.minimum_free_bytes;
+	if (blocks)
+		*blocks = info.allocated_blocks;
+	if (total)
+		*total = 0;
+}
+
 /* the lua heap's chunks, from PSRAM where the board has it.
  *
  * Asked for explicitly rather than inferred from the request size.

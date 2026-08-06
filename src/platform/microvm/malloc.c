@@ -42,11 +42,11 @@ note_peak(size_t live)
 		;
 }
 
-void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
 
 void
-malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total)
 {
 	if (live)

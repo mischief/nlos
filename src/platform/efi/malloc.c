@@ -29,11 +29,11 @@ struct hdr {
 static size_t live_bytes, peak_bytes;
 static unsigned long live_blocks, total_blocks;
 
-void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
 
 void
-malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total)
 {
 	if (live)

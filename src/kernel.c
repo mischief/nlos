@@ -926,7 +926,17 @@ static int port_push_owned(struct kport *port, unsigned char *data,
     int nrefs);
 
 extern unsigned long long platform_ticks(void);
-extern void malloc_stats(size_t *live, size_t *peak, unsigned long *blocks,
+
+/* the C heap's own accounting, per platform.
+ *
+ * Named kheap_stats and not malloc_stats, which is a libc symbol: a
+ * platform that links a libc resolves that name to it, and newlib's
+ * takes no arguments and does nothing, so the four out-params keep
+ * whatever was on the stack. Nothing warns -- the declaration here is
+ * the only one the compiler sees, and the linker is happy to match a
+ * name.
+ */
+extern void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
 static void port_unref(struct kport *port);
 /* bumped whenever a port loses a reference, which is the only way
@@ -3943,10 +3953,13 @@ api_stats(lua_State *L)
 	 * messages, net tokens and payload copies, loadfile buffers.
 	 * sys.meminfo(pid) covers the lua side.
 	 */
-	size_t hlive, hpeak;
-	unsigned long hblocks, htotal;
+	/* zeroed, so a platform that cannot answer reports nothing rather
+	 * than the stack.
+	 */
+	size_t hlive = 0, hpeak = 0;
+	unsigned long hblocks = 0, htotal = 0;
 
-	malloc_stats(&hlive, &hpeak, &hblocks, &htotal);
+	kheap_stats(&hlive, &hpeak, &hblocks, &htotal);
 	lua_pushinteger(L, (lua_Integer)hlive);
 	lua_setfield(L, -2, "heap_used");
 	lua_pushinteger(L, (lua_Integer)hpeak);
@@ -5600,7 +5613,7 @@ los_thread_open(lua_State *L)
  *
  * Through malloc, and so through the firmware's pool, which does cost
  * something: the machine loses about 1.26 bytes of conventional memory
- * per byte the heap believes it mapped, and malloc_stats cannot see the
+ * per byte the heap believes it mapped, and kheap_stats cannot see the
  * difference because AllocatePool's metadata is not ours.
  *
  * Taking whole pages instead -- AllocatePages, no pool, no malloc header,

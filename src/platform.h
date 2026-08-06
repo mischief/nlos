@@ -156,6 +156,17 @@ const char *platform_arch(void);
  */
 void platform_meminfo(unsigned long long *total, unsigned long long *avail);
 
+/* the C heap's own accounting: bytes live, the most ever live, blocks
+ * live, and allocations since boot. A platform that cannot answer one
+ * of them leaves it alone; the caller zeroes first.
+ *
+ * Not named malloc_stats. That is a libc symbol, and a platform linking
+ * a libc resolves it there instead -- newlib's takes no arguments and
+ * does nothing, which no warning catches and which reports the stack.
+ */
+void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
+    unsigned long *total);
+
 /* where the shared lua heap's chunks come from.
  *
  * malloc on a machine with one kind of memory, which is three of the
