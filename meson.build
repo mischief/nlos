@@ -337,12 +337,26 @@ foreach a : [
   '-Wshift-overflow',
   '-Wframe-larger-than=4096',
   '-Wno-unused-parameter',
+  # trap rather than call a runtime, which is what makes a sanitizer
+  # usable here at all: there is no libc to link one from. On its own
+  # this flag does nothing -- it says how to report, not what to check
+  # -- so it sat here inert until -Dubsan turned a checker on.
   '-fsanitize-trap=all',
 ]
   if cc.has_argument(a)
     hardening_args += a
   endif
 endforeach
+
+# see meson.options: off by default because it costs up to 1.9x on the
+# serializer, so a build measuring anything wants it off.
+if get_option('ubsan')
+  if cc.has_argument('-fsanitize=undefined')
+    hardening_args += '-fsanitize=undefined'
+  else
+    error('-Dubsan=true but the compiler has no -fsanitize=undefined')
+  endif
+endif
 
 # vanilla lua, warnings left to upstream
 lua_lib = static_library('lua54', lua_src,
@@ -871,6 +885,7 @@ microvm_tests = [
   ['smp', ['--smp=2']],
   ['spin', []],
   ['bigmsg', []],
+  ['sample', []],
 ]
 
 foreach t : microvm_tests
@@ -903,6 +918,7 @@ microvm_smp_tests = [
   ['gefspar', ['--gefs']],
   ['spin', []],
   ['bigmsg', []],
+  ['sample', []],
 ]
 
 foreach n : ['2', '4']

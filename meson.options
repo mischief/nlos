@@ -35,3 +35,32 @@ option('platform', type: 'combo', choices: ['efi', 'microvm'], value: 'efi',
 # with nothing injected and nothing typed.
 option('boot_payload', type: 'string', value: 'boot/microvm.lua',
   description: 'lua payload embedded in the microvm image as the fw_cfg fallback')
+
+# -fsanitize=undefined, trapping rather than reporting.
+#
+# Off by default, and the reason is measurement rather than taste: the
+# cost lands on the serializer's byte loops, where a check fires per
+# iteration. Measured on test/bench_ipc.lua, cycles per message:
+#
+#	1 B        1305 -> 1358    1.04x
+#	64 B       1756 -> 2102    1.20x
+#	4 KB      28372 -> 43142   1.52x
+#	60 KB    230581 -> 442389  1.92x
+#
+# Bulk IPC bandwidth halves, 1117 MB/s to 582. Anything measured on a
+# build with this on is measuring this, so benchmarks want it off and
+# bug hunts want it on.
+#
+# Trap mode needs no runtime, which is what makes it usable at all in a
+# -ffreestanding -nostdinc kernel with no libc to link one from. The
+# cost of that is a trap says nothing: no line, no reason, just a dead
+# machine. Under the boot harness the serial log names the last thing
+# that ran, which is usually enough; if it stops being enough, the fix
+# is our own __ubsan_handle_* reporting through kernel_log rather than
+# a runtime.
+#
+# lua/ is deliberately NOT instrumented -- hardening_args goes on our
+# own targets, not on the vendored interpreter -- so the hot path stays
+# as it was and this measures our C.
+option('ubsan', type: 'boolean', value: false,
+  description: 'trap on undefined behaviour in the kernel C (not lua/)')
