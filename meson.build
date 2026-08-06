@@ -211,6 +211,7 @@ else
   embed_files = [
     'lib/thread.lua',
     'lib/console.lua',
+    'lib/fbcons.lua',
     'task/cons.lua',
     'task/wire.lua',
     'task/power.lua',
@@ -472,6 +473,7 @@ lua_payload = files(
   'lib/caps.lua',
   'task/cons.lua',
   'lib/console.lua',
+  'lib/fbcons.lua',
   'lib/chan.lua',
   'lib/dev.lua',
   # the block device and the gefs filesystem over it. blksrv is spawned
@@ -680,7 +682,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'srv', 'mountcmd', 'sendwait', 'drivers', 'sched', 'json', 'timer', 'pingpong', 'readdir', 'magic', 'dev', 'ns', 'prog', 'hangup',
               'procfs', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount', 'p9stream', 'p9flush', 'chanstress', 'torture', 'generator', 'sync', 'readline', 'mntconc',
               'ports',
-              'font', 'fb', 'fbprog',
+              'font', 'fb', 'fbprog', 'fbcons',
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
               'strictglobals', 'efigefs', 'nsfs', 'vi', 'zmodem']
 foreach t : boot_tests
