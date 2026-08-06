@@ -23,6 +23,7 @@
 #include "efi.h"
 #include "esp32.h"
 #include "kbd.h"
+#include "touch.h"
 #include "platform.h"
 
 /* the tick the scheduler asked for, in microseconds. Set by SetTimer
@@ -121,6 +122,14 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 		 * the sleep exactly as a serial byte does.
 		 */
 		if (esp_kbd_poll())
+			break;
+
+		/* the touch panel, scanned here for the same reason: a
+		 * finger arriving ends the sleep as a keystroke does, so a
+		 * pointer is as responsive as the keyboard rather than
+		 * waiting out the tick.
+		 */
+		if (esp_touch_poll())
 			break;
 		vTaskDelay(slice);
 	}

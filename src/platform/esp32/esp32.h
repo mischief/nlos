@@ -51,6 +51,8 @@ void	vfs_embed_register(void);
 #define TDECK_I2C_SCL		8
 #define TDECK_KB_ADDR		0x55	/* the keyboard is its own C3 */
 #define TDECK_KB_INT		46
+#define TDECK_TOUCH_ADDR	0x5d	/* GT911, the second device on i2c */
+#define TDECK_TOUCH_INT		16
 
 /* the largest single SPI transfer any T-Deck driver asks for. A display
  * band dwarfs the card's 32-sector read, so this is the display's.
