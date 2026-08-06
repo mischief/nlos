@@ -35,5 +35,8 @@ int luaos_lcd_height(void);
  */
 int luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb);
 int luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix);
+/* move a full-width band from (0,y) to (0,toy); -1 if it cannot, and
+ * the caller redraws. Needs the color copy, so PSRAM. */
+int luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h);
 
 #endif

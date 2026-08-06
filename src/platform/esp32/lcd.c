@@ -120,6 +120,16 @@ static uint16_t *band;
  */
 #define SHADOW_BYTES ((LCD_W * LCD_H + 7) / 8)
 static unsigned char *shadow;
+
+/* A full-color copy of the glass, in wire-order RGB565, for scrolling.
+ *
+ * The panel cannot be read and cannot scroll in hardware in this
+ * orientation, so moving a line up means having the pixels to move. This
+ * holds them: a scroll is a memmove here and one DMA of the moved band,
+ * where a redraw renders every cell again. At 150KB it lives in PSRAM
+ * and exists only where there is PSRAM -- the Cardputer redraws instead.
+ */
+static uint16_t *cshadow;
 static int probed, present;
 
 /* ST7789 wants big-endian RGB565 on the wire. Doing the swap here means
@@ -254,27 +264,37 @@ luaos_lcd_shadow(int on)
 {
 	if (!present && on)
 		return -1;
-	if (on && shadow == NULL) {
-		/* PSRAM by preference: nothing here is touched by DMA and
-		 * nothing reads it on a hot path -- it is written on a draw
-		 * and read only when a screenshot asks -- so it has no
-		 * claim on internal sram. On the T-Deck that is 9600 bytes
-		 * of the scarce pool handed back; where there is no PSRAM
-		 * the fallback is the only option and the buffer is small.
+	if (on && shadow == NULL && cshadow == NULL) {
+		/* Where there is PSRAM, keep a full-color copy and nothing
+		 * else: it is the exact pixels the panel gets, so a
+		 * screenshot is true color and a scroll has the pixels to
+		 * move. Without PSRAM a color frame does not fit, so the
+		 * fallback is one bit per pixel -- shape, not color -- in
+		 * internal memory.
 		 */
 #if CONFIG_SPIRAM
-		shadow = heap_caps_malloc(SHADOW_BYTES,
-		    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+		cshadow = heap_caps_malloc((size_t)LCD_W * LCD_H *
+		    sizeof *cshadow, MALLOC_CAP_SPIRAM);
+		if (cshadow != NULL) {
+			memset(cshadow, 0, (size_t)LCD_W * LCD_H *
+			    sizeof *cshadow);
+			return 0;
+		}
 #endif
-		if (shadow == NULL)
-			shadow = heap_caps_malloc(SHADOW_BYTES,
-			    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+		shadow = heap_caps_malloc(SHADOW_BYTES,
+		    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 		if (shadow == NULL)
 			return -1;
 		memset(shadow, 0, SHADOW_BYTES);
-	} else if (!on && shadow != NULL) {
-		heap_caps_free(shadow);
-		shadow = NULL;
+	} else if (!on) {
+		if (shadow != NULL) {
+			heap_caps_free(shadow);
+			shadow = NULL;
+		}
+		if (cshadow != NULL) {
+			heap_caps_free(cshadow);
+			cshadow = NULL;
+		}
 	}
 	return 0;
 }
@@ -319,12 +339,39 @@ luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
 {
 	int row, col;
 
-	if (!present || shadow == NULL)
+	if (!present)
 		return -1;
 	if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
 	    x + w > LCD_W || y + h > LCD_H)
 		return -1;
 
+	/* the color copy is the true one -- the exact pixels sent to the
+	 * panel -- so where it exists a screenshot shows real colors, not
+	 * the one-bit shape. RGB565 is stored wire-order (byte-swapped);
+	 * undo that, then widen each channel to eight bits.
+	 */
+	if (cshadow != NULL) {
+		for (row = 0; row < h; row++)
+			for (col = 0; col < w; col++) {
+				uint16_t cs = cshadow[(size_t)(y + row) *
+				    LCD_W + x + col];
+				uint16_t v = (uint16_t)((cs >> 8) | (cs << 8));
+				unsigned r5 = (v >> 11) & 0x1f;
+				unsigned g6 = (v >> 5) & 0x3f;
+				unsigned b5 = v & 0x1f;
+				unsigned char *px = out +
+				    ((size_t)row * w + col) * 4;
+
+				px[0] = (unsigned char)((b5 << 3) | (b5 >> 2));
+				px[1] = (unsigned char)((g6 << 2) | (g6 >> 4));
+				px[2] = (unsigned char)((r5 << 3) | (r5 >> 2));
+				px[3] = 0;
+			}
+		return 0;
+	}
+
+	if (shadow == NULL)
+		return -1;
 	for (row = 0; row < h; row++)
 		for (col = 0; col < w; col++) {
 			size_t bit = (size_t)(y + row) * LCD_W + x + col;
@@ -356,7 +403,7 @@ luaos_lcd_unload1(int x, int y, int w, int h, unsigned char *out)
 {
 	int row, col, n = 0;
 
-	if (!present || shadow == NULL)
+	if (!present || (shadow == NULL && cshadow == NULL))
 		return -1;
 	if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
 	    x + w > LCD_W || y + h > LCD_H)
@@ -367,10 +414,19 @@ luaos_lcd_unload1(int x, int y, int w, int h, unsigned char *out)
 		int nbit = 0;
 
 		for (col = 0; col < w; col++) {
-			size_t bit = (size_t)(y + row) * LCD_W + x + col;
+			size_t idx = (size_t)(y + row) * LCD_W + x + col;
+			int ink;
 
+			/* one bit derived from the color copy where there is
+			 * one -- any non-black pixel is ink -- or read from
+			 * the one-bit plane where that is all there is.
+			 */
+			if (cshadow != NULL)
+				ink = cshadow[idx] != 0;
+			else
+				ink = (shadow[idx >> 3] >> (idx & 7)) & 1;
 			byte = (unsigned char)(byte << 1) |
-			    (unsigned char)((shadow[bit >> 3] >> (bit & 7)) & 1);
+			    (unsigned char)ink;
 			if (++nbit == 8) {
 				out[n++] = byte;
 				byte = 0;
@@ -414,6 +470,13 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 			for (c = 0; c < w; c++)
 				shadow_set(x + c, y + r, ink);
 	}
+	if (cshadow != NULL) {
+		int r, c;
+
+		for (r = 0; r < h; r++)
+			for (c = 0; c < w; c++)
+				cshadow[(size_t)(y + r) * LCD_W + x + c] = px;
+	}
 
 	for (row = 0; row < h; row += BAND_ROWS) {
 		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
@@ -450,9 +513,58 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 			if (shadow != NULL)
 				shadow_set(x + i % w, y + row + i / w,
 				    shadow_ink((r << 16) | (g << 8) | b));
+			if (cshadow != NULL)
+				cshadow[(size_t)(y + row + i / w) * LCD_W +
+				    x + i % w] = band[i];
 		}
 		if (esp_lcd_panel_draw_bitmap(panel, x, y + row, x + w,
 		    y + row + n, band) != ESP_OK)
+			return -1;
+	}
+	return 0;
+}
+
+/* Move a full-width band of the glass up or down, using the color copy.
+ *
+ * The only move a console makes: x and tox zero, the whole width, h rows
+ * from y to toy. The pixels come from cshadow, so no readback is needed
+ * and no cell is rendered again -- a memmove and one DMA of the band
+ * that moved, against a redraw of every row. Anything else, or no color
+ * copy, returns -1 and the caller redraws.
+ */
+int
+luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h)
+{
+	int row;
+
+	(void)w;
+	if (!present || cshadow == NULL)
+		return -1;
+	if (x != 0 || tox != 0 || h <= 0)
+		return -1;
+	if (y < 0 || toy < 0 || y + h > LCD_H || toy + h > LCD_H)
+		return -1;
+
+	memmove(cshadow + (size_t)toy * LCD_W, cshadow + (size_t)y * LCD_W,
+	    (size_t)h * LCD_W * sizeof *cshadow);
+	if (shadow != NULL) {
+		size_t bpr = LCD_W / 8;
+
+		memmove(shadow + (size_t)toy * bpr, shadow + (size_t)y * bpr,
+		    (size_t)h * bpr);
+	}
+	/* DMA straight from the shadow, not through the shared band buffer:
+	 * draw_bitmap queues the transfer and returns, so a band staged in
+	 * one reused buffer is overwritten by the next row before the panel
+	 * has read it. The shadow rows are persistent and each transfer
+	 * reads its own, so the whole move can be in flight at once.
+	 */
+	for (row = 0; row < h; row += BAND_ROWS) {
+		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
+
+		if (esp_lcd_panel_draw_bitmap(panel, 0, toy + row, LCD_W,
+		    toy + row + n, cshadow + (size_t)(toy + row) * LCD_W)
+		    != ESP_OK)
 			return -1;
 	}
 	return 0;
@@ -510,6 +622,13 @@ int
 luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 {
 	(void)x; (void)y; (void)w; (void)h; (void)pix;
+	return -1;
+}
+
+int
+luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h)
+{
+	(void)x; (void)y; (void)tox; (void)toy; (void)w; (void)h;
 	return -1;
 }
 

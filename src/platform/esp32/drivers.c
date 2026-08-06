@@ -745,8 +745,19 @@ fb_unload(lua_State *L)
 static int
 fb_scroll(lua_State *L)
 {
-	return luaL_error(L, "fb.scroll: needs readback, which this panel "
-	    "cannot do -- redraw instead");
+	lua_Integer x = luaL_checkinteger(L, 1);
+	lua_Integer y = luaL_checkinteger(L, 2);
+	lua_Integer tox = luaL_checkinteger(L, 3);
+	lua_Integer toy = luaL_checkinteger(L, 4);
+	lua_Integer w = luaL_checkinteger(L, 5);
+	lua_Integer h = luaL_checkinteger(L, 6);
+
+	if (luaos_lcd_scroll((int)x, (int)y, (int)tox, (int)toy,
+	    (int)w, (int)h) != 0)
+		return luaL_error(L, "fb.scroll: this move is unsupported, "
+		    "or there is no color copy -- redraw instead");
+	lua_pushboolean(L, 1);
+	return 1;
 }
 
 /* fb.unload1(x,y,w,h) -> packed 1bpp, MSB first.
