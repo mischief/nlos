@@ -1,0 +1,173 @@
+-- Sectors, and the cache between them and the device.
+--
+-- This is the only module that calls the device. Everything above it
+-- addresses sectors by logical block number and never bytes, which is
+-- what keeps the byte offset of a partition, or the fact that there is
+-- a partition at all, out of the filesystem.
+--
+-- The cache is write-back: a dirty sector stays here until sync(). What
+-- that buys is the FAT, whose one sector is touched on every allocation
+-- and would otherwise be written once per cluster.
+
+local Fs = require "fat.obj"
+
+-- The methods go on the shared filesystem object; the module itself
+-- holds nothing.
+local M = {}
+
+--------------------------------------------------------------------------
+-- addressing
+
+-- Byte offset of a sector on the device. The volume's own base is added
+-- here, so a filesystem inside a partition needs nothing else.
+function Fs:secoff(lba)
+  return self.base + lba * self.secsz
+end
+
+function Fs:checklba(lba, n)
+  if lba < 0 or lba + n > self.totsec then
+    error(("sector %d outside the volume (%d sectors)")
+      :format(lba, self.totsec), 0)
+  end
+end
+
+--------------------------------------------------------------------------
+-- the cache
+--
+-- Sectors are held as strings. A dirty one is remembered in insertion
+-- order, so a flush writes in roughly the order the work happened,
+-- which is the order a device handles best and the order a crash makes
+-- the least surprising.
+
+function Fs:cacheinit(limit)
+  self.cache = {}
+  self.dirty = {}
+  self.ndirty = 0
+  self.nclean = 0
+  -- 256 sectors, 128KB with the usual sector. Larger buys nothing
+  -- measurable: streaming a file never revisits a sector, and the ones
+  -- that are revisited -- the FAT, a directory -- are far fewer than
+  -- this. Set `cache` to trade the other way on a small machine.
+  self.limit = limit or 256
+  self.nread = 0
+  self.nwrite = 0
+end
+
+-- Drop clean sectors only: a dirty one is the only copy of what it
+-- holds until the next flush, so evicting it would lose a write. The
+-- count is of clean sectors alone, which is what makes this cheap --
+-- counting all of them would send a run of writes scanning the whole
+-- cache for something evictable and finding nothing.
+local function evict(fs)
+  if fs.nclean <= fs.limit then return end
+  for lba in pairs(fs.cache) do
+    if not fs.dirty[lba] then
+      fs.cache[lba] = nil
+      fs.nclean = fs.nclean - 1
+      if fs.nclean <= fs.limit // 2 then break end
+    end
+  end
+end
+
+function Fs:rdsec(lba)
+  local s = self.cache[lba]
+  if s then return s end
+  self:checklba(lba, 1)
+  local r, err = self.dev:read(self:secoff(lba), self.secsz)
+  if not r then error("read failed: " .. tostring(err), 0) end
+  if #r ~= self.secsz then error("short read at sector " .. lba, 0) end
+  self.nread = self.nread + 1
+  self.cache[lba] = r
+  self.nclean = self.nclean + 1
+  evict(self)
+  return r
+end
+
+function Fs:wrsec(lba, s)
+  assert(#s == self.secsz, "a write is one whole sector")
+  self:checklba(lba, 1)
+  local was = self.cache[lba]
+  self.cache[lba] = s
+  if not self.dirty[lba] then
+    if was ~= nil then self.nclean = self.nclean - 1 end
+    self.ndirty = self.ndirty + 1
+    self.dirty[lba] = self.ndirty
+  end
+  -- Dirty sectors cannot be evicted, so a long run of writes would hold
+  -- the whole run in memory. Writing them out at the same limit keeps
+  -- the cache bounded; it is not a sync, and says nothing about
+  -- durability, which is still what sync() is for.
+  if self.ndirty >= self.limit then self:flush() end
+end
+
+-- A run of sectors as one string, and a run written back from one.
+-- Reading a cluster is the common case and it is contiguous.
+function Fs:rdsecs(lba, n)
+  local out = {}
+  for i = 0, n - 1 do out[i + 1] = self:rdsec(lba + i) end
+  return table.concat(out)
+end
+
+function Fs:wrsecs(lba, s)
+  assert(#s % self.secsz == 0, "writes are whole sectors")
+  for i = 0, #s // self.secsz - 1 do
+    self:wrsec(lba + i, s:sub(i * self.secsz + 1, (i + 1) * self.secsz))
+  end
+end
+
+-- Read and write inside one sector, for the fields that are smaller
+-- than one: a FAT12 entry straddling a boundary, a directory entry, the
+-- free count in FSInfo.
+function Fs:rdat(lba, off, n)
+  return self:rdsec(lba):sub(off + 1, off + n)
+end
+
+function Fs:wrat(lba, off, s)
+  local sec = self:rdsec(lba)
+  self:wrsec(lba, sec:sub(1, off) .. s .. sec:sub(off + #s + 1))
+end
+
+--------------------------------------------------------------------------
+-- flushing
+--
+-- Nothing reaches the device until this runs. FAT has no journal and no
+-- generation counter, so there is no ordering that makes a half-flush
+-- consistent -- the most that can be said is that a sector is either
+-- the old one or the new one. What sync() gives is a point where the
+-- device holds everything, and that is what the callers are told.
+
+function Fs:flush()
+  if self.ndirty == 0 then return end
+  local order = {}
+  for lba in pairs(self.dirty) do order[#order + 1] = lba end
+  table.sort(order, function(a, b) return self.dirty[a] < self.dirty[b] end)
+  for _, lba in ipairs(order) do
+    self.dev:write(self:secoff(lba), self.cache[lba])
+    self.nwrite = self.nwrite + 1
+  end
+  -- Written out, so they are clean now and may be evicted.
+  for lba in pairs(self.dirty) do
+    if self.cache[lba] ~= nil then self.nclean = self.nclean + 1 end
+  end
+  self.dirty = {}
+  self.ndirty = 0
+  evict(self)
+end
+
+function Fs:sync()
+  self:fsisync()
+  self:flush()
+  if self.dev.sync then self.dev:sync() end
+end
+
+-- Throw the cache away and start again from the device, which is what a
+-- test wants after cutting the power and what fsck wants after a repair.
+function Fs:drop()
+  self:dropindex()
+  self.cache = {}
+  self.dirty = {}
+  self.ndirty = 0
+  self.nclean = 0
+end
+
+return M
