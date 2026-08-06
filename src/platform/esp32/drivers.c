@@ -120,7 +120,7 @@ platform_have_p9(void)
 
 /* Neither. uart_rx below always answers -1 and uart_tx goes nowhere:
  * the board's one port is the console. There is no firmware and so no
- * ESP. Answering honestly is what keeps two procs and four ports from
+ * ESP. A truthful answer keeps two procs and four ports from
  * being spent on tasks that cannot run.
  */
 int

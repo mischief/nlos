@@ -29,6 +29,9 @@
 
 #include <esp_vfs.h>
 
+#include "lua.h"
+#include "lauxlib.h"
+
 #include "embedfs.h"
 #include "esp32.h"
 #include "fs.h"
@@ -218,4 +221,82 @@ vfs_embed_register(void)
 
 	for (size_t i = 0; i < sizeof prefixes / sizeof prefixes[0]; i++)
 		esp_vfs_register(prefixes[i], &vfs, (void *)prefixes[i]);
+}
+
+/* ---- los.rom: the embedded set, as data ---- */
+
+/* Every proc can already reach these bytes: require() loads modules
+ * from them through luaL_loadfile, below the lua-level io stripping
+ * (kernel_strip_io). What this adds is the ability to list them, and
+ * to read one without executing it.
+ *
+ * This grants no authority that require does not. The set is the OS's
+ * own lib/, task/ and bin/, fixed at build time, in flash, immutable at
+ * runtime. It is data, on the same argument as los.font's glyphs.
+ *
+ * With it, a namespace can be mounted read-only over the embedded tree
+ * in any proc, with no filesystem server behind it. lib/procfs.lua
+ * already uses that shape for a local backend.
+ */
+static int
+rom_list(lua_State *L)
+{
+	lua_createtable(L, (int)embedfs_nfiles, 0);
+	for (size_t i = 0; i < embedfs_nfiles; i++) {
+		lua_pushstring(L, embedfs_files[i].path);
+		lua_rawseti(L, -2, (lua_Integer)i + 1);
+	}
+	return 1;
+}
+
+static const struct embedfile *
+rom_find(const char *path)
+{
+	for (size_t i = 0; i < embedfs_nfiles; i++)
+		if (strcmp(embedfs_files[i].path, path) == 0)
+			return &embedfs_files[i];
+	return 0;
+}
+
+/* the whole file. These are source and bytecode measured in kilobytes,
+ * so a partial read would buy nothing and add a place to get wrong.
+ */
+static int
+rom_read(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	const struct embedfile *f = rom_find(path);
+
+	if (!f)
+		return 0;
+	lua_pushlstring(L, (const char *)f->data, f->len);
+	return 1;
+}
+
+static int
+rom_size(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	const struct embedfile *f = rom_find(path);
+
+	if (!f)
+		return 0;
+	lua_pushinteger(L, (lua_Integer)f->len);
+	return 1;
+}
+
+static const luaL_Reg romlib[] = {
+	{ "list", rom_list },
+	{ "read", rom_read },
+	{ "size", rom_size },
+	{ NULL, NULL }
+};
+
+int luaopen_los_rom(lua_State *L);
+
+int
+luaopen_los_rom(lua_State *L)
+{
+	luaL_newlib(L, romlib);
+	return 1;
 }

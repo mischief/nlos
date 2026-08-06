@@ -379,7 +379,7 @@ large_alloc(struct luaheap *h, size_t n)
  * fix; this is the pressure valve for the peak that tuning cannot see
  * coming, called when the chunk source says no rather than on a
  * schedule. Removing it and re-measuring puts the screenshot back to
- * dying of "not enough memory", so it is load-bearing and not
+ * dying of "not enough memory", so this path is required rather than
  * insurance. Returns bytes released, so a caller can tell whether
  * retrying is worth anything.
  */

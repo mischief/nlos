@@ -42,6 +42,7 @@ end
 local console = require("console")
 local fbcons = require("fbcons")
 local dos = require("dos")
+local ns = require("ns")
 
 local con = console.new(fbcons.new({
 	fb = fb,
@@ -59,62 +60,22 @@ end)
 
 -- The namespace the shell looks programs up in.
 --
--- ns.current() is nil here and a fresh ns.new() would be empty: on this
--- platform nothing ever built a lua-side namespace, because there is no
--- filesystem SERVER to mount. The embedded files reach every proc
--- through the kernel instead -- io.open and require find them -- so
--- what the shell is missing is not the files but an object shaped like
--- a namespace to ask.
---
--- This is that object and no more of one than dos needs: stat to find a
--- program, readfile to load it, open for a redirect. Read-only, because
--- the image is. readdir is absent for a reason worth knowing -- the
--- esp32 VFS implements no opendir, so the embedded tree cannot be
--- enumerated at all, which is why `ls` finds nothing here while
--- `smiley` runs.
-local romns = {}
+-- Mounted rather than faked. An unprivileged proc has no io.open
+-- (kernel_strip_io: files come through a mount, not through ambient
+-- authority), and on this platform the files live in the app image
+-- with no server in front of them -- so lib/romfs.lua serves the image
+-- as a local dev backend, the way lib/procfs.lua serves the process
+-- table, and this is an ordinary read-only mount over it.
+local N = ns.new()
+local mok, merr = N:mount("/", require("romfs").new(), "romfs")
 
-function romns:stat(path)
-	local f = io.open(path)
-
-	if not f then
-		return nil
-	end
-	local n = f:seek("end")
-
-	f:close()
-	return { name = path:match("[^/]+$") or path, size = n, dir = false }
-end
-
-function romns:readfile(path)
-	local f = io.open(path)
-
-	if not f then
-		return nil, "cannot open " .. path
-	end
-
-	local d = f:read("a")
-
-	f:close()
-	return d
-end
-
-function romns:open(path, mode)
-	if mode and mode ~= "r" then
-		return nil, "read-only"
-	end
-	return io.open(path)
-end
-
--- a spawned program inherits the kernel's namespace on this platform,
--- so there is nothing to describe and nothing lost by saying so.
-function romns:describe()
-	return nil
+if not mok then
+	say("fbterm: mount failed: " .. tostring(merr) .. "\n")
 end
 
 thread.spawn(function()
 	local sh = dos.new({
-		ns = romns,
+		ns = N,
 		cons = consright,
 		fb = fb,
 	})

@@ -115,8 +115,8 @@ local function against(addr, m)
 	end
 
 	local line = {
-		-- monotonic, NOT os.clock: that is cpu time, so a driver
-		-- starved of cpu never notices time passing and measures a
+		-- monotonic rather than os.clock, which is cpu time: a driver
+		-- starved of cpu never notices time passing, and measures a
 		-- protocol deadline against its own busyness.
 		now = hostutil.now,
 		-- hostutil.send writes the whole string or fails

@@ -127,6 +127,7 @@ set(EMBED_FILES
     # the panel as a terminal: fbcons is the second binding of
     # lib/console.lua, and dos/prog/draw/caps are what a program needs
     # to be run from a prompt on it.
+    lib/romfs.lua
     lib/fbcons.lua
     task/fbterm.lua
     lib/caps.lua

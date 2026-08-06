@@ -2491,7 +2491,7 @@ api_altblock(lua_State *L)
 		 * both fire and both be released by wait_clear, so this is
 		 * about not consuming the pool rather than correctness.
 		 *
-		 * on the KIND as well as the port: wake_senders and
+		 * on the kind as well as the port: wake_senders and
 		 * wake_receivers walk the same list and skip what is not
 		 * theirs, so one port waited on both ways needs one of each.
 		 */
@@ -4089,6 +4089,7 @@ extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
 extern int luaopen_los_inet(lua_State *L);		/* inet.c: checksum */
 extern int luaopen_los_crc(lua_State *L);		/* crc.c: crc16/crc32 */
 extern int luaopen_los_font(lua_State *L);		/* font.c: glyphs */
+extern int luaopen_los_rom(lua_State *L);		/* vfs.c: the embed set */
 extern int luaopen_ssh_crypto_native(lua_State *L);	/* native.c */
 extern int luaopen_gefs_native(lua_State *L);	/* gefs_native.c */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
@@ -4840,6 +4841,18 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_los_crc);
 	lua_setfield(p->L, -2, "los.crc");
+
+	/* los.rom: the embedded set as data, ambient for the same reason.
+	 * require() already reads these bytes in every proc through
+	 * luaL_loadfile -- below the lua-level io stripping -- so what
+	 * this adds is the ability to LIST them and to read one without
+	 * executing it. That is what lets a namespace be mounted
+	 * read-only over the image with no server behind it, which is the
+	 * only way an unprivileged proc on this platform can find a
+	 * program at all.
+	 */
+	lua_pushcfunction(p->L, luaopen_los_rom);
+	lua_setfield(p->L, -2, "los.rom");
 
 	/* los.font (src/font.c), ambient on the same argument as the three
 	 * above: glyphs are data, not a device. render() rasterises a

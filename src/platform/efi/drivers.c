@@ -340,3 +340,18 @@ platform_kbd_read(void)
 {
 	return -1;
 }
+
+/* los.rom: no embedded set published here yet. An empty table rather
+ * than an absent module, so a caller can ask and get "nothing" instead
+ * of a require error -- this platform reaches its files through a
+ * filesystem server, which is what los.rom exists to stand in for where
+ * there is none.
+ */
+int luaopen_los_rom(lua_State *L);
+
+int
+luaopen_los_rom(lua_State *L)
+{
+	lua_createtable(L, 0, 0);
+	return 1;
+}

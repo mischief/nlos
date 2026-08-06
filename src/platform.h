@@ -77,7 +77,7 @@ int	platform_have_blk(void);
  */
 int	platform_have_fb(void);
 
-/* a keyboard that is NOT the console: the input half of a second
+/* a keyboard that is not the console: the input half of a second
  * terminal, where the console is a serial line the machine also has.
  * The T-Deck and the Cardputer each have one; efi's keys arrive through
  * ConIn and ARE the console, so it answers no.

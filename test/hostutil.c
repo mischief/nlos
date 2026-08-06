@@ -468,7 +468,7 @@ l_closef(lua_State *L)
  * Nothing about a tty forces this: picocom does not reset the board,
  * and neither does a plain open of the same port -- both measured.
  * Whatever socat does to the modem lines it does on top of opening,
- * so simply not doing it is enough; no flag here is load-bearing.
+ * so simply not doing it is enough. No flag here causes it.
  *
  * Holding the descriptor open for the whole session then lets a
  * receiver like lrz be handed the very line the commands went out on.

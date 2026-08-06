@@ -29,7 +29,7 @@
  * 8KB used elsewhere that is 8KB of internal sram committed to whoever
  * allocated first, on a machine with 386KB in total.
  *
- * The large-block cache is the sharper edge: four blocks per size class
+ * The large-block cache costs more: four blocks per size class
  * across 128 classes is unbounded in any way that matters here.
  * Measured before this: 113KB sitting unused inside the heap while
  * malloc had 32KB left and a proc was dying of "not enough memory".
