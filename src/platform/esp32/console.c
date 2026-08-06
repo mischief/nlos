@@ -13,7 +13,10 @@
 #include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+#include <esp_vfs.h>
 
 #include <sdkconfig.h>
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
@@ -23,6 +26,71 @@
 
 #include "esp32.h"
 #include "platform.h"
+
+/* stdout and stderr, on the same path console_write uses.
+ *
+ * IDF's own console VFS writes one character at a time, and when the
+ * port is not being drained it tries one non-blocking write, then one
+ * blocking write with a timeout, and then discards until a later write
+ * succeeds (usbjtag_tx_char_via_driver). Output is dropped exactly when
+ * something is going wrong, which is when it is wanted: a program
+ * reporting why it failed through io.stderr said nothing at all.
+ *
+ * So the standard streams are reopened on a vfs of our own whose write
+ * reaches console_write, which chunks and retries. printf, io.write,
+ * io.stderr and ESP_LOG all arrive by it.
+ */
+static ssize_t
+con_vfs_write(int fd, const void *data, size_t size)
+{
+	(void)fd;
+	console_write(data, size);
+	return (ssize_t)size;
+}
+
+static int
+con_vfs_open(const char *path, int flags, int mode)
+{
+	(void)path;
+	(void)flags;
+	(void)mode;
+	return 0;
+}
+
+static int
+con_vfs_close(int fd)
+{
+	(void)fd;
+	return 0;
+}
+
+static int
+con_vfs_fstat(int fd, struct stat *st)
+{
+	(void)fd;
+	memset(st, 0, sizeof *st);
+	st->st_mode = S_IFCHR;
+	return 0;
+}
+
+static void
+console_stdio_redirect(void)
+{
+	static const esp_vfs_t vfs = {
+		.flags = ESP_VFS_FLAG_DEFAULT,
+		.write = con_vfs_write,
+		.open = con_vfs_open,
+		.close = con_vfs_close,
+		.fstat = con_vfs_fstat,
+	};
+
+	if (esp_vfs_register("/dev/luaos", &vfs, NULL) != ESP_OK)
+		return;
+	if (freopen("/dev/luaos/con", "w", stdout))
+		setvbuf(stdout, NULL, _IONBF, 0);
+	if (freopen("/dev/luaos/con", "w", stderr))
+		setvbuf(stderr, NULL, _IONBF, 0);
+}
 
 void
 console_init(void)
@@ -66,6 +134,11 @@ console_init(void)
 
 	if (fl >= 0)
 		fcntl(STDIN_FILENO, F_SETFL, fl | O_NONBLOCK);
+
+	/* after stdin is set up: this moves only the output streams, and
+	 * reading still goes through the driver's own vfs.
+	 */
+	console_stdio_redirect();
 }
 
 /* Raw mode: pass bytes through untouched.

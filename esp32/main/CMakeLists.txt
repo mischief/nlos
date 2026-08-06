@@ -136,6 +136,8 @@ set(EMBED_FILES
     lib/draw.lua
     lib/dos.lua
     bin/smiley.lua
+    bin/cat.lua
+    bin/ls.lua
 )
 
 # Some modules ship as stripped bytecode rather than source.
