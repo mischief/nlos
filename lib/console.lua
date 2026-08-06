@@ -155,7 +155,7 @@ function Console:serve()
 			-- how wide the far end is, for a program that lays
 			-- out columns. A backend that knows says so
 			-- (lib/fbcons.lua counts cells); a serial line does
-			-- not, and answering nil is the honest reply -- there
+			-- not, and answers nil rather than a number -- there
 			-- is no escape sequence here to ask a terminal with,
 			-- and a guess dressed as a measurement is worse than
 			-- no measurement.

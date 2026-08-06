@@ -48,7 +48,7 @@ local Cons = {}
 
 Cons.__index = Cons
 
--- one message per changed SPAN, which is usually one cell.
+-- one message per changed span, which is usually one cell.
 --
 -- A whole row is 53 cells at 6x12, or 15264 bytes of BGRx, and a blit
 -- costs several copies of what it carries. Repainting the row for each

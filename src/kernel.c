@@ -4858,7 +4858,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	/* los.rom: the embedded set as data, ambient for the same reason.
 	 * require() already reads these bytes in every proc through
 	 * luaL_loadfile -- below the lua-level io stripping -- so what
-	 * this adds is the ability to LIST them and to read one without
+	 * this adds is the ability to list them, and to read one without
 	 * executing it. That is what lets a namespace be mounted
 	 * read-only over the image with no server behind it, which is the
 	 * only way an unprivileged proc on this platform can find a

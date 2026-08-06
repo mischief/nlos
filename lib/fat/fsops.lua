@@ -20,7 +20,7 @@ local rep, sub = string.rep, string.sub
 
 -- The wall clock, if there is one. A machine with no os library and no
 -- clock passed in dates what it writes 1980-01-01, which is what a FAT
--- timestamp of zero means and is honest about what the machine knows.
+-- timestamp of zero means and is all such a machine can say.
 local hostos = rawget(_G, "os")
 
 function Fs:now()
