@@ -17,7 +17,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(8)
+tap.plan(13)
 
 local SMALL = "hello from gefs\n"
 local BIG = ("gefs"):rep(10000)
@@ -113,6 +113,34 @@ local function main()
 	-- the files the host wrote were never touched and are still whole
 	tap.ok(N:readfile("/g/hello") == SMALL,
 	    "the seeded file survived the concurrent writes")
+
+	-- remove, over the mount rather than against the backend.
+	--
+	-- lib/srv.lua's op, lib/mnt.lua's method and the fid it spends are
+	-- only reachable through a served filesystem, so this is the one
+	-- place they run. A local mount (test/host_fat.lua) exercises the
+	-- backend half and none of this.
+	N:writefile("/g/doomed", SMALL)
+	tap.ok(N:readfile("/g/doomed") == SMALL, "a file to remove exists")
+	tap.ok(N:remove("/g/doomed"), "removed it through the mount")
+	tap.ok(N:readfile("/g/doomed") == nil, "and it is gone")
+	tap.ok(select(1, N:remove("/g/doomed")) == nil,
+	    "removing it again fails rather than claiming success")
+
+	-- the fid is spent on a failed remove too, so a refusal must not
+	-- leave the server holding one. Nothing here can count the
+	-- server's fids, but a mount that leaked one per refusal would
+	-- stop answering after enough of them.
+	local leaked = true
+
+	for _ = 1, 64 do
+		if select(1, N:remove("/g/doomed")) ~= nil then
+			leaked = false
+			break
+		end
+	end
+	tap.ok(leaked and N:readfile("/g/hello") == SMALL,
+	    "64 refused removes leave the mount working")
 
 	-- persistence: commit a file through the server and force the sync
 	-- explicitly by writing "sync" to the synthetic /ctl -- open it, do

@@ -450,6 +450,14 @@ lua_payload = files(
   # programs, at /bin/<name> -- see lib/prog.lua for the ABI they run under
   'bin/cat.lua',
   'bin/ps.lua',
+  # the other two repl words, and the pager. Nothing here is esp32's:
+  # a shell over ssh or a browser reaches /bin rather than the repl's
+  # _ENV, so these are wanted wherever a shell is. bin/wifi.lua is not
+  # here, being about a radio these machines do not have.
+  'bin/ports.lua',
+  'bin/stats.lua',
+  'bin/p.lua',
+  'bin/rm.lua',
   'bin/stack.lua',
   'bin/trace.lua',
   'bin/ls.lua',
