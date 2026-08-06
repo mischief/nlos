@@ -5834,6 +5834,18 @@ proc_freestate(struct kproc *p)
 	 */
 	if (p->heap && p->heap != shared_heap) {
 		luaheap_destroy(p->heap);
+	} else if (p->heap) {
+		/* a shared heap keeps what this proc was using, because
+		 * the chunks it sat in belong to the machine rather than
+		 * to the proc. This is the one moment worth looking: a
+		 * program that ran and exited has just dropped its whole
+		 * working set, and the chunks it was carved from are
+		 * empty now or never.
+		 *
+		 * Per-proc heaps need none of this -- destroy hands every
+		 * chunk back at once.
+		 */
+		luaheap_reclaim(p->heap);
 	}
 	p->heap = 0;
 	/* lua_close frees every coroutine through kernel_cofree, so the

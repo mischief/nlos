@@ -74,6 +74,17 @@ static const size_t classes[] = {
 struct chunk {
 	struct chunk *next;
 	size_t size;
+	/* scratch for release_freechunks, meaningless between sweeps. It
+	 * lives here rather than in an array because a sweep runs when
+	 * memory is short, which is the worst moment to want some.
+	 */
+	size_t freebytes;
+	/* the tail drain_bump could not cut into any class, and so put
+	 * on no free list. A sweep counts it as free, because it is --
+	 * without this a chunk never tallies full and nothing is ever
+	 * returned.
+	 */
+	size_t lost;
 };
 
 /* A large block is the one thing here that carries a header, because
@@ -265,10 +276,16 @@ drain_bump(struct luaheap *h)
 		*(void **)p = h->freelist[ci - 1];
 		h->freelist[ci - 1] = p;
 	}
+	/* h->chunks is the chunk the bump region is in: newchunk drains
+	 * before it pushes the replacement, for exactly this.
+	 */
+	if (h->chunks)
+		h->chunks->lost += h->bumpleft;
 	h->bumpleft = 0;
 }
 
 static size_t release_largefree(struct luaheap *h);
+static size_t release_freechunks(struct luaheap *h);
 
 /* take a fresh chunk and make it the bump region. */
 static int
@@ -283,16 +300,27 @@ newchunk(struct luaheap *h, size_t need)
 	c = h->ops->chunk_alloc(h->ud, want);
 	if (!c && release_largefree(h))
 		c = h->ops->chunk_alloc(h->ud, want);
+	/* and then the empty chunks: a source that said no may say yes
+	 * once they are back, and holding them against a request we
+	 * cannot serve is the worst of both.
+	 */
+	if (!c && release_freechunks(h))
+		c = h->ops->chunk_alloc(h->ud, want);
 	if (!c)
 		return 0;
 	c->size = want;
-	c->next = h->chunks;
-	h->chunks = c;
+	c->freebytes = 0;
+	c->lost = 0;
 
-	/* only once the replacement is secured: on failure the caller can
-	 * still be served from the region we would otherwise have cut up
+	/* drained while h->chunks is still the chunk being retired, so
+	 * the tail is charged to the right one -- and only once the
+	 * replacement is secured, so a failure above leaves the current
+	 * region intact for the caller.
 	 */
 	drain_bump(h);
+
+	c->next = h->chunks;
+	h->chunks = c;
 
 	h->bump = (char *)c + sizeof *c;
 	h->bumpleft = want - sizeof *c;
@@ -364,6 +392,94 @@ large_alloc(struct luaheap *h, size_t n)
 	h->nlarges++;
 	h->large_asked += n;
 	return (char *)l + sizeof *l;
+}
+
+/* Hand back chunks that nothing is using.
+ *
+ * A chunk is carved into class-sized blocks and never moves, so the
+ * heap cannot compact -- but it can notice that every block in a chunk
+ * has been freed, which happens whenever a proc exits and takes its
+ * working set with it. That is the shape of this machine's memory: the
+ * shell runs a program, the program allocates a few hundred kilobytes,
+ * and it exits.
+ *
+ * Finding which chunk a block belongs to needs no header on the block
+ * and no aligned allocation, both of which cost more than they save
+ * here (see CHUNK_BYTES on why chunks are deliberately not a round
+ * 8K). It needs only the ranges, and there are few enough chunks to
+ * walk. The cost is paid when memory is already short rather than on
+ * every free.
+ *
+ * The sum is exact because drain_bump puts a retired chunk's tail on
+ * the free lists: every byte of a chunk that is not the current one is
+ * either live or on a list, so "free bytes equal capacity" is the same
+ * statement as "nothing here is in use".
+ */
+static size_t
+release_freechunks(struct luaheap *h)
+{
+	struct chunk **cp, *c;
+	size_t freed = 0;
+
+	/* the chunk the bump pointer is in has bytes that are neither
+	 * live nor listed, so it can never tally full. Skipping it also
+	 * keeps the allocator from freeing the ground it stands on.
+	 */
+	struct chunk *cur = h->bumpleft ? h->chunks : 0;
+
+	for (c = h->chunks; c; c = c->next)
+		c->freebytes = 0;
+
+	for (size_t ci = 0; ci < NCLASS; ci++)
+		for (void *b = h->freelist[ci]; b; b = *(void **)b)
+			for (c = h->chunks; c; c = c->next)
+				if ((char *)b >= (char *)c + sizeof *c &&
+				    (char *)b < (char *)c + c->size) {
+					c->freebytes += classes[ci];
+					break;
+				}
+
+	cp = &h->chunks;
+	while ((c = *cp) != 0) {
+		if (c == cur ||
+		    c->freebytes + c->lost != c->size - sizeof *c) {
+			cp = &c->next;
+			continue;
+		}
+
+		/* every block in it is on a list, so take them off before
+		 * the memory goes back: a list still threading through a
+		 * freed chunk is a use-after-free on the next allocation.
+		 */
+		for (size_t ci = 0; ci < NCLASS; ci++) {
+			void **bp = &h->freelist[ci];
+
+			while (*bp) {
+				char *b = (char *)*bp;
+
+				if (b >= (char *)c + sizeof *c &&
+				    b < (char *)c + c->size)
+					*bp = *(void **)b;
+				else
+					bp = (void **)*bp;
+			}
+		}
+
+		*cp = c->next;
+		h->mapped -= c->size;
+		h->nchunks--;
+		freed += c->size;
+		h->ops->chunk_free(h->ud, c, c->size);
+	}
+	return freed;
+}
+
+size_t
+luaheap_reclaim(struct luaheap *h)
+{
+	if (!h)
+		return 0;
+	return release_freechunks(h);
 }
 
 /* hand every cached large block back to the chunk source.

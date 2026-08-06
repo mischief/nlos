@@ -72,6 +72,13 @@ void	luaheap_destroy(struct luaheap *h);
 void	*luaheap_realloc(struct luaheap *h, void *ptr, size_t osize,
 	    size_t nsize);
 
+/* Hand back every chunk nothing is using, and report the bytes. Runs
+ * when memory is short or when a proc has just exited and dropped its
+ * working set -- not on a schedule, because the walk is proportional to
+ * the free lists and there is nothing to find most of the time.
+ */
+size_t	luaheap_reclaim(struct luaheap *h);
+
 void	luaheap_stats(const struct luaheap *h, struct luaheap_stats *out);
 
 #endif
