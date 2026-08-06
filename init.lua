@@ -440,7 +440,7 @@ local repl_worker_src = [[
 			-- no srv capability: `mount` reads /srv out of this
 			-- namespace, which the worker inherited.
 			launcher.start({ ns = require("ns").current(),
-			    cons = consh, fb = fbh },
+			    cons = consh, fb = fbh, net = tcph },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")
 			return "back at the lua repl"

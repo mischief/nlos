@@ -339,7 +339,7 @@ _G.dos = setmetatable({}, {
 			return "dos: no namespace to run programs from"
 		end
 		require("dos").start({ ns = N, cons = caps.cons,
-		    fb = caps.fb },
+		    fb = caps.fb, net = caps.tcp },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")
 		return "back at the lua repl"

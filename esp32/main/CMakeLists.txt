@@ -162,6 +162,9 @@ set(EMBED_FILES
     lib/dhcpc.lua
     lib/dns.lua
     lib/dnsc.lua
+    # the http client, for bin/fetch.lua. A library and not a task: it
+    # owns no capability and rides the tcp right its caller holds.
+    lib/http.lua
     lib/ntp.lua
     task/eth.lua
     task/ip.lua

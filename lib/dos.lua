@@ -134,6 +134,9 @@ function M.new(caps)
 		-- decides whether programs here can draw is one grant, one
 		-- level up -- exactly like `cons`.
 		fb = caps.fb,
+		-- the tcp task, lent on the same terms as the screen: a
+		-- shell given none hands out none.
+		net = caps.net,
 		coro = caps.coro or false,
 		env = caps.env or { PATH = caps.path or "/bin", HOME = "/" },
 		cwd = "/",
@@ -403,6 +406,14 @@ function Sh:spawn1(path, argv, streams)
 	-- control output over the same terminal the prompt uses.
 	if self.cons then
 		msg.tty = { __right = self.cons }
+	end
+	-- and the network, on the same terms again: a right to the tcp
+	-- task, used by the few programs that ask (prog.net -> fetch). A
+	-- shell that was not given one hands on nothing, so a machine with
+	-- no stack is a machine whose programs cannot reach a network
+	-- rather than one that fails oddly when they try.
+	if self.net then
+		msg.net = { __right = self.net }
 	end
 	-- the pull flag rides BESIDE stdin, not inside it. a table carrying
 	-- __right is serialized as the right and nothing else (see

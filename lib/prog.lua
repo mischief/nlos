@@ -661,6 +661,8 @@ function M.main()
 	ctx.fb = ctx.fb and ctx.fb.__right or nil
 	-- the terminal, if the launcher lent us one. see M.tty below.
 	ctx.tty = ctx.tty and ctx.tty.__right or nil
+	-- the network, if the launcher lent us one. see M.net below.
+	ctx.net = ctx.net and ctx.net.__right or nil
 
 	local N, nerr = ns.restore(ctx.nsdesc)
 
@@ -699,6 +701,7 @@ function M.corun(spec)
 		-- shell holds, where M.main gets it wrapped in {__right=} off the
 		-- wire -- see Sh:pipecoro. either way M.tty() reads ctx.tty.
 		tty = spec.tty,
+		net = spec.net,
 	}
 
 	if not ctx.ns then
@@ -734,6 +737,24 @@ function M.screen()
 		return nil
 	end
 	return require("caps").fb(ctx.fb)
+end
+
+-- the network, wrapped, or nil where the launcher lent none. Same rule
+-- as M.screen, and the same shape lib/http.lua's get() takes.
+--
+-- This is the whole tcp task, not a socket: a right is a right, so a
+-- shell that lends it says its programs may open connections and listen
+-- for them. That is a larger thing to hand over than the screen, and it
+-- is deliberate rather than overlooked -- the alternative is a network
+-- served as a filesystem, which is plan 9's answer and a bigger build
+-- than one program deserves.
+function M.net()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.net then
+		return nil
+	end
+	return require("caps").tcp(ctx.net)
 end
 
 -- the terminal, wrapped, or nil if the launcher lent none -- the same

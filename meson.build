@@ -458,6 +458,7 @@ lua_payload = files(
   'bin/stats.lua',
   'bin/p.lua',
   'bin/rm.lua',
+  'bin/fetch.lua',
   'bin/stack.lua',
   'bin/trace.lua',
   'bin/ls.lua',
