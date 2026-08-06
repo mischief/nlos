@@ -264,20 +264,38 @@ function M.walkpath(backend, h, path)
 	return M.walknames(backend, h, M.elements(path))
 end
 
--- the most data one request or reply may carry across a port.
+-- the most data one request or reply may carry across a port, and the
+-- boundary the loops above align to.
 --
--- sys.MAXMSG is the hard limit on a whole serialized message; a read
--- reply is that data plus its table and seq. The headroom is far larger
--- than those cost, because the two directions of being wrong are not
--- comparable: a little throughput against a message that cannot be sent
--- at all.
+-- One block. Everything under a mount is block-shaped -- gefs's is
+-- 16384, a disk sector is 512 -- and a request that is exactly one
+-- block, on a block boundary, is the one that costs the backend
+-- nothing extra: gefs re-packs and re-writes the block a write lands
+-- in, and reads the old one first if the write does not cover it
+-- whole. Chunks that straddle turn one block-write into a
+-- read-modify-write, and a block touched by three chunks is packed and
+-- hashed three times.
 --
--- it lives here rather than in lib/mnt.lua because both halves of the
--- transport need the same number and neither is entitled to define it
--- for the other -- srv.lua clamps incoming requests to it precisely so
--- that a client which ignores it cannot make a server build a reply it
--- can never deliver.
-M.IOUNIT = sys.MAXMSG - 4096
+-- It used to be sys.MAXMSG - 4096 = 61440, reasoning only about what
+-- fits in one message. That is 94% of a port's whole queue
+-- (sys.MAXQUEUE), so a second concurrent writer did not fit, the
+-- kernel refused the send, and lib/mnt.lua reported the refusal as
+-- dev.Eio -- a write that never happened, on a file left with length
+-- 0. Three of these fit in a queue instead.
+--
+-- 9P says this per fid, in Ropen's iounit, which is the right shape
+-- and what a backend advertising its own block size would grow into.
+-- Until then one number, because both halves of the transport need the
+-- same one: srv.lua clamps incoming requests to it precisely so that a
+-- client which ignores it cannot make a server build a reply it can
+-- never deliver.
+M.IOUNIT = 16384
+
+-- a message too big to send at all is the worse failure, so the message
+-- bound stays as a ceiling over the block-shaped number above.
+if M.IOUNIT > sys.MAXMSG - 4096 then
+	M.IOUNIT = sys.MAXMSG - 4096
+end
 
 -- ---- transfers larger than one message ----
 --
@@ -314,9 +332,11 @@ function M.readloop(iounit, one, off, n)
 
 	while got < n do
 		local want = n - got
+		-- aligned, for the reason writeloop gives
+		local room = iounit - (off + got) % iounit
 
-		if want > iounit then
-			want = iounit
+		if want > room then
+			want = room
 		end
 
 		local d = one(off + got, want)
@@ -342,9 +362,17 @@ function M.writeloop(iounit, one, off, data)
 
 	while done < n do
 		local want = n - done
+		-- to the next multiple of iounit, not a flat iounit from
+		-- wherever this started. Everything under a mount is
+		-- block-shaped, and a chunk that straddles a block boundary
+		-- makes the backend read the old block before writing it --
+		-- gefs does exactly that (fsops.lua's `fo ~= 0 or n ~= blksz`).
+		-- Only the first chunk is ever short; every one after it
+		-- starts on a boundary.
+		local room = iounit - (off + done) % iounit
 
-		if want > iounit then
-			want = iounit
+		if want > room then
+			want = room
 		end
 
 		local w = one(off + done, data:sub(done + 1, done + want))
