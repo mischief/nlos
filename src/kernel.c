@@ -350,6 +350,18 @@ struct kproc {
 	TAILQ_HEAD(, kextra) coros;	/* every lua_State of this proc */
 	int hookforced;			/* 0 none, 1 p->co armed, 2 all armed */
 	int torture;			/* yield between EVERY instruction */
+
+	/* held still so another proc can read it. Nonzero means dispatch
+	 * must not resume this proc: it is counted rather than a flag
+	 * because two readers may look at one target at once, and the
+	 * second must not thaw it under the first.
+	 *
+	 * Guarded by the cpu locks, like `current` -- freezing is deciding
+	 * something about the run queues, and is done holding the same
+	 * lock that publishes who is running.
+	 */
+	int frozen;
+
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
 	struct luaheap *heap;	/* this proc's lua heap; see kalloc */
@@ -3753,13 +3765,138 @@ push_wchan(lua_State *L, struct kproc *p)
 	return 1;
 }
 
+/* ---- holding a proc still while another one reads it ----
+ *
+ * Reading another proc's stack was once safe for free: the machine was
+ * cooperative and single-threaded, so every proc but the caller was
+ * suspended between resumes and there was no moment at which a stack
+ * was half-built. On more than one cpu that is simply false -- the
+ * target can be running, pushing and popping frames, while the reader
+ * walks it.
+ *
+ * Refusing to read a running proc would be easy and useless: a spinning
+ * proc is running by definition, and it is the one you most want to
+ * sample. So the target is held still instead.
+ *
+ * Freeze first, THEN wait. Setting frozen stops dispatch from resuming
+ * it again; waiting for it to stop being some cpu's `current` is what
+ * makes the stack quiet. In that order there is no window -- the other
+ * order lets it be re-dispatched between the check and the walk.
+ *
+ * The wait ends even for a proc that never yields, because the preempt
+ * hook cuts one every quantum, so it stops being current within a
+ * quantum whatever it is doing.
+ *
+ * And the wait YIELDS rather than spins, which is what keeps two
+ * readers from deadlocking on each other: a reader that yields is no
+ * longer running, so the proc it is waiting for is free to stop.
+ */
+/* one lock, and it is the target's home cpu's: a proc runs only there,
+ * so that is the lock that publishes whether it is running, and the one
+ * make_ready already takes to decide the same thing.
+ */
+static struct cpu *
+proc_cpu(struct kproc *p)
+{
+	struct cpu *c = cpu_at(p->home);
+
+	return c ? c : cpu_at(0);
+}
+
+/* returns whether the target is running right now; frozen is raised
+ * either way, so the caller may wait and ask again without a window in
+ * between.
+ */
+static int
+proc_freeze(struct kproc *p)
+{
+	struct cpu *c = proc_cpu(p);
+	int running;
+
+	lock(&c->lock);
+	p->frozen++;
+	running = c->current == p;
+	unlock(&c->lock);
+	return running;
+}
+
+static void
+proc_thaw(struct kproc *p)
+{
+	struct cpu *c = proc_cpu(p);
+
+	lock(&c->lock);
+	if (p->frozen > 0)
+		p->frozen--;
+	unlock(&c->lock);
+}
+
+/* ---- the shape every cross-proc syscall takes ----
+ *
+ * Reading or changing another proc needs it held still, and that is not
+ * particular to stacks: a trace ring is walked while the target writes
+ * it, set_trace frees a ring the target may be mid-write into, and
+ * anything that lands here later will have the same problem. So the
+ * waiting is written once.
+ *
+ * What cannot be shared is the yield itself -- lua_yieldk names the
+ * continuation, and each syscall's is its own. So this returns which of
+ * the three situations the caller is in and lets it yield by name:
+ *
+ *	static int api_x_k(lua_State *L, int status, lua_KContext ctx)
+ *	{
+ *		struct kproc *p;
+ *
+ *		switch (proc_hold(L, 1, &p, ctx)) {
+ *		case HOLD_WAIT:	return lua_yieldk(L, 0, 1, api_x_k);
+ *		case HOLD_GONE:	return luaL_error(L, "no such proc");
+ *		case HOLD_SELF:	... do it, nothing to hold ...
+ *		case HOLD_HELD:	... do it, then proc_thaw(p) ...
+ *		}
+ *	}
+ *
+ * A body that can RAISE must run protected, because a raise past the
+ * thaw leaves the target frozen -- a proc that never runs again, which
+ * is a worse bug than the race being fixed. Anything building a table
+ * in the caller's state can raise: it allocates, and the caller has a
+ * memory limit.
+ */
+enum { HOLD_SELF, HOLD_HELD, HOLD_WAIT, HOLD_GONE };
+
+static int
+proc_hold(lua_State *L, int argn, struct kproc **out, lua_KContext ctx)
+{
+	struct kproc *me = self(L);
+	struct kproc *p = me;
+
+	if (!lua_isnoneornil(L, argn)) {
+		p = find_proc((int)luaL_checkinteger(L, argn));
+		if (!p)
+			return HOLD_GONE;
+	}
+	*out = p;
+	if (p == me)
+		return HOLD_SELF;	/* the one proc that cannot move */
+
+	/* frozen on the first pass and left frozen across every yield, so
+	 * there is no window in which it could be dispatched again
+	 * between the wait and the read. ctx says it is already ours.
+	 */
+	if (ctx == 0) {
+		if (proc_freeze(p))
+			return HOLD_WAIT;
+	} else if (proc_cpu(p)->current == p) {
+		return HOLD_WAIT;
+	}
+	return HOLD_HELD;
+}
+
 /* sys.stack(pid) -> { {source=, line=, name=, what=}, ... }
  *
- * a traceback of ANOTHER proc, which is only safe because we are
- * cooperative and single-threaded: every proc except the caller is
- * suspended between lua_resume calls, and lua_getstack/lua_getinfo on a
- * suspended coroutine are ordinary read-only debug API. no stopping the
- * world, no signals, no race.
+ * a traceback of ANOTHER proc, held still first: see proc_freeze above.
+ * lua_getstack/lua_getinfo on a suspended coroutine are ordinary
+ * read-only debug API, and once the target cannot be resumed they are
+ * as quiet as they were when one cpu made that true for free.
  *
  * two rules make it safe, and both were learned the hard way elsewhere
  * in this kernel:
@@ -3782,16 +3919,15 @@ push_wchan(lua_State *L, struct kproc *p)
  */
 #define MAXFRAMES	64
 
+/* the walk, as a lua function so it can be called protected: it
+ * allocates in the CALLER's state to build the result, so it can raise
+ * on a caller at its memory limit -- and a raise that escaped would
+ * leave the target frozen, which is a proc that never runs again.
+ */
 static int
-api_stack(lua_State *L)
+stack_walk(lua_State *L)
 {
-	struct kproc *p = self(L);
-
-	if (!lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
-		if (!p)
-			return luaL_error(L, "no such proc");
-	}
+	struct kproc *p = lua_touserdata(L, 1);
 
 	/* src/debug.c: every coroutine, not just the proc's own. A proc
 	 * built on lib/thread keeps its threads as coroutines inside its
@@ -3799,6 +3935,45 @@ api_stack(lua_State *L)
 	 * three frames for an idle proc and a deadlocked one.
 	 */
 	debug_push_stacks(L, p->L, p->co);
+	return 1;
+}
+
+static int api_stack_k(lua_State *L, int status, lua_KContext ctx);
+
+static int
+api_stack(lua_State *L)
+{
+	return api_stack_k(L, LUA_OK, 0);
+}
+
+static int
+api_stack_k(lua_State *L, int status, lua_KContext ctx)
+{
+	struct kproc *p;
+
+	(void)status;
+	switch (proc_hold(L, 1, &p, ctx)) {
+	case HOLD_GONE:
+		return luaL_error(L, "no such proc");
+	case HOLD_WAIT:
+		return lua_yieldk(L, 0, 1, api_stack_k);
+	case HOLD_SELF:
+		debug_push_stacks(L, p->L, p->co);
+		return 1;
+	}
+
+	/* protected: the walk builds its result in this proc's state, so
+	 * it allocates, so it can raise -- and a raise past the thaw would
+	 * leave the target frozen for good.
+	 */
+	lua_pushcfunction(L, stack_walk);
+	lua_pushlightuserdata(L, p);
+
+	int rc = lua_pcall(L, 1, 1, 0);
+
+	proc_thaw(p);
+	if (rc != LUA_OK)
+		return lua_error(L);
 	return 1;
 }
 
@@ -3897,12 +4072,22 @@ api_set_torture(lua_State *L)
 	return 1;
 }
 
+static int set_trace_k(lua_State *L, int status, lua_KContext ctx);
+
 static int
 api_set_trace(lua_State *L)
+{
+	return set_trace_k(L, LUA_OK, 0);
+}
+
+static int
+set_trace_k(lua_State *L, int status, lua_KContext ctx)
 {
 	struct kproc *p = self(L);
 	int arg = 1;
 	lua_Integer n;
+
+	(void)status;
 
 	if (lua_gettop(L) > 1 || (lua_gettop(L) == 1 && lua_isnoneornil(L, 1)))
 		arg = 2;
@@ -3929,7 +4114,29 @@ api_set_trace(lua_State *L)
 		    "proc %d is broke; trace before it dies, or spawn "
 		    "with opts.trace", p->id);
 
-	if (trace_arm(p, (int)n) != 0)
+	/* held for the arm itself, and only for that. This is the one
+	 * cross-proc call that WRITES: trace_arm frees and reallocates a
+	 * ring the target's line hook is putting entries into, so doing it
+	 * to a running proc frees memory out from under a writer.
+	 *
+	 * Everything above that can raise has already run, so the freeze
+	 * spans nothing that could longjmp past the thaw. trace_arm itself
+	 * only allocates C memory and reports failure by return.
+	 */
+	if (p != self(L)) {
+		if (ctx == 0) {
+			if (proc_freeze(p))
+				return lua_yieldk(L, 0, 1, set_trace_k);
+		} else if (proc_cpu(p)->current == p) {
+			return lua_yieldk(L, 0, 1, set_trace_k);
+		}
+	}
+
+	int armed = trace_arm(p, (int)n);
+
+	if (p != self(L))
+		proc_thaw(p);
+	if (armed != 0)
 		return luaL_error(L, "out of memory");
 	lua_pushboolean(L, 1);
 	return 1;
@@ -3939,19 +4146,26 @@ api_set_trace(lua_State *L)
  *
  * readable on a corpse, which is the point: the ring is freed with the
  * state, so a broke proc still says how it got where it stopped.
+ *
+ * Held still first, like sys.stack and for the same reason: a running
+ * target writes this ring on every line it executes, so walking it
+ * unheld reads entries being overwritten underneath.
  */
+static int trace_read_k(lua_State *L, int status, lua_KContext ctx);
+
 static int
 api_trace(lua_State *L)
 {
-	struct kproc *p = self(L);
+	return trace_read_k(L, LUA_OK, 0);
+}
+
+static int
+trace_body(lua_State *L)
+{
+	struct kproc *p = lua_touserdata(L, 1);
 	struct ktrace *t;
 	unsigned int n, start;
 
-	if (!lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
-		if (!p)
-			return luaL_error(L, "no such proc");
-	}
 	t = p->trace;
 	if (!t || !t->cap) {
 		lua_newtable(L);
@@ -3980,6 +4194,34 @@ api_trace(lua_State *L)
 		lua_setfield(L, -2, "wall");
 		lua_rawseti(L, -2, (int)i + 1);
 	}
+	return 1;
+}
+
+static int
+trace_read_k(lua_State *L, int status, lua_KContext ctx)
+{
+	struct kproc *p;
+
+	(void)status;
+	switch (proc_hold(L, 1, &p, ctx)) {
+	case HOLD_GONE:
+		return luaL_error(L, "no such proc");
+	case HOLD_WAIT:
+		return lua_yieldk(L, 0, 1, trace_read_k);
+	case HOLD_SELF:
+		lua_pushlightuserdata(L, p);
+		lua_replace(L, 1);
+		return trace_body(L);
+	}
+
+	lua_pushcfunction(L, trace_body);
+	lua_pushlightuserdata(L, p);
+
+	int rc = lua_pcall(L, 1, 1, 0);
+
+	proc_thaw(p);
+	if (rc != LUA_OK)
+		return lua_error(L);
 	return 1;
 }
 
@@ -4019,27 +4261,14 @@ struct histrow {
 };
 
 static int
-api_tracehist(lua_State *L)
+tracehist_body(lua_State *L)
 {
-	/* The fallback, static rather than on the stack because 256 rows is
-	 * 8KB and kernel.c builds with -Wframe-larger-than=4096. Safe
-	 * because the machine is cooperative and single-threaded: nothing
-	 * else runs between the first line of this function and the last,
-	 * which is the property src/debug.c already relies on to read
-	 * another proc's stack at all.
-	 */
-	static struct histrow fixed[HISTMAX];
-	struct kproc *p = self(L);
+	struct kproc *p = lua_touserdata(L, 1);
 	struct ktrace *t;
 	struct histrow *row;
 	int cap, nrow = 0, last = -1;
 	unsigned int n, start, dropped = 0;
 
-	if (!lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
-		if (!p)
-			return luaL_error(L, "no such proc");
-	}
 	t = p->trace;
 	if (!t || !t->cap) {
 		lua_newtable(L);
@@ -4066,10 +4295,8 @@ api_tracehist(lua_State *L)
 	 */
 	cap = (int)n;
 	row = malloc((size_t)cap * sizeof *row);
-	if (!row) {
-		row = fixed;
-		cap = HISTMAX;
-	}
+	if (!row)
+		return luaL_error(L, "tracehist: out of memory");
 
 	for (unsigned int i = 0; i < n; i++) {
 		struct tracent *e = &t->ent[(start + i) % t->cap];
@@ -4146,9 +4373,54 @@ api_tracehist(lua_State *L)
 	 */
 	lua_pushinteger(L, (lua_Integer)dropped);
 	lua_setfield(L, -2, "dropped");
-	if (row != fixed)
-		free(row);
+	free(row);
 	return 1;
+}
+
+/* There used to be a static fallback table here for when that malloc
+ * failed, and a comment saying it was safe because the machine was
+ * cooperative and single-threaded. It is not: sys.tracehist is an
+ * ordinary syscall, so two procs on two cpus can be inside this at
+ * once, both writing one shared array.
+ *
+ * Raising instead of falling back, rather than locking it, because the
+ * lock would have to be held across the table building below -- which
+ * allocates in the caller's state and can therefore raise straight
+ * through the unlock. A debugger that says "out of memory" is honest;
+ * one that quietly shares a buffer is not.
+ */
+static int
+tracehist_read_k(lua_State *L, int status, lua_KContext ctx)
+{
+	struct kproc *p;
+
+	(void)status;
+	switch (proc_hold(L, 1, &p, ctx)) {
+	case HOLD_GONE:
+		return luaL_error(L, "no such proc");
+	case HOLD_WAIT:
+		return lua_yieldk(L, 0, 1, tracehist_read_k);
+	case HOLD_SELF:
+		lua_pushlightuserdata(L, p);
+		lua_replace(L, 1);
+		return tracehist_body(L);
+	}
+
+	lua_pushcfunction(L, tracehist_body);
+	lua_pushlightuserdata(L, p);
+
+	int rc = lua_pcall(L, 1, 1, 0);
+
+	proc_thaw(p);
+	if (rc != LUA_OK)
+		return lua_error(L);
+	return 1;
+}
+
+static int
+api_tracehist(lua_State *L)
+{
+	return tracehist_read_k(L, LUA_OK, 0);
 }
 
 /* sys.syscalls(pid): how many of each los.sys call this proc has made.
@@ -6923,6 +7195,15 @@ dispatch_lap(struct cpu *me)
 
 		lock(&me->lock);
 		p = rq_take_high(me->runq);
+		/* a proc somebody is reading is put aside rather than run:
+		 * see proc_freeze. Taken and set aside under the one lock,
+		 * so it cannot be resumed between the two.
+		 */
+		if (p && p->frozen) {
+			rq_add(me->donq, p);
+			unlock(&me->lock);
+			continue;
+		}
 		/* published under the lock and for the whole resume, so
 		 * that make_ready can see this proc is in hand and leave
 		 * the requeue below to do the enqueueing.
@@ -6973,7 +7254,12 @@ dispatch_lap(struct cpu *me)
 
 		lock(&me->lock);
 		p = rq_take_any(me->runq);
-		me->current = p;	/* as phase one; see there */
+		if (p && p->frozen) {	/* as phase one; see there */
+			rq_add(me->donq, p);
+			unlock(&me->lock);
+			continue;
+		}
+		me->current = p;
 		unlock(&me->lock);
 		if (!p)
 			break;
