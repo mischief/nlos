@@ -150,7 +150,33 @@ function Console:serve()
 			-- log lines arrive already stamped and tagged
 			-- (lib/log.lua); the console is the console, not the
 			-- formatter.
-			io.write(m.data)
+			--
+			-- Coalesce a burst of writes into one backend write. A
+			-- full-screen program redraws by emitting a cursor move,
+			-- an erase and a line per row, each its own message; a
+			-- backend that draws a cursor or flushes a panel per
+			-- write (lib/fbcons.lua) then pays that per fragment
+			-- rather than per frame. Draining what is already queued
+			-- and writing it once is most of what makes the fb
+			-- console quick. Order is kept; a non-write ends the run
+			-- and is put back for the next turn of the loop.
+			local parts = { m.data }
+
+			while true do
+				local ok, nxt = sys.tryrecv(sys.SELF)
+
+				if not ok then
+					break
+				end
+				if type(nxt) == "table" and not nxt.reply and
+				    (nxt.op == "write" or nxt.op == "log") then
+					parts[#parts + 1] = nxt.data
+				else
+					table.insert(self.deferred, 1, nxt)
+					break
+				end
+			end
+			io.write(table.concat(parts))
 		elseif m.op == "size" then
 			-- how wide the far end is, for a program that lays
 			-- out columns. A backend that knows says so
