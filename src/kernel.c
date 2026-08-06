@@ -6968,10 +6968,12 @@ pump_devkbd(void)
 	if (c < 0)
 		return;
 
-	/* One bucket: one port, and port_push allocates no lua memory --
-	 * the narrow form's two obligations. Held across the drain.
+	/* Every bucket, because port_push asks for that: it carries
+	 * IPC_ASSERT_LOCKED, which is the whole-lock demand, not
+	 * IPC_ASSERT_PORT. Narrowing this means narrowing port_push
+	 * first. Held across the drain.
 	 */
-	ipclock_enter_port(devkbdport);
+	ipclock_enter();
 	do {
 		/* serialized one-char string, as pump_keyboard sends: a
 		 * port carries serialized values and the reader
