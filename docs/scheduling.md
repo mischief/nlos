@@ -78,6 +78,43 @@ yielding to each other and not otherwise:
 | a thread, without it | 0.02x |
 | a coroutine two schedulers down | 0.49x |
 
+### A park is not a preemption
+
+Everything above is about the **hook**, and the walk-out makes it reach
+any depth. A **park** gets no such help, and the difference is the one
+that bites.
+
+`sys.block`, `sys.call`, `sys.altblock`, `sys.altrecv` and
+`sys.sendblock` all end in `lua_yield`, and they mark the proc `BLOCKED`
+and take it off the run queue *before* yielding. The kernel cannot arm
+its way out of this the way it does for the hook: a park has already
+changed the proc's state, so if the yield lands short of `kernel_run` —
+in `thread.run`, or in some library's `coroutine.resume` — the proc is
+recorded as parked while it carries on executing. Nothing errors. What
+shows up is a stall somewhere else entirely, in whatever waits for the
+message that was never going to come.
+
+So the five refuse it outright: **illegal parking**, raised at the call
+site, from a state that is not `p->co`. The check sits before any state
+change, so a call that finds its message already waiting is still
+answered from any depth, and a raise never leaves a waiter registered
+behind it.
+
+`test_ipc` used to pin the opposite -- it tolerated the first such block
+and refused the second, "where the mistake is". The first is earlier
+still, and the second was only reachable because the first left the proc
+in the split state.
+
+Correct code never meets this. A thread parks by yielding to
+`thread.run`, which does the real block from the top: that is what
+`thread.park`'s `inthread()` branch is for, and `thread.recv`,
+`thread.await` and `thread.parksend` all go through it. The rule bites
+library code that owns a coroutine and calls back into user code -- a
+sans-io protocol driver, say, whose reader parks. The fix there is the
+one `lib/zmodem.lua` uses: hand the request *out* of the coroutine and
+let whoever is driving do the blocking, which is the same shape as
+`thread.run` doing it for a thread.
+
 ### Deeper nesting
 
 Arming `p->co` only helps if control returns to `p->co`. A thread that
@@ -180,7 +217,10 @@ Three paths, in order of preference:
    `thread.run` hands it straight to the waiter. No wake, no scan.
 2. **The run queue is empty and some waiter is not a plain recv.**
    `sys.altblock` blocks and returns a hint naming the port that has
-   something; `readyon` wakes only the threads parked on it.
+   something; `readyon` wakes only the threads parked on it. A thread
+   waiting for room is one of these -- see "How a thread waits for
+   room" -- since it must not be handed a message it has nowhere to
+   put.
    `readyall` — wake everyone and let each look — is the last resort
    for a wake no port of ours accounts for.
 3. **Something is still runnable** — the run queue is not empty, or a
@@ -195,6 +235,48 @@ Without (3), one thread that is merely slow between parks starves every
 thread that is waiting, because (1) and (2) run only when nothing is
 runnable. Staging a wakeup switches nobody, so this costs a busy thread
 nothing but keeps its siblings' messages moving.
+
+## How a thread waits for room
+
+The section above is the receive side. A thread that wants to **send**
+on a full port has the same problem and, for a while, a worse answer:
+`parksend` called `sys.sendblock` directly, on the grounds that the
+scheduler's park reasons were receive-shaped -- `thread.run` hands a
+port set to `sys.altblock`, and "wait for room" is not a port set. What
+actually happened was neither parking the thread nor parking the proc:
+the yield reached `thread.run`, which reads a coroutine with no park
+sentinel as a hook cut and resumes it, so the send never waited at all.
+
+The kernel had always been able to say it. `wait_add(p, port, send)`
+takes the flag, `wake_senders` and `wake_receivers` walk the same list
+and skip what is not theirs, and `sys.sendblock` has always passed 1.
+Only `api_altblock` hardcoded 0.
+
+So `sys.altblock(set, sends)` takes a second, parallel table: where
+`sends[i]` is a size, entry `i` waits for room for that many bytes
+instead of for a message, and is ready when `qbytes + need <= MAXQUEUE`
+(or when the port is dead, since then the send itself should report it).
+A parallel table rather than a boxed entry per case, because the
+all-receive park is nearly every park and should allocate nothing.
+
+`parksend` therefore registers a park record like `parkon` does, marks
+itself `nonrecv` -- it must not be handed a message it has nowhere to
+put -- and yields. `readyon` needs no change: a send wait carries
+`r.port` like any other, so the ready-port hint finds it.
+
+One park now covers both directions, which retires the asymmetry the old
+`parksend` documented: a thread waiting for room no longer stalls its
+siblings.
+
+Neither reference system could lend us this. plan9front's libthread
+blocks a thread on a channel with `_threadrendezvous`, which is
+user-level and woken by the peer thread, and refuses to make a blocking
+*syscall* from a thread at all -- `ioproc.c` spawns a proc whose whole
+job is to sit in one, and `ioread`/`iowrite` talk to it over channels.
+Go hands the P to another M in `entersyscall`. Both keep the scheduler
+off the blocking path by finding another context to block in; we have a
+third option, because our ports can already say which way a waiter is
+waiting.
 
 ## Hangups
 
