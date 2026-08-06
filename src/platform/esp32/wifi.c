@@ -23,6 +23,7 @@
 #include <esp_err.h>
 #include <esp_event.h>
 #include <esp_heap_caps.h>
+#include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_wifi.h>
 #include <esp_private/wifi.h>
@@ -158,6 +159,20 @@ esp_wifi_bringup(void)
 	}
 	if (e != ESP_OK)
 		return -1;
+
+	/* The radio's own tag, silenced to errors.
+	 *
+	 * The C5 driver dumps its calibration at warning level -- twenty
+	 * lines of register values and delay constants every time the
+	 * radio starts -- so turning the global level down to warnings is
+	 * not enough to keep the console readable. A per-tag level leaves
+	 * every other component's warnings where they are.
+	 *
+	 * Runtime rather than a config: the strings are compiled in at
+	 * warning level and this lowers what is printed, which is the only
+	 * way to treat one component differently from the rest.
+	 */
+	esp_log_level_set("wifi", ESP_LOG_ERROR);
 
 	if (esp_event_loop_create_default() != ESP_OK)
 		return -1;

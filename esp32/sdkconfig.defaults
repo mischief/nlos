@@ -52,6 +52,20 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
 
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
+# IDF talks at info level by default, which puts thirty lines of its own
+# in front of the kernel's boot and hides what this machine reports
+# about itself. Nothing here calls ESP_LOG -- the kernel writes through
+# console_write -- so turning it down loses none of our own output, and
+# a warning or an error still gets through.
+#
+# The strings are compiled out rather than merely filtered: there is no
+# way to raise the level at runtime from here, so keeping them would
+# spend flash on text nothing can ever print. Put these back to INFO
+# and rebuild to see what the driver layer is doing.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_MAXIMUM_LEVEL_WARN=y
+
 # The board this image is for. See esp32/main/Kconfig.projbuild: a
 # peripheral probe that has no business running here does not merely
 # answer no, it can hang before the kernel starts.
