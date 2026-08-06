@@ -35,6 +35,45 @@ static const struct { const char *name; lua_CFunction f; } lazylibs[] = {
 	{ LUA_DBLIBNAME, luaopen_debug },
 };
 
+/* print, as one write to the console.
+ *
+ * The base library's print writes once per argument and once more for
+ * the newline. Two cpus printing at the same time interleave between
+ * those writes, and what arrives is one line stuck onto the end of
+ * another. Both are then lost to any reader that matches on how a line
+ * starts, which is what a TAP harness does.
+ *
+ * A buffer collects the whole line first, so the console sees one call
+ * and console_write's lock makes it one line.
+ */
+static int
+kprint(lua_State *L)
+{
+	int n = lua_gettop(L);
+	luaL_Buffer b;
+	size_t l;
+	const char *s;
+
+	luaL_buffinit(L, &b);
+	for (int i = 1; i <= n; i++) {
+		/* may call __tostring, and so may raise. Nothing has been
+		 * written yet, so a raise here loses the whole line rather
+		 * than half of one.
+		 */
+		s = luaL_tolstring(L, i, &l);
+		if (i > 1)
+			luaL_addchar(&b, '\t');
+		luaL_addlstring(&b, s, l);
+		lua_pop(L, 1);
+	}
+	luaL_addchar(&b, '\n');
+	luaL_pushresult(&b);
+	s = lua_tolstring(L, -1, &l);
+	lua_writestring(s, l);
+	lua_pop(L, 1);
+	return 0;
+}
+
 /* _G's __index: called only on a miss, so this never fires again for
  * a given name once loaded (luaL_requiref with glb=1 both registers
  * package.loaded[name] and does the equivalent of _G[name] = module,
@@ -141,6 +180,15 @@ luaL_openlibs(lua_State *L)
 	 * kernel's own preload registration in proc_new also expects
 	 * package.preload to already exist) -- not worth the saved bytes.
 	 */
+	/* over the base library's print, which luaopen_base has just
+	 * bound. lib/proc.lua replaces print again for a proc that has an
+	 * output port; this is what every other proc gets.
+	 */
+	lua_pushglobaltable(L);
+	lua_pushcfunction(L, kprint);
+	lua_setfield(L, -2, "print");
+	lua_pop(L, 1);
+
 	lua_pushglobaltable(L);
 	lua_newtable(L);
 	lua_pushcfunction(L, lazylib_index);
