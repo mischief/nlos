@@ -45,11 +45,19 @@ end
 local console = require("console")
 local fbcons = require("fbcons")
 
-local con = console.new(fbcons.new({
+local backend = fbcons.new({
 	fb = fb,
 	keyport = kbd,
 	font = require("los.font"),
-}))
+})
+local con = console.new(backend)
+
+-- the grid, on the serial line. A program that lays out columns asks
+-- the console for this, and the panel is the only console that can
+-- answer -- so when a table or a page comes out the wrong height, this
+-- says whether the console knew its own size or the program guessed.
+say(("fbterm: %sx%s\n"):format(tostring(backend.cols),
+    tostring(backend.rows)))
 
 -- the console serves on this proc's own port, so what the shell writes
 -- to comes back here. A send right to ourselves is the whole of it.

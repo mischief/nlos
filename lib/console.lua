@@ -151,6 +151,18 @@ function Console:serve()
 			-- (lib/log.lua); the console is the console, not the
 			-- formatter.
 			io.write(m.data)
+		elseif m.op == "size" then
+			-- how wide the far end is, for a program that lays
+			-- out columns. A backend that knows says so
+			-- (lib/fbcons.lua counts cells); a serial line does
+			-- not, and answering nil is the honest reply -- there
+			-- is no escape sequence here to ask a terminal with,
+			-- and a guess dressed as a measurement is worse than
+			-- no measurement.
+			if reply then
+				sys.send(reply, { cols = io.cols,
+				    rows = io.rows })
+			end
 		elseif m.op == "claim_input" then
 			-- where one wire carries keyboard and data both, the
 			-- backend claims it here rather than the core assuming so;

@@ -517,6 +517,20 @@ function M.tty(handle)
 		    reply = { __right = replyport } })
 		return thread.recv(replyport)
 	end
+	-- how wide and how tall, or nil when the far end does not know.
+	-- A program that lays out columns asks once and falls back to its
+	-- own default; nil means a serial line, not an error.
+	function t.size()
+		if not replyport then
+			replyport = sys.newport()
+		end
+		sys.send(handle, { op = "size",
+		    reply = { __right = replyport } })
+
+		local m = thread.recv(replyport)
+
+		return m and m.cols, m and m.rows
+	end
 	function t.close()
 		if replyport then
 			sys.close(replyport)
