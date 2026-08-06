@@ -573,3 +573,21 @@ void
 uart_takeover(void)
 {
 }
+
+/* the matrix (Cardputer) or the i2c keyboard (T-Deck), drained by the
+ * kernel into a port of its own. Not the console: the serial line stays
+ * the console, and this is the input half of the second terminal.
+ */
+int
+platform_have_kbd(void)
+{
+	return esp_kbd_present();
+}
+
+int
+platform_kbd_read(void)
+{
+	int c = esp_kbd_read();
+
+	return c == 0 ? -1 : c;
+}

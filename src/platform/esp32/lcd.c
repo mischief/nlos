@@ -205,6 +205,24 @@ luaos_lcd_present(void)
 	if (band == NULL)
 		return 0;
 
+	/* and blank it before the backlight comes on. The controller's
+	 * RAM holds whatever was there at power-on -- the last image of a
+	 * previous firmware, or noise -- and lighting that is indis-
+	 * tinguishable from a crash. Costs one full-screen fill at boot.
+	 */
+	{
+		int y;
+
+		for (y = 0; y < LCD_H; y += BAND_ROWS) {
+			int n = (LCD_H - y < BAND_ROWS) ? LCD_H - y :
+			    BAND_ROWS;
+
+			memset(band, 0, (size_t)LCD_W * n * sizeof *band);
+			esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_W, y + n,
+			    band);
+		}
+	}
+
 	/* backlight last: a panel lit before it is initialised shows
 	 * whatever was in RAM at power-on, which looks like a crash.
 	 */

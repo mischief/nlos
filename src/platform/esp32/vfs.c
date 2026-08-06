@@ -202,7 +202,7 @@ vfs_fstat(void *ctx, int fd, struct stat *st)
  * these is invisible to fopen, so adding one means adding it here --
  * which is why the list is short and next to the reason.
  */
-static const char *const prefixes[] = { "/boot", "/lib", "/task" };
+static const char *const prefixes[] = { "/boot", "/lib", "/task", "/bin" };
 
 void
 vfs_embed_register(void)

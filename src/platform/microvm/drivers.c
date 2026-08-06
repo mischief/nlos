@@ -628,3 +628,18 @@ luaopen_los_platform_fb(lua_State *L)
 	luaL_newlib(L, fb_emptylib);
 	return 1;
 }
+
+/* no keyboard of its own: the keys this machine has arrive through the
+ * console, which is a different thing (see platform.h).
+ */
+int
+platform_have_kbd(void)
+{
+	return 0;
+}
+
+int
+platform_kbd_read(void)
+{
+	return -1;
+}

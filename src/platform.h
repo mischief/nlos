@@ -77,6 +77,18 @@ int	platform_have_blk(void);
  */
 int	platform_have_fb(void);
 
+/* a keyboard that is NOT the console: the input half of a second
+ * terminal, where the console is a serial line the machine also has.
+ * The T-Deck and the Cardputer each have one; efi's keys arrive through
+ * ConIn and ARE the console, so it answers no.
+ *
+ * platform_kbd_read returns the next character, or -1 for none. The
+ * kernel drains it into a port of its own -- not the console's -- so
+ * the two terminals stay separate all the way up.
+ */
+int	platform_have_kbd(void);
+int	platform_kbd_read(void);
+
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);

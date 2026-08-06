@@ -78,6 +78,49 @@ if caps.fb then
 	_G.fb = caps.fb
 end
 
+-- term() -- start the panel+keyboard terminal, in a proc of its own.
+--
+-- Separate so the serial console survives it: this line is how the
+-- board is debugged, and a shell that took both terminals would take
+-- the way in with it.
+if caps.fb and caps.kbd then
+	_G.term = function()
+		local f = io.open("/task/fbterm.lua")
+
+		if not f then
+			return nil, "no /task/fbterm.lua"
+		end
+
+		local src = f:read("a")
+
+		f:close()
+
+		local pid, right = sys.spawn(src, { name = "fbterm" })
+
+		sys.send(right, { fb = { __right = caps.fb },
+		    kbd = { __right = caps.kbd },
+		    cons = { __right = caps.cons } })
+		sys.close(right)
+		return pid
+	end
+end
+
+-- fbtest(text) -- draw through the framebuffer console backend.
+--
+-- The rendering half of it, alone: no lib/console.lua, no shell. What
+-- this answers is whether glyphs land where the grid says, which
+-- shot() can then read back off the panel.
+if caps.fb and caps.kbd then
+	_G.fbtest = function(msg)
+		local fbcons = require("fbcons")
+		local b = fbcons.new({ fb = caps.fb, keyport = caps.kbd,
+		    font = require("los.font") })
+
+		b.write(msg or "lua-os on the panel\n")
+		return b.cols .. "x" .. b.rows
+	end
+end
+
 _G.shot = function(name, rows)
 	local f = io.open("/task/shot.lua")
 

@@ -325,3 +325,18 @@ platform_have_eth(void)
 /* los.platform.eth lives in snp.c on this platform: the firmware's
  * EFI_SIMPLE_NETWORK_PROTOCOL, with our own stack above it.
  */
+
+/* no keyboard of its own: the keys this machine has arrive through the
+ * console, which is a different thing (see platform.h).
+ */
+int
+platform_have_kbd(void)
+{
+	return 0;
+}
+
+int
+platform_kbd_read(void)
+{
+	return -1;
+}

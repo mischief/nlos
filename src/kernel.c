@@ -440,6 +440,13 @@ static int prochigh;
 static struct kport *portv[MAXPORTS];
 static int porthigh;		/* one past the highest slot ever used */
 static struct kport *kbdport;
+
+/* the second terminal's keys, where the machine has a keyboard that is
+ * not the console (platform_have_kbd). Separate from kbdport on
+ * purpose: two terminals that shared an input port would race for every
+ * keystroke, and which one got it would depend on who asked first.
+ */
+static struct kport *devkbdport;
 static int nlive;
 
 /* one heap behind every lua_State on the machine.
@@ -5290,6 +5297,32 @@ scancode_seq(unsigned scan)
 	}
 }
 
+/* drain the second terminal's keyboard into its own port.
+ *
+ * The same shape as pump_keyboard below, and deliberately not the same
+ * port: this machine's console is a serial line, and a panel with a
+ * keyboard is a second terminal rather than a second way into the
+ * first.
+ */
+static void
+pump_devkbd(void)
+{
+	int c;
+
+	if (!devkbdport)
+		return;
+	while ((c = platform_kbd_read()) >= 0) {
+		/* serialized one-char string, as pump_keyboard sends: a
+		 * port carries serialized values and the reader
+		 * deserializes whatever arrives.
+		 */
+		unsigned char msg[6] = { 'S', 1, 0, 0, 0, 0 };
+
+		msg[5] = (unsigned char)c;
+		port_push(devkbdport, msg, sizeof msg, 0, 0);
+	}
+}
+
 static void
 pump_keyboard(void)
 {
@@ -5341,6 +5374,7 @@ kernel_init(void)
 		return -1;
 	uart_init();
 	kbdport = port_new();
+	devkbdport = platform_have_kbd() ? port_new() : 0;
 	serport = port_new();
 	diskport = port_new();
 	ethport = port_new();
@@ -5351,6 +5385,8 @@ kernel_init(void)
 	 * itself) hold these ports forever
 	 */
 	kbdport->nrights++;
+	if (devkbdport)
+		devkbdport->nrights++;
 	serport->nrights++;
 	diskport->nrights++;
 	ethport->nrights++;
@@ -5656,6 +5692,11 @@ spawn_init(const char *code, size_t len, int is_file)
 			grant_named(p, drivers[i].capname,
 			    dp->rights[0].port, 0);
 	}
+	/* a receive right: whoever init hands this to IS the second
+	 * terminal's keyboard, and there is only one of it.
+	 */
+	if (devkbdport)
+		grant_named(p, "kbd", devkbdport, 1);
 	grant_named(p, "disk", diskport, 0);
 	grant_named(p, "sched", schedport, 0);
 	return pid;
@@ -6104,6 +6145,7 @@ kernel_run(void)
 		expire_timers();
 		pump_eth();
 		pump_keyboard();
+		pump_devkbd();
 		if (pump_serial()) {
 			idle_polls = 0;
 			if (tick_slow && tick) {

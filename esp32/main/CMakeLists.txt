@@ -123,6 +123,17 @@ set(EMBED_FILES
     lib/chan.lua
     lib/ns.lua
     lib/mnt.lua
+
+    # the panel as a terminal: fbcons is the second binding of
+    # lib/console.lua, and dos/prog/draw/caps are what a program needs
+    # to be run from a prompt on it.
+    lib/fbcons.lua
+    task/fbterm.lua
+    lib/caps.lua
+    lib/prog.lua
+    lib/draw.lua
+    lib/dos.lua
+    bin/smiley.lua
 )
 
 # Some modules ship as stripped bytecode rather than source.
