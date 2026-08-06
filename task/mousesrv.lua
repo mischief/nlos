@@ -54,6 +54,26 @@ local latest = string.format("m%11d %11d %11d %11d", 0, 0, 0, 0)
 local seq = 0
 local waiters = {}
 
+-- wheel clicks waiting to be read.
+--
+-- The position may be coalesced and a click may not. A finger's old
+-- positions are of no use to a reader that fell behind, but a scroll it
+-- never saw is scrolling that did not happen -- so a record carrying
+-- button 8 or 16 queues here and is handed over one at a time, while
+-- ordinary motion just overwrites `latest`.
+--
+-- Bounded, because a queue that never drops is a leak with better
+-- manners: a reader that has stopped reading should cost a spin of the
+-- ball, not the machine.
+local WHEELMAX = 32
+local wheelq = {}
+
+local function iswheel(rec)
+	local b = tonumber(rec:match("^m%s*%-?%d+%s+%-?%d+%s+(%-?%d+)"))
+
+	return b and (b & 24) ~= 0
+end
+
 -- the fb task, where the machine has a screen. The cursor belongs to
 -- whoever owns the glass -- it is drawn over what is already there and
 -- repaired from the shadow when anything moves under it -- so this
@@ -65,13 +85,21 @@ thread.spawn(function()
 		local rec = thread.recv(ptr)
 
 		if type(rec) == "string" then
-			latest = rec
+			if iswheel(rec) then
+				if #wheelq < WHEELMAX then
+					wheelq[#wheelq + 1] = rec
+				end
+			else
+				latest = rec
+			end
 			seq = seq + 1
 
 			-- the cursor follows the finger without a client in
 			-- the loop, which is what keeps it on the finger
-			-- rather than a round trip behind it.
-			if fb then
+			-- rather than a round trip behind it. A wheel
+			-- record carries the position it scrolled at and
+			-- does not move anything, so it is not a move.
+			if fb and not iswheel(rec) then
 				local x, y = rec:match(
 				    "^m%s*(%-?%d+)%s+(%-?%d+)")
 
@@ -87,13 +115,38 @@ thread.spawn(function()
 				end
 			end
 
-			for _, w in ipairs(waiters) do
-				sys.send(w.reply, { seq = seq, rec = latest })
+			if #wheelq > 0 then
+				-- one click to one reader: two clicks must
+				-- not wake two readers with the same one,
+				-- and a click nobody took stays queued.
+				while #waiters > 0 and #wheelq > 0 do
+					local w = table.remove(waiters, 1)
+
+					sys.send(w.reply, { seq = seq,
+					    rec = table.remove(wheelq, 1) })
+				end
+			else
+				-- a position is shared: every reader wants
+				-- the same answer, which is where it is now.
+				for _, w in ipairs(waiters) do
+					sys.send(w.reply,
+					    { seq = seq, rec = latest })
+				end
+				waiters = {}
 			end
-			waiters = {}
 		end
 	end
 end)
+
+-- what a reader should be given next: a queued wheel click if there is
+-- one, otherwise where the pointer is. Clicks come out in order and
+-- exactly once; the position is whatever it is now.
+local function nextrec()
+	if #wheelq > 0 then
+		return table.remove(wheelq, 1)
+	end
+	return latest
+end
 
 -- the backend: one file, and reading it is the whole protocol.
 local function backend()
@@ -142,9 +195,9 @@ local function backend()
 		if isroot(h) then
 			dev.error(dev.Eisdir)
 		end
-		if h.seen ~= seq then
+		if #wheelq > 0 or h.seen ~= seq then
 			h.seen = seq
-			return latest:sub(1, n)
+			return nextrec():sub(1, n)
 		end
 
 		local rp = sys.newport()

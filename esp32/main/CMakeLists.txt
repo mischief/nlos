@@ -45,6 +45,7 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/kbd.c
     ${LUAOS_ROOT}/src/platform/esp32/lcd.c
     ${LUAOS_ROOT}/src/platform/esp32/tdeck.c
+    ${LUAOS_ROOT}/src/platform/esp32/ball.c
     ${LUAOS_ROOT}/src/platform/esp32/touch.c
     ${LUAOS_ROOT}/src/platform/esp32/main.c
     ${LUAOS_ROOT}/src/platform/esp32/vfs.c

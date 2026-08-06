@@ -20,6 +20,7 @@
 #include "blk.h"
 #include "flashblk.h"
 #include "kbd.h"
+#include "ball.h"
 #include "touch.h"
 #include "lcd.h"
 #include "wifi.h"
@@ -941,7 +942,20 @@ int
 platform_ptr_read(int *x, int *y, int *buttons)
 {
 #if CONFIG_LUAOS_BOARD_TDECK
-	int down = 0;
+	int down = 0, wheel = 0, ballbtn = 0;
+
+	/* the ball first, because a click is momentary: the panel's
+	 * position is still there on the next call and a click is not.
+	 */
+	if (esp_ball_take(&wheel, &ballbtn)) {
+		/* a wheel record carries the pointer's current position,
+		 * as plan 9's does -- scrolling happens somewhere.
+		 */
+		esp_touch_state(x, y, &down);
+		if (buttons)
+			*buttons = wheel | ballbtn | (down ? 1 : 0);
+		return 1;
+	}
 
 	if (!esp_touch_take(x, y, &down))
 		return 0;
