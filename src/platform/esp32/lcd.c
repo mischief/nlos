@@ -271,7 +271,28 @@ luaos_lcd_shadow(int on)
 	return 0;
 }
 
-static inline void
+/* is this colour ink, for the one-bit copy?
+ *
+ * Brightness rather than "not black". A program that draws on a dark
+ * background rather than a black one -- bin/smiley.lua uses 0x101018 --
+ * otherwise marks every pixel it touches, and the screenshot comes back
+ * a solid block with the picture invisible inside it.
+ *
+ * Rec. 601 luma, halved to keep the arithmetic in a byte. The threshold
+ * is low: this is asking "did something get drawn here", not matching a
+ * palette.
+ */
+static int
+shadow_ink(uint32_t rgb)
+{
+	uint32_t r = (rgb >> 16) & 0xff;
+	uint32_t g = (rgb >> 8) & 0xff;
+	uint32_t b = rgb & 0xff;
+
+	return ((r * 77 + g * 151 + b * 28) >> 8) > 0x30;
+}
+
+static void
 shadow_set(int x, int y, int ink)
 {
 	size_t bit = (size_t)y * LCD_W + x;
@@ -379,7 +400,7 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 		band[i] = px;
 
 	if (shadow != NULL) {
-		int r, c, ink = (rgb & 0xffffffu) != 0;
+		int r, c, ink = shadow_ink(rgb);
 
 		for (r = 0; r < h; r++)
 			for (c = 0; c < w; c++)
@@ -420,7 +441,7 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 			band[i] = rgb565((r << 16) | (g << 8) | b);
 			if (shadow != NULL)
 				shadow_set(x + i % w, y + row + i / w,
-				    (r | g | b) != 0);
+				    shadow_ink((r << 16) | (g << 8) | b));
 		}
 		if (esp_lcd_panel_draw_bitmap(panel, x, y + row, x + w,
 		    y + row + n, band) != ESP_OK)

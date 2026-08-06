@@ -751,6 +751,12 @@ M.register("procfs", function()
 	return require("procfs").new()
 end)
 
+-- the embedded image. Like procfs it needs no argument: the set is
+-- ambient, so a child rebuilds the same mount from the name alone.
+M.register("romfs", function()
+	return require("romfs").new()
+end)
+
 M.register("mem", function(args)
 	-- the tree is plain data, so it genuinely does survive the trip
 	return dev.mem((args and args.tree) or {})

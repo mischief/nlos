@@ -30,8 +30,38 @@ end
 
 thread.spawn(function()
 	local sh = dos.new({ ns = N, cons = cons, fb = fb })
+
+	-- run the loop here rather than sh:repl, so a command's exit
+	-- status is reported instead of discarded. A shell that drops it
+	-- is the same fault as a console that drops a diagnostic.
+	local function line()
+		sys.send(cons, { op = "readline", prompt = "> ",
+		    reply = { __right = sys.SELF } })
+		return thread.recv(sys.SELF)
+	end
 	local sok, serr = xpcall(function()
-		sh:repl("")
+		while true do
+			local l = line()
+
+			if l == nil then
+				return
+			end
+			if #l > 0 then
+				local st, msg = sh:run(l)
+
+				if msg then
+					sys.send(cons, { op = "write",
+					    data = tostring(msg) .. "\n" })
+				end
+				if st and st ~= 0 then
+					sys.send(cons, { op = "write",
+					    data = ("[status %d]\n")
+					    :format(st) })
+					print("fbsh: " .. l ..
+					    " exited " .. tostring(st))
+				end
+			end
+		end
 	end, debug.traceback)
 
 	if not sok then
