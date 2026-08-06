@@ -115,9 +115,10 @@ local function against(addr, m)
 	end
 
 	local line = {
-		now = function()
-			return math.floor(os.clock() * 1000)
-		end,
+		-- monotonic, NOT os.clock: that is cpu time, so a driver
+		-- starved of cpu never notices time passing and measures a
+		-- protocol deadline against its own busyness.
+		now = hostutil.now,
 		-- hostutil.send writes the whole string or fails
 		write = function(s)
 			assert(hostutil.send(fd, s), "send failed")

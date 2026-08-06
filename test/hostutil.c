@@ -32,6 +32,7 @@
 #include <sys/wait.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "lua.h"
@@ -575,6 +576,24 @@ l_serial(lua_State *L)
 	return 1;
 }
 
+/* now() -> milliseconds on a monotonic clock.
+ *
+ * os.clock() is CPU time, which is the wrong thing to measure a
+ * protocol deadline with: a driver that spins while its peer is starved
+ * burns the budget on itself and times out a peer that is merely slow.
+ * CLOCK_MONOTONIC also does not step when the wall clock is adjusted.
+ */
+static int
+l_now(lua_State *L)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	lua_pushinteger(L, (lua_Integer)ts.tv_sec * 1000 +
+	    ts.tv_nsec / 1000000);
+	return 1;
+}
+
 /* readable(fd [, timeout]) -> true | false
  *
  * Whether a read would return without blocking. serial() hands back a
@@ -619,6 +638,7 @@ static const luaL_Reg hostutil[] = {
 	{ "serial", l_serial },
 	{ "fileno", l_fileno },
 	{ "readable", l_readable },
+	{ "now", l_now },
 	{ "connect_tcp", l_connect_tcp },
 	{ "connect_unix", l_connect_unix },
 	{ "send", l_send },
