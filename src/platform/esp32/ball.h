@@ -8,7 +8,15 @@
  */
 #define BALL_UP		8
 #define BALL_DOWN	16
-#define BALL_BUTTON	2	/* the ball presses; button 2, not a tap */
+/* the ball's press is button 1, the same as a tap.
+ *
+ * They are different devices and that is not a difference a program
+ * should have to know: both mean "act on the thing here", and a file
+ * that reported one as button 2 would make every reader carry a rule
+ * about which board it is running on. That is the knowledge /dev/mouse
+ * exists to absorb.
+ */
+#define BALL_BUTTON	1
 
 /* set the pins up once; 1 if the board has a ball. */
 int esp_ball_present(void);
