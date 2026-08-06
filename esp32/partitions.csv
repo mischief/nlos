@@ -12,11 +12,16 @@
 # the build rather than the filesystem.
 #
 # An app partition must start on a 64KB boundary, a data partition on a
-# 4KB one. 0x510000 in total, which fits the Cardputer's 8MB as well as
+# 4KB one. 0x710000 in total, which fits the Cardputer's 8MB as well as
 # the T-Deck's 16MB, so one table serves every target.
+#
+# luafs is 4MB because it carries lib/ and task/ as well as bin/: the
+# image holds what is needed to mount this volume and the tree above it
+# is read from here. The whole of lib/, task/, bin/ and etc/ is about
+# 1.2MB of source, and a 4096-byte sector rounds each file up.
 #
 # Name,     Type, SubType,  Offset,   Size,     Flags
 nvs,        data, nvs,      0x9000,   0x6000,
 phy_init,   data, phy,      0xf000,   0x1000,
 factory,    app,  factory,  0x10000,  0x300000,
-luafs,      data, fat,      0x310000, 0x200000,
+luafs,      data, fat,      0x310000, 0x400000,

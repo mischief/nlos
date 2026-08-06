@@ -10,9 +10,12 @@
 -- programs out of:
 --	{ cons = {__right=}, fb = {__right=}, ns = }
 
+-- lib/dos.lua is required further down, after the namespace is in
+-- place. It is not in the esp32 image -- it lives on the filesystem
+-- this shell runs programs from -- so requiring it up here searches the
+-- image alone and the shell dies before its first prompt.
 local sys = require("los.sys")
 local thread = require("los.thread")
-local dos = require("dos")
 local ns = require("ns")
 
 local job = thread.recv(sys.SELF)
@@ -45,6 +48,12 @@ if not N then
 		    data = "fbsh: mount failed: " .. tostring(merr) .. "\n" })
 	end
 end
+
+-- current, so require resolves through it: the shell and everything it
+-- loads come off the same tree the programs do.
+ns.setcurrent(N)
+
+local dos = require("dos")
 
 thread.spawn(function()
 	local sh = dos.new({ ns = N, cons = cons, fb = fb,

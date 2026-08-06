@@ -364,8 +364,15 @@ M.builtins = builtins
 -- namespace description, and whichever streams it was given. this is
 -- posix_spawn with file_actions, delivered as a capability handoff.
 function Sh:spawn1(path, argv, streams)
-	local pid, h = sys.spawn('require("prog").main()',
-	    { name = argv[1] })
+	-- proc.spawn rather than sys.spawn, so the namespace is adopted
+	-- before this one line runs. lib/prog.lua is a file like any
+	-- other, and on a platform whose image stops at the filesystem it
+	-- is on the filesystem -- a raw spawn would search the image, not
+	-- find it, and the program would die before its own first line.
+	-- The description goes in the ABI message as well: that is what
+	-- the program itself is handed, and it may differ from this one.
+	local pid, h = require("proc").spawn('require("prog").main()',
+	    { name = argv[1], ns = self.ns:describe() })
 
 	if not pid then
 		return nil, "spawn failed"

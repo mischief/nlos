@@ -24,25 +24,17 @@ require("stdout").set(caps.cons)
 _G.sys = sys
 _G.thread = thread
 
--- ps is a convenience, not the console, so it must not be able to cost
--- us the console. Internal SRAM is ~240KB with no PSRAM behind it (qemu
--- emulates neither PSRAM mode), and lib/ps.lua on top of lib/thread.lua
--- is enough to run a tight machine out of memory -- which without this
--- killed proc 0 during require and left a booted kernel with nothing to
--- type at.
-local ok, magic = pcall(require, "ps")
+-- the hardware entropy source, which this proc alone can see. What a
+-- service gets is a seed drawn from it, not the draw itself: see
+-- lib/svc.lua on why entropy is data and not authority.
+local ok_rng, rng = pcall(require, "los.platform.rng")
 
-if ok then
-	_G.ps = magic.ps
-	_G.stats = magic.stats
-	_G.ports = magic.ports
-	_G.stack = function(pid)
-		return magic.stack(pid or sys.self())
-	end
-	if caps.power then
-		_G.halt = magic.halt(caps.power)
-	end
+if not ok_rng or type(rng) ~= "table" or not rng.bytes then
+	rng = nil
 end
+
+-- ps arrives after the partition is mounted -- see repltools() below.
+local ok, magic
 
 -- shot("name.pbm") -- send the screen to the host over ZMODEM.
 --
@@ -133,7 +125,13 @@ _G.shot = function(name, rows)
 
 	f:close()
 
-	local pid, right = sys.spawn(src, { name = "shot" })
+	-- proc.spawn rather than sys.spawn, because the sender requires
+	-- lib/zmodem.lua and that lives on the partition. A raw spawn
+	-- gives the child no namespace, so its require would search the
+	-- image alone and find nothing.
+	local N = require("ns").current()
+	local pid, right = require("proc").spawn(src,
+	    { name = "shot", ns = N and N:describe() })
 
 	-- rights are copied rather than moved, so ours stay ours.
 	sys.send(right, {
@@ -302,6 +300,11 @@ local function services()
 			return rootns:readfile(p)
 		end,
 		log = print,
+		-- entropy for services that want it, as data rather than
+		-- as a right: this proc holds los.platform.rng and hands
+		-- each service its own 32 bytes to expand. init.lua does
+		-- the same on the other platforms.
+		seed = rng and rng.bytes or nil,
 	})
 end
 
@@ -309,6 +312,30 @@ local sok, serr = pcall(services)
 
 if not sok then
 	print("svc: " .. tostring(serr))
+end
+
+-- the repl's own conveniences, which live on the partition.
+--
+-- After services(), because that is where the volume is mounted and
+-- require starts resolving through the namespace. lib/ps.lua is not in
+-- the image: it is a convenience and it must not be able to cost us the
+-- console. Internal SRAM is ~240KB with no PSRAM behind it (qemu
+-- emulates neither PSRAM mode), and ps on top of lib/thread.lua is
+-- enough to run a tight machine out of memory -- which without a pcall
+-- here killed proc 0 during require and left a booted kernel with
+-- nothing to type at.
+ok, magic = pcall(require, "ps")
+
+if ok then
+	_G.ps = magic.ps
+	_G.stats = magic.stats
+	_G.ports = magic.ports
+	_G.stack = function(pid)
+		return magic.stack(pid or sys.self())
+	end
+	if caps.power then
+		_G.halt = magic.halt(caps.power)
+	end
 end
 
 -- dos(): hand the console to the launcher, as init.lua does it on the

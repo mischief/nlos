@@ -98,14 +98,37 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
 set(LUAOS_PAYLOAD "${LUAOS_ROOT}/boot/esp32.lua"
     CACHE FILEPATH "lua chunk proc 0 runs; a test payload replaces it")
 
-# Kept short on purpose -- this is what has to exist before a namespace
-# can, not the whole tree. tap and sync are here because the boot tests
-# require them and there is nowhere else for them to come from.
+# What the machine needs before it can read a file, and nothing above
+# that. Everything else lives on the luafs partition and is loaded from
+# there, the way a unix kernel carries an initramfs only until the real
+# root is mounted.
+#
+# Three things pin a file here.
+#
+# The bootstrap itself: lib/thread.lua (the C preload reads it by path),
+# console + power, and the chain that mounts the flash -- dev, srv,
+# blkfs, blksrv, lib/fat, fatfs, fatsrv. None of these can come off the
+# volume they are what opens.
+#
+# A namespace: ns, chan, mnt, nsio, romfs. A spawned proc resolves
+# require through its namespace, but the modules that install one are
+# found before it exists, so they are found here.
+#
+# A driver the kernel spawns: cons, power, blksrv, fb, and the whole
+# network stack -- eth, ip, tcp4, dhcpd and the libs under them. These
+# procs are started by spawn_init before init runs and are given no
+# namespace, so their require goes to the ambient search path, which on
+# this platform is this set. Moving them to the partition means making
+# them services that init starts, which is a change to how a device
+# capability is handed out, not a change to this list.
+#
+# tap and sync are here for the boot tests: a test payload replaces
+# init and runs under qemu with no partition flashed at all.
 set(EMBED_FILES
     lib/thread.lua
-    lib/console.lua
     lib/stdout.lua
-    lib/ps.lua
+    lib/log.lua
+    lib/console.lua
     lib/tap.lua
     lib/sync/once.lua
     lib/sync/sema.lua
@@ -113,7 +136,6 @@ set(EMBED_FILES
     task/cons.lua
     task/power.lua
     task/fb.lua
-    task/shot.lua
 
     # the block device and what it needs to be served. Only the T-Deck
     # has a card, and only that board starts blksrv -- esp_blk_present
@@ -144,6 +166,15 @@ set(EMBED_FILES
     lib/fatfs.lua
     task/fatsrv.lua
 
+    # and what a client needs to mount it, which is also what a spawned
+    # proc adopts a namespace with. Not lib/ninep.lua -- that is the 9p
+    # wire, and a local dev backend is reached by message.
+    lib/chan.lua
+    lib/ns.lua
+    lib/mnt.lua
+    lib/nsio.lua
+    lib/romfs.lua
+
     # the network, from the wire up. The radio hands up 802.3 frames
     # and everything above them is the same Lua the other platforms
     # run: eth, then ip, then tcp, with dhcpd acquiring the lease and
@@ -159,50 +190,28 @@ set(EMBED_FILES
     lib/tcb.lua
     lib/inet.lua
     lib/dhcp.lua
-    lib/dhcpc.lua
-    lib/dns.lua
-    lib/dnsc.lua
-    # the http client, for bin/fetch.lua. A library and not a task: it
-    # owns no capability and rides the tcp right its caller holds.
-    lib/http.lua
-    lib/ntp.lua
+    lib/caps.lua
     task/eth.lua
     task/ip.lua
     task/tcp4.lua
     task/dhcpd.lua
-
-    # and what a CLIENT needs to mount it. Without these blksrv runs
-    # and nothing can open a file on it: require("ns") fails on the
-    # board. Not lib/ninep.lua -- that is the 9p wire, and a local dev
-    # backend is reached by message.
-    lib/chan.lua
-    lib/ns.lua
-    lib/mnt.lua
-
-    # the panel as a terminal: fbcons is the second binding of
-    # lib/console.lua, and dos/prog/draw/caps are what a program needs
-    # to be run from a prompt on it.
-    lib/romfs.lua
-    lib/nsio.lua
-    lib/svc.lua
-    lib/proc.lua
-    lib/log.lua
-    etc/services.lua
-    lib/fbcons.lua
-    task/fbterm.lua
-    task/fbsh.lua
-    lib/caps.lua
-    lib/prog.lua
-    lib/draw.lua
-    lib/dos.lua
 )
 
-# bin/ is not here. The programs live on the luafs partition, built by
-# tools/mkfatimg.lua and flashed separately, so a new one is an upload
-# rather than a rebuild. What that costs is that a board with an empty
-# or unflashed partition has no programs at all -- the prompt comes up
-# and every name is unknown -- which is the same bargain the other
-# platforms make with their EFI system partition.
+# What is not here: the programs in bin/, the shell and the terminal
+# above it, the panel console, the http client, the pager, and the
+# machine's own /etc/services.lua. All of that is on the luafs
+# partition, built by tools/mkfatimg.lua and flashed separately, so a
+# change to any of it is an upload rather than a rebuild.
+#
+# What that costs is that a board with an empty or unflashed partition
+# reaches the lua repl on the serial line and stops there -- no
+# programs, no panel terminal, no services at all. That is the deal a
+# separate root makes, and the repl is enough to flash one.
+#
+# A file that exists in both places is worse than a file in neither:
+# the partition is mounted before the image and silently wins, so an
+# image rebuild leaves the old copy in charge. Keep this list and the
+# image disjoint.
 
 # Some modules ship as stripped bytecode rather than source.
 #
@@ -219,11 +228,15 @@ set(EMBED_FILES
 # differs between them.
 #
 # The cost is the debugger's line numbers in these modules, so a
-# traceback names a chunk and not a line. Hence a short always-list plus
-# an opt-in for the rest, rather than doing it to everything by default.
+# traceback names a chunk and not a line, which is why this is opt-in
+# rather than done to everything by default.
+#
+# It applies to the embedded set alone. A module on the luafs partition
+# is read as source through the namespace, so the saving is available
+# only to what the image carries.
 find_program(LUAC_EXE NAMES luac5.4 luac REQUIRED)
 
-set(PRECOMPILED lib/zmodem.lua)
+set(PRECOMPILED "")
 if(CONFIG_LUAOS_PRECOMPILE)
     list(APPEND PRECOMPILED ${EMBED_FILES})
     list(REMOVE_DUPLICATES PRECOMPILED)

@@ -93,29 +93,39 @@ all, not even from the bootloader.
 
 ## The flash filesystem
 
-`bin/` is not in the firmware. Programs live on the `luafs` partition,
-so a new one is an upload rather than a rebuild. The layout is in
-`partitions.csv`:
+The firmware carries what the machine needs to reach a mounted
+filesystem and no more: the console, the block device, `lib/fat`, the
+namespace modules, and the drivers the kernel spawns before init runs.
+Everything above that -- `bin/`, the shell, the panel terminal, the
+libraries they pull in and `etc/services.lua` -- lives on the `luafs`
+partition, so a change to any of it is an upload rather than a rebuild.
+The layout is in `partitions.csv`:
 
 | partition | offset | size |
 |---|---|---|
 | `nvs` | `0x9000` | 24K |
 | `phy_init` | `0xf000` | 4K |
 | `factory` | `0x10000` | 3M |
-| `luafs` | `0x310000` | 2M |
+| `luafs` | `0x310000` | 4M |
 
-Build an image with the programs and the config in it. This one runs
-from the top of the tree, since that is where `bin/` and `etc/` are:
+Build the image from the top of the tree, which is where these
+directories are:
 
-    lua5.4 tools/mkfatimg.lua esp32/luafs.img 2M bin/=/bin etc/=/etc
+    lua5.4 tools/mkfatimg.lua esp32/luafs.img 4M \
+        bin/=/bin lib/=/lib task/=/task etc/=/etc
 
 The sector is 4096 bytes, matching the flash erase block, so a sector
 write is one erase and one program. The tool reopens the image and
 checks it before exiting.
 
-A board with no image flashed still boots to a prompt, and every command
-on it is unknown. That is the same bargain the other platforms make with
-their EFI system partition.
+A board with no image flashed still boots to a prompt on the serial
+line, and that is all: no programs, no services, no panel terminal.
+That is the same bargain the other platforms make with their EFI system
+partition, and the prompt is enough to flash a volume from.
+
+A file must not be in both places. The partition is mounted over the
+image and searched first, so a copy left on flash silently outranks the
+one a firmware rebuild just changed.
 
 ## Flashing
 
