@@ -17,7 +17,12 @@ return {
 	-- console. Skipped on a machine whose keys arrive through the
 	-- console instead: there is no kbd capability to name, and a
 	-- service that names one it cannot have is not started.
-	{ path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" } },
+	-- tcp is optional rather than required: a panel is still a panel
+	-- on a board with no stack, where naming it in caps would skip
+	-- the terminal. Where there is one, the shell lends it to every
+	-- program it runs, which is how fetch reaches the network.
+	{ path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" },
+	  optcaps = { "tcp" } },
 
 	-- the browser shell. off by default: it hands anonymous visitors a
 	-- shell, which is a decision to make deliberately rather than

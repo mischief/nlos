@@ -129,10 +129,20 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 #define SCHED_DECAY_MS	500
 /* wall-clock slice a proc may hold before the count hook yields it. the
  * hook fires on instruction count; this converts that into a time bound.
- * well under the ~10ms timer floor, so it never becomes the thing that
- * delays a tick.
+ *
+ * What a slice costs is one lap of kernel_run, so the quantum decides
+ * how much of the machine goes to scheduling rather than to work. A
+ * platform whose lap is expensive says so in its param.h: esp32
+ * measured 130us a lap, where 2ms spends 6% of the cpu on switching.
+ *
+ * The bound it must respect is the timer, not the tick. expire_timers
+ * runs once per lap, so a busy proc delays a timer by at most one
+ * quantum -- while an idle machine cannot beat the tick anyway, which
+ * is 10ms and backs off to 15ms.
  */
+#ifndef QUANTUM_MS
 #define QUANTUM_MS	2
+#endif
 /* priority resolution per unit of weight. plan 9's PriNormal is 10 and
  * its bands run 0..19; weight is our basepri, so this is what gives a
  * default-weight proc a 0..10 range to move in rather than 0..1.
@@ -6978,10 +6988,17 @@ pump_devkbd(void)
 static void
 pump_keyboard(void)
 {
-	ipclock_enter();
 	EFI_INPUT_KEY key;
 
-	while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_SUCCESS) {
+	/* Poll before locking: the scheduler calls this every lap and
+	 * nearly every lap has no key, where taking the lock is the whole
+	 * cost of the call.
+	 */
+	if (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) != EFI_SUCCESS)
+		return;
+
+	ipclock_enter();
+	do {
 		/* serialized one-char string: tag, u32 len, byte */
 		unsigned char msg[6] = { 'S', 1, 0, 0, 0, 0 };
 
@@ -7012,7 +7029,7 @@ pump_keyboard(void)
 			continue;
 		msg[5] = (unsigned char)key.UnicodeChar;
 		port_push(kbdport, msg, sizeof msg, 0, 0);
-	}
+	} while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_SUCCESS);
 	ipclock_leave();
 }
 

@@ -70,3 +70,20 @@
  * cpu this machine has and memory it does not.
  */
 #define GCPAUSE		120
+
+/* the scheduler's slice, longer here than the 2ms the other platforms
+ * take.
+ *
+ * A lap of kernel_run measured 130us on this board -- a slow core with
+ * its lua heap in psram, pumping a keyboard and a serial port each time
+ * round. At 2ms that is 6% of the cpu spent switching: 2000000 lua
+ * iterations took 2471ms at 2ms and 2325ms at 20ms, which is 1119
+ * fewer laps for 146ms.
+ *
+ * 10ms takes most of that back and costs nothing the machine did not
+ * already cost. expire_timers runs once per lap, so this is the longest
+ * a busy proc can make a timer late -- and an idle one already waits
+ * for a 10ms tick that backs off to 15ms, so the worst case is
+ * unchanged.
+ */
+#define QUANTUM_MS	10

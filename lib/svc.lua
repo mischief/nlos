@@ -127,6 +127,19 @@ function M.start(list, opts)
 			end
 		end
 
+		-- optcaps: handed over where the machine has them, absent
+		-- where it does not, and never a reason to skip. A panel
+		-- terminal wants the network so its programs can reach it
+		-- and is still a terminal without one -- where naming tcp
+		-- in caps would stop the panel on a board with no stack.
+		for _, cap in ipairs(e.optcaps or {}) do
+			local h = opts.granted[cap]
+
+			if h then
+				arg[cap] = { __right = h }
+			end
+		end
+
 		if not src then
 			log("svc: " .. name .. ": cannot read " ..
 			    tostring(e.path))

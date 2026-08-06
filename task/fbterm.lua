@@ -100,9 +100,13 @@ if src then
 	-- in the message is the capability table alone.
 	local N = require("ns").current()
 
+	-- the network too, where the machine has one. The shell lends it
+	-- to every program it runs, which is how bin/fetch.lua reaches
+	-- the stack -- see prog.net.
 	sys.send(sh, {
 		cons = { __right = consright },
 		fb = { __right = fb },
+		net = job.tcp and { __right = job.tcp.__right },
 		ns = N and N:describe(),
 	})
 	sys.close(sh)
