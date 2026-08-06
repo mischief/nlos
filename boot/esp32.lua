@@ -116,6 +116,10 @@ _G.shot = function(name, rows)
 		local m = thread.recv(sys.SELF)
 
 		if type(m) == "table" and m.exit == pid then
+			-- a proc that raised is a corpse, and a corpse keeps
+			-- its heap so it can be inspected. Nothing else will
+			-- free it, so a few failed shots would eat the board.
+			pcall(sys.reap, pid)
 			return nil, "shot died: " .. tostring(m.reason or
 			    m.exitmsg)
 		elseif type(m) == "table" and m.ok ~= nil then

@@ -112,10 +112,11 @@ end
 while true do
 	local m = recv(sys.SELF)
 	local fn = ops[m.op]
+	local reply = m.reply and m.reply.__right
 
 	if not fn then
-		if m.reply then
-			sys.send(m.reply.__right,
+		if reply then
+			sys.send(reply,
 			    { err = "no such op: " .. tostring(m.op) })
 		end
 	else
@@ -124,13 +125,18 @@ while true do
 		-- the caller gets the message back as text.
 		local ok, res = pcall(fn, m)
 
-		if m.reply then
+		if reply then
 			if ok then
-				sys.send(m.reply.__right, { ok = res })
+				sys.send(reply, { ok = res })
 			else
-				sys.send(m.reply.__right,
-				    { err = tostring(res) })
+				sys.send(reply, { err = tostring(res) })
 			end
 		end
+	end
+
+	-- a right in a message is a copy this proc owns, and sending to it
+	-- does not consume it: without this every request leaks one.
+	if reply then
+		sys.close(reply)
 	end
 end

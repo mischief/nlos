@@ -31,6 +31,11 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 
+-- the most bytes readraw will gather into one reply. A batch is held as
+-- one lua string per byte until the concat, so this is a memory ceiling
+-- rather than a throughput knob.
+local MAXRAW = 512
+
 local M = {}
 local Console = {}
 
@@ -135,6 +140,12 @@ function Console:serve()
 		-- relative to the rest of the mailbox is kept.
 		local m = table.remove(self.deferred, 1) or thread.recv(sys.SELF)
 
+		-- closed at the end of the loop: a right in a message is a
+		-- copy this proc owns, and a reader that polls leaks one per
+		-- request. Deferred messages are closed when handled, not
+		-- when first seen.
+		local reply = m.reply and m.reply.__right
+
 		if m.op == "write" or m.op == "log" then
 			-- log lines arrive already stamped and tagged
 			-- (lib/log.lua); the console is the console, not the
@@ -163,8 +174,8 @@ function Console:serve()
 			-- dropped reply.
 			local c = self:getch(m.timeout)
 
-			if m.reply and m.reply.__right then
-				sys.send(m.reply.__right, c or "")
+			if reply then
+				sys.send(reply, c or "")
 			end
 		elseif m.op == "readraw" then
 			-- bulk sibling of getch, for a reader moving bytes
@@ -176,21 +187,31 @@ function Console:serve()
 			-- round trips and not the link. Waiting once for the
 			-- first byte and then taking whatever else is already
 			-- queued turns a subpacket into one reply.
+			-- bounded hard, not by what the caller asks: every
+			-- byte is a lua string object until the concat, so
+			-- the batch is the peak. Measured on a Cardputer at
+			-- n=2048, cons peaked at 95KB of a 125KB board.
+			local want = m.n or MAXRAW
+
+			if want > MAXRAW then
+				want = MAXRAW
+			end
+
 			local t = {}
 			local c = self:getch(m.timeout or 1000)
 
 			while c and c ~= "" do
 				t[#t + 1] = c
-				if #t >= (m.n or 1024) then
+				if #t >= want then
 					break
 				end
 				c = self:getch(0)
 			end
-			if m.reply and m.reply.__right then
-				sys.send(m.reply.__right, table.concat(t))
+			if reply then
+				sys.send(reply, table.concat(t))
 			end
 		elseif m.op == "readline" then
-			sys.send(m.reply.__right, self:readline(m.prompt))
+			sys.send(reply, self:readline(m.prompt))
 		elseif m.op == "read" then
 			-- the ABI stream protocol (lib/prog.lua's PortStream), so
 			-- the console can BE a program's stdin. it is the same
@@ -205,7 +226,11 @@ function Console:serve()
 			-- would make ctrl-d unrepresentable to a program.
 			local line = self:readline()
 
-			sys.send(m.reply.__right, line and (line .. "\n") or nil)
+			sys.send(reply, line and (line .. "\n") or nil)
+		end
+
+		if reply then
+			sys.close(reply)
 		end
 	end
 end

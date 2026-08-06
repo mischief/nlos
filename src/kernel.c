@@ -1368,9 +1368,17 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 			return -1;
 		lua_createtable(L, 0, n);
 		for (unsigned int i = 0; i < n; i++) {
-			if (deserialize(L, p, len, off, receiver, depth + 1) ||
-			    deserialize(L, p, len, off, receiver, depth + 1))
-				return -1;
+			int rc = deserialize(L, p, len, off, receiver,
+			    depth + 1);
+
+			if (rc == 0)
+				rc = deserialize(L, p, len, off, receiver,
+				    depth + 1);
+			/* keep the reason: a nested right that could not
+			 * be made is still a resource failure.
+			 */
+			if (rc)
+				return rc;
 			lua_settable(L, -3);
 		}
 		return 0;
@@ -1392,8 +1400,9 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 
 		int h = right_new(receiver, portv[pi], recv);
 
+		/* a full rights table is a local limit, not bad bytes */
 		if (h < 0)
-			return -1;
+			return -2;	/* out of rights, not bad bytes */
 		lua_createtable(L, 0, 1);
 		lua_pushinteger(L, h);
 		lua_setfield(L, -2, "__right");
@@ -1959,7 +1968,9 @@ api_sendblock(lua_State *L)
  * the two callers disagree about (tryrecv reports it, api_call sleeps
  * on it), which is why the emptiness test stays outside.
  *
- * returns -1 on a corrupt message, having pushed nothing.
+ * returns nonzero having pushed nothing: -1 for a message this cannot
+ * be, -2 for one it could not receive (a full rights table). A -2 loses
+ * any rights the same message already installed.
  */
 static int
 port_pop_to_lua(lua_State *L, struct kproc *p, struct kport *port)
@@ -1974,14 +1985,27 @@ port_pop_to_lua(lua_State *L, struct kproc *p, struct kport *port)
 	wake_senders(port);
 
 	size_t off = 0;
+	int rc = deserialize(L, m->data, m->len, &off, p, 0);
 
-	if (deserialize(L, m->data, m->len, &off, p, 0)) {
+	if (rc) {
 		msg_free(m);
-		return -1;
+		return rc;
 	}
 	/* receiver now holds its own refs (right_new); drop in-flight */
 	msg_free(m);
 	return 0;
+}
+
+/* name a port_pop_to_lua failure: a local limit reached, or a message
+ * that could not be decoded.
+ */
+static int
+popfail(lua_State *L, struct kproc *p, int rc)
+{
+	if (rc == -2)
+		return luaL_error(L, "out of rights: %d of %d in use",
+		    p->rhigh, MAXRIGHTS);
+	return luaL_error(L, "corrupt message");
 }
 
 static int
@@ -1997,8 +2021,11 @@ api_tryrecv(lua_State *L)
 		return 1;
 	}
 	lua_pushboolean(L, 1);
-	if (port_pop_to_lua(L, p, r->port))
-		return luaL_error(L, "corrupt message");
+
+	int rc = port_pop_to_lua(L, p, r->port);
+
+	if (rc)
+		return popfail(L, p, rc);
 	return 2;
 }
 
@@ -2093,8 +2120,10 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 		rq_del(p);
 		return lua_yieldk(L, 0, ctx, call_k);
 	}
-	if (port_pop_to_lua(L, p, rr->port))
-		return luaL_error(L, "corrupt message");
+	int rc = port_pop_to_lua(L, p, rr->port);
+
+	if (rc)
+		return popfail(L, p, rc);
 	return 1;
 }
 
@@ -2300,8 +2329,11 @@ altrecv_take(lua_State *L, struct kproc *p)
 	if (!r || !r->recv || !r->port->head)
 		return 0;	/* cannot happen today; see the note above */
 	lua_pushinteger(L, i);
-	if (port_pop_to_lua(L, p, r->port))
-		return luaL_error(L, "corrupt message");
+
+	int rc = port_pop_to_lua(L, p, r->port);
+
+	if (rc)
+		return popfail(L, p, rc);
 	return 2;
 }
 
