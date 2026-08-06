@@ -703,24 +703,23 @@ it says nothing about the kernel: the spinners share nothing.
 
 `test/boot/microvm_pairs.lua` asks the other half. Four independent
 pairs of procs pass a message back and forth over ports no other pair
-touches — no shared server, no shared queue, four takes of the IPC lock
-per round trip. 800000 round trips, same subtraction: **0.70s at
-`-smp 1`, 0.81s at 2, 0.97s at 4, 1.95s at 8.** More cpus make message
-passing slower, and past four they make it much slower.
+touches — no shared server, no shared queue. 800000 round trips, wall
+clock including boot: **1.00s at `-smp 1`, 1.01s at 2, 0.98s at 4,
+1.53s at 8.** Flat to four cpus. Under one ipc lock the same run was
+0.95 / 1.14 / 1.38 / 1.87 — more cpus made message passing slower.
 
-So the IPC lock is the ceiling, and it is a real one. Nothing shared
-remains to blame: the pairs share only that lock, and the same run at
-the same widths shows the spinners scaling. Splitting it — a lock per
-port, with the table's allocation scan kept separate — is the next
-piece of work, and this test is how it gets judged.
+`schedlock` is the ceiling now, and at `-smp 8` it is 89.1% contended.
+That is the one global run queue, and it is the next piece of work.
 
-**What is shared, and how.** One lock over the whole IPC layer, taken
-at the outermost syscall entry and asserted — not taken — by the inner
-helpers, because they nest. It is recursive: allocating Lua objects
-under it can run the collector, `__gc` clunks handles, and that
-re-enters through `api_close`. The physical allocator has one lock; the
-malloc counters are relaxed atomics. The lock order is in `src/lock.h`
-and is the whole discipline.
+**What is shared, and how.** The ipc layer has eight locks, hashed on
+the port index; a caller that names one port takes one, and a caller
+that can reach a port it cannot name takes all eight. Nothing may
+allocate Lua memory holding one, because the collector runs a `__gc`
+handler that clunks a handle and reaches another port. `docs/locking.md`
+is that discipline in full — the wide/narrow split, the wake protocol,
+and the three assertion tiers — and it is worth reading before touching
+`kernel.c`'s ipc paths. The physical allocator has one lock; the malloc
+counters are relaxed atomics. The lock order is in `src/lock.h`.
 
 The `luaheap` arrangement follows `NCPU`, and neither setting takes a
 lock — the only combination that would need one is shared-and-parallel,
