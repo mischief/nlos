@@ -190,6 +190,45 @@ function M.check(backend, name)
 	return backend
 end
 
+-- subtree(backend, root) -> a backend serving root and what is under it.
+--
+-- plan 9 binds a piece of a file server; this is that piece. It belongs
+-- here rather than in each backend, because attaching somewhere other
+-- than the top is a property of the mount and not of what is mounted --
+-- so mem, romfs, mnt and anything written later gain it without being
+-- told about it. lib/ns.lua applies it whenever a mount names a root.
+--
+-- Everything but attach passes through untouched: a handle is the
+-- wrapped backend's own, and the subtree is decided once, when the
+-- namespace attaches.
+--
+-- Not a permission. A namespace shows what its mounts show, and this
+-- narrows one of them; a proc that also holds the right the mount was
+-- built from can still talk to the whole server behind it. Attenuating
+-- that is a proxy proc's job, not a namespace's.
+function M.subtree(backend, root)
+	local names = M.elements(root or "/")
+
+	if #names == 0 then
+		return backend
+	end
+
+	local sub = {}
+
+	for k, v in pairs(backend) do
+		sub[k] = v
+	end
+	function sub.attach()
+		return M.walknames(backend, backend.attach(), names)
+	end
+
+	-- ".." is resolved lexically by lib/ns.lua before any backend sees
+	-- a path, so a walk cannot climb out of here. A caller driving a
+	-- backend directly, below the namespace, is on its own -- as it is
+	-- for every other rule the namespace keeps.
+	return sub
+end
+
 -- walk a list of names one at a time.
 --
 -- no error checking, which is the point of the idiom: a failing walk

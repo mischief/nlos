@@ -114,42 +114,67 @@ local function netreq(extra)
 	return thread.recv(rp)
 end
 
--- What a session's namespace contains. A private mem tree, so writes are
--- scratch that die with the connection, and /bin is COPIED in the same
--- way svc/webterm.lua copies it -- for the same reason and with the same
--- reservation. The honest fix for both is a read-only ESP server mounted
--- at /lib and /bin, shared by every session rather than copied into each;
--- see the note at the top of lib/webterm.lua.
+-- What a session's namespace contains: a private mem tree for the root
+-- and for /tmp, so writes are scratch that die with the connection, and
+-- this machine's own /lib and /bin mounted as subtrees.
+--
+-- Mounted rather than copied. A session runs a shell, the shell loads
+-- lib/dos.lua, dos loads lib/prog.lua, and a program loads whatever it
+-- was written against -- so copying means keeping a list of modules by
+-- hand and finding out it is short when a session dies at a require.
+-- The subtree is a mount's root (lib/dev.lua's subtree, applied by
+-- ns:mount), so a session sees /lib and /bin and not /etc.
+--
+-- What that is worth is tidiness, not confinement: the description
+-- carries the right each mount was built from, so a session determined
+-- to reach the rest of the server can. Attenuating that needs a proxy
+-- proc between them.
 local nsdesc
 do
 	local N = ns.current()
-
-	local function slurp(path)
-		local src = N and N:readfile(path)
-
-		return src or ("-- missing: " .. path .. "\n")
-	end
-
 	local site = {
 		["README"] = "lua-os, over ssh. this shell is a proc of its " ..
 		    "own,\nholding one right: the console you are typing " ..
 		    "into.\n",
-		["bin"] = {
-			["ls.lua"] = slurp("/bin/ls.lua"),
-			["cat.lua"] = slurp("/bin/cat.lua"),
-			["seq.lua"] = slurp("/bin/seq.lua"),
-			["ps.lua"] = slurp("/bin/ps.lua"),
-			["stack.lua"] = slurp("/bin/stack.lua"),
-			-- the program is copied in (prog loads it from the session
-			-- namespace); its ed/ engine and terminal are require'd from
-			-- the ESP by the ambient searcher, not copied.
-			["vi.lua"] = slurp("/bin/vi.lua"),
-		},
 		["tmp"] = {},
 	}
 	local V = ns.new()
 
 	assert(V:mount("/", dev.mem(site), "mem", { tree = site }))
+
+	-- one subtree mount per mount this proc has at "/", in the order
+	-- it has them: a union of an image under a filesystem must stay a
+	-- union, or a session on a board whose flash shadows the image
+	-- gets whichever half was listed first.
+	for _, m in ipairs(N and N:describe() or {}) do
+		if m.prefix == "/" and m.kind ~= "mem" then
+			for _, dir in ipairs({ "/lib", "/bin" }) do
+				local args = { root = dir }
+
+				for k, v in pairs(m.args or {}) do
+					if k ~= "root" then
+						args[k] = v
+					end
+				end
+
+				local build = ns.kinds[m.kind]
+				local ok, b = false, nil
+
+				if build then
+					ok, b = pcall(build, args)
+				end
+
+				-- attached here rather than at first use: a
+				-- backend with no such directory -- the esp32
+				-- image has no /bin -- is left out, instead
+				-- of raising inside a walk that the next
+				-- mount in the union would have answered.
+				if ok and pcall(dev.subtree(b, dir).attach) then
+					V:mount(dir, b, m.kind, args, "after")
+				end
+			end
+		end
+	end
 	nsdesc = V:describe()
 end
 
@@ -162,7 +187,6 @@ local SHELL = [[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
 	local ns = require("ns")
-	local dos = require("dos")
 
 	local m = thread.recv(sys.SELF)
 	local cons = m.cons.__right
@@ -173,6 +197,13 @@ local SHELL = [[
 		    data = "namespace: " .. tostring(err) .. "\n" })
 		return
 	end
+	-- current first, then require: lib/dos.lua comes out of the
+	-- session's own /lib. On a platform whose image stops at the
+	-- filesystem it is not anywhere else.
+	ns.setcurrent(N)
+
+	local dos = require("dos")
+
 	dos.start({ ns = N, cons = cons, coro = true }, m.banner)
 ]]
 

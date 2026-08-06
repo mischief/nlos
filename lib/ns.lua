@@ -109,11 +109,20 @@ end
 -- kind/args are optional and only used by describe(): they record how to
 -- rebuild this backend in another proc. a mount without them still
 -- works, it just cannot be inherited.
+-- args.root, where a mount has one, names a directory in the backend to
+-- attach at: what appears at the prefix is that subtree. It is handled
+-- here rather than by each backend because it is a property of the
+-- mount, so every kind has it and none implements it -- and because a
+-- description that carries a root must rebuild the same narrowed mount
+-- in the child, which is only true if one place applies it.
 function NS:mount(prefix, backend, kind, args, order)
 	local ok, err = pcall(dev.check, backend, kind or "backend")
 
 	if not ok then
 		return nil, err
+	end
+	if args and args.root and args.root ~= "/" then
+		backend = dev.subtree(backend, args.root)
 	end
 	prefix = clean(prefix)
 	order = order or "replace"
@@ -776,8 +785,11 @@ M.register("mnt", function(args)
 	return require("mnt").new(args.port.__right)
 end)
 
-M.register("espfs", function(args)
-	return require("espfs").new((args and args.root) or "/")
+-- espfs takes a root of its own, which predates NS:mount applying one
+-- and means the same thing. Left at "/" here so a described root is
+-- applied once, by the namespace, as it is for every other kind.
+M.register("espfs", function()
+	return require("espfs").new("/")
 end)
 
 M.register("procfs", function()

@@ -24,7 +24,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(32)
+tap.plan(37)
 
 -- ---- the server proc ----
 --
@@ -116,6 +116,38 @@ for _, e in ipairs(root or {}) do
 end
 tap.ok(table.concat(rootnames, " "):find("host", 1, true) ~= nil,
     "the mount point shows up in /: " .. table.concat(rootnames, " "))
+
+-- ---- a mount rooted at a subtree ----
+--
+-- args.root is the namespace's, not the backend's: lib/dev.lua wraps
+-- whatever was mounted, so this claims the same thing for a local
+-- backend as for one across a port.
+
+local S = ns.new()
+
+S:mount("/", dev.mem({ ["init.lua"] = "-- local\n" }), "mem",
+    { tree = { ["init.lua"] = "-- local\n" } })
+S:mount("/deep", mnt.new(h), "mnt", { port = { __right = h },
+    root = "/sub" })
+
+tap.is(S:readfile("/deep/deep"), "deep file\n",
+    "a mount rooted at /sub serves what is under it")
+tap.is(S:readfile("/deep/hello"), nil,
+    "and does not serve what is above it")
+tap.is(S:readfile("/deep/../hello"), nil,
+    "'..' does not climb out of a rooted mount")
+
+-- and the root travels: a child rebuilds the narrowed mount, not the
+-- whole server, because the namespace applies it and not the kind.
+local S2 = ns.restore(S:describe())
+
+tap.is(S2 and S2:readfile("/deep/deep"), "deep file\n",
+    "the root survived describe/restore")
+tap.is(S2 and S2:readfile("/deep/hello"), nil,
+    "and the restored mount is narrowed too")
+
+S:unmount("/deep")
+S2:unmount("/deep")
 
 -- ---- writing, and create ----
 
