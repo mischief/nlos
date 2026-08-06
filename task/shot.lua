@@ -17,17 +17,9 @@
 
 local sys = require("los.sys")
 
--- two ways to wait, and the difference matters.
---
--- recv parks: sys.block ends in lua_yield, which suspends whatever
--- coroutine is running. That is right at the top level and right inside
--- zmodem's driver, which calls line.read from OUTSIDE its coroutine.
---
--- spin does not park, because file.read IS called from inside that
--- coroutine: a yield there goes to zmodem's resume rather than to the
--- kernel, and the driver gets a wakeup it cannot read. The machine
--- stays fair regardless -- the reduction budget preempts a spinning
--- proc, so the server we are waiting on still runs.
+-- Everything below parks. Nothing here runs inside zmodem's coroutine:
+-- the row fetch is a request the driver answers from outside it
+-- (opts.yieldread), so sys.block reaches the kernel as it should.
 local function recv(h)
 	h = h or sys.SELF
 	while true do
@@ -37,16 +29,6 @@ local function recv(h)
 			return m
 		end
 		sys.block(h)
-	end
-end
-
-local function spin(h)
-	while true do
-		local ok, m = sys.tryrecv(h)
-
-		if ok then
-			return m
-		end
 	end
 end
 
@@ -63,10 +45,10 @@ local cons, fb = job.cons.__right, job.fb.__right
 local fbport = sys.newport()
 local consport = sys.newport()
 
-local function rpc(h, port, msg, wait)
+local function rpc(h, port, msg)
 	msg.reply = { __right = port }
 	sys.send(h, msg)
-	return (wait or recv)(port)
+	return recv(port)
 end
 
 -- ask the panel rather than assume it: this runs on a 240x135
@@ -97,8 +79,7 @@ local cached, cachedy = nil, -1
 local function row(y)
 	if y ~= cachedy then
 		local r = rpc(fb, fbport,
-		    { op = "unload1", r = { x = 0, y = y, w = W, h = 1 } },
-		    spin)
+		    { op = "unload1", r = { x = 0, y = y, w = W, h = 1 } })
 
 		if not (r and r.ok) then
 			error("unload1 row " .. y .. ": " ..
@@ -162,8 +143,10 @@ local line = {
 		return d
 	end,
 }
+-- yieldread: readat parks on fb for a row, so the read must happen
+-- outside the sender's coroutine. See lib/zmodem.lua's Mach:want.
 local m = zmodem.sender({ { name = job.name or "screen.pbm",
-    size = size, read = readat } })
+    size = size, read = readat } }, { yieldread = true })
 local res, err = zmodem.drive(m, line)
 
 sys.send(cons, { op = "rawoff" })

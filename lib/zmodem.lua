@@ -361,7 +361,7 @@ function Mach:run(now)
 			break
 		end
 		self.waiting = what
-		if what == "flush" then
+		if what == "flush" or what == "file" then
 			self.wantinput = false
 			return "running"
 		end
@@ -372,6 +372,35 @@ function Mach:run(now)
 end
 
 -- ---- reader primitives (they yield; only the coroutine may call them) ----
+
+-- ask the driver for body bytes, the way wait() asks it for wire bytes.
+--
+-- A reader cannot simply be called from in here. lua_yield unwinds to
+-- whoever resumed the state it fired in, so a reader that parks -- on a
+-- port, a file, anything -- lands in Mach:run rather than in its own
+-- scheduler, and run resumes the coroutine again believing the yield
+-- was a preemption. On lua-os that leaves the kernel holding a proc
+-- marked blocked while it carries on executing. So the request goes
+-- out the same door the transport's does, and the driver, which is
+-- outside the coroutine, is free to park.
+function Mach:want(off, n)
+	-- Only where the caller asked for it. A reader that cannot block --
+	-- a generator, a string slice -- is served inline, which is what
+	-- every run/pull/feed caller expects; opting in is for a reader
+	-- that parks, and means the driver must answer filereq.
+	if not self.yieldread then
+		return self.filereader(off, n)
+	end
+
+	self.filereq = { off = off, n = n }
+	coroutine.yield("file")
+	self.filereq = nil
+
+	local d = self.filedata
+
+	self.filedata = nil
+	return d
+end
 
 function Mach:wait()
 	self.deadline = self.now + self.timeout
@@ -880,6 +909,10 @@ local function sendfile(m, file, use32, bufsize)
 	-- position-based, so a reader that cannot seek cannot recover.
 	local data = file.data
 	local read = file.read
+
+	-- published for the driver: Mach:want yields the request out, and
+	-- whoever is driving needs the function to answer it with.
+	m.filereader = read
 	local total = file.size or (data and #data) or 0
 
 	if not data and not read then
@@ -950,7 +983,7 @@ local function sendfile(m, file, use32, bufsize)
 			if data then
 				chunk = data:sub(pos + 1, pos + n)
 			else
-				chunk = read(pos, n)
+				chunk = m:want(pos, n)
 				if chunk == nil or #chunk == 0 then
 					return nil, "short read at " .. pos
 				end
@@ -1126,6 +1159,10 @@ local function newmach(body, opts)
 		-- get the 25% back.
 		escall = opts.escctl ~= false,
 		sink = opts.sink,
+		-- a body reader that PARKS. See Mach:want: it makes the read
+		-- a request the driver answers from outside the coroutine,
+		-- because a yield in here reaches Mach:run and nothing else.
+		yieldread = opts.yieldread,
 	}, Mach)
 
 	m.co = coroutine.create(function()
@@ -1158,6 +1195,10 @@ end
 -- ---- driver, for callers that have a blocking line ----
 --
 -- line = { read = f(ms) -> string|nil, write = f(s), now = f() -> ms }.
+--
+-- Both kinds of blocking happen HERE, outside the coroutine, and that
+-- is the point: a yield inside it unwinds to Mach:run rather than to
+-- the caller's own scheduler.
 function M.drive(m, line)
 	while true do
 		local st = m:run(line.now())
@@ -1171,6 +1212,13 @@ function M.drive(m, line)
 				return m.result
 			end
 			return nil, m.err
+		end
+		if m.filereq then
+			-- a body served by a reader rather than a string. The
+			-- reader may park; it is called from out here so that
+			-- parking reaches whoever should hear it.
+			m.filedata = m.filereader(m.filereq.off,
+			    m.filereq.n)
 		end
 		if m.wantinput then
 			local d = line.read(m:timeleft(line.now()))
