@@ -72,9 +72,17 @@ end
 -- its residue is 0xDEBB20E3 where CRC16's is zero. That asymmetry is
 -- Forsberg's, not ours.
 
+-- The C module first, because the tables below are only the fallback:
+-- 512 entries built at load time in every proc that requires this, and
+-- dead weight where crc.c answers. Probing first is worth several KB on
+-- a board that counts them.
+local haveC, ccrc = pcall(require, "los.crc")
+
+haveC = haveC and type(ccrc) == "table" and type(ccrc.crc32) == "function"
+
 local crc16tab, crc32tab = {}, {}
 
-for i = 0, 255 do
+for i = 0, (haveC and -1 or 255) do
 	local c = i << 8
 
 	for _ = 1, 8 do
@@ -87,7 +95,7 @@ for i = 0, 255 do
 	crc16tab[i] = c
 end
 
-for i = 0, 255 do
+for i = 0, (haveC and -1 or 255) do
 	local c = i
 
 	for _ = 1, 8 do
@@ -126,9 +134,7 @@ end
 -- all because it is the only cost that scales with the payload: in the
 -- guest the Lua loops run at ~10MB/s against the C's ~500, and the data
 -- goes through one at each end, which was 37% of a 256KiB transfer.
-local haveC, ccrc = pcall(require, "los.crc")
-
-if haveC and type(ccrc) == "table" and type(ccrc.crc32) == "function" then
+if haveC then
 	crc16up, crc32up = ccrc.crc16, ccrc.crc32
 end
 
@@ -141,7 +147,7 @@ local function crc32of(s)
 end
 
 -- exposed for the test's check vectors: crc16("123456789") is 0x31c3
--- and crc32("123456789") is 0xcbf43f26, so a table built wrong is
+-- and crc32("123456789") is 0xcbf43926, so a table built wrong is
 -- caught where it happens rather than as "the transfer hangs".
 function M.crc16(s)
 	return crc16up(s, 0)
