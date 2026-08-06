@@ -884,6 +884,7 @@ microvm_tests = [
   ['idle', []],
   ['smp', ['--smp=2']],
   ['spin', []],
+  ['pairs', []],
   ['bigmsg', []],
   ['sample', []],
 ]
@@ -917,6 +918,7 @@ microvm_smp_tests = [
   ['gefssrv', ['--gefscommit']],
   ['gefspar', ['--gefs']],
   ['spin', []],
+  ['pairs', []],
   ['bigmsg', []],
   ['sample', []],
 ]
