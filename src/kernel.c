@@ -329,7 +329,7 @@ struct waiter {
 	int send;			/* waiting for room, not for a message */
 	/* still linked on port->waiters. A waker unlinks the entry it
 	 * woke on and clears this, under that port's bucket; the entries
-	 * the proc holds on OTHER ports stay linked, and collecting them
+	 * the proc holds on other ports stay linked, and collecting them
 	 * is the proc's own job. See wait_reap.
 	 */
 	int onport;
@@ -1416,7 +1416,7 @@ right_slot_grow(struct kproc *p, int h)
 static int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
-	/* CALLER NEEDS NO LOCK, and this is the one helper here that
+	/* The caller needs no lock, and this is the one helper here that
 	 * genuinely needs none.
 	 *
 	 * It writes two things. p's right table belongs to p, and only p
@@ -1905,7 +1905,7 @@ wait_add(struct kproc *p, struct kport *port, int send)
  * builds a new set, so it has to be safe to call when the list is
  * already empty.
  *
- * This is the WIDE operation: it reaches every port the proc waits on,
+ * This is the wide operation: it reaches every port the proc waits on,
  * so it demands every bucket. wait_reap is the narrow form and is what
  * the wake path uses.
  */
@@ -2386,7 +2386,7 @@ self(lua_State *L)
  * api_send and api_call, which differ only in what they do afterwards.
  * the wbuf is disposed of on every path, success or not.
  *
- * TAKES NO LOCK ON ENTRY, and that is the point: the serializer is the
+ * It takes no lock on entry, and that is the point: the serializer is the
  * expensive half of a send and it is also the half that must not run
  * under a bucket, because building the message allocates lua memory and
  * the collector reaches api_close from there. So it runs first, with
@@ -2698,7 +2698,7 @@ msg_dispose(struct kmsg *m)
 	}
 }
 
-/* push a popped message as ONE lua value, and dispose of it.
+/* push a popped message as one lua value, and dispose of it.
  *
  * returns nonzero having pushed nothing: -1 for a message this cannot
  * be, -2 for one it could not receive (a full rights table). A -2 loses
@@ -7291,13 +7291,18 @@ reprioritize(struct kproc *p, int nrunnable)
  * This is plan 9's arrangement -- port/proc.c's `Schedq runq[Nrq]` is
  * global there too -- rather than the per-cpu queues and work stealing
  * of OpenBSD's kern_sched.c. The usual argument for per-cpu queues is
- * keeping cpus off one lock on the hottest path, and that argument is
- * weak here: every send and every wakeup already passes through the
- * single ipc lock, held longer than anything done under this one. This
- * cannot become the bottleneck without that being one first.
+ * keeping cpus off one lock on the hottest path.
  *
- * If it ever does contend, plan 9 has the next step as well: it locks
- * each priority queue separately rather than the whole set.
+ * That argument was dismissed here on the grounds that the ipc lock was
+ * always held longer, so this one could not contend first. Splitting
+ * the ipc lock ended it: on microvm_pairs at -smp 8 schedlock is 89.1%
+ * contended with 25380 Mcycles spinning, against the ipc buckets' 465.
+ * It is the ceiling now. Below eight cpus it is not -- the same test is
+ * flat from one to four -- so this is a real problem at one width and
+ * not yet at the others.
+ *
+ * plan 9 has the next step as well: it locks each priority queue
+ * separately rather than the whole set.
  *
  * `runq` is the lap in progress, `donq` what has already had a turn,
  * and dispatch_lap swaps them. schedlock guards both, and also every
@@ -7909,7 +7914,7 @@ kernel_run_ap(void)
 
 	while (nlive > 0) {
 		me->nlaps++;
-		if (ipcheld())	/* see kernel_run; the same check */
+		if (ipcheld_any())	/* see kernel_run; the same check */
 			platform_abort("ipclock held across a lap");
 		if (dispatch_lap(me)) {
 			me->ndispatch++;
@@ -7997,8 +8002,17 @@ kernel_run(void)
 		 * and asking lock.h's holding() reported that as a leak
 		 * -- a panic that arrives at random on a machine that is
 		 * working correctly.
+		 *
+		 * Any bucket, never every one. A leak is a single missed
+		 * release, so it is a single bucket left held. Demanding
+		 * all eight asks whether the cpu is inside a wide region,
+		 * which answers no for exactly the case this exists to
+		 * catch -- and the recursion comment above tells a reader
+		 * to trust this check over the tests, so it has to be the
+		 * question that finds a leak rather than the one that
+		 * looks similar.
 		 */
-		if (ipcheld())
+		if (ipcheld_any())
 			platform_abort("ipclock held across a lap");
 
 		/* drain the periodic timer's signal. nothing is paced

@@ -108,7 +108,7 @@ end
 -- child -- port 3's lands on a proc that is already parked and whose
 -- waiter on 3 is not the one being unlinked.
 --
--- Order matters: 3 has to be queued BEFORE the wake, or this tests
+-- Order matters: 3 has to be queued before the wake, or this tests
 -- nothing but two ordinary deliveries.
 sys.send(ports[3].__right, "three")
 sys.send(ports[1].__right, "one")

@@ -7,7 +7,7 @@
 -- readies the proc, the loser leaves it entirely alone. Go's runtime
 -- does the same with g.selectDone.
 --
--- WHAT THIS DOES NOT ASSERT, because it was tried: that a claim is
+-- What this does not assert, because it was tried: that a claim is
 -- ever lost. Three arrangements were measured and none produced one
 -- collision at any width up to -smp 8. The counter is reported
 -- instead, and `lost 0` is a known gap rather than a passing test.
@@ -34,7 +34,7 @@
 --
 -- What this does assert is the half that holds either way: under an
 -- alt hammered from eight ports at once, every message arrives, on the
--- port it was sent to. A lost claim may lose only the WAKE -- the
+-- port it was sent to. A lost claim may lose only the wake -- the
 -- waiter it did not unlink stays put, and the re-scan finds it.
 
 local sys = require("los.sys")
@@ -209,7 +209,7 @@ for i = 1, NPORT do
 end
 
 -- the correctness half, and it holds on one cpu as well as eight: a
--- lost claim must lose only the WAKE, never the message. The waiter it
+-- lost claim must lose only the wake, never the message. The waiter it
 -- did not unlink stays on its port, and the proc finds it on the
 -- re-scan.
 tap.ok(total == NPORT * ROUNDS and misdelivered == 0,
@@ -221,7 +221,7 @@ local won, lost = ipc.claimwon or 0, ipc.claimlost or 0
 tap.diag(string.format("claims: %d won, %d lost", won, lost))
 
 -- that the receiver genuinely parked, which is the part of the race
--- this test CAN guarantee. Without it the whole thing degenerates into
+-- this test can guarantee. Without it the whole thing degenerates into
 -- an ordinary send loop -- the first arrangement above, where altrecv
 -- took at entry every time and the wake path was never entered -- and
 -- it would still pass every assertion above.
