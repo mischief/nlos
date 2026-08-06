@@ -338,6 +338,14 @@ esp_kbd_poll(void)
 	if (i2c_master_receive(kb, &v, 1, 20) != ESP_OK || v == 0)
 		return 0;
 
+	/* the keyboard has no Escape key, and a full-screen program needs
+	 * one to leave insert mode. Alt+C is a spare combo the keyboard
+	 * firmware sends as 0x0C (form feed); nothing here reads form feed,
+	 * so it stands in as Escape.
+	 */
+	if (v == 0x0c)
+		v = 0x1b;
+
 	next = (rhead + 1) % sizeof ring;
 	if (next == rtail)
 		return 0;		/* full; drop rather than block */
