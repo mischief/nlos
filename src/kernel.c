@@ -6727,12 +6727,17 @@ count_runnable(struct cpu *c)
 /* run the proc's sys.atexit handlers, LIFO, on the main state -- p->co
  * has finished, but its registry is p->L's, so the list is still here.
  * self() reads the handler state's extraspace, so the kernel api resolves
- * without help; current_proc is set for the plain-C paths that have no
- * lua_State to consult -- the disk read-gate io.open hits (see
- * fopen_allowed) -- exactly as run_proc sets it around a resume. Errors
- * in a handler are swallowed the way a finalizer's are, since there is no
- * longer a caller to report them to. Cleared after so a handler that
- * itself exits cannot loop.
+ * without help. The plain-C paths that have no lua_State to consult --
+ * the disk read-gate io.open hits, see fopen_allowed -- read
+ * cpu_self()->current, and this runs inside run_proc, where dispatch_lap
+ * published that for the whole resume before calling it. So there is
+ * nothing to set here: this used to set and clear it around the loop,
+ * back when it was a bare global, and clearing it mid-resume is exactly
+ * what make_ready must not see -- it would enqueue a proc dispatch_lap
+ * still holds.
+ *
+ * Errors in a handler are swallowed the way a finalizer's are, since
+ * there is no longer a caller to report them to.
  */
 static void
 run_atexit(struct kproc *p)
@@ -6748,13 +6753,11 @@ run_atexit(struct kproc *p)
 	lua_rawsetp(L, LUA_REGISTRYINDEX, &atexit_key);	/* run once */
 
 	n = (int)luaL_len(L, -1);
-	current_proc = p;
 	for (int i = n; i >= 1; i--) {
 		lua_rawgeti(L, -1, i);
 		if (lua_pcall(L, 0, 0, 0) != LUA_OK)
 			lua_pop(L, 1);	/* swallow the error message */
 	}
-	current_proc = 0;
 	lua_pop(L, 1);		/* the handler table */
 }
 

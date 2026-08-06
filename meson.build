@@ -692,7 +692,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'ports',
               'font', 'fb', 'fbprog', 'fbcons',
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
-              'strictglobals', 'efigefs', 'nsfs', 'vi', 'zmodem']
+              'strictglobals', 'efigefs', 'nsfs', 'vi', 'zmodem', 'atexit']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
