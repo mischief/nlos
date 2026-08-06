@@ -845,11 +845,14 @@ static int nlive;
  * counted in kalloc, per proc, and never depended on the heap being
  * separate.
  *
- * What the per-proc arrangement buys back, incidentally: a proc that
- * allocates hugely and dies returns those chunks, because its whole
- * heap is destroyed with it rather than dissolving into shared free
- * lists. Where the heap is shared they dissolve, which is what they
- * did before any of this and is the price of the 232KB.
+ * A proc that allocates hugely and dies returns those chunks either
+ * way. Per-proc it is destroy that does it, the whole heap at once;
+ * shared, the blocks dissolve into the common free lists and
+ * luaheap_reclaim gathers up whatever chunks came out empty. The
+ * shared arrangement recovers less of it -- a dead proc's blocks share
+ * chunks with whatever else was allocating at the time, and a chunk
+ * with one survivor in it stays -- but it is no longer the whole loss
+ * it would otherwise be.
  *
  * ---- and why both arrangements are still here ----
  *
