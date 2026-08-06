@@ -13,6 +13,12 @@
 -- what to run from what it can see, without this growing a syntax.
 
 return {
+	-- the panel and the keyboard, as a terminal beside the serial
+	-- console. Skipped on a machine whose keys arrive through the
+	-- console instead: there is no kbd capability to name, and a
+	-- service that names one it cannot have is not started.
+	{ path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" } },
+
 	-- the browser shell. off by default: it hands anonymous visitors a
 	-- shell, which is a decision to make deliberately rather than
 	-- inherit from a default config.

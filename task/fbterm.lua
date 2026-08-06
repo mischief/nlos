@@ -20,7 +20,10 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 
-local job = thread.recv(sys.SELF)
+-- started either way: as a service, lib/svc.lua hands the capabilities
+-- to the chunk as its argument; started by hand from the repl, they
+-- arrive in a message.
+local job = ... or thread.recv(sys.SELF)
 local fb = job.fb.__right
 local kbd = job.kbd.__right
 

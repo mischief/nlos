@@ -171,6 +171,51 @@ _G.shot = function(name, rows)
 	end
 end
 
+-- what this machine runs, from /etc/services.lua.
+--
+-- The same table and the same loader init.lua uses on the other
+-- platforms, so a service is described once and starts wherever its
+-- capabilities exist. A service naming one this board does not have is
+-- skipped rather than started to fail, which is what keeps the panel
+-- terminal out of a build with no keyboard.
+--
+-- The namespace comes from lib/romfs.lua: the embedded image, mounted
+-- read only. It is described to each service so the child rebuilds the
+-- same mount, which is how a program reaches /bin at all.
+local function services()
+	local nsmod = require("ns")
+	local rootns = nsmod.new()
+	local mok, merr = rootns:mount("/", require("romfs").new(), "romfs")
+
+	if not mok then
+		print("svc: mount: " .. tostring(merr))
+		return
+	end
+	nsmod.setcurrent(rootns)
+
+	local svc = require("svc")
+	local list, why = svc.load(rootns, "/etc/services.lua")
+
+	if not list then
+		print("svc: " .. tostring(why))
+		return
+	end
+	svc.start(list, {
+		ns = rootns:describe(),
+		granted = caps,
+		readfile = function(p)
+			return rootns:readfile(p)
+		end,
+		log = print,
+	})
+end
+
+local sok, serr = pcall(services)
+
+if not sok then
+	print("svc: " .. tostring(serr))
+end
+
 print(_VERSION .. " on esp32")
 if ok then
 	print("mach-lite kernel + plan9 furniture. ps, stats, stack(pid)" ..

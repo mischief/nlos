@@ -128,6 +128,11 @@ set(EMBED_FILES
     # lib/console.lua, and dos/prog/draw/caps are what a program needs
     # to be run from a prompt on it.
     lib/romfs.lua
+    lib/nsio.lua
+    lib/svc.lua
+    lib/proc.lua
+    lib/log.lua
+    etc/services.lua
     lib/fbcons.lua
     task/fbterm.lua
     task/fbsh.lua
