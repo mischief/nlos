@@ -850,6 +850,7 @@ microvm_tests = [
   ['blk', ['--blk']],
   ['gefs', ['--gefscommit']],
   ['gefssrv', ['--gefscommit']],
+  ['gefspar', ['--gefs']],
   ['gefsshutdown', ['--gefscommit']],
   ['gefsgpt', ['--gefsgpt']],
   ['gefspart', ['--gefsgpt']],
@@ -899,6 +900,7 @@ microvm_smp_tests = [
   ['eth', ['--net']],
   ['tcp', ['--netecho']],
   ['gefssrv', ['--gefscommit']],
+  ['gefspar', ['--gefs']],
   ['spin', []],
   ['bigmsg', []],
 ]
