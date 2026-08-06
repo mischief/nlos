@@ -1114,19 +1114,28 @@ end
 -- asked for and none of the prompts, while the prompts piled up on
 -- com1 belonging to nobody. one message per prompt is the cost.
 
+-- named here because sendwait waits on it and is defined first; the
+-- body is below, beside the park it is built from.
+local parksend
+
 -- send, treating a full queue as backpressure and a dead port as a
--- reportable fact. returns false only when the port is gone for good.
+-- reportable fact. returns false plus the reason only when the port is
+-- gone for good.
 local function sendwait(h, msg)
 	while true do
-		local ok, why = sys.send(h, msg)
+		-- the third value is the size the kernel refused, and it is
+		-- what parksend has to ask room for. A wait for room for
+		-- zero wakes on any drain and finds this message still too
+		-- big to fit.
+		local ok, why, need = sys.send(h, msg)
 
 		if ok then
 			return true
 		end
 		if why ~= "full" then
-			return false
+			return false, why
 		end
-		sys.sendblock(h)
+		parksend(h, need)
 	end
 end
 
@@ -1239,7 +1248,7 @@ thread.yield = yield
 -- which is why a SERVER must never use this (it would stop serving
 -- everyone because one client stopped reading). pipe-shaped code,
 -- which is what this is for, has nothing else to get on with anyway.
-local function parksend(h, need)
+function parksend(h, need)
 	if not inthread() then
 		sys.sendblock(h, need)
 		return
@@ -1323,10 +1332,13 @@ local function call(h, msg, replyh)
 		return sys.call(h, msg, replyh)
 	end
 
-	local ok, why = sys.send(h, msg)
+	local ok, why, need = sys.send(h, msg)
 
 	if not ok then
-		return nil, why or "dead"
+		-- the refused size rides along with "full", so a caller
+		-- whose policy is to wait can ask for the right amount of
+		-- room without sending twice to find out how much.
+		return nil, why or "dead", need
 	end
 	return await(replyh)
 end

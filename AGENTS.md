@@ -452,6 +452,22 @@ at thousands of timers, and `MAXPROCS` is 32.
   `requester()` does *not* do this — fine for the small messages every
   other user sends, fatal for pixels, and on the reply path it loses the
   request and then blocks forever on an answer that will never come.
+  A third return value carries the refused size, which is what
+  `sendblock` and an alt send case need; `thread.sendwait` is that loop
+  written out, and `thread.call` passes the size through.
+- **`alt` has both directions.** `sys.altblock(set, sends)` takes a
+  second, parallel table: `sends[i]` is the size entry `i` wants room
+  for, and anything else leaves entry `i` an ordinary receive. Parallel
+  rather than boxing every entry, so the common all-receive call passes
+  nothing extra and builds no garbage. plan 9's libthread is the same
+  idea, with `CHANSND` and `CHANRCV`. That alt performs the send itself;
+  this one reports the case ready and lets the caller send, because a
+  message here is serialized on its way into a port and the serializer
+  mints a reference to every port the message names — serializing on the
+  way into a park would hold those references for as long as the park
+  lasted, and `lib/mnt.lua` reads exactly those counts to find a dead
+  server. Inside a thread, `thread.parksend` waits on one coroutine and
+  leaves its siblings running.
 - **Pixels do not fit in a message.** `sys.MAXMSG` is 64KiB, which is
   16384 BGRx pixels — a 128x128 tile — so "load the whole screen in one
   call" cannot exist, in either direction (a reply is a message too).

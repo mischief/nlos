@@ -2417,8 +2417,20 @@ self(lua_State *L)
  */
 enum { SEND_OK = 0, SEND_UNSERIALIZABLE, SEND_DEAD, SEND_FULL, SEND_NOMEM };
 
+/* `len`, if given, is filled with the serialized size of the message.
+ *
+ * On SEND_FULL that is the number a caller needs in order to wait for
+ * room. sys.sendblock and an alt send case both ask for room for a
+ * stated number of bytes, and a waiter that asks for room for zero
+ * wakes when anything drains, fails to send again, and parks again;
+ * api_sendblock describes that trap in full.
+ *
+ * Only the kernel can know the figure, because the serializer produces
+ * it. So it reports the figure, and lua never has to estimate one.
+ */
 static int
-port_send_from_lua(lua_State *L, struct kproc *p, struct right *r, int idx)
+port_send_from_lua(lua_State *L, struct kproc *p, struct right *r, int idx,
+    size_t *len)
 {
 	struct wbuf w = { 0 };
 	int rc;
@@ -2431,6 +2443,9 @@ port_send_from_lua(lua_State *L, struct kproc *p, struct right *r, int idx)
 		rc = SEND_UNSERIALIZABLE;
 		goto discard;
 	}
+
+	if (len)
+		*len = w.len;
 
 	ipclock_enter_port(r->port);
 	rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv, w.nrefs);
@@ -2468,6 +2483,7 @@ api_send(lua_State *L)
 	struct kproc *p = self(L);
 	lua_Integer h = luaL_checkinteger(L, 1);	/* raises; before */
 	struct right *r;
+	size_t len = 0;
 	int rc;
 
 	luaL_checkany(L, 2);				/* raises; before */
@@ -2477,7 +2493,7 @@ api_send(lua_State *L)
 	 * takes the one bucket it needs for as long as it needs it.
 	 */
 	r = right_get(p, h);
-	rc = r ? port_send_from_lua(L, p, r, 2) : 0;
+	rc = r ? port_send_from_lua(L, p, r, 2, &len) : 0;
 
 	if (!r)
 		return luaL_error(L, "bad right");
@@ -2504,10 +2520,18 @@ api_send(lua_State *L)
 	 * the same split the receive side already makes -- sys.tryrecv
 	 * plus sys.block, with the blocking loop living in lua.
 	 */
+	/* the third value is how many bytes were refused, and it exists so
+	 * that the policy lua picks can be "wait for room" without lua
+	 * having to work out how much room. It is the serialized size, so
+	 * nothing short of the serializer could produce it, and it is what
+	 * sys.sendblock and an altblock send wait both want. See
+	 * port_send_from_lua.
+	 */
 	if (rc == SEND_FULL) {
 		lua_pushboolean(L, 0);
 		lua_pushliteral(L, "full");
-		return 2;
+		lua_pushinteger(L, (lua_Integer)len);
+		return 3;
 	}
 	if (rc == SEND_NOMEM)
 		return luaL_error(L, "out of memory queueing message");
@@ -2993,7 +3017,8 @@ api_call(lua_State *L)
 		return luaL_error(L, BLOCKED_TWICE_MSG);
 
 	ipclock_enter();
-	int rc = port_send_from_lua(L, p, r, 2);
+	size_t len = 0;
+	int rc = port_send_from_lua(L, p, r, 2, &len);
 
 	ipclock_leave();
 
@@ -3006,10 +3031,15 @@ api_call(lua_State *L)
 		lua_pushliteral(L, "dead");
 		return 2;
 	}
+	/* the refused size third, as sys.send reports it, so a caller whose
+	 * policy is to wait has the figure without sending twice to learn
+	 * it.
+	 */
 	if (rc == SEND_FULL) {
 		lua_pushnil(L);
 		lua_pushliteral(L, "full");
-		return 2;
+		lua_pushinteger(L, (lua_Integer)len);
+		return 3;
 	}
 	/* the reply may already be queued -- a same-proc service, or one
 	 * that ran between our send and here -- in which case call_k takes

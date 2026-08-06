@@ -7,14 +7,17 @@
 -- months -- nothing here had ever put two independent senders on one
 -- server port.
 --
--- So: four procs, four threads each, four files apiece. Separate
--- sessions and separate fid spaces across the procs, a shared session
--- within each, and under -smp the procs are genuinely parallel rather
--- than interleaved.
+-- So: six procs, six threads each, four files apiece. Separate sessions
+-- and separate fid spaces across the procs, a shared session within
+-- each, and under -smp the procs are genuinely parallel rather than
+-- interleaved.
 --
--- Four and not eight of each: eight threads x eight files already
--- exceeds what this machine finishes inside the harness timeout, so a
--- bigger number would only measure qemu.
+-- Thirty-six writers and not sixteen, because sixteen never fill the
+-- server's port queue. Filling it is what this test is for: a refused
+-- send is backpressure that lib/mnt waits out and repeats, and below
+-- that width nothing exercises the waiting. Not larger still, because
+-- eight threads x eight files exceeds what this machine finishes inside
+-- the harness timeout, and a bigger number would only measure qemu.
 --
 -- ---- what the sizes are for ----
 --
@@ -40,7 +43,7 @@ local tap = require("tap")
 
 tap.plan(6)
 
-local NPROC, NTHREAD, NFILE = 4, 4, 4
+local NPROC, NTHREAD, NFILE = 6, 6, 4
 
 -- distinct per (proc, thread, file) and cheap to regenerate for the
 -- comparison, so nothing has to be kept around to check against
@@ -238,9 +241,16 @@ local function main()
 
 	-- ---- the bound that started all this ----
 	--
-	-- a refused send reaches a client as dev.Eio and NS:writefile hands
-	-- it back rather than raising, so a dropped one is invisible in the
-	-- content checks above. Ask the kernel instead.
+	-- The queue does fill at this width, and a refused send is where
+	-- the write used to be lost: it reached the client as dev.Eio, and
+	-- NS:writefile handed that back rather than raising, so the loss
+	-- was invisible to a caller that had wrapped the write in pcall.
+	--
+	-- lib/mnt now waits for room and sends again, so a refusal costs
+	-- nothing and the count below is a diagnostic rather than a fault.
+	-- What proves the waiting works is the two checks above: every file
+	-- has its full contents. Before the retry existed they failed here
+	-- with seven files short.
 	local drop, qpeak = 0, 0
 
 	for _, pt in ipairs(sys.ports()) do
@@ -249,9 +259,9 @@ local function main()
 			qpeak = pt.qpeak
 		end
 	end
-	tap.diag(("iounit=%d, deepest port queue %d bytes"):format(
-	    dev.IOUNIT, qpeak))
-	tap.ok(drop == 0, "no send was refused for a full queue")
+	tap.diag(("iounit=%d, deepest port queue %d bytes, %d sends refused"):
+	    format(dev.IOUNIT, qpeak, drop))
+	tap.ok(drop > 0, "the server's queue filled, so backpressure ran")
 
 	local st = sys.stats()
 	local elsewhere = 0

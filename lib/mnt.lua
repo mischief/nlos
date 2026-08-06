@@ -109,11 +109,21 @@ function M.new(right)
 		-- the pcall catches a bad or closed right, which raises;
 		-- everything thread.call REPORTS -- a dead or full port, a
 		-- hangup -- comes back as a nil below.
-		local ok, res = pcall(thread.call, right, msg, reply)
+		--
+		-- a full queue waits for room, as in rpc below; see there
+		-- for why the retry belongs to the caller.
+		local ok, res, why, need
 
-		if not ok then
-			dev.error(dev.Eio)
-		end
+		repeat
+			ok, res, why, need =
+			    pcall(thread.call, right, msg, reply)
+			if not ok then
+				dev.error(dev.Eio)
+			end
+			if res == nil and why == "full" then
+				thread.parksend(right, need)
+			end
+		until res ~= nil or why ~= "full"
 		while true do
 			if type(res) ~= "table" then
 				dev.error(dev.Eio)
@@ -182,11 +192,32 @@ function M.new(right)
 		-- this matters more than it looks. the ESP is a server proc
 		-- now, so it is every proc's filesystem; without this its
 		-- death parked the entire machine with no diagnostic.
-		local ok, res = pcall(thread.call, sess, msg, reply)
+		-- a full queue is backpressure, not a failure. thread.call
+		-- reports it as a third value, with the size it could not
+		-- fit as a fourth, and this waits for that much room and
+		-- sends again.
+		--
+		-- Retried here rather than inside thread.call because the
+		-- policy belongs to the caller. A server must never wait on
+		-- a client that stopped reading. A client waiting for room
+		-- on the server it is talking to is what backpressure means.
+		--
+		-- thread.parksend waits on the calling coroutine alone, so
+		-- a client's other threads keep working. The send is
+		-- repeated whole, seq included: the refused one never
+		-- reached the port.
+		local ok, res, why, need
 
-		if not ok then
-			dev.error(dev.Eio)	-- right closed, or not a right
-		end
+		repeat
+			ok, res, why, need =
+			    pcall(thread.call, sess, msg, reply)
+			if not ok then
+				dev.error(dev.Eio)	-- closed, or not a right
+			end
+			if res == nil and why == "full" then
+				thread.parksend(sess, need)
+			end
+		until res ~= nil or why ~= "full"
 		while true do
 			if type(res) ~= "table" then
 				dev.error(dev.Eio)	-- undelivered, or nobody left
