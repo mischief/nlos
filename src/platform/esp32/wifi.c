@@ -1,0 +1,293 @@
+/* the wifi radio: 802.3 frames in and out, and the association beside.
+ *
+ * Deliberately not esp_netif, which is the arrangement every esp32
+ * project uses: esp_netif binds the radio to lwip and hands back a
+ * socket API, and a second IP stack in the image is exactly what this
+ * one exists instead of. esp_wifi_internal_reg_rxcb and
+ * esp_wifi_internal_tx are the layer esp_netif itself sits on -- plain
+ * ethernet frames, no addressing, no protocol -- so lib/ip4.lua and
+ * everything above it runs here as it does over virtio-net.
+ *
+ * The cost of that choice is the two functions being private headers:
+ * esp_private/wifi.h is not the documented API and has moved once
+ * already, from esp_wifi_internal.h. What holds it in place is that
+ * esp_netif has no other way in either, so the pair cannot leave while
+ * IDF still has a network stack.
+ *
+ * NVS has to exist before the radio starts. The driver keeps its
+ * calibration there, and esp_wifi_init fails without it.
+ */
+
+#include <string.h>
+
+#include <esp_err.h>
+#include <esp_event.h>
+#include <esp_heap_caps.h>
+#include <esp_mac.h>
+#include <esp_wifi.h>
+#include <esp_private/wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <nvs_flash.h>
+
+#include "platform.h"
+#include "wifi.h"
+
+enum { WIFI_IDLE, WIFI_JOINING, WIFI_JOINED, WIFI_FAILED };
+
+/* Frames arrive on the wifi task and leave on the kernel's, so the ring
+ * is the one place here with two threads in it. A spinlock rather than
+ * a queue: the producer copies and returns, and holding it across a
+ * memcpy of at most 1514 bytes is shorter than the queue send it would
+ * replace.
+ *
+ * 16 slots is 24KB, in PSRAM. A burst deeper than that means the
+ * consumer is not running, and the frame is dropped -- which is what an
+ * ethernet does under the same conditions, and is why drops are counted
+ * rather than the driver blocking the radio.
+ */
+#define NSLOT 16
+
+struct slot {
+	uint16_t len;
+	uint8_t buf[ESP_WIFI_MAXFRAME];
+};
+
+static struct slot *ring;
+static unsigned rhead, rtail;
+static portMUX_TYPE ringlock = portMUX_INITIALIZER_UNLOCKED;
+
+static unsigned long irqs, drops;
+
+static int up;
+static int state;
+static int lastreason;
+static char lastssid[33];
+
+/* the radio's own task calls this. Copy and return: the buffer belongs
+ * to the driver, and holding it would starve the receive path.
+ */
+static esp_err_t
+rxframe(void *buffer, uint16_t len, void *eb)
+{
+	unsigned next;
+
+	if (len > ESP_WIFI_MAXFRAME)
+		len = ESP_WIFI_MAXFRAME;
+
+	portENTER_CRITICAL(&ringlock);
+	next = (rhead + 1) % NSLOT;
+	if (next == rtail) {
+		drops++;
+		portEXIT_CRITICAL(&ringlock);
+	} else {
+		memcpy(ring[rhead].buf, buffer, len);
+		ring[rhead].len = len;
+		rhead = next;
+		irqs++;
+		portEXIT_CRITICAL(&ringlock);
+	}
+	if (eb)
+		esp_wifi_internal_free_rx_buffer(eb);
+	return ESP_OK;
+}
+
+/* Association is asynchronous and this is where it lands.
+ *
+ * A disconnect is not retried here. The kernel above decides what to do
+ * about a network that went away, and a driver quietly reconnecting
+ * would hide from it that anything had happened.
+ */
+static void
+onwifi(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+	(void)arg;
+	(void)base;
+
+	switch (id) {
+	case WIFI_EVENT_STA_CONNECTED:
+		state = WIFI_JOINED;
+		/* the receive path is registered once associated: before
+		 * that there is no interface to register it on.
+		 */
+		esp_wifi_internal_reg_rxcb(WIFI_IF_STA, rxframe);
+		break;
+	case WIFI_EVENT_STA_DISCONNECTED: {
+		wifi_event_sta_disconnected_t *d = data;
+
+		lastreason = d ? d->reason : 0;
+		state = (state == WIFI_JOINING) ? WIFI_FAILED : WIFI_IDLE;
+		esp_wifi_internal_reg_rxcb(WIFI_IF_STA, NULL);
+		break;
+	}
+	}
+}
+
+int
+esp_wifi_bringup(void)
+{
+	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+	esp_err_t e;
+
+	if (up)
+		return 0;
+
+	if (ring == NULL) {
+		/* PSRAM: 24KB is a tenth of the internal heap and the
+		 * radio needs what is left of it. Nothing here is handed
+		 * to DMA -- both halves copy -- so the slower memory
+		 * costs a memcpy and no correctness.
+		 */
+		ring = heap_caps_malloc(sizeof(*ring) * NSLOT,
+		    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+		if (ring == NULL)
+			ring = heap_caps_malloc(sizeof(*ring) * NSLOT,
+			    MALLOC_CAP_8BIT);
+		if (ring == NULL)
+			return -1;
+	}
+
+	e = nvs_flash_init();
+	if (e == ESP_ERR_NVS_NO_FREE_PAGES ||
+	    e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+		/* the partition table changed under it, which is what a
+		 * reflash with a new layout looks like from here.
+		 */
+		nvs_flash_erase();
+		e = nvs_flash_init();
+	}
+	if (e != ESP_OK)
+		return -1;
+
+	if (esp_event_loop_create_default() != ESP_OK)
+		return -1;
+	if (esp_wifi_init(&cfg) != ESP_OK)
+		return -1;
+	if (esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+	    onwifi, NULL, NULL) != ESP_OK)
+		return -1;
+	/* the credentials live in a file on luafs, not in the driver's
+	 * own NVS copy: one place for them, and one that can be read and
+	 * edited from the machine.
+	 */
+	if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK)
+		return -1;
+	if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK)
+		return -1;
+	if (esp_wifi_start() != ESP_OK)
+		return -1;
+
+	up = 1;
+	return 0;
+}
+
+int
+esp_wifi_present(void)
+{
+	return up;
+}
+
+int
+esp_wifi_connect_to(const char *ssid, const char *psk)
+{
+	wifi_config_t cfg;
+
+	if (!up && esp_wifi_bringup() != 0)
+		return -1;
+	if (ssid == NULL || *ssid == 0)
+		return -1;
+
+	memset(&cfg, 0, sizeof cfg);
+	strncpy((char *)cfg.sta.ssid, ssid, sizeof cfg.sta.ssid - 1);
+	if (psk != NULL && *psk != 0)
+		strncpy((char *)cfg.sta.password, psk,
+		    sizeof cfg.sta.password - 1);
+
+	strncpy(lastssid, ssid, sizeof lastssid - 1);
+	lastssid[sizeof lastssid - 1] = 0;
+
+	if (esp_wifi_set_config(WIFI_IF_STA, &cfg) != ESP_OK)
+		return -1;
+
+	/* a fresh attempt, so an earlier failure stops being reported */
+	lastreason = 0;
+	state = WIFI_JOINING;
+	if (esp_wifi_connect() != ESP_OK) {
+		state = WIFI_FAILED;
+		return -1;
+	}
+	return 0;
+}
+
+int
+esp_wifi_disconnect_from(void)
+{
+	if (!up)
+		return -1;
+	state = WIFI_IDLE;
+	return esp_wifi_disconnect() == ESP_OK ? 0 : -1;
+}
+
+int
+esp_wifi_state(int *reason, const char **ssid)
+{
+	if (reason != NULL)
+		*reason = lastreason;
+	if (ssid != NULL)
+		*ssid = lastssid[0] ? lastssid : NULL;
+	return state;
+}
+
+int
+esp_wifi_mac(uint8_t mac[6])
+{
+	if (!up)
+		return -1;
+	return esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK ? 0 : -1;
+}
+
+size_t
+esp_wifi_recv_frame(void *buf, size_t max)
+{
+	size_t n = 0;
+
+	if (ring == NULL)
+		return 0;
+
+	portENTER_CRITICAL(&ringlock);
+	if (rtail != rhead) {
+		n = ring[rtail].len;
+		if (n > max)
+			n = max;
+		memcpy(buf, ring[rtail].buf, n);
+		rtail = (rtail + 1) % NSLOT;
+	}
+	portEXIT_CRITICAL(&ringlock);
+	return n;
+}
+
+int
+esp_wifi_send_frame(const void *buf, size_t len)
+{
+	if (state != WIFI_JOINED)
+		return -1;
+	if (len == 0 || len > ESP_WIFI_MAXFRAME)
+		return -1;
+	/* esp_wifi_internal_tx copies before it returns, so the caller's
+	 * buffer -- a lua string -- does not have to outlive the call.
+	 */
+	return esp_wifi_internal_tx(WIFI_IF_STA, (void *)buf,
+	    (uint16_t)len) == ESP_OK ? 0 : -1;
+}
+
+unsigned long
+esp_wifi_irqs(void)
+{
+	return irqs;
+}
+
+unsigned long
+esp_wifi_drops(void)
+{
+	return drops;
+}

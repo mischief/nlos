@@ -50,6 +50,16 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local eth = require("los.platform.eth")
 
+-- the radio, where the wire is one. Absent on a machine whose NIC has
+-- nothing to associate with, and the "wifi" op below says so rather
+-- than failing to load: every platform grants the module, and only one
+-- of them puts anything in it.
+local okwifi, wifi = pcall(require, "los.platform.wifi")
+
+if not okwifi or type(wifi) ~= "table" or wifi.connect == nil then
+	wifi = nil
+end
+
 local RAWETH = 1
 
 -- send rights to the ports of everyone who asked to see frames. Held
@@ -153,6 +163,24 @@ while true do
 		end
 	elseif m.op == "irqs" then
 		reply(m, { n = eth.irqs() })
+	elseif m.op == "wifi" then
+		-- which network this wire is on.
+		--
+		-- Here rather than in a task of its own because the radio
+		-- is one device and this proc owns it: nothing else holds
+		-- los.platform.wifi, so nothing else could associate even
+		-- if it wanted to. A machine whose NIC has no network to
+		-- pick answers that it has none, which is what every
+		-- platform but esp32 does.
+		if not wifi then
+			reply(m, { err = "no radio on this machine" })
+		elseif m.how == "connect" then
+			reply(m, { ok = wifi.connect(m.ssid, m.psk) })
+		elseif m.how == "disconnect" then
+			reply(m, { ok = wifi.disconnect() })
+		else
+			reply(m, { ok = wifi.status() })
+		end
 	else
 		reply(m, { err = "unknown op" })
 	end

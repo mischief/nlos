@@ -21,6 +21,7 @@
 #include "flashblk.h"
 #include "kbd.h"
 #include "lcd.h"
+#include "wifi.h"
 
 #include "efi.h"
 #include "esp32.h"
@@ -35,7 +36,11 @@
 unsigned long
 platform_dev_irqs(void)
 {
-	return esp_kbd_irqs();
+	/* the radio counts beside the keyboard: a frame arriving is work
+	 * the scheduler has to wake for, and a machine that only woke for
+	 * keystrokes would answer the network at the speed someone typed.
+	 */
+	return esp_kbd_irqs() + esp_wifi_irqs();
 }
 
 /* Nothing to wait on: idf_shim's WaitForEvent already sleeps until the
@@ -99,8 +104,8 @@ open_kbd(lua_State *L)
  * esp_fill_random is a true generator only while an RF subsystem is
  * running -- the entropy comes from the radio's noise -- and reads a
  * pseudo-random sequence otherwise. That is exactly the condition here:
- * the radio is brought up at probe time, before any task that draws
- * from this one is spawned.
+ * platform_have_eth brings the radio up at probe time, before any task
+ * that draws from this one is spawned.
  */
 
 #define RNG_MAX_BYTES 65536	/* one request's worth, as microvm has */
@@ -195,7 +200,13 @@ platform_have_esp(void)
 int
 platform_have_eth(void)
 {
-	return 0;
+	/* The radio is brought up at probe time, not at association: an
+	 * interface exists whether or not it has joined a network, the
+	 * way a NIC exists with no cable in it. task/eth.lua and the
+	 * stack above it therefore start at boot, and carry nothing until
+	 * that task is sent a "wifi" op naming an ssid.
+	 */
+	return esp_wifi_bringup() == 0;
 }
 
 /* the microSD slot. Probing it powers the peripheral rail and brings up
@@ -380,6 +391,139 @@ int
 luaopen_los_platform_blk(lua_State *L)
 {
 	luaL_newlib(L, blk_lib);
+	return 1;
+}
+
+/* ---- los.platform.eth: the radio, as ethernet ----
+ *
+ * The same four calls virtio-net and SNP give, so task/eth.lua does not
+ * know what is under it. Frames only: joining a network is
+ * los.platform.wifi below, and a different capability.
+ */
+
+static int
+eth_mac(lua_State *L)
+{
+	uint8_t mac[6];
+
+	if (esp_wifi_mac(mac) != 0)
+		return 0;
+	lua_pushlstring(L, (const char *)mac, sizeof mac);
+	return 1;
+}
+
+static int
+eth_send(lua_State *L)
+{
+	size_t n;
+	const char *data = luaL_checklstring(L, 1, &n);
+
+	lua_pushboolean(L, esp_wifi_send_frame(data, n) == 0);
+	return 1;
+}
+
+static int
+eth_recv(lua_State *L)
+{
+	char buf[ESP_WIFI_MAXFRAME];
+	size_t n = esp_wifi_recv_frame(buf, sizeof buf);
+
+	if (n == 0)
+		return 0;		/* nil: nothing waiting */
+	lua_pushlstring(L, buf, n);
+	return 1;
+}
+
+static int
+eth_irqs(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)esp_wifi_irqs());
+	return 1;
+}
+
+static const luaL_Reg ethlib[] = {
+	{ "mac", eth_mac },
+	{ "send", eth_send },
+	{ "recv", eth_recv },
+	{ "irqs", eth_irqs },
+	{ NULL, NULL },
+};
+
+int luaopen_los_platform_eth(lua_State *L);
+
+int
+luaopen_los_platform_eth(lua_State *L)
+{
+	luaL_newlib(L, ethlib);
+	return 1;
+}
+
+/* ---- los.platform.wifi: joining a network ----
+ *
+ * A separate module beside the frames rather than more calls among
+ * them, because they are separate concerns: one is a wire, the other is
+ * which wire. Both reach the same proc, since the radio is one device
+ * and task/eth.lua owns it -- plan 9's ether is likewise the thing you
+ * move packets over and the thing you configure.
+ */
+
+static int
+wifi_connect(lua_State *L)
+{
+	const char *ssid = luaL_checkstring(L, 1);
+	const char *psk = luaL_optstring(L, 2, NULL);
+
+	lua_pushboolean(L, esp_wifi_connect_to(ssid, psk) == 0);
+	return 1;
+}
+
+static int
+wifi_disconnect(lua_State *L)
+{
+	lua_pushboolean(L, esp_wifi_disconnect_from() == 0);
+	return 1;
+}
+
+/* state, ssid, reason, drops. The names rather than the numbers: a
+ * caller formatting this for someone should not carry the enum.
+ */
+static int
+wifi_status(lua_State *L)
+{
+	static const char *names[] = { "idle", "joining", "joined", "failed" };
+	int reason = 0;
+	const char *ssid = NULL;
+	int st = esp_wifi_state(&reason, &ssid);
+
+	lua_createtable(L, 0, 5);
+	lua_pushstring(L, (st >= 0 && st <= 3) ? names[st] : "unknown");
+	lua_setfield(L, -2, "state");
+	if (ssid != NULL) {
+		lua_pushstring(L, ssid);
+		lua_setfield(L, -2, "ssid");
+	}
+	lua_pushinteger(L, reason);
+	lua_setfield(L, -2, "reason");
+	lua_pushinteger(L, (lua_Integer)esp_wifi_drops());
+	lua_setfield(L, -2, "drops");
+	lua_pushboolean(L, esp_wifi_present());
+	lua_setfield(L, -2, "up");
+	return 1;
+}
+
+static const luaL_Reg wifilib[] = {
+	{ "connect", wifi_connect },
+	{ "disconnect", wifi_disconnect },
+	{ "status", wifi_status },
+	{ NULL, NULL },
+};
+
+int luaopen_los_platform_wifi(lua_State *L);
+
+int
+luaopen_los_platform_wifi(lua_State *L)
+{
+	luaL_newlib(L, wifilib);
 	return 1;
 }
 
@@ -687,7 +831,6 @@ static const luaL_Reg emptylib[] = {
 EMPTY_MODULE(los_efi)
 EMPTY_MODULE(los_platform_wire)
 EMPTY_MODULE(los_platform_p9)
-EMPTY_MODULE(los_platform_eth)
 
 /* ---- the wire ----
  *

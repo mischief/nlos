@@ -678,3 +678,16 @@ luaopen_los_rom(lua_State *L)
 	lua_createtable(L, 0, 0);
 	return 1;
 }
+
+/* No radio here: this machine's NIC is a wire, with no network to pick.
+ * task/eth.lua tests for the calls rather than the module, so an empty
+ * table is the answer that means "nothing to associate with".
+ */
+int luaopen_los_platform_wifi(lua_State *L);
+
+int
+luaopen_los_platform_wifi(lua_State *L)
+{
+	lua_newtable(L);
+	return 1;
+}

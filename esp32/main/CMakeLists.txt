@@ -47,6 +47,7 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/tdeck.c
     ${LUAOS_ROOT}/src/platform/esp32/main.c
     ${LUAOS_ROOT}/src/platform/esp32/vfs.c
+    ${LUAOS_ROOT}/src/platform/esp32/wifi.c
     ${LUAOS_ROOT}/src/xtensa/machine.c
 )
 
@@ -65,6 +66,12 @@ idf_component_register(
         ${CMAKE_CURRENT_BINARY_DIR}
     REQUIRES esp_psram esp_timer driver vfs esp_driver_usb_serial_jtag
             esp_lcd esp_partition
+            # the radio: esp_wifi for the driver, nvs_flash because it
+            # keeps its calibration there and will not start without
+            # one, esp_event for the association callbacks. Not
+            # esp_netif or lwip -- the frames go to lib/ip4.lua, and a
+            # second network stack in the image is what that avoids.
+            esp_wifi nvs_flash esp_event
             sdmmc esp_driver_sdspi esp_driver_spi esp_driver_gpio
 )
 
@@ -136,6 +143,30 @@ set(EMBED_FILES
     lib/gefs/io.lua
     lib/fatfs.lua
     task/fatsrv.lua
+
+    # the network, from the wire up. The radio hands up 802.3 frames
+    # and everything above them is the same Lua the other platforms
+    # run: eth, then ip, then tcp, with dhcpd acquiring the lease and
+    # serving it as /net. Measured at about 676KB of heap for the four
+    # procs together, which is why this is a board with PSRAM.
+    lib/ether.lua
+    lib/ethwire.lua
+    lib/arp.lua
+    lib/ip4.lua
+    lib/icmp.lua
+    lib/udp4.lua
+    lib/tcp4.lua
+    lib/tcb.lua
+    lib/inet.lua
+    lib/dhcp.lua
+    lib/dhcpc.lua
+    lib/dns.lua
+    lib/dnsc.lua
+    lib/ntp.lua
+    task/eth.lua
+    task/ip.lua
+    task/tcp4.lua
+    task/dhcpd.lua
 
     # and what a CLIENT needs to mount it. Without these blksrv runs
     # and nothing can open a file on it: require("ns") fails on the

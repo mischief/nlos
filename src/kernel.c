@@ -4100,6 +4100,7 @@ extern int luaopen_los_platform_p9(lua_State *L);	/* drivers.c: microvm only, no
 extern int luaopen_los_platform_eth(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_blk(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_flash(lua_State *L);	/* drivers.c: esp32 only, no-op elsewhere */
+extern int luaopen_los_platform_wifi(lua_State *L);	/* drivers.c: esp32 only, no-op elsewhere */
 extern int luaopen_los_platform_fb(lua_State *L);	/* gop.c: efi only, no-op elsewhere */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
@@ -4912,6 +4913,13 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	case PRIV_ETH:
 		lua_pushcfunction(p->L, luaopen_los_platform_eth);
 		lua_setfield(p->L, -2, "los.platform.eth");
+		/* the radio is one device: whoever moves its frames is
+		 * whoever joins networks with it, as plan 9's ether is
+		 * both. A no-op table on a platform whose NIC has nothing
+		 * to associate with.
+		 */
+		lua_pushcfunction(p->L, luaopen_los_platform_wifi);
+		lua_setfield(p->L, -2, "los.platform.wifi");
 		break;
 	case PRIV_BLK:
 		lua_pushcfunction(p->L, luaopen_los_platform_blk);
