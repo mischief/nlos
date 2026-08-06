@@ -237,6 +237,13 @@ local function session(connid)
 	local getwait = nil		-- reply port of a parked getch
 	local gettimer = nil		-- its timeout, so a lone Esc resolves
 
+	-- the client's terminal, from pty-req and kept current by
+	-- window-change. A program that lays out columns asks the console
+	-- for this (lib/caps.lua's size), and over ssh the client is the
+	-- only thing that knows -- so an unanswered size is a program
+	-- guessing 80 columns at a window that is not 80 wide.
+	local ptycols, ptyrows = nil, nil
+
 	-- answer a parked getch and drop its timeout timer.
 	local function reply_getch(byte)
 		if getwait then
@@ -289,6 +296,18 @@ local function session(connid)
 			else
 				getwait = rp
 				gettimer = m.timeout and sys.timer(m.timeout) or nil
+			end
+		elseif m.op == "size" then
+			-- Answered even when this session never asked for a
+			-- pty: the reply is what a caller waits on, and a
+			-- console that stays silent parks the program
+			-- forever. nil cols is "I do not know", which is
+			-- what lib/caps.lua documents and what a serial
+			-- line says.
+			local rp = m.reply and m.reply.__right
+
+			if rp then
+				sys.send(rp, { cols = ptycols, rows = ptyrows })
 			end
 		elseif m.op == "readline" then
 			if m.prompt and chan then
@@ -416,7 +435,11 @@ local function session(connid)
 		print("sshd: session for " .. tostring(srv.user))
 
 		for ev in srv:events() do
-			if ev.type == "shell" then
+			-- pty-req arrives before the shell request, so the
+			-- size is known by the time a program can ask for it.
+			if ev.type == "pty" then
+				ptycols, ptyrows = ev.cols, ev.rows
+			elseif ev.type == "shell" then
 				chan = ev.chan
 
 				local pid, h = sys.spawn(SHELL,

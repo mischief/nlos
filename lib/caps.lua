@@ -527,7 +527,15 @@ function M.tty(handle)
 		sys.send(handle, { op = "size",
 		    reply = { __right = replyport } })
 
-		local m = thread.recv(replyport)
+		-- Bounded, because "the far end does not know" and "the far
+		-- end does not answer" are the same thing to a caller and
+		-- only one of them is survivable by waiting. A console that
+		-- has never heard of this op drops the message, and an
+		-- unbounded recv here parks the program on a port nothing
+		-- will ever write -- no cpu, no wakeup, nothing in ps but a
+		-- pid sitting on a port. Half a second is far longer than a
+		-- console on the same machine needs.
+		local m = thread.recvtimeout(replyport, 500)
 
 		return m and m.cols, m and m.rows
 	end

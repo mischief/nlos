@@ -191,6 +191,13 @@ local function absorb(s, m)
 			append(s, tostring(m.prompt))
 		end
 		s.waiting = m.reply.__right
+	elseif m.op == "size" and type(m.reply) == "table" then
+		-- answered rather than dropped, even though this terminal
+		-- has no size to give: a program laying out columns waits
+		-- on the reply, and an empty one means "I do not know",
+		-- which is the answer here. Dropping it makes the program
+		-- wait for a message nobody will send.
+		sys.send(m.reply.__right, {})
 	end
 end
 
