@@ -24,6 +24,7 @@
 #include "esp32.h"
 #include "kbd.h"
 #include "touch.h"
+#include "wifi.h"
 #include "platform.h"
 
 /* the tick the scheduler asked for, in microseconds. Set by SetTimer
@@ -107,6 +108,7 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 	(void)evs;
 
 	unsigned long long start = tick_now();
+	unsigned long rx = esp_wifi_irqs();
 	TickType_t slice = pdMS_TO_TICKS(1);
 
 	if (slice == 0)
@@ -116,6 +118,18 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 		if (tick_now() != start)
 			break;
 		if (console_peek())
+			break;
+
+		/* a frame arriving ends the sleep, exactly as a keystroke
+		 * does. Without it the tick is the only thing that wakes
+		 * the machine for the network: a packet landing just after
+		 * this sleep begins waits out the rest of it, pump_eth
+		 * runs at the top of the next lap, and every hop of a
+		 * request between eth, ip, tcp and the server pays it
+		 * again. Measured on the T-Deck as 14.61ms a lap idle,
+		 * against a wire round trip of one or two.
+		 */
+		if (esp_wifi_irqs() != rx)
 			break;
 		/* the matrix keyboard, which cannot interrupt: scanned
 		 * here so nothing above has to poll, and a keypress ends
