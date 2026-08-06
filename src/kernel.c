@@ -796,7 +796,7 @@ static struct kport *devkbdport;
 
 /* the pointer's events, where the machine has one (platform_have_ptr).
  * A port of its own for the reason devkbdport is: whoever holds this
- * IS the mouse, and two readers of one pointer would each see half a
+ * is the mouse, and two readers of one pointer would each see half a
  * drag.
  */
 static struct kport *devptrport;

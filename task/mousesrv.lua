@@ -7,9 +7,8 @@
 -- to be handed.
 --
 -- That is the whole reason this proc exists. A right must be lent by
--- every layer between the machine and a program -- the network right
--- took three -- while a mount travels in a namespace description on its
--- own, and a subtree of it can be handed to a session that should see
+-- every layer between the machine and a program; a mount travels in a
+-- namespace description on its own, and dev.subtree can hand a session
 -- the pointer and nothing else.
 --
 -- ---- the file ----

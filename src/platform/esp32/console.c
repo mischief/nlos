@@ -215,8 +215,8 @@ write_all(const char *s, size_t n)
 	 * hands over every pending subpacket at once, well past that.
 	 *
 	 * A zero is "no room right now", not "nobody is listening", so it
-	 * is retried -- briefly. This blocks inside a C call, so nothing
-	 * cuts it and no other proc runs while it waits: an unread console
+	 * is retried -- briefly. This blocks inside a C call, where no
+	 * quantum interrupts it and no other proc runs: an unread console
 	 * would otherwise set the speed of everything on the board.
 	 *
 	 * Two different conditions have to be cheap. Nothing attached at
