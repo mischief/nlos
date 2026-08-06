@@ -371,6 +371,29 @@ function NS:create(path, mode, isdir)
 	return res
 end
 
+-- remove a file. nil plus a reason where the backend has no remove --
+-- lib/dev.lua makes it optional, and a read-only mount is the ordinary
+-- case rather than a fault.
+--
+-- The handle is walked and spent here, never clunked: a remove consumes
+-- it on the server whether or not the file went, which is 9P's rule and
+-- what stops a refusal leaking a fid.
+function NS:remove(path)
+	local ok, res = pcall(function()
+		local c = self:walk(clean(path))
+
+		if not c.B.remove then
+			dev.error(dev.Enotimpl)
+		end
+		return c.B.remove(c.h)
+	end)
+
+	if not ok then
+		return nil, res
+	end
+	return true
+end
+
 function NS:stat(path)
 	local ok, res = pcall(function()
 		local c <close> = self:walk(path)
@@ -504,9 +527,19 @@ function NS:readfile(path)
 	return table.concat(parts)
 end
 
+-- Make the file hold exactly this, whether or not it is already there.
+--
+-- create refuses a name that exists, as 9P's create does, so a second
+-- write to the same path failed where it should have replaced. Opening
+-- for "w" is the fallback and means truncate -- see lib/fatfs.lua's
+-- open, which is where that is honoured -- so a shorter body does not
+-- leave the tail of the longer one behind it.
 function NS:writefile(path, data)
 	local f, err = self:create(path, "w")
 
+	if not f then
+		f, err = self:open(path, "w")
+	end
 	if not f then
 		return nil, err
 	end

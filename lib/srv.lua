@@ -168,6 +168,37 @@ end
 -- clunk never fails and never replies, matching dev.clunk. the client
 -- sends it from a finalizer as well as from close(), so it must not
 -- care whether the fid is still there.
+-- remove the file a fid names, and clunk the fid either way.
+--
+-- 9P's Tremove, including the part that is easy to get wrong: the fid
+-- is spent whether or not the remove succeeded, because the client has
+-- no way to find out which and would otherwise leak one on every
+-- refusal. The error still comes back.
+--
+-- A backend that has no remove says Enotimpl rather than pretending:
+-- lib/dev.lua marks it optional, and a client that cannot tell a
+-- refusal from a success would report a file gone that is still there.
+function ops.remove(S, m)
+	local h = S.fids[m.fid]
+
+	if h == nil then
+		dev.error(dev.Ebadfid)
+	end
+	S.fids[m.fid] = nil
+	if not S.B.remove then
+		pcall(S.B.clunk, h)
+		dev.error(dev.Enotimpl)
+	end
+
+	local ok, err = pcall(S.B.remove, h)
+
+	pcall(S.B.clunk, h)
+	if not ok then
+		error(err, 0)
+	end
+	return { ok = true }
+end
+
 function ops.clunk(S, m)
 	local h = S.fids[m.fid]
 

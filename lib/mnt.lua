@@ -319,6 +319,17 @@ function M.new(right)
 
 	-- fire and forget, matching dev.clunk's "never fails". no reply
 	-- means no round trip, which is what makes it safe from __gc.
+	-- the fid is spent either way, so it is forgotten here before the
+	-- reply is looked at: the server has already dropped it, and a
+	-- later clunk of the same number would be clunking whatever the
+	-- server has since put there.
+	function B.remove(h)
+		local fid = h.fid
+
+		h.fid = nil
+		rpc({ op = "remove", fid = fid })
+	end
+
 	function B.clunk(h)
 		local sess = session:peek()
 

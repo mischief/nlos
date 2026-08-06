@@ -28,6 +28,21 @@ package.preload["los.sys"] = function()
 	return { MAXMSG = 8192 }
 end
 
+-- lib/ns.lua reaches lib/chan.lua, which wants the scheduler for its
+-- parallel walk. A local mount never takes that path -- there is no
+-- port and nothing to wait on -- so this stubs the names rather than
+-- booting a kernel, and says so loudly if one is ever reached.
+package.preload["los.thread"] = function()
+	local function nope()
+		error("host_fat: a local mount reached the scheduler", 0)
+	end
+
+	return {
+		inthread = function() return false end,
+		run = nope, chancreate = nope, spawn = nope,
+	}
+end
+
 local fat = require("fat")
 local fatfs = require("fatfs")
 local dev = require("dev")
@@ -159,6 +174,44 @@ ok(raises(B2.remove, root2), "removing the root raises")
 -- remove
 B2.remove(B2.walk(sub, "smiley.lua"))
 ok(raises(B2.walk, sub, "smiley.lua"), "a removed file is gone")
+
+-- ---- through a namespace ----
+--
+-- The local-mount path, which is what an esp32 proc uses: the same
+-- backend, reached by path rather than by handle. The served path
+-- (lib/mnt.lua over a port) is a boot test's job, since it needs a
+-- kernel to put a server on the other end.
+local ns = require("ns")
+local N = ns.new()
+
+ok(N:mount("/", B2, "fatfs"), "the volume mounts")
+
+-- writefile twice: create refuses a name that exists, so the second
+-- has to go through open-for-write instead. The shorter body is the
+-- case that matters -- without truncation the tail of the first is
+-- still there, and what parses back is not what was written.
+local long = ("return { ssid = %q }\n"):format("a-long-network-name")
+local short = ("return { ssid = %q }\n"):format("s")
+
+ok(N:writefile("/conf.lua", long) ~= nil, "writefile creates")
+ok(N:readfile("/conf.lua") == long, "and the contents are right")
+ok(N:writefile("/conf.lua", short) ~= nil, "writefile overwrites")
+
+local back = N:readfile("/conf.lua")
+
+ok(back == short, "the shorter body replaced the longer one")
+if back ~= short then
+	diag("got [" .. tostring(back) .. "]")
+end
+
+local conf = load(back or "", "=conf", "t", {})
+
+ok(conf ~= nil and conf().ssid == "s", "and it parses back as written")
+
+-- remove
+ok(N:remove("/conf.lua"), "remove takes a file away")
+ok(N:readfile("/conf.lua") == nil, "and it is gone")
+ok(select(1, N:remove("/conf.lua")) == nil, "removing it again fails")
 
 -- the volume is still coherent after all of that
 B2.sync()

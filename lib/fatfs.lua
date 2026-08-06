@@ -131,12 +131,27 @@ function M.new(fs)
 		}
 	end
 
+	-- "w" truncates, "rw" does not.
+	--
+	-- 9P's OTRUNC by another name, and the same split POSIX makes
+	-- between O_WRONLY|O_TRUNC and O_RDWR: opening to write means
+	-- replacing the contents, opening to read and write means editing
+	-- them in place. Without it, rewriting a file with a shorter one
+	-- leaves the tail of the old behind -- which for a config file is
+	-- a syntax error at the end of something that otherwise looks
+	-- right.
 	function B.open(h, mode)
 		if isctl(h) then
 			return dev.closable(B, h_ctl())
 		end
-		if isdir(entof(h.path)) and mode ~= "r" then
+
+		local ent = entof(h.path)
+
+		if isdir(ent) and mode ~= "r" then
 			dev.error(dev.Eisdir)
+		end
+		if mode == "w" and not isdir(ent) and ent.size > 0 then
+			fail(fs:truncate(h.path, 0))
 		end
 		return dev.closable(B, h_of(h.path))
 	end
