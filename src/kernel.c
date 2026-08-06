@@ -3858,6 +3858,37 @@ api_uptime_ms(lua_State *L)
 	return 1;
 }
 
+/* registry key for a proc's atexit list -- its address is the key, so it
+ * cannot collide with a lua string key. Shared across a state's threads,
+ * since the registry is per global state.
+ */
+static const char atexit_key = 0;
+
+/* sys.atexit(fn): run fn when this proc's main function returns normally,
+ * in the order registered's reverse (LIFO, like C atexit). The handler
+ * runs after main has returned, in the main state and OUTSIDE the
+ * scheduler's resume of the proc -- so it must not yield or block. That
+ * is enough for the things an exit handler wants: send a last message,
+ * close a right, log. It does not run on an error exit (a broke proc is
+ * held for inspection, not cleaned up) nor on sys.kill.
+ */
+static int
+api_atexit(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+
+	if (lua_rawgetp(L, LUA_REGISTRYINDEX, &atexit_key) != LUA_TTABLE) {
+		lua_pop(L, 1);
+		lua_newtable(L);
+		lua_pushvalue(L, -1);
+		lua_rawsetp(L, LUA_REGISTRYINDEX, &atexit_key);
+	}
+	lua_pushvalue(L, 1);
+	lua_rawseti(L, -2, luaL_len(L, -2) + 1);
+	lua_pop(L, 1);
+	return 0;
+}
+
 static const luaL_Reg kapi[] = {
 	{ "send", api_send },
 	{ "call", api_call },
@@ -3886,6 +3917,7 @@ static const luaL_Reg kapi[] = {
 	{ "wchan", api_wchan },
 	{ "stack", api_stack },
 	{ "reap", api_reap },
+	{ "atexit", api_atexit },
 	{ "kill", api_kill },
 	{ "set_trace", api_set_trace },
 	{ "set_torture", api_set_torture },
@@ -5703,6 +5735,40 @@ count_runnable(void)
 	return runq->n + donq->n + running;
 }
 
+/* run the proc's sys.atexit handlers, LIFO, on the main state -- p->co
+ * has finished, but its registry is p->L's, so the list is still here.
+ * self() reads the handler state's extraspace, so the kernel api resolves
+ * without help; current_proc is set for the plain-C paths that have no
+ * lua_State to consult -- the disk read-gate io.open hits (see
+ * fopen_allowed) -- exactly as run_proc sets it around a resume. Errors
+ * in a handler are swallowed the way a finalizer's are, since there is no
+ * longer a caller to report them to. Cleared after so a handler that
+ * itself exits cannot loop.
+ */
+static void
+run_atexit(struct kproc *p)
+{
+	lua_State *L = p->L;
+	int n;
+
+	if (lua_rawgetp(L, LUA_REGISTRYINDEX, &atexit_key) != LUA_TTABLE) {
+		lua_pop(L, 1);
+		return;
+	}
+	lua_pushnil(L);
+	lua_rawsetp(L, LUA_REGISTRYINDEX, &atexit_key);	/* run once */
+
+	n = (int)luaL_len(L, -1);
+	current_proc = p;
+	for (int i = n; i >= 1; i--) {
+		lua_rawgeti(L, -1, i);
+		if (lua_pcall(L, 0, 0, 0) != LUA_OK)
+			lua_pop(L, 1);	/* swallow the error message */
+	}
+	current_proc = 0;
+	lua_pop(L, 1);		/* the handler table */
+}
+
 static int
 run_proc(struct kproc *p)
 {
@@ -5773,8 +5839,10 @@ run_proc(struct kproc *p)
 				break;	/* now BLOCKED */
 			continue;	/* spend more weight */
 		}
-		if (rc == LUA_OK)
+		if (rc == LUA_OK) {
+			run_atexit(p);
 			proc_kill(p, 0);
+		}
 		else if (rc == LUA_ERRMEM)
 			/* lua reports OOM via a static, preallocated message
 			 * specifically so it never has to allocate to report
