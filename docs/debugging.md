@@ -32,9 +32,30 @@ list. A proc built on `lib/thread` keeps its threads inside its own
 state, so reporting only the main one shows the scheduler parked in
 `altblock` whether the proc is idle or wedged.
 
-It is safe on anything, including a wedged proc, because the machine is
-cooperative and single-threaded: every proc but the caller is suspended
-between resumes, so there is no moment at which a stack is half-built.
+It is safe on anything, including a proc that is running right now,
+because the kernel **holds the target still** before reading it. That
+used to be free: with one cpu every proc but the caller was suspended
+between resumes, so there was no moment at which a stack was
+half-built. With more than one, the target can be executing while the
+reader walks its frames, and it has to be stopped.
+
+Stopping it rather than refusing is the point. A spinning proc is
+running by definition, and it is the one worth sampling — "where is it
+stuck" is the question — so declining to read a running proc would
+decline exactly the interesting case.
+
+The mechanism is `kproc.frozen` (see `proc_freeze` in `src/kernel.c`):
+the target is marked unresumable first, and only then waited for. In
+that order there is no window where it gets dispatched again between
+the wait and the read. The wait ends even for a proc that never yields,
+because the preempt hook cuts one every quantum; and it yields rather
+than spins, which is what stops two readers from deadlocking on each
+other.
+
+The same holds for anything else that reads or changes another proc:
+`sys.trace` walks a ring the target writes on every line, and
+`sys.set_trace` frees that ring under a live writer. `proc_hold` is the
+shared shape, and the comment above it is the recipe for the next one.
 
 `src/debug.c` keeps three rules that make it introspection rather than
 participation, and they are why this works on procs that are nearly
