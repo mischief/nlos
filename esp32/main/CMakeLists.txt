@@ -48,7 +48,7 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/main.c
     ${LUAOS_ROOT}/src/platform/esp32/vfs.c
     ${LUAOS_ROOT}/src/platform/esp32/wifi.c
-    ${LUAOS_ROOT}/src/xtensa/machine.c
+    ${LUAOS_ROOT}/src/platform/esp32/machine.c
 )
 
 # esp_psram is required explicitly, not because anything calls it yet

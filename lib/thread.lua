@@ -422,6 +422,31 @@ local function wakehungup()
 	return woke
 end
 
+-- What failed, and how it was reached.
+--
+-- A coroutine that raised keeps its stack until it is collected, so the
+-- traceback is still walkable here even though resume has returned --
+-- and it has to be taken from the coroutine, since the resuming stack
+-- is this scheduler and says nothing about the fault.
+--
+-- Without it a fault is one line naming a file and a line number, and
+-- finding what called it means bisecting by hand over whatever console
+-- the machine has. That is expensive on a board.
+--
+-- debug is fetched rather than required: kernel_strip_debug takes
+-- sethook out of every proc, and a proc that has no debug table at all
+-- still gets the message.
+local dbg = rawget(_G, "debug")
+
+local function fault(co, err)
+	local msg = tostring(err)
+
+	if dbg and dbg.traceback then
+		return dbg.traceback(co, msg)
+	end
+	return msg
+end
+
 -- the one place a thread is resumed, so the rules about what a yield
 -- meant live together rather than being restated.
 local function resume_one(co)
@@ -456,7 +481,7 @@ local function resume_one(co)
 		thread._n = thread._n - 1
 		thread._parked[co] = nil
 		if not ok then
-			print("thread error: " .. tostring(err))
+			print("thread error: " .. fault(co, err))
 		end
 	elseif thread._parked[co] then
 		-- parked. run() wakes it when its channel or port has

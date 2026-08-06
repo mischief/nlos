@@ -1,4 +1,10 @@
-/* xtensa machine bits, for the esp32 platform.
+/* the machine, for every esp32 this platform runs on.
+ *
+ * Nothing here is about the core. It is esp_timer, esp_heap_caps and
+ * FreeRTOS, so it serves an xtensa S3 and a RISC-V C5 alike -- which is
+ * the whole reason a second chip family cost no port: IDF brings the
+ * toolchain, the FreeRTOS port and newlib, and src/platform/esp32 is
+ * written against IDF rather than against a processor.
  *
  * The counter is esp_timer's and not the core's CCOUNT, which matters
  * enough to say why: platform_ticks must be free-running and 64-bit,
@@ -43,10 +49,19 @@ machine_halt(void)
 		vTaskDelay(portMAX_DELAY);
 }
 
+/* the core this build is for, which the image knows and the file no
+ * longer assumes. `ps` and the boot banner report it, and a board that
+ * called itself xtensa while running RISC-V is the kind of wrong that
+ * survives for years.
+ */
 const char *
 platform_arch(void)
 {
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+	return "riscv32";
+#else
 	return "xtensa";
+#endif
 }
 
 /* Internal SRAM only, deliberately. `avail` is what the lua heaps draw

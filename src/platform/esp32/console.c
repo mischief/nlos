@@ -27,7 +27,15 @@
 #include "esp32.h"
 #include "platform.h"
 
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+
 /* stdout and stderr, on the same path console_write uses.
+ *
+ * The USB console only. There, console_write reaches the
+ * usb_serial_jtag driver directly and never goes through stdio, so
+ * without this everything printed to a standard stream is lost. On a
+ * uart console stdout already reaches the console and write_all is an
+ * fwrite to it, so redirecting would make console_write call itself.
  *
  * IDF's own console VFS writes one character at a time, and when the
  * port is not being drained it tries one non-blocking write, then one
@@ -92,6 +100,8 @@ console_stdio_redirect(void)
 		setvbuf(stderr, NULL, _IONBF, 0);
 }
 
+#endif
+
 void
 console_init(void)
 {
@@ -137,8 +147,21 @@ console_init(void)
 
 	/* after stdin is set up: this moves only the output streams, and
 	 * reading still goes through the driver's own vfs.
+	 *
+	 * Only where the console is the USB link. There, console_write
+	 * goes straight to the usb_serial_jtag driver and bypasses stdio,
+	 * so anything printed through stdout would be lost without this.
+	 *
+	 * On a uart console stdout already reaches the console, and
+	 * write_all below is an fwrite to it -- so redirecting stdout
+	 * into this file would make console_write call itself. The first
+	 * line the kernel printed would recurse until the stack went,
+	 * which reads as a board that boots as far as IDF's own logs and
+	 * then says nothing at all.
 	 */
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 	console_stdio_redirect();
+#endif
 }
 
 /* Raw mode: pass bytes through untouched.

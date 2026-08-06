@@ -18,6 +18,14 @@
 
 #include <sdkconfig.h>
 
+/* Outside the board guard: the stubs at the bottom answer the same
+ * declarations, so a board with no panel needs the header and the fixed
+ * width types as much as one with a panel does.
+ */
+#include <stdint.h>
+
+#include "lcd.h"
+
 #if CONFIG_LUAOS_BOARD_CARDPUTER || CONFIG_LUAOS_BOARD_TDECK
 
 #include <string.h>

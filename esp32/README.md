@@ -59,9 +59,28 @@ directory. `sdkconfig.defaults` is the T-Deck; the others layer over it.
     idf.py -B build-cardputer \
         -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.cardputer" build
 
+    # ESP32-C5 devkit: RISC-V, 16MB flash, 8MB PSRAM, no peripherals
+    idf.py -B build-c5 -DSDKCONFIG=build-c5.sdkconfig -DIDF_TARGET=esp32c5 \
+        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.c5" build
+
     # emulator
     idf.py -B build-qemu \
         -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.qemu" build
+
+A second chip family costs a board file and nothing else. The C5 is
+RISC-V where the T-Deck is xtensa, and src/platform/esp32 is written
+against IDF's API rather than a processor -- IDF brings the toolchain,
+the FreeRTOS port and newlib. `platform_arch` reports which it is.
+
+`-DSDKCONFIG` matters once a second target exists. idf.py keeps one
+`sdkconfig` beside the project and pins the target in it, so a build
+directory for another chip fails to configure until it is given a
+sdkconfig of its own.
+
+The C5 devkit has two USB sockets. The console here is UART0, which is
+the one behind a serial bridge; the chip's own USB link is the other.
+An image built for one socket is silent on the other, and silence looks
+the same as a board that failed to boot.
 
 `SDKCONFIG_DEFAULTS` is read only when a build directory has no
 `sdkconfig` yet. Changing it later does nothing; delete the directory.

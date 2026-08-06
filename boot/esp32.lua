@@ -208,7 +208,13 @@ local function services()
 	-- capability, unopenable volume and unformatted partition are all
 	-- the same case: say so and carry on with the image alone, because
 	-- a prompt that comes up is what makes the partition fixable.
-	if caps.flash then
+	-- Says what happened either way, as init reports every device. A
+	-- step that is silent when it works and silent when it is skipped
+	-- cannot be told apart from one that never ran, and telling those
+	-- apart by hand costs a boot each time.
+	if not caps.flash then
+		print("luafs: no flash capability, programs from the image only")
+	else
 		local src = rootns:readfile("/task/fatsrv.lua")
 		local fok, ferr = pcall(function()
 			local _, f = sys.spawn(src, { name = "fatsrv" })
@@ -218,8 +224,10 @@ local function services()
 			    { port = { __right = f } }, "before"))
 		end)
 
-		if not fok then
-			print("svc: luafs: " .. tostring(ferr))
+		if fok then
+			print("luafs: mounted over the image")
+		else
+			print("luafs: " .. tostring(ferr))
 		end
 	end
 	-- the lease, as /net.

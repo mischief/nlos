@@ -1,0 +1,33 @@
+# An ESP32-C5 devkit: a bare board with a radio and nothing else on it.
+#
+# Layered over sdkconfig.defaults, which describes the T-Deck:
+#
+#   idf.py -B build-c5 -DIDF_TARGET=esp32c5 \
+#       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.c5" build
+#
+# The chip is RISC-V rather than xtensa, which the kernel does not care
+# about: src/platform/esp32 is written against IDF's API and not the
+# core, and IDF brings the toolchain, the FreeRTOS port and newlib.
+
+# No display, no keyboard, no card. Every peripheral probe answers no
+# and the tasks that would own them are simply not started.
+CONFIG_LUAOS_BOARD_NONE=y
+
+# and so nothing to keep a copy of
+CONFIG_LUAOS_FB_SHADOW=n
+
+# Quad, not the T-Deck's octal: the C5 has no octal PSRAM interface. A
+# devkit without the chip fitted still boots, since the probe is allowed
+# to find nothing.
+CONFIG_SPIRAM_MODE_QUAD=y
+
+# The console is on UART0, which is the devkit's second USB socket --
+# the one behind a serial bridge rather than the chip's own USB. The
+# T-Deck has only the native link and sdkconfig.defaults says so, so
+# this overrides it.
+#
+# The two sockets are not interchangeable. An image built for one is
+# silent on the other, and silence looks the same as a board that
+# failed to boot.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
