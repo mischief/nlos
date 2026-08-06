@@ -52,13 +52,15 @@ local function psrows()
 	return rows
 end
 
--- width is the terminal's, or nil when nothing knows it -- in which
--- case every column is kept and only the sizing applies.
-function M.psfmt(width)
-	local rows = psrows()
-	local cols, cells = {}, {}
+-- Lay a table out in `width` columns, or in as many as it wants when
+-- nothing knows the width -- in which case only the sizing applies and
+-- no column is dropped.
+--
+-- spec is the column list above; rows are records it reads by key.
+local function fmttable(spec, rows, width)
+	local cols, cells, wide = {}, {}, {}
 
-	for _, c in ipairs(PSCOLS) do
+	for _, c in ipairs(spec) do
 		local w = #c.head
 		local column = {}
 
@@ -75,7 +77,9 @@ function M.psfmt(width)
 		end
 		cols[#cols + 1] = c
 		cells[c] = column
-		c.width = w
+		-- beside the spec rather than on it: the spec is a
+		-- module-level constant, shared by every call.
+		wide[c] = w
 	end
 
 	-- drop until it fits, lowest drop first. A column with no drop
@@ -84,7 +88,7 @@ function M.psfmt(width)
 		local n = -1	-- no trailing space after the last column
 
 		for _, c in ipairs(cols) do
-			n = n + c.width + 1
+			n = n + wide[c] + 1
 		end
 		return n
 	end
@@ -112,8 +116,8 @@ function M.psfmt(width)
 			local v = (i == 0) and c.head or cells[c][i]
 
 			line[#line + 1] = string.format(
-			    c.left and ("%-" .. c.width .. "s")
-			    or ("%" .. c.width .. "s"), v)
+			    c.left and ("%-" .. wide[c] .. "s")
+			    or ("%" .. wide[c] .. "s"), v)
 		end
 		-- the last column is not padded: a trailing run of spaces
 		-- costs a wrapped line on a terminal exactly as wide as the
@@ -121,6 +125,11 @@ function M.psfmt(width)
 		out[#out + 1] = table.concat(line, " "):gsub("%s+$", "")
 	end
 	return table.concat(out, "\n")
+end
+
+-- width is the terminal's, or nil when nothing knows it.
+function M.psfmt(width)
+	return fmttable(PSCOLS, psrows(), width)
 end
 
 -- the bare word in the repl, which has no width to offer.
@@ -171,12 +180,26 @@ M.stats = setmetatable({}, stats_mt)
 -- QPEAK earns its column over QLEN: a queue is rarely looked at while
 -- it is deep. One that touched MAXQUEUE and drained shows QLEN 0, and
 -- is exactly the port worth asking about.
-local PORTFMT = "%4s %-14s %3s %3s %6s %6s %8s %6s %6s"
+-- Sized and dropped as the ps table is, and for the same reason: 64
+-- fixed columns wrapped every row on the panel.
+--
+-- The two drop counts leave last of the droppable columns, being the
+-- reason to look at all. qlen goes before qpeak, which is the one that
+-- catches a queue that has already drained.
+local PORTCOLS = {
+	{ head = "IDX", key = "port" },
+	{ head = "OWNER", key = "who", left = true, max = 14 },
+	{ head = "R", key = "rights", drop = 2 },
+	{ head = "RCV", key = "recv", drop = 1 },
+	{ head = "QLEN", key = "qbytes", drop = 3 },
+	{ head = "QPEAK", key = "qpeak", drop = 5 },
+	{ head = "SENT", key = "sent", drop = 4 },
+	{ head = "DROPF", key = "dropfull", drop = 7 },
+	{ head = "DROPD", key = "dropdead", drop = 6 },
+}
 
-local ports_mt = {}
-ports_mt.__tostring = function()
-	local lines = { string.format(PORTFMT, "IDX", "OWNER", "R", "RCV",
-	    "QLEN", "QPEAK", "SENT", "DROPF", "DROPD") }
+local function portrows()
+	local rows = {}
 
 	for _, p in ipairs(sys.ports()) do
 		-- owner is whoever holds the receive right, and is absent
@@ -194,11 +217,19 @@ ports_mt.__tostring = function()
 			who = "-"
 		end
 
-		lines[#lines + 1] = string.format(PORTFMT,
-		    p.port, who, p.rights, p.recv, p.qbytes, p.qpeak,
-		    p.sent, p.dropfull, p.dropdead)
+		p.who = who
+		rows[#rows + 1] = p
 	end
-	return table.concat(lines, "\n")
+	return rows
+end
+
+function M.portsfmt(width)
+	return fmttable(PORTCOLS, portrows(), width)
+end
+
+local ports_mt = {}
+ports_mt.__tostring = function()
+	return M.portsfmt(nil)
 end
 M.ports = setmetatable({}, ports_mt)
 
