@@ -20,6 +20,7 @@
 #include "blk.h"
 #include "flashblk.h"
 #include "kbd.h"
+#include "touch.h"
 #include "lcd.h"
 #include "wifi.h"
 
@@ -760,6 +761,28 @@ fb_scroll(lua_State *L)
 	return 1;
 }
 
+/* fb.cursor(x, y, on) -- move, show or hide the pointer.
+ *
+ * Here rather than in whoever tracks the pointer, because this is the
+ * only writer to the glass: the cursor is drawn over what is already
+ * there and repaired from the colour shadow when anything moves under
+ * it, and a second proc drawing it would race every fill. The mouse
+ * server reports a position and never draws, exactly as plan 9's
+ * devmouse leaves the drawing to devdraw.
+ */
+static int
+fb_cursor(lua_State *L)
+{
+	lua_Integer x = luaL_optinteger(L, 1, -1);
+	lua_Integer y = luaL_optinteger(L, 2, -1);
+	int on = lua_isnoneornil(L, 3) ? -1 : (lua_toboolean(L, 3) ? 1 : 0);
+
+	if (luaos_lcd_cursor((int)x, (int)y, on) != 0)
+		return luaL_error(L, "fb.cursor: no cursor on this screen");
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 /* fb.unload1(x,y,w,h) -> packed 1bpp, MSB first.
  *
  * Not part of the shared fb protocol: an efi framebuffer has colour and
@@ -804,6 +827,7 @@ static const luaL_Reg fb_lib[] = {
 	{ "unload", fb_unload },
 	{ "unload1", fb_unload1 },
 	{ "scroll", fb_scroll },
+		{ "cursor", fb_cursor },
 	{ NULL, NULL },
 };
 
@@ -894,4 +918,40 @@ platform_kbd_read(void)
 	int c = esp_kbd_read();
 
 	return c == 0 ? -1 : c;
+}
+
+/* the touch panel, as this board's pointer.
+ *
+ * A finger is one button: there is no hover and no second button to
+ * report, so down is button 1 and up is none. What a long press or two
+ * fingers should mean is policy, and policy belongs above this in Lua
+ * where it can change without a reflash.
+ */
+int
+platform_have_ptr(void)
+{
+#if CONFIG_LUAOS_BOARD_TDECK
+	return esp_touch_present();
+#else
+	return 0;
+#endif
+}
+
+int
+platform_ptr_read(int *x, int *y, int *buttons)
+{
+#if CONFIG_LUAOS_BOARD_TDECK
+	int down = 0;
+
+	if (!esp_touch_take(x, y, &down))
+		return 0;
+	if (buttons)
+		*buttons = down ? 1 : 0;
+	return 1;
+#else
+	(void)x;
+	(void)y;
+	(void)buttons;
+	return 0;
+#endif
 }

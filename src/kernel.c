@@ -793,6 +793,13 @@ static struct kport *kbdport;
  * keystroke, and which one got it would depend on who asked first.
  */
 static struct kport *devkbdport;
+
+/* the pointer's events, where the machine has one (platform_have_ptr).
+ * A port of its own for the reason devkbdport is: whoever holds this
+ * IS the mouse, and two readers of one pointer would each see half a
+ * drag.
+ */
+static struct kport *devptrport;
 static int nlive;
 
 /* one heap per proc, in p->heap.
@@ -7000,6 +7007,59 @@ pump_devkbd(void)
 	ipclock_leave();
 }
 
+/* the pointer, onto its own port.
+ *
+ * What goes out is plan 9's mouse record: 'm' and four fixed-width
+ * fields, x, y, buttons and a millisecond clock. Fixed width because a
+ * reader asks for 49 bytes and gets exactly one event, which is what
+ * lets /dev/mouse be read without a framing rule of its own -- and the
+ * format is the one every plan 9 program already knows.
+ *
+ * The driver coalesces, so this pushes at most one message per lap and
+ * that message is the current state. A finger that has not moved costs
+ * a comparison.
+ */
+static void
+pump_devptr(void)
+{
+	int x = 0, y = 0, b = 0;
+	char rec[64];
+	int n;
+
+	if (!devptrport)
+		return;
+	if (!platform_ptr_read(&x, &y, &b))
+		return;
+
+	n = snprintf(rec, sizeof rec, "m%11d %11d %11d %11d",
+	    x, y, b, (int)(platform_ticks() / 1000));
+	if (n <= 0 || (size_t)n >= sizeof rec)
+		return;
+
+	/* a serialized string, as the keyboard pump sends: 'S', the
+	 * length, then the bytes.
+	 */
+	{
+		unsigned char msg[5 + sizeof rec];
+		int i;
+
+		msg[0] = 'S';
+		msg[1] = (unsigned char)(n & 0xff);
+		msg[2] = (unsigned char)((n >> 8) & 0xff);
+		msg[3] = (unsigned char)((n >> 16) & 0xff);
+		msg[4] = (unsigned char)((n >> 24) & 0xff);
+		for (i = 0; i < n; i++)
+			msg[5 + i] = (unsigned char)rec[i];
+
+		/* every bucket, as pump_devkbd takes: port_push carries
+		 * IPC_ASSERT_LOCKED.
+		 */
+		ipclock_enter();
+		port_push(devptrport, msg, (size_t)(5 + n), 0, 0);
+		ipclock_leave();
+	}
+}
+
 static void
 pump_keyboard(void)
 {
@@ -7062,6 +7122,7 @@ kernel_init(void)
 	ipclock_enter();
 	kbdport = port_new();
 	devkbdport = platform_have_kbd() ? port_new() : 0;
+	devptrport = platform_have_ptr() ? port_new() : 0;
 	serport = port_new();
 	diskport = port_new();
 	ethport = port_new();
@@ -7075,6 +7136,8 @@ kernel_init(void)
 	kbdport->nrights++;
 	if (devkbdport)
 		devkbdport->nrights++;
+	if (devptrport)
+		devptrport->nrights++;
 	serport->nrights++;
 	diskport->nrights++;
 	ethport->nrights++;
@@ -7410,6 +7473,9 @@ spawn_init(const char *code, size_t len, int is_file)
 	 */
 	if (devkbdport)
 		grant_named(p, "kbd", devkbdport, 1);
+	/* likewise the pointer: a receive right, and only one of it. */
+	if (devptrport)
+		grant_named(p, "ptr", devptrport, 1);
 	grant_named(p, "disk", diskport, 0);
 	grant_named(p, "sched", schedport, 0);
 	ipclock_leave();
@@ -8312,6 +8378,7 @@ kernel_run(void)
 		pump_eth();
 		pump_keyboard();
 		pump_devkbd();
+		pump_devptr();
 		if (pump_serial()) {
 			idle_polls = 0;
 			if (tick_slow && tick) {

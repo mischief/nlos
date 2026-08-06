@@ -53,6 +53,12 @@ static i2c_master_dev_handle_t tp;
 static int probed, present;
 static int curx, cury, curdown;
 
+/* set when the state above changes and cleared by esp_touch_take:
+ * the kernel pumps this port on every lap, and a still finger must
+ * cost a comparison rather than a message.
+ */
+static int dirty;
+
 /* the panel's own resolution, from its config registers. It is mounted
  * in portrait under a display driven landscape, so this is 240x320
  * against the screen's 320x240 -- read rather than assumed, since the
@@ -195,6 +201,8 @@ esp_touch_poll(void)
 	 * take the panel with it.
 	 */
 	reg_write8(GT911_STATUS, 0);
+	if (changed)
+		dirty = 1;
 	return changed;
 }
 
@@ -207,6 +215,16 @@ esp_touch_state(int *x, int *y, int *down)
 		*y = cury;
 	if (down)
 		*down = curdown;
+}
+
+int
+esp_touch_take(int *x, int *y, int *down)
+{
+	if (!dirty)
+		return 0;
+	dirty = 0;
+	esp_touch_state(x, y, down);
+	return 1;
 }
 
 #endif /* CONFIG_LUAOS_BOARD_TDECK */

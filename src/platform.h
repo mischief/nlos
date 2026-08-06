@@ -97,6 +97,24 @@ int	platform_have_fb(void);
 int	platform_have_kbd(void);
 int	platform_kbd_read(void);
 
+/* a pointing device, on the same terms as the keyboard above: its own
+ * port, not the console's.
+ *
+ * platform_ptr_read answers 1 and fills all three when the position or
+ * the buttons have changed since the last call, and 0 otherwise. State
+ * rather than a queue, deliberately: a pointer's past positions are of
+ * no use to a reader that has fallen behind, so a slow reader should
+ * lose resolution and not time. The driver coalesces and this reports
+ * whatever the latest is.
+ *
+ * Coordinates are the display's, in pixels. A device that measures
+ * something else -- a touch panel in its own orientation, a ball
+ * counting steps -- converts before it gets here, so that one place
+ * knows the transform.
+ */
+int	platform_have_ptr(void);
+int	platform_ptr_read(int *x, int *y, int *buttons);
+
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);

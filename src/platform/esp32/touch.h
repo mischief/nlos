@@ -12,8 +12,14 @@ int esp_touch_present(void);
 int esp_touch_poll(void);
 
 /* the current position, and whether a finger is down. Coordinates are
- * the panel's own, in the display's orientation.
+ * the display's, not the panel's.
  */
 void esp_touch_state(int *x, int *y, int *down);
+
+/* the same, but only when it has changed since the last call: 1 and the
+ * three filled, or 0. This is what the kernel's pump asks, so a lap
+ * with a still finger costs one comparison and pushes nothing.
+ */
+int esp_touch_take(int *x, int *y, int *down);
 
 #endif

@@ -361,6 +361,25 @@ platform_kbd_read(void)
 	return -1;
 }
 
+/* No pointing device on this platform. A machine with none reports
+ * none, and the kernel creates no port for it -- so nothing above can
+ * be handed a right to a mouse that does not exist.
+ */
+int
+platform_have_ptr(void)
+{
+	return 0;
+}
+
+int
+platform_ptr_read(int *x, int *y, int *buttons)
+{
+	(void)x;
+	(void)y;
+	(void)buttons;
+	return 0;
+}
+
 /* los.rom: no embedded set published here yet. An empty table rather
  * than an absent module, so a caller can ask and get "nothing" instead
  * of a require error -- this platform reaches its files through a

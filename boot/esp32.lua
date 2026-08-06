@@ -247,6 +247,39 @@ local function services()
 			print("svc: /net: " .. tostring(nerr))
 		end
 	end
+
+	-- the pointer, as /dev/mouse.
+	--
+	-- Started and mounted here rather than named in /etc/services.lua
+	-- for the reason the flash volume is: what a service entry gives
+	-- is a running proc, and what a pointer has to be is a file in the
+	-- namespace every later proc inherits. Mounting it after the
+	-- terminal had started would leave the terminal without one.
+	--
+	-- It is handed the framebuffer as well as the pointer, so it moves
+	-- the cursor itself. That is plan 9's split -- devmouse reports,
+	-- devdraw draws -- and it keeps the cursor on the finger instead
+	-- of a round trip behind whatever is reading the file.
+	if caps.ptr then
+		local src = rootns:readfile("/task/mousesrv.lua")
+		local mok, merr2 = pcall(function()
+			local _, m = sys.spawn(assert(src, "no mousesrv"),
+			    { name = "mousesrv" })
+
+			sys.send(m, { ptr = { __right = caps.ptr },
+			    fb = caps.fb and { __right = caps.fb } or nil })
+			-- the right stays ours: the mount's args hold it,
+			-- and describing this namespace for a child
+			-- serializes it again. Closing it here leaves a
+			-- description nothing can be spawned with, which
+			-- fails as "unserializable arg" in the child rather
+			-- than here.
+			assert(rootns:mount("/dev", require("mnt").new(m),
+			    "mnt", { port = { __right = m } }))
+		end)
+
+		print("mouse: " .. (mok and "/dev/mouse" or tostring(merr2)))
+	end
 	nsmod.setcurrent(rootns)
 
 	-- the network this machine is on, from /etc/wifi.lua.

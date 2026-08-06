@@ -456,6 +456,128 @@ luaos_lcd_height(void)
 	return LCD_H;
 }
 
+/* the cursor.
+ *
+ * plan 9's swcursor, minus the backing store. That exists to remember
+ * what a cursor covered so it can be put back; cshadow already holds
+ * every pixel the machine drew, so the repair reads from there and
+ * there is nothing to keep in step.
+ *
+ * The invariant is one line: cshadow never contains the cursor. What is
+ * on the glass is cshadow plus the cursor, and every path that writes
+ * pixels writes cshadow first -- so erasing is a copy out of cshadow,
+ * and a draw that lands under the cursor only has to put it back on
+ * top afterwards.
+ *
+ * Without cshadow there is no cursor: the panel cannot be read, so
+ * nothing could say what was underneath. A board with no PSRAM says no
+ * rather than smearing.
+ */
+#define CURSOR_R	5			/* arms, so 11x11 */
+#define CURSOR_SIDE	(2 * CURSOR_R + 1)
+#define CURSOR_RGB	0x00ff00		/* green, over dark text */
+
+static int curx = -1, cury = -1, curshown;
+
+/* the cursor's rectangle, clipped to the screen. 0 if none of it is on
+ * the glass, which is also what an unplaced cursor gives.
+ */
+static int
+cursor_rect(int *x, int *y, int *w, int *h)
+{
+	int x0, y0, x1, y1;
+
+	if (curx < 0 || cury < 0 || cshadow == NULL)
+		return 0;
+	x0 = curx - CURSOR_R;
+	y0 = cury - CURSOR_R;
+	x1 = curx + CURSOR_R + 1;
+	y1 = cury + CURSOR_R + 1;
+	if (x0 < 0)
+		x0 = 0;
+	if (y0 < 0)
+		y0 = 0;
+	if (x1 > LCD_W)
+		x1 = LCD_W;
+	if (y1 > LCD_H)
+		y1 = LCD_H;
+	if (x1 <= x0 || y1 <= y0)
+		return 0;
+	*x = x0;
+	*y = y0;
+	*w = x1 - x0;
+	*h = y1 - y0;
+	return 1;
+}
+
+/* paint the cursor's rectangle: the pixels underneath from cshadow,
+ * with the crosshair drawn over them when `with` is set. One transfer
+ * either way -- 242 bytes for an 11x11, against 10KB for a text band.
+ */
+static void
+cursor_blit(int with)
+{
+	uint16_t buf[CURSOR_SIDE * CURSOR_SIDE];
+	int x, y, w, h, r, c;
+
+	if (!cursor_rect(&x, &y, &w, &h))
+		return;
+
+	for (r = 0; r < h; r++)
+		for (c = 0; c < w; c++)
+			buf[r * w + c] =
+			    cshadow[(size_t)(y + r) * LCD_W + x + c];
+
+	if (with) {
+		uint16_t ink = rgb565(CURSOR_RGB);
+
+		for (c = 0; c < w; c++)
+			buf[(cury - y) * w + c] = ink;
+		for (r = 0; r < h; r++)
+			buf[r * w + (curx - x)] = ink;
+	}
+	esp_lcd_panel_draw_bitmap(panel, x, y, x + w, y + h, buf);
+}
+
+/* whether a rectangle just written overlaps the cursor, so the caller
+ * knows to put it back. Asked after the write, since cshadow is already
+ * current by then and the repair is just a paint.
+ */
+static int
+cursor_hit(int x, int y, int w, int h)
+{
+	int cx, cy, cw, ch;
+
+	if (!curshown || !cursor_rect(&cx, &cy, &cw, &ch))
+		return 0;
+	return !(x >= cx + cw || x + w <= cx || y >= cy + ch || y + h <= cy);
+}
+
+/* move the cursor, show it, or hide it.
+ *
+ * on < 0 leaves the visibility alone, which is what a move is.
+ */
+int
+luaos_lcd_cursor(int x, int y, int on)
+{
+	if (!present || cshadow == NULL)
+		return -1;
+
+	if (curshown)
+		cursor_blit(0);		/* erase from where it was */
+
+	if (x >= 0)
+		curx = x;
+	if (y >= 0)
+		cury = y;
+	if (on >= 0)
+		curshown = on != 0;
+
+	if (curshown)
+		cursor_blit(1);
+	return 0;
+}
+
 int
 luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 {
@@ -489,6 +611,8 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 		    y + row + n, band) != ESP_OK)
 			return -1;
 	}
+	if (cursor_hit(x, y, w, h))
+		cursor_blit(1);
 	return 0;
 }
 
@@ -526,6 +650,8 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 		    y + row + n, band) != ESP_OK)
 			return -1;
 	}
+	if (cursor_hit(x, y, w, h))
+		cursor_blit(1);
 	return 0;
 }
 
@@ -572,6 +698,8 @@ luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h)
 		    != ESP_OK)
 			return -1;
 	}
+	if (cursor_hit(0, toy, LCD_W, h))
+		cursor_blit(1);
 	return 0;
 }
 
@@ -634,6 +762,13 @@ int
 luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h)
 {
 	(void)x; (void)y; (void)tox; (void)toy; (void)w; (void)h;
+	return -1;
+}
+
+int
+luaos_lcd_cursor(int x, int y, int on)
+{
+	(void)x; (void)y; (void)on;
 	return -1;
 }
 

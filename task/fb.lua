@@ -18,6 +18,7 @@
 --   {op="load", r=, data=, reply=}          -> true
 --   {op="unload", r=, reply=}               -> the pixels
 --   {op="scroll", r=, to=, reply=}          -> true
+--   {op="cursor", x=, y=, on=, reply=}      -> true
 --
 -- a rectangle is {x=,y=,w=,h=} and `to` is a {x=,y=} destination
 -- corner. reply is optional on every op that only answers true: a
@@ -107,6 +108,23 @@ function ops.scroll(m)
 
 	platform.scroll(x, y, to.x or 0, to.y or 0, w, h)
 	return true
+end
+
+-- the pointer, drawn over whatever is on the glass.
+--
+-- It lives here because this task is the only writer to the screen: the
+-- cursor is composited on top and repaired underneath when anything is
+-- drawn where it sits, and a second proc painting it would race every
+-- fill. task/mousesrv.lua reports where the pointer is and never draws,
+-- which is plan 9's split between devmouse and devdraw.
+--
+-- x or y absent leaves that coordinate alone; `on` absent leaves the
+-- visibility alone, so a move is {op="cursor", x=, y=}.
+function ops.cursor(m)
+	if not platform.cursor then
+		return nil, "no cursor on this screen"
+	end
+	return platform.cursor(m.x, m.y, m.on)
 end
 
 while true do

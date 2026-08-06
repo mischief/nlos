@@ -39,4 +39,14 @@ int luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix);
  * the caller redraws. Needs the color copy, so PSRAM. */
 int luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h);
 
+/* Move, show or hide the cursor. A negative x or y leaves that
+ * coordinate alone and a negative `on` leaves the visibility alone, so
+ * a move is cursor(x, y, -1) and a hide is cursor(-1, -1, 0).
+ *
+ * -1 where the machine cannot have one: the cursor is composited over
+ * the colour shadow and repaired from it, so a board without one has no
+ * way to know what a cursor covered.
+ */
+int luaos_lcd_cursor(int x, int y, int on);
+
 #endif
