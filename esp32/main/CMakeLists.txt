@@ -115,6 +115,14 @@ set(EMBED_FILES
     lib/srv.lua
     lib/blkfs.lua
     task/blksrv.lua
+
+    # and what a CLIENT needs to mount it. Without these blksrv runs
+    # and nothing can open a file on it: require("ns") fails on the
+    # board. Not lib/ninep.lua -- that is the 9p wire, and a local dev
+    # backend is reached by message.
+    lib/chan.lua
+    lib/ns.lua
+    lib/mnt.lua
 )
 
 # Some modules ship as stripped bytecode rather than source.
