@@ -118,6 +118,20 @@ esp_ball_take(int *wheel, int *button)
 	if (!esp_ball_present())
 		return 0;
 
+	/* the press first, because it is state and a click is a queue:
+	 * a button change waiting behind a spin is a button that reports
+	 * late or, while the ball keeps turning, not at all. Pressing
+	 * this ball turns it a little, so that is the ordinary case
+	 * rather than the awkward one.
+	 */
+	down = gpio_get_level(TB_PRESS) == 0;
+	if (down != held) {
+		held = down;
+		*wheel = 0;
+		*button = held ? BALL_BUTTON : 0;
+		return 1;
+	}
+
 	/* one click per call, so a spin arrives as several records. The
 	 * counter is only ever decremented here and incremented in the
 	 * isr, so a click landing between the test and the subtraction
@@ -136,16 +150,6 @@ esp_ball_take(int *wheel, int *button)
 		return 1;
 	}
 
-	/* the press, low when held. Reported only when it changes: it is
-	 * state, unlike a click.
-	 */
-	down = gpio_get_level(TB_PRESS) == 0;
-	if (down != held) {
-		held = down;
-		*wheel = 0;
-		*button = held ? BALL_BUTTON : 0;
-		return 1;
-	}
 	return 0;
 }
 
