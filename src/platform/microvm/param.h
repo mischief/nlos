@@ -14,3 +14,9 @@
  */
 #define LUAHEAP_CHUNK		(8 * 1024)
 #define LUAHEAP_LARGE_CACHED	4
+
+/* Lua's gc pause, as a percentage of live. The stock 200 -- let the
+ * heap double before collecting again -- is the right trade where
+ * memory is not the constraint.
+ */
+#define GCPAUSE		200

@@ -62,3 +62,11 @@
 #define LUAHEAP_LARGE_CACHED	1
 
 #endif
+
+/* Lua's gc pause: how far the heap may grow past live before the next
+ * cycle, as a percentage. The stock 200 lets it double, and on this
+ * board that overshoot is memory nothing else can have -- measured
+ * lua_live 161KB against lua_mapped 290KB. Collecting more often costs
+ * cpu this machine has and memory it does not.
+ */
+#define GCPAUSE		120

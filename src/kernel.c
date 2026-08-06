@@ -4631,6 +4631,13 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	p->L = lua_newstate(kalloc, p);
 	if (!p->L)
 		return -1;
+
+	/* how far the heap may grow past what is live before the next
+	 * cycle. Lua's 200 means it doubles, which on a board with a few
+	 * hundred KB is most of the machine spent on garbage that has
+	 * already been collected once.
+	 */
+	lua_gc(p->L, LUA_GCINC, GCPAUSE, 0, 0);
 	/* stash the proc pointer where the kernel api finds it (self()).
 	 * set before the thread is created so lua_newthread copies it into
 	 * the coroutine's extra space too.
