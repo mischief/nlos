@@ -11,6 +11,7 @@
  */
 
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -201,33 +202,53 @@ static void
 write_all(const char *s, size_t n)
 {
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+	/* Sticky: what it remembers is whether anything reads this port,
+	 * which outlives any one write. Only the kernel task writes the
+	 * console, so no lock.
+	 */
+	static bool detached = false;
 	size_t off = 0;
 	int idle = 0;
 
 	/* In chunks, because usb_serial_jtag_write_bytes takes at most a
-	 * buffer's worth per call and answers 0 for more -- and zmodem's
-	 * pull() hands over every pending subpacket at once, which is
-	 * comfortably past that. Asking for the lot returned 0 and, with
-	 * an earlier version of this loop that gave up on the first zero,
-	 * silently dropped the write: measured as 6144 bytes in and one
-	 * byte out.
+	 * buffer's worth per call and answers 0 for more -- and zmodem
+	 * hands over every pending subpacket at once, well past that.
 	 *
 	 * A zero is "no room right now", not "nobody is listening", so it
-	 * is retried; only a run of them means the far end has gone away.
+	 * is retried -- briefly. This blocks inside a C call, so nothing
+	 * cuts it and no other proc runs while it waits: an unread console
+	 * would otherwise set the speed of everything on the board.
+	 *
+	 * Two different conditions have to be cheap. Nothing attached at
+	 * all is what IDF's own VFS write asks before it touches the
+	 * driver, so ask it too. Attached with nobody reading -- a cable
+	 * in a PC, no terminal open -- still sends SOF, so that answers
+	 * yes and the buffer fills anyway; `detached` is for that one.
 	 */
+	if (!usb_serial_jtag_is_connected())
+		return;
+
 	while (off < n) {
 		size_t want = n - off;
 		int w;
 
 		if (want > 512)
 			want = 512;
+
+		/* a detached console is probed with no wait, so a write to
+		 * one costs a call and not a sleep.
+		 */
 		w = usb_serial_jtag_write_bytes(s + off, want,
-		    pdMS_TO_TICKS(100));
+		    detached ? 0 : pdMS_TO_TICKS(10));
 		if (w > 0) {
 			off += (size_t)w;
 			idle = 0;
-		} else if (++idle > 20) {
-			return;		/* ~2s of nobody draining */
+			detached = false;
+		} else if (detached) {
+			return;
+		} else if (++idle > 5) {
+			detached = true;	/* ~50ms, nobody reading */
+			return;
 		}
 	}
 #else
