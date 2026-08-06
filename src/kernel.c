@@ -356,11 +356,25 @@ struct kproc {
 	 * because two readers may look at one target at once, and the
 	 * second must not thaw it under the first.
 	 *
-	 * Guarded by the cpu locks, like `current` -- freezing is deciding
+	 * Guarded by schedlock, like `current` -- freezing is deciding
 	 * something about the run queues, and is done holding the same
 	 * lock that publishes who is running.
 	 */
 	int frozen;
+
+	/* which cpu has this proc in hand, plus one, or zero for none.
+	 *
+	 * One proc is one thread of control, and every invariant in this
+	 * kernel rests on it: a per-proc lua heap needs no lock, a virtio
+	 * queue needs no lock, and a coroutine cannot be resumed twice.
+	 * Two cpus dispatching one proc breaks all three at once, and it
+	 * does not report itself -- it arrives later as a page fault on a
+	 * pointer that was fine, or as lua refusing to resume.
+	 *
+	 * So it is checked rather than argued. Written under schedlock at
+	 * both ends, which is where a proc is taken and given back.
+	 */
+	unsigned oncpu;
 
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
 	int nwatch;
@@ -539,6 +553,18 @@ ipcheld(void)
 	}								\
 } while (0)
 
+/* how long the lock is held, summed. lock.h counts the waiting; this
+ * counts the other half, and the two together say whether splitting
+ * this lock would buy anything -- a lock nobody holds for long is not
+ * the thing to split.
+ *
+ * Owner-only, like ipcdepth, so no atomics. One rdtsc pair per
+ * outermost ipc call is about 1% of one, which is worth paying for the
+ * one number the design question turns on.
+ */
+static unsigned long long ipcheld_cycles;
+static unsigned long long ipcheld_t0;
+
 static void
 ipclock_enter(void)
 {
@@ -551,6 +577,7 @@ ipclock_enter(void)
 	lock(&ipclock);
 	atomic_store_explicit(&ipcowner, me, memory_order_relaxed);
 	ipcdepth = 1;
+	ipcheld_t0 = machine_cycles();
 }
 
 static void
@@ -558,6 +585,7 @@ ipclock_leave(void)
 {
 	if (--ipcdepth > 0)
 		return;
+	ipcheld_cycles += machine_cycles() - ipcheld_t0;
 	atomic_store_explicit(&ipcowner, 0, memory_order_relaxed);
 	unlock(&ipclock);
 }
@@ -727,12 +755,35 @@ static int count_runnable(void);
  * because the freeze path above the scheduler takes it too.
  */
 static struct lock schedlock;
+
+/* the run queues are one structure for the machine, so every hand that
+ * touches them needs this. Same shape as IPC_ASSERT_LOCKED, and it
+ * answers the same weaker question -- held by anyone, not held by me --
+ * for the same reason: lock.h stays below cpu identity.
+ *
+ * It exists because the alternative is silence. A queue mutated from a
+ * syscall while another cpu is in dispatch_lap does not fail there. It
+ * hands one proc to two cpus, and that arrives much later as a page
+ * fault on a pointer that was good, or as lua refusing to resume a
+ * coroutine that is already running.
+ */
+#define SCHED_ASSERT_LOCKED() do {					\
+	if (!holding(&schedlock)) {					\
+		char b_[96];						\
+		snprintf(b_, sizeof b_, "schedlock not held: %s",	\
+		    __func__);						\
+		platform_abort(b_);					\
+	}								\
+} while (0)
+
 static void rq_init(void);
 static void rq_del(struct kproc *p);
 static void rq_add(struct rqset *set, struct kproc *p);
 static struct kproc *rq_take_high(struct rqset *set);
 static struct kproc *rq_take_any(struct rqset *set);
 static void make_ready(struct kproc *p);
+static void proc_block(struct kproc *p);
+static void proc_unqueue(struct kproc *p);
 
 /* release a right that was serialized into a message but never
  * delivered (send failed, or the queue was flushed). a receive right in
@@ -2251,8 +2302,7 @@ api_sendblock(lua_State *L)
 	else if (!wait_add(p, r->port, 1))
 		rc = NOWAIT;
 	else {
-		p->status = BLOCKED;
-		rq_del(p);
+		proc_block(p);
 	}
 	ipclock_leave();
 
@@ -2391,8 +2441,7 @@ api_block(lua_State *L)
 	else if (!wait_add(p, r->port, 0))
 		rc = NOWAIT;
 	else {
-		p->status = BLOCKED;
-		rq_del(p);
+		proc_block(p);
 	}
 	ipclock_leave();
 
@@ -2500,8 +2549,7 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 			ipclock_leave();
 			return luaL_error(L, "out of waiters");
 		}
-		p->status = BLOCKED;
-		rq_del(p);
+		proc_block(p);
 		ipclock_leave();
 		return lua_yieldk(L, 0, ctx, call_k);
 	}
@@ -2926,8 +2974,7 @@ api_altblock(lua_State *L)
 			return luaL_error(L, "altblock: out of waiters");
 		}
 	}
-	p->status = BLOCKED;
-	rq_del(p);
+	proc_block(p);
 	ipclock_leave();
 	return lua_yieldk(L, 0, 0, altblock_k);
 }
@@ -3002,8 +3049,7 @@ api_altrecv(lua_State *L)
 			return luaL_error(L, "altrecv: out of waiters");
 		}
 	}
-	p->status = BLOCKED;
-	rq_del(p);
+	proc_block(p);
 	ipclock_leave();
 	return lua_yieldk(L, 0, 0, altrecv_k);
 }
@@ -3586,6 +3632,11 @@ api_stats(lua_State *L)
 			lua_setfield(L, -2, "contended");
 			lua_pushinteger(L, (lua_Integer)lkv[i]->spin);
 			lua_setfield(L, -2, "spin");
+			if (lkv[i] == &ipclock) {
+				lua_pushinteger(L,
+				    (lua_Integer)ipcheld_cycles);
+				lua_setfield(L, -2, "held");
+			}
 			lua_setfield(L, -2, lkn[i]);
 		}
 	}
@@ -3817,22 +3868,23 @@ push_wchan(lua_State *L, struct kproc *p)
  * readers from deadlocking on each other: a reader that yields is no
  * longer running, so the proc it is waiting for is free to stop.
  */
-/* one lock, and it is the scheduler's: that is where `current` is
- * published, and the one make_ready already takes to decide the same
- * thing. Every cpu is asked, because there is one run queue for the
- * machine and so a proc can be on any of them. p->home says where it
- * last ran, which is a report and not an answer.
+/* one lock, and it is the scheduler's: that is where a proc is taken
+ * and given back, and the one make_ready already takes to decide the
+ * same thing.
+ *
+ * The proc is asked, not the cpus. Asking every cpu whether it is
+ * running p means asking `cpu_at(i)` for i below `platform_ncpu()`, and
+ * that count trails reality during boot -- startap raises it only once
+ * an AP has come up, so an AP that is already dispatching is not in it
+ * yet. A scan misses that cpu. p->oncpu cannot: it is written by
+ * whichever cpu has p in hand, counted or not.
+ *
+ * p->home says where it last ran, which is a report and not an answer.
  */
 static int
 proc_running(struct kproc *p)
 {
-	for (unsigned i = 0; i < platform_ncpu(); i++) {
-		struct cpu *c = cpu_at(i);
-
-		if (c && c->current == p)
-			return 1;
-	}
-	return 0;
+	return p->oncpu != 0;
 }
 
 /* returns whether the target is running right now; frozen is raised
@@ -6052,7 +6104,7 @@ static void
 proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 {
 	wait_clear(p);
-	rq_del(p);
+	proc_unqueue(p);
 	nlive--;
 
 	/* release every right this proc held; ports lose refs, orphaned
@@ -6887,6 +6939,7 @@ rq_add(struct rqset *set, struct kproc *p)
 {
 	int b = rq_bucket(p->pri);
 
+	SCHED_ASSERT_LOCKED();
 	TAILQ_INSERT_TAIL(&set->q[b], p, rqe);
 	set->mask |= 1u << b;
 	set->n++;
@@ -6899,6 +6952,7 @@ rq_del(struct kproc *p)
 	struct rqset *set = p->onq;
 	int b;
 
+	SCHED_ASSERT_LOCKED();
 	if (!set)
 		return;
 	b = rq_bucket(p->pri);
@@ -6941,6 +6995,38 @@ rq_take_any(struct rqset *set)
 	return 0;
 }
 
+/* park a proc that is running: it goes to sleep on a port and stops
+ * being runnable.
+ *
+ * Both halves need schedlock. The queues are one structure for the
+ * machine, so rq_del touching them from a syscall while another cpu is
+ * in dispatch_lap corrupts them, and `status` is what dispatch_lap
+ * reads under that same lock to decide whether to requeue.
+ *
+ * The caller holds ipclock, and ipc -> sched is the allowed order.
+ */
+static void
+proc_block(struct kproc *p)
+{
+	IPC_ASSERT_LOCKED();
+	lock(&schedlock);
+	p->status = BLOCKED;
+	rq_del(p);
+	unlock(&schedlock);
+}
+
+/* take a proc off whatever queue it is on, for a caller that is not
+ * putting it to sleep -- proc_detach, where it is dying. Same reason
+ * for the lock.
+ */
+static void
+proc_unqueue(struct kproc *p)
+{
+	lock(&schedlock);
+	rq_del(p);
+	unlock(&schedlock);
+}
+
 static void
 make_ready(struct kproc *p)
 {
@@ -6948,13 +7034,18 @@ make_ready(struct kproc *p)
 	 * CONTEXT: proc_new, wake_receivers, wake_senders.
 	 */
 	IPC_ASSERT_LOCKED();
-	struct rqset *keep = p->onq;
 
 	/* one lock, and no cpu to choose: whichever looks next takes
 	 * it. Nested inside the ipc lock, which is the one nesting
 	 * lock.h's order allows (ipc -> sched).
 	 */
 	lock(&schedlock);
+
+	/* which queue p is already on, read under the lock: another cpu
+	 * takes procs off these, so a read from outside can name a queue
+	 * p has already left.
+	 */
+	struct rqset *keep = p->onq;
 
 	/* p may be running right now on another cpu, which is a case
 	 * that cannot arise on one cpu: there, the only proc running is
@@ -6965,19 +7056,20 @@ make_ready(struct kproc *p)
 	 * terminates.
 	 *
 	 * So leave it to the cpu running it. Marking it READY is
-	 * enough: dispatch_lap requeues on exactly that, and it clears
-	 * current under this same lock, so one of the two always sees
-	 * the other.
+	 * enough: dispatch_lap requeues on exactly that, and it gives
+	 * the proc back under this same lock, so one of the two always
+	 * sees the other.
+	 *
+	 * The proc is asked rather than the cpus, for the reason in
+	 * proc_running: a scan of cpu_at() misses an AP that is
+	 * dispatching but not yet counted, and two cpus then take the
+	 * same proc.
 	 */
-	for (unsigned i = 0; i < platform_ncpu(); i++) {
-		struct cpu *c = cpu_at(i);
-
-		if (c && c->current == p) {
-			p->status = READY;
-			p->pri = reprioritize(p, count_runnable() + 1);
-			unlock(&schedlock);
-			return;
-		}
+	if (p->oncpu) {
+		p->status = READY;
+		p->pri = reprioritize(p, count_runnable() + 1);
+		unlock(&schedlock);
+		return;
 	}
 
 	if (keep)
@@ -7261,6 +7353,11 @@ dispatch_lap(struct cpu *me)
 		 * that make_ready can see this proc is in hand and leave
 		 * the requeue below to do the enqueueing.
 		 */
+		if (p) {
+			if (p->oncpu)
+				platform_abort("proc dispatched on two cpus");
+			p->oncpu = me->idx + 1;
+		}
 		me->current = p;
 		unlock(&schedlock);
 		if (!p)
@@ -7279,6 +7376,7 @@ dispatch_lap(struct cpu *me)
 		 */
 		lock(&schedlock);
 		me->current = 0;
+		p->oncpu = 0;
 		if (p->status == READY && !p->onq)
 			rq_add(donq, p);
 		unlock(&schedlock);
@@ -7312,6 +7410,11 @@ dispatch_lap(struct cpu *me)
 			unlock(&schedlock);
 			continue;
 		}
+		if (p) {
+			if (p->oncpu)
+				platform_abort("proc dispatched on two cpus");
+			p->oncpu = me->idx + 1;
+		}
 		me->current = p;
 		unlock(&schedlock);
 		if (!p)
@@ -7320,6 +7423,7 @@ dispatch_lap(struct cpu *me)
 			ran = 1;
 		lock(&schedlock);
 		me->current = 0;
+		p->oncpu = 0;
 		if (p->status == READY && !p->onq)
 			rq_add(donq, p);
 		unlock(&schedlock);

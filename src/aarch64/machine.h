@@ -13,4 +13,18 @@ machine_relax(void)
 	__asm__ volatile ("yield" ::: "memory");
 }
 
+/* the virtual counter, for measuring something too short to reach a
+ * clock through a function call. It runs at CNTFRQ_EL0, 62.5MHz under
+ * qemu, so it is far coarser than a TSC; it is meant to be summed over
+ * many events rather than trusted for one.
+ */
+static inline unsigned long long
+machine_cycles(void)
+{
+	unsigned long long v;
+
+	__asm__ volatile ("mrs %0, cntvct_el0" : "=r" (v));
+	return v;
+}
+
 #endif

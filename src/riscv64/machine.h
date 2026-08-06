@@ -18,4 +18,17 @@ machine_relax(void)
 	__asm__ volatile (".insn i 0x0F, 0, x0, x0, 0x010" ::: "memory");
 }
 
+/* the `time` csr, via the rdtime pseudo-instruction, for measuring
+ * something too short to reach a clock through a function call. It is
+ * meant to be summed over many events rather than trusted for one.
+ */
+static inline unsigned long long
+machine_cycles(void)
+{
+	unsigned long long v;
+
+	__asm__ volatile ("rdtime %0" : "=r" (v));
+	return v;
+}
+
 #endif

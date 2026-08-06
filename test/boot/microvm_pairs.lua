@@ -154,7 +154,9 @@ for _, name in ipairs({ "ipc", "sched" }) do
 		    "%s lock: %d taken, %d contended (%.1f%%), %d Mcycles spinning",
 		    name, l.locks, l.contended,
 		    l.locks > 0 and l.contended / l.locks * 100 or 0,
-		    l.spin // 1000000))
+		    l.spin // 1000000) ..
+		    (l.held and string.format(", %d Mcycles held",
+		    l.held // 1000000) or ""))
 	end
 end
 
