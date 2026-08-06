@@ -250,8 +250,24 @@ struct kport {
 	unsigned short idx;	/* its slot in portv; what the wire carries */
 	int used;
 	TAILQ_HEAD(, waiter) waiters;
-	int nrights;	/* rights + in-flight message refs + kernel refs */
-	int nrecv;	/* receive rights among those */
+	/* rights + in-flight message refs + kernel refs, and the receive
+	 * rights among those.
+	 *
+	 * Atomic because they are the one part of a port touched with no
+	 * bucket held. serialize walks a message minting a reference on
+	 * every port it names -- arbitrary ports, so arbitrary buckets --
+	 * and it has to run outside the lock entirely, because building
+	 * the message allocates lua memory and the collector reaches
+	 * api_close from there.
+	 *
+	 * Taking a reference is safe unlocked because it cannot destroy
+	 * anything: whoever increments already holds one, so the count
+	 * was not zero and cannot reach zero underneath. Dropping one
+	 * can, so port_unref still runs under every bucket, and that is
+	 * what serializes a drop against the flush it may perform.
+	 */
+	atomic_int nrights;
+	atomic_int nrecv;
 	int dead;	/* no receive right left; sends are dropped */
 	size_t qbytes;	/* queued payload, against MAXQUEUE */
 	struct kmsg *head, *tail;
@@ -311,6 +327,12 @@ struct waiter {
 	struct kproc *p;
 	struct kport *port;
 	int send;			/* waiting for room, not for a message */
+	/* still linked on port->waiters. A waker unlinks the entry it
+	 * woke on and clears this, under that port's bucket; the entries
+	 * the proc holds on OTHER ports stay linked, and collecting them
+	 * is the proc's own job. See wait_reap.
+	 */
+	int onport;
 	TAILQ_ENTRY(waiter) pq;		/* on port->waiters */
 	SLIST_ENTRY(waiter) pw;		/* on proc->waiters; walked whole */
 };
@@ -361,6 +383,21 @@ struct kproc {
 	 * lock that publishes who is running.
 	 */
 	int frozen;
+
+	/* some port has claimed the right to wake this proc.
+	 *
+	 * A proc in an alt waits on several ports at once, so several
+	 * cpus can decide to wake it at the same moment, each holding a
+	 * different bucket and neither covering the other. This is what
+	 * settles it: the winner is whoever takes the flag from 0 to 1,
+	 * and a loser leaves the proc alone entirely. Go's runtime does
+	 * exactly this with g.selectDone, for exactly this reason.
+	 *
+	 * Cleared by wait_reap, which runs on the proc's own cpu before
+	 * it is resumed -- so it is 0 for the whole time the proc is
+	 * running, and there is nothing to claim until it blocks again.
+	 */
+	atomic_int woken;
 
 	/* which cpu has this proc in hand, plus one, or zero for none.
 	 *
@@ -483,11 +520,78 @@ static int prochigh;
  * region that neither yields nor raises, which is narrower than the
  * function.
  *
- * Coverage is partial at this commit: the plain-C entry points below
- * take it, the lua-facing ones do not yet. That is safe only because
- * nothing runs on a second cpu -- see smp.c, where the APs still park.
+ * It is not one lock but an array of them, hashed on the port index.
+ * The bucket array is the middle ground between one lock and a lock
+ * per port, and it is the cheap way to find out which of those the
+ * workload actually wants: buckets are static, so they raise none of
+ * the questions a per-port lock does -- what its lifetime is against
+ * the port's, and how it orders against the refcount that decides that
+ * lifetime. Linux hashes futexes onto a fixed bucket array for the
+ * same reason.
+ *
+ * Eight of them. The number is small on purpose: it costs an acquire
+ * per bucket on the paths that need all of them, and the question it
+ * has to answer -- does spreading the ports over separate cachelines
+ * recover the scaling microvm_pairs loses -- is answered as well by
+ * eight as by eighty.
+ *
+ * Two ways in, and which one a caller uses is the whole of the split:
+ *
+ *	ipclock_enter()		every bucket, ascending
+ *	ipclock_enter_port(p)	the one bucket covering p
+ *
+ * Taking all of them is what every caller does until measurement moves
+ * it, because it is what the single lock did. A caller narrowed to one
+ * bucket takes on two obligations that the wide form carries for it:
+ * it must touch no port outside that bucket, and it must allocate no
+ * lua memory, because the collector reaches api_close and a handle in
+ * another bucket -- which is the re-entry the depth counter below
+ * absorbs today, and which no lock order can absorb once the two
+ * buckets are chosen by a hash.
  */
-static struct lock ipclock = LOCK_INIT;
+#define NIPCLOCK 8
+
+struct ipcbucket {
+	struct lock lk;
+	/* atomic because it is read by a cpu that does not hold the
+	 * lock -- that is the whole of ipclock_enter_one's fast path --
+	 * while another cpu writes it. Relaxed is enough: the only
+	 * value any cpu acts on is its own struct cpu, and a cpu is the
+	 * only writer of that value, so a read that races can be stale
+	 * but can never be wrongly equal to me.
+	 *
+	 * depth needs none of that. It is touched only by the owner,
+	 * and by definition there is exactly one.
+	 */
+	_Atomic(struct cpu *) owner;
+	int depth;
+
+	/* how long it is held, summed. lock.h counts the waiting; this
+	 * counts the other half, and the two together say whether
+	 * splitting further would buy anything -- a lock nobody holds
+	 * for long is not the thing to split.
+	 *
+	 * Owner-only, like depth, so no atomics. One rdtsc pair per
+	 * outermost acquire is about 1% of one, which is worth paying
+	 * for the one number the design question turns on.
+	 */
+	unsigned long long held, t0;
+};
+
+/* zero is the initial state of every field, LOCK_INIT included, so
+ * there is nothing to write here.
+ */
+static struct ipcbucket ipcbuckets[NIPCLOCK];
+
+/* which bucket covers a port. The index is dense from zero and ports
+ * are handed out in order, so the low bits spread as well as any
+ * mixing would and cost nothing.
+ */
+static struct ipcbucket *
+ipcbucket_of(const struct kport *p)
+{
+	return &ipcbuckets[p->idx & (NIPCLOCK - 1)];
+}
 
 /* the ipc lock is recursive, and it is not a shortcut.
  *
@@ -510,39 +614,62 @@ static struct lock ipclock = LOCK_INIT;
  *
  * The usual objection to a recursive lock is that it hides a contract
  * bug rather than reporting it. That holds, and the answer here is
- * that this re-entry is neither a bug nor avoidable. It cost a full
- * bisect to establish, twice: the first attempt at this wrapper failed
- * to convert the unlock sites -- \block does not match inside "unlock"
- * -- so ipcowner stayed set, every later acquire was a no-op, and the
- * suite passed by not locking at all.
- */
-/* atomic because it is read by a cpu that does not hold the lock --
- * that is the whole of ipclock_enter's fast path -- while another cpu
- * writes it. Relaxed is enough: the only value any cpu acts on is its
- * own struct cpu, and a cpu is the only writer of that value, so a read
- * that races can be stale but can never be wrongly equal to me.
+ * that this re-entry is neither a bug nor avoidable.
  *
- * ipcdepth needs none of that. It is touched only by the owner, and by
- * definition there is exactly one.
+ * The pitfall, because it passes the whole suite: a bucket whose
+ * owner is set but whose leave is missed is never released, and every
+ * later acquire on that cpu takes the depth fast path and succeeds.
+ * The kernel then runs unlocked and green. Anything that changes these
+ * two functions wants the assertions in kernel_run -- no bucket held
+ * across a lap -- to be the thing that is trusted, not the tests.
  */
-static _Atomic(struct cpu *) ipcowner;
-static int ipcdepth;
+/* does this cpu hold this bucket. Not lock.h's holding(), which
+ * answers for the machine: under smp another cpu holding a bucket is
+ * the ordinary case and says nothing about whether this one may touch
+ * the ports under it.
+ */
+static int
+ipcheld_one(struct ipcbucket *b)
+{
+	return atomic_load_explicit(&b->owner, memory_order_relaxed) ==
+	    cpu_self();
+}
 
-/* does this cpu hold it. Not lock.h's holding(), which answers for the
- * machine: under smp another cpu holding the ipc lock is the ordinary
- * case and says nothing about whether this one may touch the tables.
+/* does this cpu hold every bucket, which is what the wide form gives
+ * and what an assertion naming no port has to demand.
  */
 static int
 ipcheld(void)
 {
-	return atomic_load_explicit(&ipcowner, memory_order_relaxed) ==
-	    cpu_self();
+	for (unsigned i = 0; i < NIPCLOCK; i++)
+		if (!ipcheld_one(&ipcbuckets[i]))
+			return 0;
+	return 1;
+}
+
+/* any bucket at all. The weakest of the three, for a helper whose
+ * requirement is that its caller reached it from inside an ipc region
+ * rather than that any particular port is covered -- proc_block, which
+ * records a decision some port's bucket was holding still.
+ */
+static int
+ipcheld_any(void)
+{
+	for (unsigned i = 0; i < NIPCLOCK; i++)
+		if (ipcheld_one(&ipcbuckets[i]))
+			return 1;
+	return 0;
 }
 
 /* the contract the inner helpers assert. Named after OpenBSD's
  * MUTEX_ASSERT_LOCKED (mutex(9)), and live on every platform: the
  * owner is recorded even where NCPU is 1, so efi, aarch64 and riscv64
  * -- which run this same file -- check it too.
+ *
+ * IPC_ASSERT_PORT is the one to reach for in a helper that touches a
+ * named port and nothing else. It is the weaker demand, and a helper
+ * that can honestly make it is one the split can eventually narrow;
+ * IPC_ASSERT_LOCKED marks the rest.
  */
 #define IPC_ASSERT_LOCKED() do {					\
 	if (!ipcheld()) {						\
@@ -553,41 +680,80 @@ ipcheld(void)
 	}								\
 } while (0)
 
-/* how long the lock is held, summed. lock.h counts the waiting; this
- * counts the other half, and the two together say whether splitting
- * this lock would buy anything -- a lock nobody holds for long is not
- * the thing to split.
- *
- * Owner-only, like ipcdepth, so no atomics. One rdtsc pair per
- * outermost ipc call is about 1% of one, which is worth paying for the
- * one number the design question turns on.
- */
-static unsigned long long ipcheld_cycles;
-static unsigned long long ipcheld_t0;
+#define IPC_ASSERT_PORT(p) do {						\
+	if (!ipcheld_one(ipcbucket_of(p))) {				\
+		char b_[96];						\
+		snprintf(b_, sizeof b_, "ipclock not held: %s port %d",	\
+		    __func__, (int)(p)->idx);				\
+		platform_abort(b_);					\
+	}								\
+} while (0)
+
+#define IPC_ASSERT_ANY() do {						\
+	if (!ipcheld_any()) {						\
+		char b_[96];						\
+		snprintf(b_, sizeof b_, "no ipclock bucket held: %s",	\
+		    __func__);						\
+		platform_abort(b_);					\
+	}								\
+} while (0)
 
 static void
-ipclock_enter(void)
+ipclock_enter_one(struct ipcbucket *b)
 {
 	struct cpu *me = cpu_self();
 
-	if (atomic_load_explicit(&ipcowner, memory_order_relaxed) == me) {
-		ipcdepth++;
+	if (atomic_load_explicit(&b->owner, memory_order_relaxed) == me) {
+		b->depth++;
 		return;
 	}
-	lock(&ipclock);
-	atomic_store_explicit(&ipcowner, me, memory_order_relaxed);
-	ipcdepth = 1;
-	ipcheld_t0 = machine_cycles();
+	lock(&b->lk);
+	atomic_store_explicit(&b->owner, me, memory_order_relaxed);
+	b->depth = 1;
+	b->t0 = machine_cycles();
+}
+
+static void
+ipclock_leave_one(struct ipcbucket *b)
+{
+	if (--b->depth > 0)
+		return;
+	b->held += machine_cycles() - b->t0;
+	atomic_store_explicit(&b->owner, 0, memory_order_relaxed);
+	unlock(&b->lk);
+}
+
+/* the one bucket covering p. See the obligations listed over the
+ * bucket array: no other port, and no lua allocation.
+ */
+static void
+ipclock_enter_port(struct kport *p)
+{
+	ipclock_enter_one(ipcbucket_of(p));
+}
+
+static void
+ipclock_leave_port(struct kport *p)
+{
+	ipclock_leave_one(ipcbucket_of(p));
+}
+
+/* every bucket, ascending, which is the order two of the same class
+ * are taken in everywhere. Releasing runs the other way for no reason
+ * beyond symmetry -- release order is free.
+ */
+static void
+ipclock_enter(void)
+{
+	for (unsigned i = 0; i < NIPCLOCK; i++)
+		ipclock_enter_one(&ipcbuckets[i]);
 }
 
 static void
 ipclock_leave(void)
 {
-	if (--ipcdepth > 0)
-		return;
-	ipcheld_cycles += machine_cycles() - ipcheld_t0;
-	atomic_store_explicit(&ipcowner, 0, memory_order_relaxed);
-	unlock(&ipclock);
+	for (unsigned i = NIPCLOCK; i-- > 0; )
+		ipclock_leave_one(&ipcbuckets[i]);
 }
 
 static struct kport *portv[MAXPORTS];
@@ -795,10 +961,18 @@ static void
 release_inflight(const unsigned short *refs, const unsigned char *refrecv,
     int n)
 {
-	/* caller holds ipclock.
-	 * CONTEXT: msg_free, port_push, port_push_owned,
-	 * port_send_from_lua, and api_spawn via release_inflight_locked.
+	/* caller holds ipclock, unless there is nothing to release.
+	 * CONTEXT: msg_free, port_push, port_send_from_lua, and
+	 * api_spawn via release_inflight_locked.
+	 *
+	 * The empty case is not a shortcut, it is the common one: a
+	 * message carrying no rights names no port, so this touches
+	 * nothing and may be called from anywhere. That is what lets the
+	 * send and receive paths dispose of an ordinary message without
+	 * leaving their one bucket to take all eight.
 	 */
+	if (n == 0)
+		return;
 	IPC_ASSERT_LOCKED();
 	for (int i = 0; i < n; i++) {
 		struct kport *port = portv[refs[i]];
@@ -1242,12 +1416,22 @@ right_slot_grow(struct kproc *p, int h)
 static int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
-	/* caller holds ipclock.
+	/* CALLER NEEDS NO LOCK, and this is the one helper here that
+	 * genuinely needs none.
+	 *
+	 * It writes two things. p's right table belongs to p, and only p
+	 * runs on any cpu at a time. port->nrights is atomic, and taking
+	 * a reference cannot destroy anything -- the caller already holds
+	 * one, or the message it is deserializing does.
+	 *
+	 * That is what lets deserialize run outside every bucket, which
+	 * is the whole point: turning a message into lua values allocates
+	 * lua memory, and the collector reaches api_close from there.
+	 *
 	 * CONTEXT: api_newport, api_sendright, api_timer, api_spawn,
 	 * deserialize, grant_named, proc_new, release_inflight,
 	 * spawn_driver.
 	 */
-	IPC_ASSERT_LOCKED();
 	/* start where a free slot was last seen. without it a proc holding
 	 * five hundred rights rescans all of them for each new one, which is
 	 * quadratic for exactly the case a large MAXRIGHTS is meant to allow
@@ -1688,11 +1872,16 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 static int
 wait_add(struct kproc *p, struct kport *port, int send)
 {
-	/* caller holds ipclock.
+	/* caller holds the bucket covering `port`.
 	 * CONTEXT: the five blocking calls, all of which hold it
 	 * across the test that decided to sleep.
+	 *
+	 * Per-port rather than every bucket, because that is all this
+	 * touches: one port's waiter list, and p's own list, which
+	 * belongs to the running proc. alt names several ports but one
+	 * per call, so this is the right demand there too.
 	 */
-	IPC_ASSERT_LOCKED();
+	IPC_ASSERT_PORT(port);
 	struct waiter *w;
 
 	if (!p->w0used) {
@@ -1706,26 +1895,33 @@ wait_add(struct kproc *p, struct kport *port, int send)
 	w->p = p;
 	w->port = port;
 	w->send = send;
+	w->onport = 1;
 	TAILQ_INSERT_TAIL(&port->waiters, w, pq);
 	SLIST_INSERT_HEAD(&p->waiters, w, pw);
 	return 1;
 }
 
-/* drop every wait this proc holds. called on wake and on death, so it has
- * to be safe to call when the list is already empty.
+/* drop every wait this proc holds. called on death and by alt before it
+ * builds a new set, so it has to be safe to call when the list is
+ * already empty.
+ *
+ * This is the WIDE operation: it reaches every port the proc waits on,
+ * so it demands every bucket. wait_reap is the narrow form and is what
+ * the wake path uses.
  */
 static void
 wait_clear(struct kproc *p)
 {
 	/* caller holds ipclock.
-	 * CONTEXT: alt, proc_detach, wake_receivers, wake_senders.
+	 * CONTEXT: alt, proc_detach.
 	 */
 	IPC_ASSERT_LOCKED();
 	while (!SLIST_EMPTY(&p->waiters)) {
 		struct waiter *w = SLIST_FIRST(&p->waiters);
 
 		SLIST_REMOVE_HEAD(&p->waiters, pw);
-		TAILQ_REMOVE(&w->port->waiters, w, pq);
+		if (w->onport)
+			TAILQ_REMOVE(&w->port->waiters, w, pq);
 		if (w == &p->w0)
 			p->w0used = 0;
 		else
@@ -1733,14 +1929,72 @@ wait_clear(struct kproc *p)
 	}
 }
 
+/* collect the waits left over from the last block, on the proc's own
+ * cpu and just before it is resumed.
+ *
+ * This is the half of the wake that the waker deliberately does not do.
+ * A waker holds one port's bucket, so the only waiter list it may touch
+ * is that port's -- and a proc in an alt is on several. So the waker
+ * unlinks the one it woke on and leaves the rest, and the proc collects
+ * them here, taking each port's bucket in turn and holding exactly one
+ * at a time.
+ *
+ * Linux's poll works the same way round: pollwake touches the one wait
+ * queue it was called on, and poll_freewait walks the rest from the
+ * woken task. Because only one lock is ever held here, there is no
+ * order to violate between them.
+ *
+ * Also where `woken` is cleared, which is what re-arms the proc to be
+ * claimed the next time it blocks. Nothing may claim it in between,
+ * because a running proc is not BLOCKED.
+ */
+static void
+wait_reap(struct kproc *p)
+{
+	while (!SLIST_EMPTY(&p->waiters)) {
+		struct waiter *w = SLIST_FIRST(&p->waiters);
+
+		SLIST_REMOVE_HEAD(&p->waiters, pw);
+		if (w->onport) {
+			ipclock_enter_port(w->port);
+			/* re-read under the bucket: a waker may have
+			 * unlinked it between the test and the lock.
+			 */
+			if (w->onport) {
+				TAILQ_REMOVE(&w->port->waiters, w, pq);
+				w->onport = 0;
+			}
+			ipclock_leave_port(w->port);
+		}
+		if (w == &p->w0)
+			p->w0used = 0;
+		else
+			free(w);
+	}
+	atomic_store_explicit(&p->woken, 0, memory_order_relaxed);
+}
+
+/* take the right to wake this proc, or find that another port already
+ * has. See kproc.woken.
+ */
+static int
+wake_claim(struct kproc *p)
+{
+	int expect = 0;
+
+	return atomic_compare_exchange_strong_explicit(&p->woken, &expect, 1,
+	    memory_order_acq_rel, memory_order_relaxed);
+}
+
 static void
 wake_receivers(struct kport *port)
 {
-	/* caller holds ipclock.
+	/* caller holds the bucket covering `port`.
 	 * CONTEXT: port_push_owned and port_unref. Touches another
-	 * proc's waiter list and its cpu's run queue.
+	 * proc's run queue, and this port's waiter list -- but no
+	 * other port's, which is what lets a sender hold one bucket.
 	 */
-	IPC_ASSERT_LOCKED();
+	IPC_ASSERT_PORT(port);
 	struct waiter *w, *n;
 
 	TAILQ_FOREACH_SAFE(w, &port->waiters, pq, n) {
@@ -1748,10 +2002,10 @@ wake_receivers(struct kport *port)
 
 		if (w->send || p->status != BLOCKED)
 			continue;
-		/* clears every wait p holds, including the one we are
-		 * standing on, which is why the SAFE form is required
-		 */
-		wait_clear(p);
+		if (!wake_claim(p))
+			continue;	/* another port got there first */
+		TAILQ_REMOVE(&port->waiters, w, pq);
+		w->onport = 0;
 		make_ready(p);
 	}
 }
@@ -1773,11 +2027,11 @@ wake_receivers(struct kport *port)
 static void
 wake_senders(struct kport *port)
 {
-	/* caller holds ipclock.
+	/* caller holds the bucket covering `port`.
 	 * CONTEXT: port_pop_to_lua and port_unref. Same reach as
 	 * wake_receivers.
 	 */
-	IPC_ASSERT_LOCKED();
+	IPC_ASSERT_PORT(port);
 	struct waiter *w, *n;
 
 	TAILQ_FOREACH_SAFE(w, &port->waiters, pq, n) {
@@ -1785,7 +2039,10 @@ wake_senders(struct kport *port)
 
 		if (!w->send || p->status != BLOCKED)
 			continue;
-		wait_clear(p);
+		if (!wake_claim(p))
+			continue;
+		TAILQ_REMOVE(&port->waiters, w, pq);
+		w->onport = 0;
 		make_ready(p);
 	}
 }
@@ -1794,9 +2051,18 @@ wake_senders(struct kport *port)
  * a dead port silently drops -- erlang semantics, the sender learns
  * from the monitor, not the send.
  */
-/* takes ownership of `data` unconditionally: on success the queued
- * message owns it, and on every failure path (including a dead port)
- * this frees it. callers must not free or reuse it afterwards.
+/* takes ownership of `data` only when it returns 0. On any refusal the
+ * caller still owns both the buffer and the in-flight refs, and must
+ * free the one and release the other.
+ *
+ * That is the awkward half of the contract and it is deliberate. This
+ * runs under one bucket -- the one covering `port` -- and releasing a
+ * reference does not: it can drop a port to zero and flush its queue,
+ * which reaches other ports under other buckets, so it demands all of
+ * them. A narrow region cannot widen, so the disposal has to happen
+ * after the caller leaves. release_inflight is a no-op for a message
+ * carrying no rights, which is nearly all of them, so the usual cost of
+ * this arrangement is a branch.
  *
  * this exists so a serialized message is built once and queued without a
  * second copy. the serializer already malloc'd exactly the buffer we
@@ -1807,30 +2073,24 @@ static int
 port_push_owned(struct kport *port, unsigned char *data, size_t len,
     const unsigned short *refs, const unsigned char *refrecv, int nrefs)
 {
-	/* caller holds ipclock.
+	/* caller holds the bucket covering `port`.
 	 * CONTEXT: port_push, notify_exit, port_send_from_lua.
 	 */
-	IPC_ASSERT_LOCKED();
+	IPC_ASSERT_PORT(port);
 	if (port->dead) {
 		port->ndrop_dead++;
-		release_inflight(refs, refrecv, nrefs);
-		free(data);
-		return 0;
+		return -3;
 	}
 
 	if (port->qbytes + len > MAXQUEUE) {
 		port->ndrop_full++;
-		release_inflight(refs, refrecv, nrefs);
-		free(data);
 		return -2;		/* full, distinct from out of memory */
 	}
 
 	struct kmsg *m = malloc(sizeof *m);
 
-	if (!m) {
-		free(data);
+	if (!m)
 		return -1;
-	}
 	m->next = 0;
 	m->len = len;
 	m->data = data;
@@ -1871,7 +2131,18 @@ port_push(struct kport *port, const unsigned char *data, size_t len,
 		return -1;
 	}
 	memcpy(copy, data, len);
-	return port_push_owned(port, copy, len, refs, 0, nrefs);
+
+	int rc = port_push_owned(port, copy, len, refs, 0, nrefs);
+
+	if (rc) {
+		release_inflight(refs, 0, nrefs);
+		free(copy);
+	}
+	/* a dead port is not this caller's failure -- see the erlang
+	 * note above -- so it reads as success, which is what the
+	 * refusal code used to be folded into.
+	 */
+	return rc == -3 ? 0 : rc;
 }
 
 /* remove the file half of io; the console half stays. see kernel.h on
@@ -2092,6 +2363,18 @@ self(lua_State *L)
 /* serialize the value at `idx` and queue it on r's port. shared by
  * api_send and api_call, which differ only in what they do afterwards.
  * the wbuf is disposed of on every path, success or not.
+ *
+ * TAKES NO LOCK ON ENTRY, and that is the point: the serializer is the
+ * expensive half of a send and it is also the half that must not run
+ * under a bucket, because building the message allocates lua memory and
+ * the collector reaches api_close from there. So it runs first, with
+ * nothing held, and only the queue insert and the wakeup happen under
+ * the one bucket covering r->port.
+ *
+ * The references serialize mints are what make that safe. They are
+ * taken with no lock, which is sound because taking one cannot destroy
+ * anything, and they keep every port the message names alive for as
+ * long as the message exists.
  */
 enum { SEND_OK = 0, SEND_UNSERIALIZABLE, SEND_DEAD, SEND_FULL, SEND_NOMEM };
 
@@ -2099,34 +2382,45 @@ static int
 port_send_from_lua(lua_State *L, struct kproc *p, struct right *r, int idx)
 {
 	struct wbuf w = { 0 };
+	int rc;
 
 	wreserve(&w, sizehint(L, idx));
 	if (serialize(L, idx, &w, p, 0)) {
 		/* release refs taken for rights serialized before the
 		 * failure point
 		 */
-		release_inflight(w.refs, w.refrecv, w.nrefs);
-		free(w.p);
-		return SEND_UNSERIALIZABLE;
+		rc = SEND_UNSERIALIZABLE;
+		goto discard;
 	}
-	if (r->port->dead) {
-		/* counted here as well as in port_push_owned: this path
-		 * returns before reaching it, and it is the one every send
-		 * from lua takes.
-		 */
-		r->port->ndrop_dead++;
-		release_inflight(w.refs, w.refrecv, w.nrefs);
-		free(w.p);
-		return SEND_DEAD;
-	}
-	int rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv,
-	    w.nrefs);
 
-	if (rc == -2)		/* w.p already freed by port_push_owned */
-		return SEND_FULL;
-	if (rc)
-		return SEND_NOMEM;
-	return SEND_OK;
+	ipclock_enter_port(r->port);
+	rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv, w.nrefs);
+	ipclock_leave_port(r->port);
+
+	switch (rc) {
+	case 0:
+		return SEND_OK;
+	case -2:
+		rc = SEND_FULL;
+		break;
+	case -3:
+		rc = SEND_DEAD;
+		break;
+	default:
+		rc = SEND_NOMEM;
+		break;
+	}
+discard:
+	/* outside the bucket, because releasing a reference needs all of
+	 * them. Free of charge unless the message carried rights.
+	 */
+	if (w.nrefs) {
+		ipclock_enter();
+		release_inflight(w.refs, w.refrecv, w.nrefs);
+		ipclock_leave();
+	}
+	free(w.p);
+	return rc;
 }
 
 static int
@@ -2139,10 +2433,12 @@ api_send(lua_State *L)
 
 	luaL_checkany(L, 2);				/* raises; before */
 
-	ipclock_enter();
+	/* no lock here at all: the right lookup reads this proc's own
+	 * table, which only this proc touches, and port_send_from_lua
+	 * takes the one bucket it needs for as long as it needs it.
+	 */
 	r = right_get(p, h);
 	rc = r ? port_send_from_lua(L, p, r, 2) : 0;
-	ipclock_leave();
 
 	if (!r)
 		return luaL_error(L, "bad right");
@@ -2282,16 +2578,30 @@ api_sendblock(lua_State *L)
 	 */
 	nopark(L, p);
 
-	/* the room test and the wait_add are one region, for the reason
+	/* the first entry point narrowed to one bucket, and it qualifies
+	 * on both counts: everything below names r->port and nothing
+	 * else, and nothing below allocates lua memory -- wait_add's
+	 * malloc is the kernel's, over the pmm, with no collector behind
+	 * it.
+	 *
+	 * The right lookup happens before any bucket is taken, because
+	 * it is what says which bucket to take. That is sound because a
+	 * proc's own right table is not shared: it is read and written
+	 * only while that proc runs, and a proc runs on one cpu.
+	 * api_anyready reads it with no lock at all on the same grounds.
+	 *
+	 * The room test and the wait_add are one region, for the reason
 	 * api_block's are: a receiver draining the port between them
 	 * would wake nobody and leave this proc parked on a port that
 	 * has the room it asked for.
 	 */
-	ipclock_enter();
 	r = right_get(p, h);
-	if (!r)
+	if (!r) {
 		rc = BADRIGHT;
-	else if (!SLIST_EMPTY(&p->waiters))
+		goto out;
+	}
+	ipclock_enter_port(r->port);
+	if (!SLIST_EMPTY(&p->waiters))
 		rc = TWICE;
 	else if (r->port->dead)
 		rc = DONTSLEEP;		/* never drains; let the send say so */
@@ -2304,7 +2614,8 @@ api_sendblock(lua_State *L)
 	else {
 		proc_block(p);
 	}
-	ipclock_leave();
+	ipclock_leave_port(r->port);
+out:
 
 	switch (rc) {
 	case BADRIGHT:
@@ -2322,38 +2633,67 @@ api_sendblock(lua_State *L)
 	return lua_yield(L, 0);
 }
 
-/* take the head message off `port` and push it as ONE lua value. the
- * caller must have established that port->head is non-null; "nothing
- * there" is the one thing this cannot express, and it is exactly what
- * the two callers disagree about (tryrecv reports it, api_call sleeps
- * on it), which is why the emptiness test stays outside.
+/* take the head message off `port`, or null if there is none.
+ *
+ * The mirror of port_send_from_lua's split, and the same reasoning
+ * backwards: detaching the message from the queue is the part that
+ * needs the bucket, and turning it into lua values is the part that
+ * must not have it. Once detached the message is the caller's alone --
+ * no other cpu can reach it -- and the in-flight references it carries
+ * keep every port it names alive until msg_dispose.
+ */
+static struct kmsg *
+port_pop(struct kport *port)
+{
+	struct kmsg *m;
+
+	ipclock_enter_port(port);
+	m = port->head;
+	if (m) {
+		port->head = m->next;
+		if (!port->head)
+			port->tail = 0;
+		port->qbytes -= m->len;
+		/* room freed: this is the ordinary backpressure wakeup */
+		wake_senders(port);
+	}
+	ipclock_leave_port(port);
+	return m;
+}
+
+/* finish with a popped message. Wide only when it carries rights,
+ * which is what dropping their in-flight references demands.
+ */
+static void
+msg_dispose(struct kmsg *m)
+{
+	if (m->nrefs) {
+		ipclock_enter();
+		msg_free(m);
+		ipclock_leave();
+	} else {
+		msg_free(m);
+	}
+}
+
+/* push a popped message as ONE lua value, and dispose of it.
  *
  * returns nonzero having pushed nothing: -1 for a message this cannot
  * be, -2 for one it could not receive (a full rights table). A -2 loses
  * any rights the same message already installed.
  */
 static int
-port_pop_to_lua(lua_State *L, struct kproc *p, struct kport *port)
+msg_to_lua(lua_State *L, struct kproc *p, struct kmsg *m)
 {
-	struct kmsg *m = port->head;
-
-	port->head = m->next;
-	if (!port->head)
-		port->tail = 0;
-	port->qbytes -= m->len;
-	/* room freed: this is the ordinary backpressure wakeup */
-	wake_senders(port);
-
 	size_t off = 0;
+	/* the reason is kept as deserialize gave it, so popfail can tell a
+	 * proc that ran out of rights from a message that would not decode.
+	 */
 	int rc = deserialize(L, m->data, m->len, &off, p, 0);
 
-	if (rc) {
-		msg_free(m);
-		return rc;
-	}
 	/* receiver now holds its own refs (right_new); drop in-flight */
-	msg_free(m);
-	return 0;
+	msg_dispose(m);
+	return rc;
 }
 
 /* name a port_pop_to_lua failure: a local limit reached, or a message
@@ -2376,16 +2716,16 @@ api_tryrecv(lua_State *L)
 	struct right *r;
 	int empty = 0, rc = 0;
 
-	ipclock_enter();
 	r = right_get(p, h);
 	if (r && r->recv) {
-		empty = !r->port->head;
-		if (!empty) {
+		struct kmsg *m = port_pop(r->port);
+
+		empty = !m;
+		if (m) {
 			lua_pushboolean(L, 1);
-			rc = port_pop_to_lua(L, p, r->port);
+			rc = msg_to_lua(L, p, m);
 		}
 	}
-	ipclock_leave();
 
 	if (!r || !r->recv)
 		return luaL_error(L, "bad receive right");
@@ -2430,11 +2770,13 @@ api_block(lua_State *L)
 	 * there: luaL_error longjmps, and it must not do so while this is
 	 * held.
 	 */
-	ipclock_enter();
 	r = right_get(p, h);
-	if (!r || !r->recv)
+	if (!r || !r->recv) {
 		rc = BADRIGHT;
-	else if (r->port->head)
+		goto out;
+	}
+	ipclock_enter_port(r->port);
+	if (r->port->head)
 		rc = HAVEMSG;		/* already there, don't sleep */
 	else if (!SLIST_EMPTY(&p->waiters))
 		rc = TWICE;
@@ -2443,7 +2785,8 @@ api_block(lua_State *L)
 	else {
 		proc_block(p);
 	}
-	ipclock_leave();
+	ipclock_leave_port(r->port);
+out:
 
 	switch (rc) {
 	case BADRIGHT:
@@ -2554,9 +2897,16 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 		return lua_yieldk(L, 0, ctx, call_k);
 	}
 
-	int rc = port_pop_to_lua(L, p, rr->port);
+	/* detach inside the region that established the queue is not
+	 * empty, and deserialize outside it -- the message is ours alone
+	 * once it is off the queue.
+	 */
+	struct kmsg *m = port_pop(rr->port);
 
 	ipclock_leave();
+
+	int rc = msg_to_lua(L, p, m);
+
 	/* named out here, because popfail raises */
 	if (rc)
 		return popfail(L, p, rc);
@@ -2822,10 +3172,16 @@ altrecv_take(lua_State *L, struct kproc *p)
 		return 0;	/* cannot happen today; see the note above */
 	lua_pushinteger(L, i);
 
-	int rc = port_pop_to_lua(L, p, r->port);
+	struct kmsg *m = port_pop(r->port);
 
-	/* carried out rather than raised: this runs inside the region, and
-	 * popfail longjmps. The caller names it once outside.
+	if (!m)
+		return -1;
+
+	int rc = msg_to_lua(L, p, m);
+
+	/* carried out rather than raised: this runs inside the region and
+	 * popfail longjmps. The caller names it once outside, and the
+	 * value is popfail's own, so "out of rights" survives the trip.
 	 */
 	if (rc)
 		return rc < -1 ? -2 : -1;
@@ -2848,7 +3204,7 @@ api_altrecvnb(lua_State *L)
 	ipclock_leave();
 
 	if (got < 0)
-		return luaL_error(L, "corrupt message");
+		return popfail(L, self(L), got);
 	return got;
 }
 
@@ -2869,7 +3225,7 @@ altrecv_k(lua_State *L, int status, lua_KContext ctx)
 	ipclock_leave();
 
 	if (got < 0)
-		return luaL_error(L, "corrupt message");
+		return popfail(L, self(L), got);
 	return got;
 }
 
@@ -3010,7 +3366,7 @@ api_altrecv(lua_State *L)
 	if (got) {
 		ipclock_leave();
 		if (got < 0)
-			return luaL_error(L, "corrupt message");
+			return popfail(L, p, got);
 		return got;
 	}
 
@@ -3621,24 +3977,41 @@ api_stats(lua_State *L)
 	 */
 	lua_newtable(L);
 	{
-		static struct lock *const lkv[] = { &ipclock, &schedlock };
-		static const char *const lkn[] = { "ipc", "sched" };
+		/* ipc is the bucket array summed. A per-bucket breakdown
+		 * would say something else worth knowing -- whether the
+		 * hash spreads the ports evenly -- but the totals are
+		 * what compares against the single-lock measurement, and
+		 * that comparison is what this exists for.
+		 */
+		unsigned long long nlock = 0, ncontend = 0, spin = 0;
+		unsigned long long held = 0;
 
-		for (unsigned i = 0; i < sizeof lkv / sizeof lkv[0]; i++) {
-			lua_createtable(L, 0, 3);
-			lua_pushinteger(L, (lua_Integer)lkv[i]->nlock);
-			lua_setfield(L, -2, "locks");
-			lua_pushinteger(L, (lua_Integer)lkv[i]->ncontend);
-			lua_setfield(L, -2, "contended");
-			lua_pushinteger(L, (lua_Integer)lkv[i]->spin);
-			lua_setfield(L, -2, "spin");
-			if (lkv[i] == &ipclock) {
-				lua_pushinteger(L,
-				    (lua_Integer)ipcheld_cycles);
-				lua_setfield(L, -2, "held");
-			}
-			lua_setfield(L, -2, lkn[i]);
+		for (unsigned i = 0; i < NIPCLOCK; i++) {
+			nlock += ipcbuckets[i].lk.nlock;
+			ncontend += ipcbuckets[i].lk.ncontend;
+			spin += ipcbuckets[i].lk.spin;
+			held += ipcbuckets[i].held;
 		}
+
+		lua_createtable(L, 0, 4);
+		lua_pushinteger(L, (lua_Integer)nlock);
+		lua_setfield(L, -2, "locks");
+		lua_pushinteger(L, (lua_Integer)ncontend);
+		lua_setfield(L, -2, "contended");
+		lua_pushinteger(L, (lua_Integer)spin);
+		lua_setfield(L, -2, "spin");
+		lua_pushinteger(L, (lua_Integer)held);
+		lua_setfield(L, -2, "held");
+		lua_setfield(L, -2, "ipc");
+
+		lua_createtable(L, 0, 3);
+		lua_pushinteger(L, (lua_Integer)schedlock.nlock);
+		lua_setfield(L, -2, "locks");
+		lua_pushinteger(L, (lua_Integer)schedlock.ncontend);
+		lua_setfield(L, -2, "contended");
+		lua_pushinteger(L, (lua_Integer)schedlock.spin);
+		lua_setfield(L, -2, "spin");
+		lua_setfield(L, -2, "sched");
 	}
 	lua_setfield(L, -2, "lock");
 	return 1;
@@ -6077,7 +6450,11 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 		    wput(&w, "broke", 5) || wbyte(&w, 'T'))
 			goto fail;
 	}
-	port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0);
+	/* no rights in an exit notice, so a refusal means only that the
+	 * buffer comes back here to be freed.
+	 */
+	if (port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0))
+		free(w.p);
 	return;
 fail:
 	free(w.p);
@@ -7008,7 +7385,7 @@ rq_take_any(struct rqset *set)
 static void
 proc_block(struct kproc *p)
 {
-	IPC_ASSERT_LOCKED();
+	IPC_ASSERT_ANY();
 	lock(&schedlock);
 	p->status = BLOCKED;
 	rq_del(p);
@@ -7030,10 +7407,16 @@ proc_unqueue(struct kproc *p)
 static void
 make_ready(struct kproc *p)
 {
-	/* caller holds ipclock.
+	/* caller holds some ipc bucket.
 	 * CONTEXT: proc_new, wake_receivers, wake_senders.
+	 *
+	 * Some rather than all, because the two wakers hold only the
+	 * bucket covering the port they woke on. Everything below is
+	 * schedlock's business; what the ipc side has to guarantee is
+	 * that the decision to wake p was made inside a region that
+	 * still holds, and any bucket answers that.
 	 */
-	IPC_ASSERT_LOCKED();
+	IPC_ASSERT_ANY();
 
 	/* one lock, and no cpu to choose: whichever looks next takes
 	 * it. Nested inside the ipc lock, which is the one nesting
@@ -7183,6 +7566,19 @@ run_proc(struct kproc *p)
 	 * decision.
 	 */
 	for (int w = 0; w < p->weight; w++) {
+		/* collect the waits left behind by whoever woke this proc,
+		 * before any lua runs. The loop only comes round again
+		 * while p is READY, and a READY proc holding waits is
+		 * exactly the woken case, so this is the right place for
+		 * it on both the first pass and the rest.
+		 *
+		 * It has to be before the resume rather than after,
+		 * because the double-block test reads the same list: a
+		 * proc that called sys.block with stale entries still
+		 * attached would be told it was already blocked.
+		 */
+		wait_reap(p);
+
 		ran = 1;
 		cpu_self()->ndispatch++;
 		/* where it ran, recorded rather than decided -- nothing
