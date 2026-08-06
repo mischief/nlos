@@ -15,6 +15,20 @@ machine_relax(void)
 	__asm__ volatile ("pause" ::: "memory");
 }
 
+/* the cycle counter, for measuring something too short to reach a
+ * clock through a function call. rdtsc is not serialized, so one
+ * reading is worth a few tens of cycles either way; it is meant to be
+ * summed over many events rather than trusted for one.
+ */
+static inline unsigned long long
+machine_cycles(void)
+{
+	unsigned lo, hi;
+
+	__asm__ volatile ("rdtsc" : "=a" (lo), "=d" (hi));
+	return ((unsigned long long)hi << 32) | lo;
+}
+
 /* the per-cpu pointer, kept in the gs base and read back through a
  * gs-relative load of offset 0 -- struct cpu's first member is a
  * pointer to itself for exactly this.

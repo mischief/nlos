@@ -3568,6 +3568,28 @@ api_stats(lua_State *L)
 		lua_rawseti(L, -2, (lua_Integer)i + 1);
 	}
 	lua_setfield(L, -2, "cpu");
+	/* the two locks kernel.c owns, so contention is a number rather
+	 * than an argument. `spin` is cycles a cpu spent waiting, and it
+	 * is the figure that says whether splitting a lock would buy
+	 * anything: an uncontended lock has nothing to give back.
+	 */
+	lua_newtable(L);
+	{
+		static struct lock *const lkv[] = { &ipclock, &schedlock };
+		static const char *const lkn[] = { "ipc", "sched" };
+
+		for (unsigned i = 0; i < sizeof lkv / sizeof lkv[0]; i++) {
+			lua_createtable(L, 0, 3);
+			lua_pushinteger(L, (lua_Integer)lkv[i]->nlock);
+			lua_setfield(L, -2, "locks");
+			lua_pushinteger(L, (lua_Integer)lkv[i]->ncontend);
+			lua_setfield(L, -2, "contended");
+			lua_pushinteger(L, (lua_Integer)lkv[i]->spin);
+			lua_setfield(L, -2, "spin");
+			lua_setfield(L, -2, lkn[i]);
+		}
+	}
+	lua_setfield(L, -2, "lock");
 	return 1;
 }
 

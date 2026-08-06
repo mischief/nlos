@@ -142,4 +142,20 @@ end
 table.sort(parts)
 tap.diag("procs by home: " .. table.concat(parts, " "))
 
+-- where the cpus actually waited. A round trip takes both locks, so
+-- the two lines together say which one is the ceiling.
+local st = sys.stats()
+
+for _, name in ipairs({ "ipc", "sched" }) do
+	local l = (st.lock or {})[name]
+
+	if l then
+		tap.diag(string.format(
+		    "%s lock: %d taken, %d contended (%.1f%%), %d Mcycles spinning",
+		    name, l.locks, l.contended,
+		    l.locks > 0 and l.contended / l.locks * 100 or 0,
+		    l.spin // 1000000))
+	end
+end
+
 tap.done()

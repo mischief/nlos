@@ -65,13 +65,24 @@
 
 #include <stdatomic.h>
 
+/* the counters are plain, not atomic, and they are written after the
+ * lock is held. That is what makes them safe: the holder is alone, so
+ * these are as protected as anything else the lock guards.
+ *
+ * Only the waiting is timed, never the acquiring. Reading the cycle
+ * counter on every take would make the fast path several times its own
+ * length and measure the measurement instead.
+ */
 struct lock {
 	atomic_uint next;	/* the ticket the next arrival takes */
 	atomic_uint owner;	/* the ticket being served */
 	int held;		/* for holding(); see the uniprocessor half */
+	unsigned long long nlock;	/* acquisitions */
+	unsigned long long ncontend;	/* of those, ones that had to wait */
+	unsigned long long spin;	/* cycles spent waiting */
 };
 
-#define LOCK_INIT { 0, 0, 0 }
+#define LOCK_INIT { 0, 0, 0, 0, 0, 0 }
 
 static inline void
 lock(struct lock *l)
@@ -79,9 +90,21 @@ lock(struct lock *l)
 	unsigned t = atomic_fetch_add_explicit(&l->next, 1,
 	    memory_order_relaxed);
 
-	while (atomic_load_explicit(&l->owner, memory_order_acquire) != t)
-		machine_relax();
+	unsigned long long t0 = 0;
+
+	if (atomic_load_explicit(&l->owner, memory_order_acquire) != t) {
+		t0 = machine_cycles();
+		do
+			machine_relax();
+		while (atomic_load_explicit(&l->owner,
+		    memory_order_acquire) != t);
+	}
 	l->held = 1;
+	l->nlock++;
+	if (t0) {
+		l->ncontend++;
+		l->spin += machine_cycles() - t0;
+	}
 }
 
 static inline void
@@ -108,6 +131,7 @@ canlock(struct lock *l)
 	    memory_order_acquire, memory_order_relaxed))
 		return 0;
 	l->held = 1;
+	l->nlock++;
 	return 1;
 }
 
@@ -137,15 +161,19 @@ holding(const struct lock *l)
  */
 struct lock {
 	int held;
+	unsigned long long nlock;	/* acquisitions */
+	unsigned long long ncontend;	/* always zero: one cpu cannot wait */
+	unsigned long long spin;	/* always zero, for the same reason */
 };
 
-#define LOCK_INIT { 0 }
+#define LOCK_INIT { 0, 0, 0, 0 }
 
 #define barrier() __asm__ volatile ("" ::: "memory")
 
-static inline void lock(struct lock *l) { barrier(); l->held = 1; }
+static inline void lock(struct lock *l) { barrier(); l->held = 1; l->nlock++; }
 static inline void unlock(struct lock *l) { l->held = 0; barrier(); }
-static inline int canlock(struct lock *l) { barrier(); l->held = 1; return 1; }
+static inline int canlock(struct lock *l)
+{ barrier(); l->held = 1; l->nlock++; return 1; }
 static inline int holding(const struct lock *l) { return l->held; }
 
 #endif
