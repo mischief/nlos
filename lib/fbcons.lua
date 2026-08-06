@@ -22,8 +22,8 @@
 -- It is the terminal emulator, not a pass-through: a serial backend
 -- hands bytes to a host xterm that interprets them, but nothing sits
 -- below this, so this file parses the escape sequences itself. A small
--- ANSI subset -- cursor motion, erase, and SGR colour -- so a program
--- that colours its output over the tty reaches the glass, since a proc
+-- ANSI subset -- cursor motion, erase, and SGR color -- so a program
+-- that colors its output over the tty reaches the glass, since a proc
 -- has no other path to the console than the byte stream.
 
 local sys = require("los.sys")
@@ -32,7 +32,7 @@ local thread = require("los.thread")
 -- how far a tab advances. Eight, like every other terminal.
 local TABSTOP = 8
 
--- the 16 ANSI colours as 0xRRGGBB. 0-7 are normal, 8-15 the bright half
+-- the 16 ANSI colors as 0xRRGGBB. 0-7 are normal, 8-15 the bright half
 -- a bold attribute selects for the foreground.
 local PALETTE = {
 	[0] = 0x000000, [1] = 0xcc0000, [2] = 0x00cc00, [3] = 0xcccc00,
@@ -107,11 +107,11 @@ end
 -- A caller (a full-screen program like vi) redraws everything on every
 -- keystroke; the panel is slow, and blitting a cell that is already
 -- right is the cost that made that painful. So this keeps a shown grid
--- -- the character and colour last drawn into each cell -- and skips a
+-- -- the character and color last drawn into each cell -- and skips a
 -- cell whose new value matches it. A keystroke that changes one glyph
 -- draws one cell, not the row.
 --
--- What does draw is split into runs of one colour, because los.font
+-- What does draw is split into runs of one color, because los.font
 -- renders a string with a single foreground and background; a whole row
 -- is 53 cells at 6x12, or 15264 bytes of BGRx, and one blit carries
 -- several copies of what it holds. An unchanged cell ends a run: drawing
@@ -224,6 +224,28 @@ function Cons:cursor(on)
 	end
 end
 
+-- move the glass up one cell row with the framebuffer's own scroll, if
+-- it has one: gop copies video to video, and the esp32 panel moves its
+-- color shadow. Returns true if it happened, false if the fb declined
+-- (no such move, no readback and no shadow -- then the caller redraws).
+-- move the glass up k cell rows with the framebuffer's own scroll, if it
+-- has one: gop copies video to video, the esp32 panel moves its color
+-- shadow. One move of k rows, not k moves of one, because a full-frame
+-- transfer is the cost and a burst should pay it once. Returns true if it
+-- happened.
+function Cons:doscroll(k)
+	local ok, r = pcall(thread.rpc, self.fb, { op = "scroll",
+	    r = { x = 0, y = k * self.ch, w = self.cols * self.cw,
+	    h = (self.rows - k) * self.ch }, to = { x = 0, y = 0 } })
+
+	return ok and type(r) == "table" and r.err == nil
+end
+
+-- one line off the top: shift the grid up and count it. The glass is not
+-- touched here. A write that scrolls many lines -- a screen of ps output
+-- landing on a full screen -- would otherwise move the whole frame once
+-- per line; the count is spent once, at the end of the write, as a
+-- single move of k rows.
 function Cons:scroll()
 	table.remove(self.grid, 1)
 	table.remove(self.fgc, 1)
@@ -232,27 +254,11 @@ function Cons:scroll()
 	self.fgc[self.rows] = {}
 	self.bgc[self.rows] = {}
 	self.row = self.rows - 1
-
-	-- the grid moved up but the glass did not: fb.scroll cannot help,
-	-- it needs to read the screen back and this panel's SDO is routed
-	-- nowhere (see src/platform/esp32/lcd.c). So every cell on the
-	-- glass is now wrong. Forget what it showed, then repaint puts it
-	-- all back -- the one case the diff cannot spare, and why scrolling
-	-- output stays the slow path until the panel scrolls in hardware.
-	for i = 1, self.rows do
-		self.shownch[i] = {}
-		self.shownfg[i] = {}
-		self.shownbg[i] = {}
-	end
-	self:repaint()
-
-	-- the screen is current after the repaint; drop what was pending
-	-- for the rows that just moved. Anything written next re-marks.
-	self.dirty = {}
+	self.scrolled = self.scrolled + 1
 end
 
--- place one character at the cursor with the active colours, padding a
--- short row with default-coloured spaces so a write after a \r or a
+-- place one character at the cursor with the active colors, padding a
+-- short row with default-colored spaces so a write after a \r or a
 -- cursor jump lands mid-line.
 function Cons:setcell(y, col, c)
 	local i = y + 1
@@ -371,8 +377,8 @@ function Cons:sgr(p)
 		elseif n >= 100 and n <= 107 then
 			self.lbg = PALETTE[n - 100 + 8]
 		end
-		-- an unknown code (256-colour 38;5, truecolour 38;2) is
-		-- skipped, leaving the colour as it was rather than wrong.
+		-- an unknown code (256-color 38;5, truecolor 38;2) is
+		-- skipped, leaving the color as it was rather than wrong.
 	end
 end
 
@@ -482,14 +488,11 @@ end
 -- Bytes in, glyphs on the glass. The cursor is lifted for the whole
 -- write and set down once at the end, and only the rows a write touched
 -- are painted -- one message per changed span, in column order.
-function Cons:write(s)
-	self:cursor(false)
-	self.dirty = {}
-
-	for i = 1, #s do
-		self:feed(s:sub(i, i))
-	end
-
+-- paint the spans marked dirty since the last flush, in row order, and
+-- clear the marks. Called at the end of a write and again before a
+-- scroll, so what a line put on the grid reaches the glass before the
+-- glass moves under it.
+function Cons:paintdirty()
 	local ys = {}
 
 	for y in pairs(self.dirty) do
@@ -500,6 +503,54 @@ function Cons:write(s)
 		local d = self.dirty[y]
 
 		self:paintspan(y, d[1], d[2])
+	end
+	self.dirty = {}
+end
+
+function Cons:write(s)
+	self:cursor(false)
+	self.dirty = {}
+	self.scrolled = 0
+
+	for i = 1, #s do
+		self:feed(s:sub(i, i))
+	end
+
+	local k = self.scrolled
+
+	if k == 0 then
+		-- nothing scrolled: paint just the spans that changed, which
+		-- is one cell for a keystroke.
+		self:paintdirty()
+	else
+		-- the grid scrolled k rows this write. Move the glass up k rows
+		-- in one step and shift the shown copy to match, so the rows
+		-- that survived stay marked present and the repaint below draws
+		-- only the new ones. More than a screenful, or no framebuffer
+		-- scroll: nothing survives, so forget the glass and draw it all.
+		local moved = false
+
+		if k < self.rows and self.canscroll ~= false then
+			moved = self:doscroll(k)
+			self.canscroll = moved
+		end
+		if moved then
+			for _ = 1, k do
+				table.remove(self.shownch, 1)
+				table.remove(self.shownfg, 1)
+				table.remove(self.shownbg, 1)
+				self.shownch[self.rows] = {}
+				self.shownfg[self.rows] = {}
+				self.shownbg[self.rows] = {}
+			end
+		else
+			for i = 1, self.rows do
+				self.shownch[i] = {}
+				self.shownfg[i] = {}
+				self.shownbg[i] = {}
+			end
+		end
+		self:repaint()
 	end
 	self:cursor(true)
 end

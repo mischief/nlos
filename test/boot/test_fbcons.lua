@@ -3,7 +3,7 @@
 -- lib/fbcons.lua is the terminal emulator, so what it emulates is a
 -- claim about pixels, not about a return value. This drives it against
 -- the real fb task and reads the cells back, the way test/boot/test_fb.lua
--- proves a fill really filled. A colour that was parsed but never drawn,
+-- proves a fill really filled. A color that was parsed but never drawn,
 -- or drawn in the wrong cell, fails here and nowhere else.
 --
 -- the pen is persistent, as on any terminal, so each case starts with
@@ -17,7 +17,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(13)
+tap.plan(14)
 
 tap.ok(caps_of.fb ~= nil, "boot payload holds the screen")
 if not caps_of.fb then
@@ -38,7 +38,7 @@ tap.ok(con.cols > 0 and con.rows > 0,
 
 local HOME = "\27[0m\27[2J\27[H"
 
--- the set of distinct colours in one character cell, read from the panel.
+-- the set of distinct colors in one character cell, read from the panel.
 local function cell(cx, cy)
 	local pix = fb.unload(draw.rect(cx * cw, cy * ch, cw, ch))
 	local img = draw.fromBytes(cw, ch, pix)
@@ -56,7 +56,7 @@ local function has(cx, cy, color)
 	return cell(cx, cy)[color] == true
 end
 
--- every pixel of a cell is one colour (a space glyph: all paper).
+-- every pixel of a cell is one color (a space glyph: all paper).
 local function solid(cx, cy, color)
 	local seen = cell(cx, cy)
 
@@ -76,9 +76,9 @@ tap.ok(has(0, 0, 0x000000), "default paper is black")
 -- ---- SGR foreground ----
 con.write(HOME .. "\27[31mB")
 tap.ok(has(0, 0, 0xcc0000), "SGR 31 draws red ink")
-tap.ok(has(0, 0, 0x000000), "paper stays black under coloured ink")
+tap.ok(has(0, 0, 0x000000), "paper stays black under colored ink")
 
--- ---- SGR background: a space fills the cell with the paper colour ----
+-- ---- SGR background: a space fills the cell with the paper color ----
 con.write(HOME .. "\27[44m ")
 tap.ok(solid(0, 0, 0x0000cc), "SGR 44 fills the cell blue")
 
@@ -86,7 +86,7 @@ tap.ok(solid(0, 0, 0x0000cc), "SGR 44 fills the cell blue")
 con.write(HOME .. "\27[7m ")
 tap.ok(solid(0, 0, 0xc0c0c0), "SGR 7 paints the space in the foreground")
 
--- ---- SGR 0 puts the pen back after a colour was set ----
+-- ---- SGR 0 puts the pen back after a color was set ----
 con.write(HOME .. "\27[44m\27[0m ")
 tap.ok(solid(0, 0, 0x000000), "SGR 0 restores the default paper")
 
@@ -103,3 +103,12 @@ tap.ok(has(4, 2, 0xc0c0c0), "CSI H places the glyph at row 3 col 5")
 con.write("\27[2;1H\27[0J")
 tap.ok(has(0, 0, 0xc0c0c0), "CSI 0J leaves the rows above the cursor")
 tap.ok(solid(4, 2, 0x000000), "CSI 0J clears from the cursor down")
+
+-- ---- a scroll carries the line that triggered it ----
+-- park the cursor on the last row, put a red marker there and a newline,
+-- which scrolls. The marker must land one row up, not vanish -- a fast
+-- scroll that moves the glass but forgets the line still being written.
+con.write("\27[0m\27[2J\27[H" .. string.rep("\n", con.rows - 1))
+con.write("\27[31mX\27[0m\n")
+tap.ok(has(0, con.rows - 2, 0xcc0000),
+    "the line that triggered the scroll is carried up, not lost")
