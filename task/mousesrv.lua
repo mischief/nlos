@@ -76,10 +76,15 @@ thread.spawn(function()
 				local x, y = rec:match(
 				    "^m%s*(%-?%d+)%s+(%-?%d+)")
 
+				-- on every move, not once at the start: the
+				-- cursor is hidden until something says to
+				-- show it, and a move alone deliberately
+				-- leaves the visibility as it found it. A
+				-- machine with a pointer shows where it is.
 				if x then
 					sys.send(fb, { op = "cursor",
 					    x = tonumber(x),
-					    y = tonumber(y) })
+					    y = tonumber(y), on = true })
 				end
 			end
 
