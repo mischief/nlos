@@ -462,6 +462,7 @@ lua_payload = files(
   'lib/ed/terminfo.lua',
   'lib/caps.lua',
   'task/cons.lua',
+  'lib/console.lua',
   'lib/chan.lua',
   'lib/dev.lua',
   # the block device and the gefs filesystem over it. blksrv is spawned
