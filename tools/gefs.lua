@@ -22,6 +22,17 @@
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 package.path = scriptdir .. "/../lib/?.lua;" .. package.path
 
+-- lib/gefs hashes blocks with the C metrohash64 and keeps no lua
+-- fallback, so gefs.so has to be findable from wherever this is run.
+-- LUAOS_BUILD says where; without it the default "./?.so" still answers
+-- when the caller's directory IS a build directory, which is what meson
+-- does and why the suite did not notice this was needed.
+local build = os.getenv("LUAOS_BUILD")
+
+if build then
+	package.cpath = build .. "/?.so;" .. package.cpath
+end
+
 local gefs = require("gefs")
 local sys_stat = (select(2, pcall(require, "posix.sys.stat")))
 local dat = gefs.dat

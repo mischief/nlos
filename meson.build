@@ -596,7 +596,12 @@ luaos_img = custom_target('luaos.img',
 # booting, and must not guess: with a cross build the host arch is the
 # wrong answer. tools/arch.lua and test/qemuarch.lua both fall back
 # to uname when this is unset, which is what a bare `qemu.lua img` gets.
-archenv = {'LUAOS_ARCH': arch}
+archenv = {
+  'LUAOS_ARCH': arch,
+  # where tools/gefs.lua finds gefs.so; see its note. Without it the
+  # tools only work from inside a build directory.
+  'LUAOS_BUILD': meson.current_build_dir(),
+}
 
 # console on stdio, 9p wire on <builddir>/9p.sock
 # mount from host: 9p -a 'unix!<builddir>/9p.sock' ls /
