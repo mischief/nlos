@@ -19,6 +19,8 @@
 local unistd = require("posix.unistd")
 local prog = require("prog")
 
+-- Rooted where the shell is, so a relative name works: prog.ns()
+-- resolves against the program's cwd (see lib/prog.lua).
 local N = assert(prog.ns(), "rm: no namespace")
 
 local force = false

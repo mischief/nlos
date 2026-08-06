@@ -60,23 +60,24 @@ local function saved()
 	return (ok and type(conf) == "table") and conf or {}
 end
 
--- one line from the terminal, a byte at a time: the console hands over
--- what has been typed, and a read of 256 would wait for 256 bytes or a
--- close, neither of which anyone types.
+-- One read is one line.
+--
+-- A console stream ignores the byte count and replies with the line its
+-- own editor has just finished, newline already stripped -- see
+-- lib/prog.lua's PortStream. So asking for a byte at a time does not
+-- get a byte: it gets the whole line, which is then not a newline, and
+-- the reader waits for a second line to end the first. Every prompt
+-- needed Enter twice.
+--
+-- An empty answer and end of input are both "", and both mean "keep
+-- what is there", which is what pressing Enter at a prompt should do.
 local function readline()
-	local acc = {}
+	local l = unistd.read(0, 512)
 
-	while true do
-		local c = unistd.read(0, 1)
-
-		if c == nil or c == "" then
-			return #acc > 0 and table.concat(acc) or nil
-		end
-		if c == "\n" or c == "\r" then
-			return table.concat(acc)
-		end
-		acc[#acc + 1] = c
+	if l == nil or l == "" then
+		return nil
 	end
+	return (l:gsub("[\r\n]+$", ""))
 end
 
 local function ask(prompt, default)

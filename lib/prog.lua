@@ -234,6 +234,62 @@ end
 
 -- ---- the fd table ----
 
+-- ---- the namespace, rooted where the program is ----
+--
+-- A namespace resolves absolute paths and nothing else, so a relative
+-- argument has to be joined to the program's cwd before it goes in.
+-- Leaving that to every caller is a rule that gets forgotten: `rm
+-- wifi.lua` from /etc looked for /wifi.lua and reported that a file
+-- plainly there did not exist. So the joining happens once, on the
+-- handle prog.ns() hands over, and a program cannot skip it.
+--
+-- Idempotent, so a caller that already resolved is unaffected: abspath
+-- of an absolute path is that path cleaned.
+--
+-- Every other method is forwarded with the real namespace as self,
+-- cached on first use so a call costs a table lookup rather than a
+-- closure.
+-- Built on demand and one method at a time: a program that only calls
+-- remove pays for one closure, not for the whole interface. The set is
+-- one table for the proc however many programs run in it.
+local PATHOP = {
+	walk = true, open = true, create = true, stat = true,
+	readdir = true, readfile = true, writefile = true, remove = true,
+	lookup = true, mountpoints = true, mount = true, unmount = true,
+}
+
+local function rootedns(ctx)
+	local N = ctx.ns
+
+	if N == nil or ctx.rootedns then
+		return N and ctx.rootedns
+	end
+	ctx.rootedns = setmetatable({}, {
+		__index = function(t, k)
+			local v = N[k]
+
+			if type(v) ~= "function" then
+				return v
+			end
+
+			local f
+
+			if PATHOP[k] then
+				f = function(_, p, ...)
+					return v(N, M.abspath(ctx, p), ...)
+				end
+			else
+				f = function(_, ...)
+					return v(N, ...)
+				end
+			end
+			rawset(t, k, f)
+			return f
+		end,
+	})
+	return ctx.rootedns
+end
+
 local function newfds(ctx)
 	local fds = {}
 
@@ -453,7 +509,7 @@ local function install(ctx)
 	-- EXIT are all still there.
 	mods["prog"] = function()
 		return setmetatable({
-			ns = function() return ctx.ns end,
+			ns = function() return rootedns(ctx) end,
 			cwd = function() return ctx.cwd or "/" end,
 			ctx = ctx,
 		}, { __index = M })
