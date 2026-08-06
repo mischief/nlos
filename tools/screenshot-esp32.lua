@@ -160,10 +160,12 @@ local data = fh:read("a")
 fh:close()
 os.remove(tmp)
 
-local w, h = data:match("^P4\n(%d+) (%d+)\n")
+-- P6 (color) where the driver keeps a color copy of the panel, P4 (one
+-- bit) where it keeps only a shape.
+local kind, w, h = data:match("^(P[46])\n(%d+) (%d+)\n")
 
-if not w then
-	io.stderr:write("not a PBM: " ..
+if not kind then
+	io.stderr:write("not a netpbm: " ..
 	    string.format("%q", data:sub(1, 16)) .. "\n")
 	os.exit(1)
 end

@@ -57,35 +57,42 @@ end
 local mode = rpc(fb, fbport, { op = "mode" }).ok
 local W = mode.w
 local H = math.min(job.rows or mode.h, mode.h)
-local stride = (W + 7) // 8
-local header = ("P4\n%d %d\n"):format(W, H)
+local stride = W * 3
+local header = ("P6\n%d %d\n255\n"):format(W, H)
 local size = #header + H * stride
-
--- PBM says 1 is BLACK, the shadow says 1 is lit. Inverted here rather
--- than in unload1, which hands back the plane as the device holds it.
-local inv = {}
-
-for i = 0, 255 do
-	inv[string.char(i)] = string.char(~i & 0xff)
-end
 
 -- the image is never built. read() takes an offset so that a body can
 -- be larger than memory: a row is fetched when the bytes about to go on
 -- the wire fall in it, and only the current one is kept. ZRPOS can
 -- rewind, which a plain generator could not serve -- but a row is
 -- always recomputable from the panel.
+--
+-- unload hands back BGRx, the shared framebuffer layout: real colors
+-- where the driver keeps a color copy (the T-Deck), or black and white
+-- where it keeps only a one-bit shape (the Cardputer). PPM wants RGB, so
+-- each pixel is reordered as it is read.
 local cached, cachedy = nil, -1
 
 local function row(y)
 	if y ~= cachedy then
 		local r = rpc(fb, fbport,
-		    { op = "unload1", r = { x = 0, y = y, w = W, h = 1 } })
+		    { op = "unload", r = { x = 0, y = y, w = W, h = 1 } })
 
 		if not (r and r.ok) then
-			error("unload1 row " .. y .. ": " ..
+			error("unload row " .. y .. ": " ..
 			    tostring(r and r.err), 0)
 		end
-		cached = (r.ok:gsub(".", inv))
+
+		local bgrx = r.ok
+		local rgb = {}
+
+		for i = 1, W do
+			local o = (i - 1) * 4
+
+			rgb[i] = string.char(bgrx:byte(o + 3),
+			    bgrx:byte(o + 2), bgrx:byte(o + 1))
+		end
+		cached = table.concat(rgb)
 		cachedy = y
 	end
 	return cached
