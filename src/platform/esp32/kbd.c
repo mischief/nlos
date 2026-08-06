@@ -328,13 +328,20 @@ esp_kbd_poll(void)
 	if (i2c_master_receive(kb, &v, 1, 20) != ESP_OK || v == 0)
 		return 0;
 
-	/* the keyboard has no Escape key, and a full-screen program needs
-	 * one to leave insert mode. Alt+C is a spare combo the keyboard
-	 * firmware sends as 0x0C (form feed); nothing here reads form feed,
-	 * so it stands in as Escape.
+	/* the keyboard has no control key, so Alt+C stands in for one.
+	 * The firmware sends it as 0x0C (form feed), which nothing here
+	 * reads, and it becomes 0x03 -- the interrupt character every
+	 * other terminal already sends.
+	 *
+	 * One byte, and the mode decides what it means: a cooked console
+	 * interrupts on it, and a raw one hands it to the program, where
+	 * bin/vi.lua takes it as Escape. That is vim's own behaviour --
+	 * ^C leaves insert mode and :q is still the way out -- and it
+	 * saves the keyboard a second convention for the layers above to
+	 * know about.
 	 */
 	if (v == 0x0c)
-		v = 0x1b;
+		v = 0x03;
 
 	next = (rhead + 1) % sizeof ring;
 	if (next == rtail)

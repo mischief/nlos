@@ -2,7 +2,7 @@
 --
 -- the line editor, getch, and the tty protocol a program consumes --
 -- {op="write"}, {op="log"}, {op="readline"}, {op="read"}, {op="getch"},
--- {op="readraw"},
+-- {op="readraw"}, {op="intr"},
 -- {op="rawon"}/{op="rawoff"} -- are all bytes-in, bytes-out and care
 -- nothing for the wire underneath. so they live here, and the device is
 -- injected:
@@ -36,6 +36,13 @@ local thread = require("los.thread")
 -- rather than a throughput knob.
 local MAXRAW = 512
 
+-- the interrupt character, uniformly, whatever the terminal is: a
+-- serial line and an ssh client both send 0x03 for it, and a keyboard
+-- without a control key maps some combination to the same byte rather
+-- than inventing a second convention for the layers above to know
+-- about.
+local INTR = "\3"
+
 local M = {}
 local Console = {}
 
@@ -45,6 +52,11 @@ function M.new(backend)
 	return setmetatable({
 		io = backend,
 		kbd = backend.keyport,
+		-- keystrokes that are not the interrupt character, put
+		-- here by the pump. readline and getch take from this
+		-- rather than from the keyboard, so every byte has been
+		-- looked at by the time either sees one.
+		inq = sys.newport(),
 		-- messages that landed on sys.SELF while readline was mid-line
 		-- and are not its business: serve drains them once the line is
 		-- done, so a getch or a second reader that arrived during editing
@@ -59,9 +71,9 @@ end
 -- for a key.
 function Console:getch(ms)
 	if ms then
-		return thread.recvtimeout(self.kbd, ms)	-- nil on timeout
+		return thread.recvtimeout(self.inq, ms)	-- nil on timeout
 	end
-	return thread.recv(self.kbd)
+	return thread.recv(self.inq)
 end
 
 -- read one edited line, prompt included. Waits on the keyboard AND the
@@ -93,7 +105,7 @@ function Console:readline(prompt)
 	end
 
 	while true do
-		local which, m = thread.alt({ { port = self.kbd },
+		local which, m = thread.alt({ { port = self.inq },
 		    { port = sys.SELF } })
 
 		if which ~= 1 then
@@ -132,8 +144,38 @@ function Console:readline(prompt)
 	end
 end
 
+-- the input pump: everything typed passes through here.
+--
+-- It exists because nothing else looks at the keyboard while a program
+-- is running. readline and getch read when a reader asks, so a proc
+-- that has stopped asking -- looping, or blocked on something that will
+-- not answer -- leaves its keystrokes sitting in the port with no one
+-- to notice what they are. The interrupt character has to be seen when
+-- nobody is listening, which is exactly when it is typed.
+--
+-- Everything else is forwarded unchanged, so a reader cannot tell the
+-- pump is there.
+function Console:pump()
+	while true do
+		local c = thread.recv(self.kbd)
+
+		if c == INTR and self.intr and not self.raw then
+			-- to whoever asked to hear it, and not into the
+			-- input: a program being interrupted should not
+			-- also read the character that interrupted it.
+			sys.send(self.intr, { op = "interrupt" })
+		elseif c ~= nil then
+			sys.send(self.inq, c)
+		end
+	end
+end
+
 function Console:serve()
 	local io = self.io
+
+	thread.spawn(function()
+		self:pump()
+	end)
 
 	while true do
 		-- messages readline set aside mid-line come first, so their order
@@ -177,6 +219,21 @@ function Console:serve()
 				end
 			end
 			io.write(table.concat(parts))
+		elseif m.op == "intr" then
+			-- who to tell when the interrupt character is
+			-- typed, or nobody when the reply is absent. A
+			-- shell claims this while a program it started is
+			-- running and drops it afterwards, so the character
+			-- means "stop that" exactly while there is a that.
+			--
+			-- One listener, not a list: two claimants would each
+			-- get half the interrupts, and which half would
+			-- depend on the order they registered.
+			if self.intr then
+				sys.close(self.intr)
+			end
+			self.intr = reply
+			reply = nil		-- kept, so not closed below
 		elseif m.op == "size" then
 			-- how wide the far end is, for a program that lays
 			-- out columns. A backend that knows says so
@@ -203,6 +260,15 @@ function Console:serve()
 			-- that rewrites them, and esp32's turns \n into \r\n,
 			-- which corrupts any binary stream carrying 0x0a. So a
 			-- device that has something to switch gets told.
+			--
+			-- and it turns the interrupt character off, which
+			-- is a tty's ISIG: raw means every byte reaches the
+			-- program unexamined. A binary stream carries 0x03
+			-- like any other value -- a zmodem receiver's
+			-- headers and acks do -- so a console still watching
+			-- for it would kill the transfer with the transfer's
+			-- own traffic.
+			self.raw = m.op == "rawon"
 			if io.raw then
 				io.raw(m.op == "rawon")
 			end

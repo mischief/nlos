@@ -768,8 +768,34 @@ function Sh:run(line)
 
 	local left, status, exitmsg = #pids, 0, nil
 
+	-- what we killed deliberately, so its corpse can be dropped. A
+	-- proc that dies badly is held for inspection, which is right for
+	-- a crash and wrong for an interrupt: the person who typed it
+	-- knows why it stopped, and a corpse holds the program's whole
+	-- working set until something reaps it.
+	local interrupted = {}
+
+	-- claim the interrupt character while these run. The console
+	-- watches the keyboard even when nothing is reading it, which is
+	-- the only way a program that has stopped reading can still be
+	-- stopped -- and that is the program you want to interrupt.
+	if self.cons then
+		sys.send(self.cons, { op = "intr",
+		    reply = { __right = sys.SELF } })
+	end
+
 	while left > 0 do
 		local m = thread.recv(sys.SELF)
+
+		-- kill every stage, not the last: a pipeline is one thing
+		-- to the person who typed it, and leaving the writers alive
+		-- to fill a pipe nobody drains is not stopping anything.
+		if type(m) == "table" and m.op == "interrupt" then
+			for pid in pairs(mine) do
+				pcall(sys.kill, pid)
+				interrupted[pid] = true
+			end
+		end
 
 		-- only OUR stages count. sys.SELF is a general mailbox and may
 		-- hold an unrelated monitor notification; counting one of those
@@ -779,6 +805,9 @@ function Sh:run(line)
 		if m and m.exit and mine[m.exit] then
 			left = left - 1
 			mine[m.exit] = nil
+			if interrupted[m.exit] then
+				pcall(sys.reap, m.exit)
+			end
 			if m.exit == last then
 				if m.normal then
 					status = m.status or 0
@@ -789,6 +818,13 @@ function Sh:run(line)
 				end
 			end
 		end
+	end
+
+	-- given back: with nothing running, the interrupt character has
+	-- nothing to mean, and a console still holding this would send
+	-- the shell a message it no longer expects.
+	if self.cons then
+		sys.send(self.cons, { op = "intr" })
 	end
 
 	-- file servers are still coroutines and still need stopping; pipes
