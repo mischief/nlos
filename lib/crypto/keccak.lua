@@ -18,8 +18,6 @@
 -- it is. spec/hash_spec.lua then checks the whole thing against
 -- openssl.
 
-local M = {}
-
 local spack, sunpack, schar = string.pack, string.unpack, string.char
 local concat = table.concat
 
@@ -140,6 +138,11 @@ end
 --------------------------------------------------------------------------
 -- the sponge
 
+-- The sponge is written against three operations -- absorb, squeeze and
+-- permute -- so that the C module can supply the same three over a
+-- 200-byte state string, and the four hashes and the reader below are
+-- written once for both.
+
 local function newstate()
   local s = {}
   for i = 1, 25 do s[i] = 0 end
@@ -177,6 +180,9 @@ local function absorb(rate, pad, msg)
   return s
 end
 
+-- Squeeze `outlen` bytes, permuting between blocks and not after the
+-- last one. Reading on past a block boundary is a squeeze of a whole
+-- block followed by a permute, which is what the reader below does.
 local function squeeze(s, rate, outlen)
   local lanes = rate // 8
   local out, n = {}, 0
@@ -191,41 +197,92 @@ local function squeeze(s, rate, outlen)
     if got < outlen then keccakf(s) end
   end
 
-  return concat(out):sub(1, outlen)
+  return concat(out):sub(1, outlen), s
 end
+
+local pure = {
+  absorb = absorb,
+  squeeze = squeeze,
+  permute = function(s) keccakf(s) return s end,
+}
 
 --------------------------------------------------------------------------
 -- what callers use
 
-function M.sha3_256(msg) return squeeze(absorb(136, 0x06, msg), 136, 32) end
-function M.sha3_512(msg) return squeeze(absorb(72, 0x06, msg), 72, 64) end
-function M.shake128(msg, outlen) return squeeze(absorb(168, 0x1f, msg), 168, outlen) end
-function M.shake256(msg, outlen) return squeeze(absorb(136, 0x1f, msg), 136, outlen) end
+-- The four sponges of FIPS 202 that ML-KEM needs, over one of the
+-- backends: they differ only in the rate and the domain separator.
+local function sponges(be)
+  local absorb, squeeze, permute = be.absorb, be.squeeze, be.permute
+  local S = {}
 
--- An incremental SHAKE reader.
---
--- ML-KEM's SampleNTT rejects candidate coefficients, so it cannot know
--- in advance how much output it needs -- it asks for more until it has
--- 256 accepted values. Squeezing a guessed amount and hoping is how that
--- goes subtly wrong.
-function M.shake128_reader(seed)
-  local s = absorb(168, 0x1f, seed)
-  local buf, pos = "", 1
-
-  return function(n)
-    while #buf - pos + 1 < n do
-      buf = buf:sub(pos) .. squeeze(s, 168, 168)
-      pos = 1
-      keccakf(s)
-    end
-    local out = buf:sub(pos, pos + n - 1)
-
-    pos = pos + n
-    return out
+  function S.sha3_256(msg) return (squeeze(absorb(136, 0x06, msg), 136, 32)) end
+  function S.sha3_512(msg) return (squeeze(absorb(72, 0x06, msg), 72, 64)) end
+  function S.shake128(msg, outlen)
+    return (squeeze(absorb(168, 0x1f, msg), 168, outlen))
   end
+  function S.shake256(msg, outlen)
+    return (squeeze(absorb(136, 0x1f, msg), 136, outlen))
+  end
+
+  -- An incremental SHAKE reader.
+  --
+  -- ML-KEM's SampleNTT rejects candidate coefficients, so it cannot know
+  -- in advance how much output it needs -- it asks for more until it has
+  -- 256 accepted values. Squeezing a guessed amount and hoping is how
+  -- that goes subtly wrong.
+  function S.shake128_reader(seed)
+    local s = absorb(168, 0x1f, seed)
+    local buf, pos = "", 1
+
+    return function(n)
+      while #buf - pos + 1 < n do
+        local block
+        block, s = squeeze(s, 168, 168)
+        buf = buf:sub(pos) .. block
+        pos = 1
+        s = permute(s)
+      end
+      local out = buf:sub(pos, pos + n - 1)
+
+      pos = pos + n
+      return out
+    end
+  end
+
+  return S
+end
+
+--------------------------------------------------------------------------
+
+-- The C sponge, when it is there. The state crosses as its 200-byte
+-- little-endian lane encoding, and a whole absorb or squeeze goes over
+-- in one call, so nothing per block or per lane is left up here.
+local M = sponges(pure)
+
+M.pure = M
+
+local ok, native = pcall(require, "crypto.native")
+if ok and type(native) == "table" and native.keccak_absorb then
+  local fast = sponges({
+    absorb = function(rate, pad, msg)
+      return native.keccak_absorb(msg, rate, pad)
+    end,
+    squeeze = native.keccak_squeeze,
+    permute = native.keccak_permute,
+  })
+
+  fast.pure = M
+  fast.native = fast
+  M = fast
 end
 
 M.RC = RC
 M.ROT = ROT
+M.pure.RC = RC
+M.pure.ROT = ROT
+
+-- The bare permutation on the lane table, for the spec suite: it is what
+-- ties the generated constants here to the literal ones in the C.
+M.pure.permute = pure.permute
 
 return M

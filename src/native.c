@@ -16,8 +16,14 @@
  *     the compiler is free to recognise.
  *   - No 64-bit division or modulo, which is what would pull in libgcc's
  *     __udivdi3 on a target that lacks the instruction. Only 64-bit
- *     multiply, add and shift, all native on x86_64, aarch64 and
- *     riscv64.
+ *     multiply, add and shift.
+ *   - No 64-bit multiply of two 64-bit values. Every product here is
+ *     32x32->64, which x86_64, aarch64 and riscv64 do in one
+ *     instruction and which rv32im and Xtensa LX7 do in two, mul plus
+ *     mulhu and mull plus mulsh. A full 64x64 multiply on those 32-bit
+ *     targets is three multiplies and a shift-add, and the field
+ *     arithmetic does enough of them for that to be the difference
+ *     between fast and unusable.
  *   - No unaligned loads and no endian assumption: every 32-bit word is
  *     assembled from and written back as bytes, by u32le/p32le. There is
  *     no #ifdef on byte order anywhere here, and there was: a
@@ -532,6 +538,265 @@ sha512_blocks(uint8_t state[64], const uint8_t *p, size_t nblocks)
 }
 
 /* ------------------------------------------------------------------ */
+/* Keccak-f[1600] and the sponge, FIPS 202                              */
+
+/*
+ * SHA3-256, SHA3-512, SHAKE128 and SHAKE256 are one sponge that differs
+ * only in its rate and its domain separator, so both are arguments here
+ * and there is one absorb and one squeeze.
+ *
+ * ML-KEM is the heavy caller: SHAKE128 expands the matrix, SHAKE256 is
+ * the noise PRF, and the two SHA-3 hashes bind the ciphertext.
+ *
+ * The permutation is xor, and-not, or and shift on 64-bit lanes. There
+ * is no multiply and no divide, so nothing here can reach for libgcc's
+ * __muldi3 or __udivdi3 on a 32-bit target.
+ *
+ * Rho and pi are written out one lane at a time with literal rotation
+ * offsets rather than looped over a table of them. That is what keeps
+ * the shift counts constant: a 64-bit shift by a run-time value lowers
+ * to __ashldi3 and __lshrdi3 on riscv32 and xtensa, which a freestanding
+ * link does not have. ssh/crypto/keccak.lua generates the same offsets
+ * from the (x,y) walk of FIPS 202 3.2.2 and exports them, and the spec
+ * suite checks these against those.
+ *
+ * The state crosses the Lua boundary as its 200-byte little-endian lane
+ * encoding, so a caller can hold a sponge between calls -- which is what
+ * ML-KEM's rejection sampling needs, since it cannot know in advance how
+ * much SHAKE128 output it will use.
+ */
+
+static uint64_t
+u64le(const uint8_t *p)
+{
+	return (uint64_t)u32le(p) | ((uint64_t)u32le(p + 4) << 32);
+}
+
+static void
+p64le(uint8_t *p, uint64_t v)
+{
+	p32le(p, (uint32_t)v);
+	p32le(p + 4, (uint32_t)(v >> 32));
+}
+
+/* The LFSR of FIPS 202 3.2.5, evaluated. */
+static const uint64_t KECCAK_RC[24] = {
+	0x0000000000000001ull, 0x0000000000008082ull,
+	0x800000000000808aull, 0x8000000080008000ull,
+	0x000000000000808bull, 0x0000000080000001ull,
+	0x8000000080008081ull, 0x8000000000008009ull,
+	0x000000000000008aull, 0x0000000000000088ull,
+	0x0000000080008009ull, 0x000000008000000aull,
+	0x000000008000808bull, 0x800000000000008bull,
+	0x8000000000008089ull, 0x8000000000008003ull,
+	0x8000000000008002ull, 0x8000000000000080ull,
+	0x000000000000800aull, 0x800000008000000aull,
+	0x8000000080008081ull, 0x8000000000008080ull,
+	0x0000000080000001ull, 0x8000000080008008ull
+};
+
+#define ROL(x, n) (((x) << (n)) | ((x) >> (64 - (n))))
+
+static void
+keccakf1600(uint64_t s[25])
+{
+	uint64_t b[25];
+	uint64_t c0, c1, c2, c3, c4, d0, d1, d2, d3, d4;
+	int r;
+
+	for (r = 0; r < 24; r++) {
+		/* theta */
+		c0 = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20];
+		c1 = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21];
+		c2 = s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22];
+		c3 = s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23];
+		c4 = s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24];
+
+		d0 = c4 ^ ROL(c1, 1);
+		d1 = c0 ^ ROL(c2, 1);
+		d2 = c1 ^ ROL(c3, 1);
+		d3 = c2 ^ ROL(c4, 1);
+		d4 = c3 ^ ROL(c0, 1);
+
+		s[0] ^= d0; s[5] ^= d0; s[10] ^= d0;
+		s[15] ^= d0; s[20] ^= d0;
+		s[1] ^= d1; s[6] ^= d1; s[11] ^= d1;
+		s[16] ^= d1; s[21] ^= d1;
+		s[2] ^= d2; s[7] ^= d2; s[12] ^= d2;
+		s[17] ^= d2; s[22] ^= d2;
+		s[3] ^= d3; s[8] ^= d3; s[13] ^= d3;
+		s[18] ^= d3; s[23] ^= d3;
+		s[4] ^= d4; s[9] ^= d4; s[14] ^= d4;
+		s[19] ^= d4; s[24] ^= d4;
+
+		/* rho and pi: rotate on the way to the new position */
+		b[0] = s[0];
+		b[10] = ROL(s[1], 1);
+		b[20] = ROL(s[2], 62);
+		b[5] = ROL(s[3], 28);
+		b[15] = ROL(s[4], 27);
+		b[16] = ROL(s[5], 36);
+		b[1] = ROL(s[6], 44);
+		b[11] = ROL(s[7], 6);
+		b[21] = ROL(s[8], 55);
+		b[6] = ROL(s[9], 20);
+		b[7] = ROL(s[10], 3);
+		b[17] = ROL(s[11], 10);
+		b[2] = ROL(s[12], 43);
+		b[12] = ROL(s[13], 25);
+		b[22] = ROL(s[14], 39);
+		b[23] = ROL(s[15], 41);
+		b[8] = ROL(s[16], 45);
+		b[18] = ROL(s[17], 15);
+		b[3] = ROL(s[18], 21);
+		b[13] = ROL(s[19], 8);
+		b[14] = ROL(s[20], 18);
+		b[24] = ROL(s[21], 2);
+		b[9] = ROL(s[22], 61);
+		b[19] = ROL(s[23], 56);
+		b[4] = ROL(s[24], 14);
+
+		/* chi, a row at a time */
+		s[0] = b[0] ^ (~b[1] & b[2]);
+		s[1] = b[1] ^ (~b[2] & b[3]);
+		s[2] = b[2] ^ (~b[3] & b[4]);
+		s[3] = b[3] ^ (~b[4] & b[0]);
+		s[4] = b[4] ^ (~b[0] & b[1]);
+		s[5] = b[5] ^ (~b[6] & b[7]);
+		s[6] = b[6] ^ (~b[7] & b[8]);
+		s[7] = b[7] ^ (~b[8] & b[9]);
+		s[8] = b[8] ^ (~b[9] & b[5]);
+		s[9] = b[9] ^ (~b[5] & b[6]);
+		s[10] = b[10] ^ (~b[11] & b[12]);
+		s[11] = b[11] ^ (~b[12] & b[13]);
+		s[12] = b[12] ^ (~b[13] & b[14]);
+		s[13] = b[13] ^ (~b[14] & b[10]);
+		s[14] = b[14] ^ (~b[10] & b[11]);
+		s[15] = b[15] ^ (~b[16] & b[17]);
+		s[16] = b[16] ^ (~b[17] & b[18]);
+		s[17] = b[17] ^ (~b[18] & b[19]);
+		s[18] = b[18] ^ (~b[19] & b[15]);
+		s[19] = b[19] ^ (~b[15] & b[16]);
+		s[20] = b[20] ^ (~b[21] & b[22]);
+		s[21] = b[21] ^ (~b[22] & b[23]);
+		s[22] = b[22] ^ (~b[23] & b[24]);
+		s[23] = b[23] ^ (~b[24] & b[20]);
+		s[24] = b[24] ^ (~b[20] & b[21]);
+
+		/* iota */
+		s[0] ^= KECCAK_RC[r];
+	}
+}
+
+#undef ROL
+
+static void
+keccak_load(uint64_t s[25], const uint8_t state[200])
+{
+	int i;
+
+	for (i = 0; i < 25; i++)
+		s[i] = u64le(state + 8 * i);
+}
+
+static void
+keccak_store(uint8_t state[200], const uint64_t s[25])
+{
+	int i;
+
+	for (i = 0; i < 25; i++)
+		p64le(state + 8 * i, s[i]);
+}
+
+/* The permutation on the byte encoding of the state. */
+static void
+keccak_permute(uint8_t state[200])
+{
+	uint64_t s[25];
+
+	keccak_load(s, state);
+	keccakf1600(s);
+	keccak_store(state, s);
+}
+
+/*
+ * Absorb a whole message at `rate` bytes a block, apply the domain
+ * padding of `pad`, and leave the state ready to squeeze. `state` starts
+ * empty here rather than being carried in: every caller hashes one
+ * message and then reads from it.
+ */
+static void
+keccak_absorb(uint8_t state[200], const uint8_t *msg, size_t len,
+    size_t rate, uint8_t pad)
+{
+	uint64_t s[25];
+	uint8_t tail[200];
+	size_t lanes = rate / 8;
+	size_t i;
+
+	for (i = 0; i < 25; i++)
+		s[i] = 0;
+
+	while (len >= rate) {
+		for (i = 0; i < lanes; i++)
+			s[i] ^= u64le(msg + 8 * i);
+		keccakf1600(s);
+		msg += rate;
+		len -= rate;
+	}
+
+	/* the final block: what is left, the separator, zeroes, and the
+	 * high bit of the last byte.
+	 */
+	for (i = 0; i < len; i++)
+		tail[i] = msg[i];
+	tail[len] = pad;
+	for (i = len + 1; i < rate; i++)
+		tail[i] = 0;
+	tail[rate - 1] |= 0x80;
+
+	for (i = 0; i < lanes; i++)
+		s[i] ^= u64le(tail + 8 * i);
+	keccakf1600(s);
+
+	keccak_store(state, s);
+}
+
+/*
+ * Squeeze `outlen` bytes, permuting between blocks and not after the
+ * last one. A caller that wants to go on reading past a block boundary
+ * asks for a whole block and then permutes, which is what an incremental
+ * SHAKE reader does.
+ */
+static void
+keccak_squeeze(uint8_t state[200], uint8_t *out, size_t outlen, size_t rate)
+{
+	uint64_t s[25];
+	uint8_t block[200];
+	size_t lanes = rate / 8;
+	size_t i, n;
+
+	keccak_load(s, state);
+
+	for (;;) {
+		for (i = 0; i < lanes; i++)
+			p64le(block + 8 * i, s[i]);
+
+		n = outlen < rate ? outlen : rate;
+		for (i = 0; i < n; i++)
+			out[i] = block[i];
+
+		out += n;
+		outlen -= n;
+		if (outlen == 0)
+			break;
+		keccakf1600(s);
+	}
+
+	keccak_store(state, s);
+}
+
+/* ------------------------------------------------------------------ */
 /* AES-128 and AES-256, FIPS 197, encryption direction only             */
 
 /*
@@ -759,39 +1024,50 @@ aes_ctr_xor(const struct aes *a, uint8_t ctr[16], uint8_t *restrict out,
  * one. Every connection pays for a key exchange and a signature, and
  * the field arithmetic under both is the slowest part of either.
  *
- * The shifts here are arithmetic right shifts, as TweetNaCl's are. The
- * Lua spells each one as floor division, because Lua's >> is logical
- * and would be silently wrong on a negative limb -- that is the one
- * thing that does not survive a move in either direction. Shifts are
- * also what keeps this inside the freestanding rules at the top of this
- * file: a shift is not a division, so nothing pulls in libgcc's
- * __divdi3 on a target without the instruction.
+ * The shifts here are arithmetic right shifts. The Lua spells each one
+ * as floor division, because Lua's >> is logical and would be silently
+ * wrong on a negative limb -- that is the one thing that does not
+ * survive a move in either direction. Shifts are also what keeps this
+ * inside the freestanding rules at the top of this file: a shift is not
+ * a division, so nothing pulls in libgcc's __divdi3 on a target without
+ * the instruction.
  *
- * A field element is 16 signed limbs of radix 2^16. Limbs are allowed
- * to go negative between reductions and nothing may assume otherwise
- * before pack25519.
+ * A field element is 10 signed limbs of radix 2^25.5: limb i carries
+ * weight 2^ceil(25.5*i), so the widths alternate 26, 25, 26, 25. The
+ * limbs are int32_t and the products that accumulate over them are
+ * int64_t, which is the one shape every target here multiplies in a
+ * single instruction. A 32-bit machine gets 32x32->64 from mul/mulhu on
+ * rv32im and mull/mulsh on Xtensa, with no call into libgcc; a 64-bit
+ * machine gets one imul. Sixteen 64-bit limbs of radix 2^16 would ask
+ * for a full 64x64 multiply, which on a 32-bit target is three
+ * multiplies and a shift-add, 256 times per field multiply.
+ *
+ * The invariant every routine below depends on: a field element handed
+ * to fM or fS has |limb| <= 1.65*2^26, and fM and fS return |limb| <=
+ * 2^25.5. So a caller may add or subtract two results and multiply
+ * again, which is the only pattern the ladder and the point addition
+ * use. Limbs are signed between reductions and nothing may assume
+ * otherwise before pack25519.
  */
 
-typedef int64_t gf[16];
+typedef int32_t gf[10];
+
+/* bit width of limb i */
+#define FW(i) (((i) & 1) ? 25 : 26)
 
 static const gf gf0;
 static const gf gf1 = { 1 };
-static const gf _121665 = { 0xDB41, 1 };
-static const gf D = { 0x78a3, 0x1359, 0x4dca, 0x75eb, 0xd8ab, 0x4141,
-	0x0a4d, 0x0070, 0xe898, 0x7779, 0x4079, 0x8cc7, 0xfe73, 0x2b6f,
-	0x6cee, 0x5203 };
-static const gf D2 = { 0xf159, 0x26b2, 0x9b94, 0xebd6, 0xb156, 0x8283,
-	0x149a, 0x00e0, 0xd130, 0xeef3, 0x80f2, 0x198e, 0xfce7, 0x56df,
-	0xd9dc, 0x2406 };
-static const gf X = { 0xd51a, 0x8f25, 0x2d60, 0xc956, 0xa7b2, 0x9525,
-	0xc760, 0x692c, 0xdc5c, 0xfdd6, 0xe231, 0xc0a4, 0x53fe, 0xcd6e,
-	0x36d3, 0x2169 };
-static const gf Y = { 0x6658, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666,
-	0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666,
-	0x6666, 0x6666 };
-static const gf I = { 0xa0b0, 0x4a0e, 0x1b27, 0xc4ee, 0xe478, 0xad2f,
-	0x1806, 0x2f43, 0xd7a7, 0x3dfb, 0x0099, 0x2b4d, 0xdf0b, 0x4fc1,
-	0x2480, 0x2b83 };
+static const gf _121665 = { 121665, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static const gf D = { -10913629, 13857413, -15372611, 6949391, 114729,
+	-8787816, -6275908, -3247719, -18696448, 21499316 };
+static const gf D2 = { -21827239, -5839606, -30745221, 13898782, 229458,
+	15978800, -12551817, -6495438, 29715968, 9444199 };
+static const gf X = { -14297830, -7645148, 16144683, -16471763, 27570974,
+	-2696100, -26142465, 8378389, 20764389, 8758491 };
+static const gf Y = { -26843560, -6710886, 13421773, -13421773, 26843546,
+	6710886, -13421773, 13421773, -26843546, 26843546 };
+static const gf I = { -32595792, -7943725, 9377950, 3500415, 12389472,
+	-272473, -25146209, -2005654, 326686, 11406482 };
 
 /* order of the base point, little-endian */
 static const int64_t Lorder[32] = {
@@ -805,7 +1081,7 @@ fset(gf r, const gf a)
 {
 	int i;
 
-	for (i = 0; i < 16; i++)
+	for (i = 0; i < 10; i++)
 		r[i] = a[i];
 }
 
@@ -814,7 +1090,7 @@ fA(gf o, const gf a, const gf b)
 {
 	int i;
 
-	for (i = 0; i < 16; i++)
+	for (i = 0; i < 10; i++)
 		o[i] = a[i] + b[i];
 }
 
@@ -823,102 +1099,201 @@ fZ(gf o, const gf a, const gf b)
 {
 	int i;
 
-	for (i = 0; i < 16; i++)
+	for (i = 0; i < 10; i++)
 		o[i] = a[i] - b[i];
 }
 
+/*
+ * The order in which limbs are carried. One carry reduces a limb to its
+ * own width by a rounding shift, so the carry out is the nearest
+ * multiple rather than the floor and the remainder stays balanced around
+ * zero. The carry out of limb 9 re-enters at limb 0 multiplied by 19,
+ * which is the whole of the reduction: 2^255 = 19 mod p.
+ *
+ * Two sequential passes over all ten limbs would also work and would
+ * need twenty-one carries. This needs twelve. It works because each
+ * carry roughly halves the excess width of the limb it lands on, so a
+ * limb only has to be revisited if something wide reached it: the even
+ * and odd halves interleave, limbs 4 and 8 receive a second carry once
+ * the limbs below them have settled, and limb 0 receives one after the
+ * wrap from limb 9. The rest are done after a single visit.
+ *
+ * The chain assumes its input is a product of two field elements whose
+ * limbs are within the stated 1.65*2^26. It leaves |limb| <= 2^25.5.
+ */
+static const uint8_t FCARRY[12] = { 0, 4, 1, 5, 2, 6, 3, 7, 4, 8, 9, 0 };
+
 static void
-car25519(gf o)
+fcarry(int64_t h[10])
+{
+	int64_t c;
+	int i, k, w;
+
+	for (i = 0; i < 12; i++) {
+		k = FCARRY[i];
+		w = FW(k);
+		c = (h[k] + ((int64_t)1 << (w - 1))) >> w;
+		h[k] -= c << w;
+		if (k == 9)
+			h[0] += 19 * c;
+		else
+			h[k + 1] += c;
+	}
+}
+
+static void
+fstore(gf o, int64_t h[10])
 {
 	int i;
-	int64_t c;
 
-	for (i = 0; i < 16; i++) {
-		o[i] += (int64_t)1 << 16;
-		c = o[i] >> 16;
-		o[(i + 1) * (i < 15)] += c - 1 + 37 * (c - 1) * (i == 15);
-		o[i] -= c << 16;
-	}
+	fcarry(h);
+	for (i = 0; i < 10; i++)
+		o[i] = (int32_t)h[i];
 }
 
 static void
 fM(gf o, const gf a, const gf b)
 {
-	int64_t t[31];
+	int64_t t[19], p;
 	int i, j;
 
-	for (i = 0; i < 31; i++)
+	for (i = 0; i < 19; i++)
 		t[i] = 0;
 	/* no skip on a zero limb, however tempting: these limbs are
 	 * secret and the branch would be a timing signal.
 	 */
-	for (i = 0; i < 16; i++)
-		for (j = 0; j < 16; j++)
-			t[i + j] += a[i] * b[j];
-	for (i = 0; i < 15; i++)
-		t[i] += 38 * t[i + 16];
-	for (i = 0; i < 16; i++)
-		o[i] = t[i];
-	car25519(o);
-	car25519(o);
+	for (i = 0; i < 10; i++) {
+		for (j = 0; j < 10; j++) {
+			p = (int64_t)a[i] * b[j];
+			/* Two odd limbs each carry half a bit more weight
+			 * than their index suggests, and the product lands
+			 * on an even index that carries neither.
+			 */
+			if ((i & 1) && (j & 1))
+				p *= 2;
+			t[i + j] += p;
+		}
+	}
+	/* limb i + 10 sits 255 bits above limb i */
+	for (i = 0; i < 9; i++)
+		t[i] += 19 * t[i + 10];
+	fstore(o, t);
 }
 
+/*
+ * Squaring. Every off-diagonal product appears twice in fM, so this
+ * forms each one once and doubles it: 55 multiplies rather than 100.
+ * The doubling for two odd limbs is the same half-bit correction fM
+ * makes, and the two doublings compose.
+ */
 static void
 fS(gf o, const gf a)
 {
-	fM(o, a, a);
+	int64_t t[19], p;
+	int i, j;
+
+	for (i = 0; i < 19; i++)
+		t[i] = 0;
+	for (i = 0; i < 10; i++) {
+		for (j = i; j < 10; j++) {
+			p = (int64_t)a[i] * a[j];
+			if ((i & 1) && (j & 1))
+				p *= 2;
+			if (i != j)
+				p *= 2;
+			t[i + j] += p;
+		}
+	}
+	for (i = 0; i < 9; i++)
+		t[i] += 19 * t[i + 10];
+	fstore(o, t);
 }
 
 /* constant-time conditional swap; b is 0 or 1 */
 static void
 sel25519(gf p, gf q, int64_t b)
 {
-	int64_t t, c = ~(b - 1);
+	int32_t t, c = -(int32_t)b;
 	int i;
 
-	for (i = 0; i < 16; i++) {
+	for (i = 0; i < 10; i++) {
 		t = c & (p[i] ^ q[i]);
 		p[i] ^= t;
 		q[i] ^= t;
 	}
 }
 
+/*
+ * The canonical little-endian encoding. The input is congruent to the
+ * value mod p but need not be the least such, so this subtracts the one
+ * multiple of p that brings it into range. q is that multiple, found by
+ * running the carry chain that the addition of 19 would produce and
+ * keeping only whether it overflowed 2^255.
+ */
 static void
 pack25519(uint8_t *o, const gf n)
 {
-	gf m, t;
-	int i, j;
-	int64_t b;
+	int64_t h[10], q;
+	int i, off, w;
 
-	fset(t, n);
-	car25519(t);
-	car25519(t);
-	car25519(t);
-	for (j = 0; j < 2; j++) {
-		m[0] = t[0] - 0xffed;
-		for (i = 1; i < 15; i++) {
-			m[i] = t[i] - 0xffff - ((m[i - 1] >> 16) & 1);
-			m[i - 1] &= 0xffff;
-		}
-		m[15] = t[15] - 0x7fff - ((m[14] >> 16) & 1);
-		b = (m[15] >> 16) & 1;
-		m[14] &= 0xffff;
-		sel25519(t, m, 1 - b);
+	for (i = 0; i < 10; i++)
+		h[i] = n[i];
+	fcarry(h);
+	fcarry(h);
+
+	q = (19 * h[9] + (1 << 24)) >> 25;
+	for (i = 0; i < 10; i++)
+		q = (h[i] + q) >> FW(i);
+	h[0] += 19 * q;
+
+	/* unsigned carry, so every limb is now its own bit field and the
+	 * borrow out of limb 9 is the 2^255 that q already removed
+	 */
+	for (i = 0; i < 9; i++) {
+		w = FW(i);
+		h[i + 1] += h[i] >> w;
+		h[i] -= (h[i] >> w) << w;
 	}
-	for (i = 0; i < 16; i++) {
-		o[2 * i] = (uint8_t)(t[i] & 0xff);
-		o[2 * i + 1] = (uint8_t)((t[i] >> 8) & 0xff);
+	h[9] &= ((int64_t)1 << 25) - 1;
+
+	for (i = 0; i < 32; i++)
+		o[i] = 0;
+	for (i = 0, off = 0; i < 10; i++) {
+		o[off >> 3] |= (uint8_t)(h[i] << (off & 7));
+		o[(off >> 3) + 1] |= (uint8_t)(h[i] >> (8 - (off & 7)));
+		o[(off >> 3) + 2] |= (uint8_t)(h[i] >> (16 - (off & 7)));
+		o[(off >> 3) + 3] |= (uint8_t)(h[i] >> (24 - (off & 7)));
+		off += FW(i);
 	}
 }
 
+/*
+ * The inverse. Limb i starts at bit offset sum(FW(0..i-1)), which is
+ * never more than bit 230, so a four-byte window at that offset always
+ * lies inside the 32 bytes. The top bit of the last byte is not part of
+ * the value.
+ */
 static void
 unpack25519(gf o, const uint8_t *n)
 {
-	int i;
+	uint8_t s[32];
+	int64_t h[10], v;
+	int i, j, off, w;
 
-	for (i = 0; i < 16; i++)
-		o[i] = n[2 * i] + ((int64_t)n[2 * i + 1] << 8);
-	o[15] &= 0x7fff;
+	for (i = 0; i < 32; i++)
+		s[i] = n[i];
+	s[31] &= 0x7f;
+
+	for (i = 0, off = 0; i < 10; i++) {
+		w = FW(i);
+		v = 0;
+		for (j = 0; j < 4; j++)
+			v |= (int64_t)s[(off >> 3) + j] << (8 * j);
+		v >>= off & 7;
+		h[i] = v & (((int64_t)1 << w) - 1);
+		off += w;
+	}
+	fstore(o, h);
 }
 
 static int
@@ -994,7 +1369,7 @@ x25519(uint8_t *q, const uint8_t *n, const uint8_t *p)
 	z[0] &= 248;
 
 	unpack25519(x, p);
-	for (i = 0; i < 16; i++) {
+	for (i = 0; i < 10; i++) {
 		b[i] = x[i];
 		a[i] = c[i] = d[i] = 0;
 	}
@@ -1427,6 +1802,80 @@ l_poly1305_auth(lua_State *L)
 	return 1;
 }
 
+/* A sponge rate, in bytes: a whole number of lanes, and short enough to
+ * leave the capacity the standard asks for. The caller names it, because
+ * the rate is what tells SHA3-256 from SHAKE256.
+ */
+static size_t
+checkrate(lua_State *L, int idx)
+{
+	lua_Integer rate = luaL_checkinteger(L, idx);
+
+	if (rate < 8 || rate > 200 || rate % 8 != 0)
+		luaL_error(L, "keccak rate must be 8..200 and a multiple of 8");
+	return (size_t)rate;
+}
+
+/* keccak_absorb(msg, rate, pad) -> 200-byte state */
+static int
+l_keccak_absorb(lua_State *L)
+{
+	size_t len;
+	const char *msg = luaL_checklstring(L, 1, &len);
+	size_t rate = checkrate(L, 2);
+	lua_Integer pad = luaL_checkinteger(L, 3);
+	uint8_t state[200];
+
+	if (pad < 0 || pad > 0xff)
+		return luaL_error(L, "keccak pad must be a byte");
+
+	keccak_absorb(state, (const uint8_t *)msg, len, rate, (uint8_t)pad);
+	lua_pushlstring(L, (const char *)state, sizeof(state));
+	return 1;
+}
+
+/* keccak_squeeze(state, rate, n) -> n bytes, state */
+static int
+l_keccak_squeeze(lua_State *L)
+{
+	const uint8_t *in = checkbytes(L, 1, 200, "keccak state");
+	size_t rate = checkrate(L, 2);
+	lua_Integer n = luaL_checkinteger(L, 3);
+	uint8_t state[200];
+	luaL_Buffer b;
+	char *out;
+	size_t i;
+
+	if (n < 0)
+		return luaL_error(L, "keccak output length must not be negative");
+
+	for (i = 0; i < sizeof(state); i++)
+		state[i] = in[i];
+
+	out = luaL_buffinitsize(L, &b, (size_t)n);
+	keccak_squeeze(state, (uint8_t *)out, (size_t)n, rate);
+	luaL_pushresultsize(&b, (size_t)n);
+
+	lua_pushlstring(L, (const char *)state, sizeof(state));
+	return 2;
+}
+
+/* keccak_permute(state) -> state */
+static int
+l_keccak_permute(lua_State *L)
+{
+	const uint8_t *in = checkbytes(L, 1, 200, "keccak state");
+	uint8_t state[200];
+	size_t i;
+
+	for (i = 0; i < sizeof(state); i++)
+		state[i] = in[i];
+
+	keccak_permute(state);
+	lua_pushlstring(L, (const char *)state, sizeof(state));
+	return 1;
+}
+
 /* sha256_blocks(state, data) -> state.  `data` must be a whole number of
  * 64-byte blocks; the caller does the buffering, because the caller is
  * ssh.crypto.hashstate and it already does.
@@ -1610,6 +2059,9 @@ static const luaL_Reg funcs[] = {
 	{ "chacha20_block", l_chacha20_block },
 	{ "chacha20_xor", l_chacha20_xor },
 	{ "poly1305_auth", l_poly1305_auth },
+	{ "keccak_absorb", l_keccak_absorb },
+	{ "keccak_squeeze", l_keccak_squeeze },
+	{ "keccak_permute", l_keccak_permute },
 	{ "sha256_blocks", l_sha256_blocks },
 	{ "sha512_blocks", l_sha512_blocks },
 	{ "aes_ecb_block", l_aes_ecb_block },
