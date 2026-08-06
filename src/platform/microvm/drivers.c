@@ -593,6 +593,26 @@ platform_have_blk(void)
 	return present;
 }
 
+/* No flash partition here: storage is a virtio disk, and it reaches Lua
+ * through platform_have_blk above. luaopen_los_platform_flash is never
+ * called, because nothing is ever granted PRIV_FLASH -- but the symbol
+ * has to exist for the link.
+ */
+int
+platform_have_flash(void)
+{
+	return 0;
+}
+
+int luaopen_los_platform_flash(lua_State *L);
+
+int
+luaopen_los_platform_flash(lua_State *L)
+{
+	lua_newtable(L);
+	return 1;
+}
+
 /* not implemented, and NOT because this machine cannot have a display.
  * `-device virtio-gpu-device` is the virtio-mmio spelling of virtio-gpu
  * and qemu attaches it to microvm's mmio bus quite happily (measured:

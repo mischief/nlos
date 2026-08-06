@@ -1,0 +1,31 @@
+/* the luafs flash partition as raw sectors, the same surface blk.h
+ * gives for the microSD slot. lib/blkfs.lua turns either into /data and
+ * lib/fat sits above, knowing about neither.
+ *
+ * A sector here is one flash erase block, not 512 bytes. NOR flash
+ * erases in 4KB units and cannot rewrite a byte without erasing what
+ * holds it, so a 512-byte sector would make every write a read, an
+ * erase and a program of the whole 4KB around it. Matching the two
+ * makes a sector write exactly one erase and one program. FAT accepts
+ * 4096-byte sectors -- see the bytspersec check in lib/fat/vol.lua --
+ * so the geometry does the work that a wear levelling layer would
+ * otherwise have to.
+ */
+#ifndef ESP32_FLASHBLK_H
+#define ESP32_FLASHBLK_H
+
+#include <stdint.h>
+
+/* One transfer's ceiling, as in blk.h. Eight 4KB sectors is 32KB, and
+ * unlike the microSD path this one needs no staging buffer: the
+ * partition API reads straight into the caller's memory.
+ */
+#define ESP_FLASHBLK_MAXSEC 8
+
+int esp_flashblk_present(void);		/* found the partition; cached */
+uint64_t esp_flashblk_sectors(void);	/* partition size in sectors */
+uint32_t esp_flashblk_secsz(void);	/* bytes per sector: the erase block */
+int esp_flashblk_read(uint64_t lba, uint32_t nsec, void *buf);	/* 0 ok */
+int esp_flashblk_write(uint64_t lba, const void *buf, uint32_t nbytes);
+
+#endif

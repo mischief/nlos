@@ -65,6 +65,14 @@ int	platform_have_eth(void);
  */
 int	platform_have_blk(void);
 
+/* is there a writable flash partition? esp32 answers by looking for the
+ * luafs partition; the others say no, because their storage is a disk
+ * and reaches Lua through platform_have_blk above. It is a second block
+ * device rather than a second kind of thing: the same raw sectors, and
+ * the same filesystem in Lua on top.
+ */
+int	platform_have_flash(void);
+
 /* is there a framebuffer? efi answers by probing for a GraphicsOutput
  * (src/platform/efi/gop.c); microvm always says no today, for want of a
  * virtio-gpu driver rather than for want of a device -- see the comment

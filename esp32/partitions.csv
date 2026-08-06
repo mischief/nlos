@@ -1,0 +1,22 @@
+# The flash, divided.
+#
+# The default single-app table has no room for a filesystem, and a
+# filesystem is what keeps bin/ and lib/ out of the app image: a program
+# uploaded to luafs runs without a reflash, which is what the UEFI
+# system partition gives the other platforms.
+#
+# Offsets are written out rather than left blank. A blank offset packs
+# each partition against the one before it, so adding a partition moves
+# every partition after it -- and a moved data partition is a partition
+# whose contents are now garbage. Fixed offsets mean an edit here breaks
+# the build rather than the filesystem.
+#
+# An app partition must start on a 64KB boundary, a data partition on a
+# 4KB one. 0x510000 in total, which fits the Cardputer's 8MB as well as
+# the T-Deck's 16MB, so one table serves every target.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xf000,   0x1000,
+factory,    app,  factory,  0x10000,  0x300000,
+luafs,      data, fat,      0x310000, 0x200000,

@@ -20,7 +20,18 @@
 --
 -- failures are raised, not returned (lib/dev.lua says why).
 
-local blk = require("los.platform.blk")
+-- whichever raw device this proc holds. The kernel grants exactly one
+-- -- PRIV_BLK brings los.platform.blk, PRIV_FLASH brings
+-- los.platform.flash -- and they answer the same three calls, so this
+-- file works either way and a client cannot tell from the outside which
+-- it mounted. Asking for both and taking the one that answers is how a
+-- proc discovers what its own capability was.
+local blk = select(2, pcall(require, "los.platform.blk"))
+
+if type(blk) ~= "table" then
+	blk = require("los.platform.flash")
+end
+
 local dev = require("dev")
 
 local M = {}
@@ -51,7 +62,12 @@ function M.new()
 	-- lib/srv.lua. That split is the point: this file knows about
 	-- sectors, that one knows about messages, and neither has to know
 	-- the other's number.
-	local MAXSEC = 32
+	--
+	-- A driver that disagrees says so: the esp32 flash partition
+	-- moves 4KB sectors and takes eight, where virtio takes 32 of
+	-- 512 bytes. Whichever it is, the number is the device's and not
+	-- this file's.
+	local MAXSEC = blk.maxsec or 32
 
 	local B = {}
 

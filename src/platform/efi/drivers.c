@@ -190,6 +190,26 @@ platform_have_blk(void)
 	return efi_blk_present();
 }
 
+/* No flash partition here: storage on this machine is a disk, and it
+ * reaches Lua through platform_have_blk above. luaopen_los_platform_flash
+ * is never called, because nothing is ever granted PRIV_FLASH -- but the
+ * symbol has to exist for the link.
+ */
+int
+platform_have_flash(void)
+{
+	return 0;
+}
+
+int luaopen_los_platform_flash(lua_State *L);
+
+int
+luaopen_los_platform_flash(lua_State *L)
+{
+	lua_newtable(L);
+	return 1;
+}
+
 /* ---- los.platform.blk: EFI_BLOCK_IO, raw sectors ----
  *
  * The same surface virtio_blk gives on microvm, minus the yielding:

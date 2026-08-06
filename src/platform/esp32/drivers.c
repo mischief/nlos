@@ -17,6 +17,7 @@
 #include "lua.h"
 
 #include "blk.h"
+#include "flashblk.h"
 #include "kbd.h"
 #include "lcd.h"
 
@@ -149,6 +150,15 @@ int
 platform_have_blk(void)
 {
 	return esp_blk_present();
+}
+
+/* Every board, unlike the card: the partition is in the image the
+ * bootloader just ran from, so it exists wherever this build does.
+ */
+int
+platform_have_flash(void)
+{
+	return esp_flashblk_present();
 }
 
 int
@@ -314,6 +324,90 @@ int
 luaopen_los_platform_blk(lua_State *L)
 {
 	luaL_newlib(L, blk_lib);
+	return 1;
+}
+
+/* ---- los.platform.flash: the luafs partition, raw sectors ----
+ *
+ * The same three calls los.platform.blk gives, so lib/blkfs.lua serves
+ * either without knowing which it holds. A sector is 4KB here and 512
+ * on the card, which is why nothing above asks for a sector count
+ * without asking capacity() first.
+ */
+
+static int
+flash_capacity(lua_State *L)
+{
+	if (!esp_flashblk_present())
+		return 0;		/* nil: no partition */
+	lua_pushinteger(L, (lua_Integer)esp_flashblk_sectors());
+	lua_pushinteger(L, (lua_Integer)esp_flashblk_secsz());
+	return 2;
+}
+
+static int
+flash_read(lua_State *L)
+{
+	lua_Integer lba = luaL_checkinteger(L, 1);
+	lua_Integer nsec = luaL_checkinteger(L, 2);
+	uint32_t secsz = esp_flashblk_secsz();
+	luaL_Buffer b;
+	char *buf;
+	size_t len;
+
+	if (lba < 0)
+		return luaL_error(L, "flash.read: negative sector");
+	if (nsec <= 0 || nsec > ESP_FLASHBLK_MAXSEC)
+		return luaL_error(L, "flash.read: bad sector count");
+
+	len = (size_t)nsec * secsz;
+	buf = luaL_buffinitsize(L, &b, len);
+	if (esp_flashblk_read((uint64_t)lba, (uint32_t)nsec, buf) != 0)
+		return luaL_error(L, "flash.read: device error");
+	luaL_pushresultsize(&b, len);
+	return 1;
+}
+
+static int
+flash_write(lua_State *L)
+{
+	lua_Integer lba = luaL_checkinteger(L, 1);
+	size_t n;
+	const char *data = luaL_checklstring(L, 2, &n);
+	uint32_t secsz = esp_flashblk_secsz();
+
+	if (lba < 0)
+		return luaL_error(L, "flash.write: negative sector");
+	if (n == 0 || secsz == 0 || n % secsz != 0)
+		return luaL_error(L,
+		    "flash.write: not a whole number of sectors");
+	if (n > (size_t)ESP_FLASHBLK_MAXSEC * secsz)
+		return luaL_error(L, "flash.write: too large");
+	if (esp_flashblk_write((uint64_t)lba, data, (uint32_t)n) != 0)
+		return luaL_error(L, "flash.write: device error");
+	lua_pushinteger(L, (lua_Integer)(n / secsz));
+	return 1;
+}
+
+static const luaL_Reg flash_lib[] = {
+	{ "capacity", flash_capacity },
+	{ "read", flash_read },
+	{ "write", flash_write },
+	{ NULL, NULL },
+};
+
+int luaopen_los_platform_flash(lua_State *L);
+
+int
+luaopen_los_platform_flash(lua_State *L)
+{
+	luaL_newlib(L, flash_lib);
+	/* what one call may carry, in sectors. lib/blkfs.lua steps by
+	 * this rather than by a number of its own, because the two
+	 * devices here disagree about it.
+	 */
+	lua_pushinteger(L, ESP_FLASHBLK_MAXSEC);
+	lua_setfield(L, -2, "maxsec");
 	return 1;
 }
 

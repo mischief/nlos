@@ -3,6 +3,11 @@
 # SRAM only and these settings simply find no chip -- which is why the
 # port must not require PSRAM to reach a repl.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# The app shares the flash with a filesystem: see esp32/partitions.csv
+# for the layout and for why the offsets are written out.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y

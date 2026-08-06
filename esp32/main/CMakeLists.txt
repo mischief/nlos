@@ -39,6 +39,7 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/blk.c
     ${LUAOS_ROOT}/src/platform/esp32/console.c
     ${LUAOS_ROOT}/src/platform/esp32/drivers.c
+    ${LUAOS_ROOT}/src/platform/esp32/flashblk.c
     ${LUAOS_ROOT}/src/platform/esp32/fs.c
     ${LUAOS_ROOT}/src/platform/esp32/idf_shim.c
     ${LUAOS_ROOT}/src/platform/esp32/kbd.c
@@ -63,7 +64,7 @@ idf_component_register(
         ${LUAOS_ROOT}/lua
         ${CMAKE_CURRENT_BINARY_DIR}
     REQUIRES esp_psram esp_timer driver vfs esp_driver_usb_serial_jtag
-            esp_lcd
+            esp_lcd esp_partition
             sdmmc esp_driver_sdspi esp_driver_spi esp_driver_gpio
 )
 

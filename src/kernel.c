@@ -153,7 +153,7 @@ enum { DEAD, READY, BLOCKED, BROKE };
  * lets it build the root namespace every other proc inherits.
  */
 enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
-    PRIV_P9, PRIV_ETH, PRIV_FB, PRIV_BLK };
+    PRIV_P9, PRIV_ETH, PRIV_FB, PRIV_BLK, PRIV_FLASH };
 
 /* line trace: the last N lines a proc executed, in a ring.
  *
@@ -591,6 +591,7 @@ static int have_p9;
 static int have_eth;
 static int have_fb;
 static int have_blk;
+static int have_flash;
 static int have_wire;
 static int have_esp;
 
@@ -4098,6 +4099,7 @@ extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_p9(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_eth(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_blk(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
+extern int luaopen_los_platform_flash(lua_State *L);	/* drivers.c: esp32 only, no-op elsewhere */
 extern int luaopen_los_platform_fb(lua_State *L);	/* gop.c: efi only, no-op elsewhere */
 
 /* the los.sys module: the microkernel abi (ports, rights, procs) plus
@@ -4915,6 +4917,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		lua_pushcfunction(p->L, luaopen_los_platform_blk);
 		lua_setfield(p->L, -2, "los.platform.blk");
 		break;
+	case PRIV_FLASH:
+		lua_pushcfunction(p->L, luaopen_los_platform_flash);
+		lua_setfield(p->L, -2, "los.platform.flash");
+		break;
 	case PRIV_FB:
 		lua_pushcfunction(p->L, luaopen_los_platform_fb);
 		lua_setfield(p->L, -2, "los.platform.fb");
@@ -5430,6 +5436,7 @@ kernel_init(void)
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
 	have_blk = platform_have_blk();
+	have_flash = platform_have_flash();
 	have_wire = platform_have_wire();
 	have_esp = platform_have_esp();
 	return 0;
@@ -5576,6 +5583,18 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_BLK, .devport = 0, .devrecv = 0,
 		  .what = "the block device", .enabled = have_blk,
 		  .capname = "blk" },
+		/* the writable flash partition, served the same way and by
+		 * the same task: one file, /data, that is the partition.
+		 * Two procs run task/blksrv.lua on a board with both, each
+		 * holding the capability for one device, so neither can
+		 * reach the other's sectors. Which one a proc got is not a
+		 * question it can ask -- it holds a right, and the right is
+		 * the answer.
+		 */
+		{ .path = "/task/blksrv.lua", .chunkname = "=flashsrv",
+		  .priv = PRIV_FLASH, .devport = 0, .devrecv = 0,
+		  .what = "the flash partition", .enabled = have_flash,
+		  .capname = "flash" },
 		/* raw ethernet frames, and the bottom of the whole stack.
 		 * This task owns a wire and nothing more -- everything from
 		 * arp upwards is Lua on the far side of its port. No NIC
