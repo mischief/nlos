@@ -5762,7 +5762,7 @@ gc_step(struct kproc *p, lua_State *L)
 		const char *e = lua_tostring(L, -1);
 		char b[256];
 
-		snprintf(b, sizeof b, "lua: %%s: gc: %%s", p->name,
+		snprintf(b, sizeof b, "lua: %s: gc: %s", p->name,
 		    e ? e : "?");
 		kernel_log(b);
 		lua_pop(L, 1);

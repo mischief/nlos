@@ -23,6 +23,7 @@
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 
+#include "cpu.h"
 #include "esp32.h"
 #include "fs.h"
 #include "kernel.h"
@@ -64,4 +65,43 @@ app_main(void)
 	 */
 	kernel_log("all procs exited");
 	machine_halt();
+}
+
+/* ---- the one cpu ----
+ *
+ * The kernel runs on a single FreeRTOS task, so from kernel.c's side
+ * this machine has one cpu whatever the chip has: an S3 carries two
+ * xtensa cores and a C5 one RISC-V core beside a low-power one, and no
+ * second core runs Lua. NCPU is 1 here, so lock.h compiles every lock
+ * down to a compiler barrier and nothing below is ever contended.
+ *
+ * The same arrangement efi has, for a stronger reason: a second core
+ * would mean running the scheduler outside the task IDF handed us,
+ * beside a wifi driver and a FreeRTOS that decide their own affinity.
+ */
+static struct cpu thecpu = { .self = &thecpu, .idx = 0, .apicid = 0 };
+
+struct cpu *
+cpu_self(void)
+{
+	return &thecpu;
+}
+
+struct cpu *
+cpu_at(unsigned i)
+{
+	return i == 0 ? &thecpu : 0;
+}
+
+unsigned
+platform_ncpu(void)
+{
+	return 1;
+}
+
+/* one cpu, so there is never another to wake. */
+void
+platform_wake_cpu(unsigned i)
+{
+	(void)i;
 }
