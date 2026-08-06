@@ -222,7 +222,63 @@ local function services()
 			print("svc: luafs: " .. tostring(ferr))
 		end
 	end
+	-- the lease, as /net.
+	--
+	-- task/dhcpd.lua serves what it acquired -- /net/addr, /net/gw,
+	-- /net/dns, /net/lease -- and mounting it is what makes network
+	-- status a file rather than a capability. lib/dnsc.lua reads its
+	-- resolver from /net/dns rather than holding a right to anything,
+	-- and a shell can cat /net/lease. init.lua does this on the other
+	-- platforms; this payload is where it belongs here.
+	if caps.dhcpd then
+		local nok, nerr = pcall(function()
+			assert(rootns:mount("/net",
+			    require("mnt").new(caps.dhcpd), "mnt",
+			    { port = { __right = caps.dhcpd } }))
+		end)
+
+		if not nok then
+			print("svc: /net: " .. tostring(nerr))
+		end
+	end
 	nsmod.setcurrent(rootns)
+
+	-- the network this machine is on, from /etc/wifi.lua.
+	--
+	--	return { ssid = "labratory", psk = "..." }
+	--
+	-- A lua chunk rather than a format, as /etc/services.lua is: it
+	-- needs no parser, and a file that will not load says so with a
+	-- line number.
+	--
+	-- Read here rather than in task/eth.lua, which owns the radio but
+	-- is a kernel-spawned driver with no namespace and no io.open. So
+	-- the proc that can read a file tells the proc that can join a
+	-- network, which is one message and no third party.
+	--
+	-- Absent is the ordinary case on a machine nobody has configured.
+	-- Nothing is retried and nothing is watched: this joins once, and
+	-- bin/wifi.lua is how it is done again.
+	if caps.eth then
+		local src = rootns:readfile("/etc/wifi.lua")
+
+		if src then
+			local ok, conf = pcall(function()
+				return assert(load(src, "=/etc/wifi.lua", "t",
+				    {}))()
+			end)
+
+			if ok and type(conf) == "table" and conf.ssid then
+				sys.send(caps.eth, { op = "wifi",
+				    how = "connect", ssid = conf.ssid,
+				    psk = conf.psk })
+				print("wifi: joining " .. conf.ssid)
+			else
+				print("wifi: /etc/wifi.lua: " ..
+				    tostring(conf))
+			end
+		end
+	end
 
 	local svc = require("svc")
 	local list, why = svc.load(rootns, "/etc/services.lua")
