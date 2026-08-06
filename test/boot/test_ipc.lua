@@ -159,11 +159,17 @@ sys.send(w, { stop = true })
 -- sys.block yields to whoever resumed the coroutine it is called from.
 -- At the top level of a proc that is the kernel, which is the contract.
 -- Inside a coroutine it is that coroutine's resumer -- a thread
--- scheduler -- so the kernel has marked the proc BLOCKED and taken it
--- off the run queue while the proc carries on running. The next block
--- then hangs a second waiter for one proc on a port, and wake_receivers
--- walks a waiter that wait_clear already freed. Refuse the second one
--- instead, where the mistake is, rather than faulting later.
+-- scheduler -- so the kernel would mark the proc BLOCKED and take it
+-- off the run queue while the proc carried on running.
+--
+-- It is refused at the first one now, not the second. Tolerating it
+-- once left the proc in that split state, which surfaces far from the
+-- call: a transfer that stalls with no error, in a library whose only
+-- crime was calling back into code that parks. The second block was
+-- refused because by then it hangs a second waiter for one proc on a
+-- port and wake_receivers walks a waiter wait_clear already freed --
+-- still true, and still guarded, but it is not the earliest point the
+-- mistake can be named.
 --
 -- los.thread's park() and recv() pick park over block via inthread(),
 -- so ordinary threaded code never reaches this. Requiring that module
@@ -173,21 +179,30 @@ local pa, pb = sys.newport(), sys.newport()
 local blocked = coroutine.create(function() sys.block(pa) end)
 local again = coroutine.create(function() sys.block(pb) end)
 
-tap.ok(coroutine.resume(blocked),
-    "sys.block inside a coroutine yields to the coroutine, not the kernel")
+local aok, aerr = coroutine.resume(blocked)
 
+tap.ok(not aok and tostring(aerr):find("illegal parking") ~= nil,
+    "sys.block inside a coroutine is refused: " .. tostring(aerr))
+
+-- and the proc is still runnable, which is the point of refusing: a
+-- raise leaves no BLOCKED bookkeeping behind for a proc that is plainly
+-- still going.
 local bok, berr = coroutine.resume(again)
 
-tap.ok(not bok and tostring(berr):find("already blocked") ~= nil,
-    "a second block from the same proc is refused: " .. tostring(berr))
+tap.ok(not bok and tostring(berr):find("illegal parking") ~= nil,
+    "so is the next one: " .. tostring(berr))
 
 -- sys.call blocks too, so it is refused by the same guard and for the
 -- same reason -- checked BEFORE its send, so a call that cannot wait
 -- also does not deliver a request whose answer nobody will collect.
-local cok, cerr = pcall(sys.call, w, { value = "x",
-    reply = { __right = rp } }, rp)
+-- From the top level it is perfectly legal, which is why this one has
+-- to be made from a coroutine to be refused at all.
+local calling = coroutine.create(function()
+	return sys.call(w, { value = "x", reply = { __right = rp } }, rp)
+end)
+local cok, cerr = coroutine.resume(calling)
 
-tap.ok(not cok and tostring(cerr):find("already blocked") ~= nil,
+tap.ok(not cok and tostring(cerr):find("illegal parking") ~= nil,
     "and so is sys.call, which blocks: " .. tostring(cerr))
 
 tap.done()

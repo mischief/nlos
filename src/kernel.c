@@ -1937,10 +1937,40 @@ blocking_twice(lua_State *L, struct kproc *p)
  * rather than sleeping forever and lets the send report the failure --
  * the same reason the dead-port case above returns.
  */
+/* a park must be issued from the state the kernel resumed.
+ *
+ * lua_yield unwinds to the resumer of the state it fired in, so a block
+ * from a coroutine below p->co lands in whoever resumed THAT -- while
+ * this proc is already marked BLOCKED and off the run queue. The kernel
+ * believes it is parked and it carries on running, which shows up later
+ * as a protocol that stalls somewhere else entirely.
+ *
+ * Threads are not affected: lib/thread parks them by yielding to
+ * thread.run, which does the real block from the top (thread.park's
+ * inthread branch). This catches everyone else -- typically a library
+ * that owns a coroutine and calls back into code that parks.
+ *
+ * At entry rather than at the point of descheduling: a call that
+ * happens to find its message already there would not park this time,
+ * but the code is still wrong and the next call is the one that hangs.
+ * Refusing early also keeps the waiter list clean -- a guard after
+ * wait_add leaves a waiter registered, and the next block reports
+ * "already blocked" instead.
+ */
+static void
+nopark(lua_State *L, struct kproc *p)
+{
+	if (L != p->co)
+		luaL_error(L, "illegal parking: this coroutine is not the "
+		    "one the kernel resumed, so a block here would never "
+		    "reach it");
+}
+
 static int
 api_sendblock(lua_State *L)
 {
 	struct kproc *p = self(L);
+
 	struct right *r = right_get(p, luaL_checkinteger(L, 1));
 	lua_Integer need = luaL_optinteger(L, 2, 0);
 
@@ -1948,6 +1978,8 @@ api_sendblock(lua_State *L)
 		return luaL_error(L, "bad right");
 	if (need < 0)
 		return luaL_error(L, "negative size");
+
+	nopark(L, p);
 	blocking_twice(L, p);
 	if (r->port->dead)
 		return 0;	/* never going to drain; let the send report it */
@@ -2033,12 +2065,14 @@ static int
 api_block(lua_State *L)
 {
 	struct kproc *p = self(L);
+
 	struct right *r = right_get(p, luaL_checkinteger(L, 1));
 
 	if (!r || !r->recv)
 		return luaL_error(L, "bad receive right");
 	if (r->port->head)
 		return 0;	/* message already there, don't sleep */
+	nopark(L, p);
 	blocking_twice(L, p);
 	if (!wait_add(p, r->port, 0))
 		return luaL_error(L, "out of waiters");
@@ -2131,6 +2165,7 @@ static int
 api_call(lua_State *L)
 {
 	struct kproc *p = self(L);
+
 	struct right *r = right_get(p, luaL_checkinteger(L, 1));
 	lua_Integer rh = luaL_checkinteger(L, 3);
 	struct right *rr = right_get(p, rh);
@@ -2149,6 +2184,7 @@ api_call(lua_State *L)
 	 * is not is worse than one that always refuses. los.thread's call()
 	 * is the shape for a thread, and picks this only at the top level.
 	 */
+	nopark(L, p);
 	blocking_twice(L, p);
 
 	int rc = port_send_from_lua(L, p, r, 2);
@@ -2186,6 +2222,29 @@ api_call(lua_State *L)
  * message. the mp-clean version of this is an atomic take-from-any (a
  * port set), which replaces it rather than building on it.
  */
+/* an alt set may carry send waits as well as receive waits: sends[i] is
+ * the size entry i wants room for, and anything else means entry i is
+ * an ordinary receive. Kept as a parallel table rather than boxing every
+ * entry, so the common all-receive call passes nothing extra and builds
+ * no garbage.
+ *
+ * -1 for "not a send wait", since a send of zero bytes is a real
+ * question (is there any room at all).
+ */
+static lua_Integer
+altneed(lua_State *L, int i)
+{
+	lua_Integer need = -1;
+
+	if (!lua_istable(L, 2))
+		return -1;
+	lua_rawgeti(L, 2, i);
+	if (lua_isinteger(L, -1))
+		need = lua_tointeger(L, -1);
+	lua_pop(L, 1);
+	return need < 0 ? -1 : need;
+}
+
 static int
 altready(lua_State *L, struct kproc *p)
 {
@@ -2200,8 +2259,22 @@ altready(lua_State *L, struct kproc *p)
 		struct right *r = right_get(p, (int)lua_tointeger(L, -1));
 
 		lua_pop(L, 1);
-		if (r && r->recv && r->port->head)
+		if (!r)
+			continue;
+
+		lua_Integer need = altneed(L, i);
+
+		if (need >= 0) {
+			/* a send wait is ready when the message would fit
+			 * -- or when the port is dead, since then the send
+			 * itself is what should report it.
+			 */
+			if (r->port->dead ||
+			    r->port->qbytes + (size_t)need <= MAXQUEUE)
+				return i;
+		} else if (r->recv && r->port->head) {
 			return i;
+		}
 	}
 	return 0;
 }
@@ -2358,12 +2431,21 @@ altrecv_k(lua_State *L, int status, lua_KContext ctx)
 	return altrecv_take(L, self(L));
 }
 
-/* block until any of a set of receive rights has a message (port set) */
+/* block until any entry of a port set is ready.
+ *
+ * sys.altblock(set [, sends]) -> index | nothing. An entry is a receive
+ * wait unless sends[i] gives a size, in which case it waits for room --
+ * so one park can cover both directions, which is what lets a thread
+ * scheduler park a thread waiting to send without blocking itself.
+ */
 static int
 api_altblock(lua_State *L)
 {
 	struct kproc *p = self(L);
+
 	int n;
+
+	nopark(L, p);
 
 	luaL_checktype(L, 1, LUA_TTABLE);
 	n = (int)luaL_len(L, 1);
@@ -2377,11 +2459,22 @@ api_altblock(lua_State *L)
 		struct right *r = right_get(p, luaL_checkinteger(L, -1));
 
 		lua_pop(L, 1);
-		if (!r || !r->recv) {
+
+		lua_Integer need = altneed(L, i);
+		int send = need >= 0;
+
+		/* a send wait needs only a send right, for the same reason
+		 * api_sendblock does: a writer waiting on its reader has no
+		 * business holding the receive end.
+		 */
+		if (!r || (!send && !r->recv)) {
 			wait_clear(p);
-			return luaL_error(L, "altblock: bad receive right");
+			return luaL_error(L, send ? "altblock: bad right" :
+			    "altblock: bad receive right");
 		}
-		if (r->port->head) {
+		if (send ? (r->port->dead ||
+		    r->port->qbytes + (size_t)need <= MAXQUEUE) :
+		    (r->port->head != 0)) {
 			wait_clear(p);
 			lua_pushinteger(L, i);
 			return 1;	/* already ready, don't sleep */
@@ -2390,16 +2483,20 @@ api_altblock(lua_State *L)
 		 * since alt cases share ports. two waits on one port would
 		 * both fire and both be released by wait_clear, so this is
 		 * about not consuming the pool rather than correctness.
+		 *
+		 * on the KIND as well as the port: wake_senders and
+		 * wake_receivers walk the same list and skip what is not
+		 * theirs, so one port waited on both ways needs one of each.
 		 */
 		int seen = 0;
 		struct waiter *w;
 
 		SLIST_FOREACH(w, &p->waiters, pw)
-			if (w->port == r->port) {
+			if (w->port == r->port && w->send == send) {
 				seen = 1;
 				break;
 			}
-		if (!seen && !wait_add(p, r->port, 0)) {
+		if (!seen && !wait_add(p, r->port, send)) {
 			wait_clear(p);
 			return luaL_error(L, "altblock: out of waiters");
 		}
@@ -2414,7 +2511,10 @@ static int
 api_altrecv(lua_State *L)
 {
 	struct kproc *p = self(L);
+
 	int n;
+
+	nopark(L, p);
 
 	luaL_checktype(L, 1, LUA_TTABLE);
 	n = (int)luaL_len(L, 1);

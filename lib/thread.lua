@@ -303,15 +303,32 @@ end
 -- sys.altblock reads it with luaL_len.
 local altset, altseen, altgen, altn = {}, {}, 0, 0
 
+-- the parallel table sys.altblock reads for send waits: altsends[i] is
+-- the size entry i wants room for, and nil means entry i is an ordinary
+-- receive. Kept beside altset rather than boxing every entry, so an
+-- all-receive park -- which is nearly all of them -- passes an empty
+-- table and allocates nothing.
+local altsends, altnsend = {}, 0
+
 local function gatherports()
 	altgen = altgen + 1
 
 	local n = 0
 
+	altnsend = 0
 	for _, r in pairs(thread._parked) do
 		local ps = r.ports
 
-		if ps then
+		if r.send then
+			-- a send wait is its own entry even where the same
+			-- port is also being received on: the kernel keeps
+			-- the two waiter kinds apart, and one of each is
+			-- what makes both wakes arrive.
+			n = n + 1
+			altset[n] = r.port
+			altsends[n] = r.send
+			altnsend = altnsend + 1
+		elseif ps then
 			for i = 1, #ps do
 				local h = ps[i]
 
@@ -319,6 +336,7 @@ local function gatherports()
 					altseen[h] = altgen
 					n = n + 1
 					altset[n] = h
+					altsends[n] = nil
 				end
 			end
 		elseif r.port then
@@ -328,11 +346,16 @@ local function gatherports()
 				altseen[h] = altgen
 				n = n + 1
 				altset[n] = h
+				altsends[n] = nil
 			end
 		end
 	end
+	-- both tails: altsends is refilled in place like altset, so a
+	-- receive entry landing where a send wait used to be must have the
+	-- stale size cleared or the kernel waits for room nobody wants.
 	for i = n + 1, altn do
 		altset[i] = nil
+		altsends[i] = nil
 	end
 	altn = n
 	return n
@@ -560,7 +583,7 @@ function thread.run()
 				-- than only when we came back empty-handed.
 				wakehungup()
 			else
-				local i = sys.altblock(altset)
+				local i = sys.altblock(altset, altsends)
 
 				-- the hint names the port that has
 				-- something; only its threads need to run.
@@ -1191,8 +1214,39 @@ thread.yield = yield
 -- which is why a SERVER must never use this (it would stop serving
 -- everyone because one client stopped reading). pipe-shaped code,
 -- which is what this is for, has nothing else to get on with anyway.
-local function parksend(h)
-	sys.sendblock(h)
+local function parksend(h, need)
+	if not inthread() then
+		sys.sendblock(h, need)
+		return
+	end
+
+	local co = coroutine.running()
+	local r = parkrec[co]
+
+	if not r then
+		r = { port = false, ports = false, chan = false,
+		    recv = false, mail = false, hasmail = false }
+		parkrec[co] = r
+	end
+	r.port, r.ports, r.chan, r.recv = h, false, false, false
+	r.send = need or 0
+
+	-- not on portq: that queue is where deliver() hands an arriving
+	-- message to a waiting receiver, and this thread is not waiting
+	-- for one. nonrecv keeps run() off the altrecv fast path, which
+	-- takes a message and would have nowhere to put it.
+	nonrecv[co] = true
+	if woken[co] then
+		woken[co] = nil
+		nonrecv[co] = nil
+		r.send = nil
+		return
+	end
+	thread._parked[co] = r
+	coroutine.yield()
+	thread._parked[co] = nil
+	nonrecv[co] = nil
+	r.send = nil
 end
 
 -- ---- request/reply ----
