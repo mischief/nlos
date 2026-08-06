@@ -11,6 +11,7 @@
 
 #include <stddef.h>
 
+#include <esp_random.h>
 #include <esp_system.h>
 
 #include "lauxlib.h"
@@ -88,9 +89,64 @@ open_kbd(lua_State *L)
 	return 1;
 }
 
+/* ---- los.platform.rng: the hardware generator ----
+ *
+ * The same surface efi's EFI_RNG_PROTOCOL and microvm's virtio-rng give,
+ * and wanted by the same caller: task/tcp4.lua draws an initial sequence
+ * number from it, refuses to invent one without it (RFC 6528), and so
+ * cannot dial at all on a machine with no rng.
+ *
+ * esp_fill_random is a true generator only while an RF subsystem is
+ * running -- the entropy comes from the radio's noise -- and reads a
+ * pseudo-random sequence otherwise. That is exactly the condition here:
+ * the radio is brought up at probe time, before any task that draws
+ * from this one is spawned.
+ */
+
+#define RNG_MAX_BYTES 65536	/* one request's worth, as microvm has */
+
+static int
+rng_bytes(lua_State *L)
+{
+	lua_Integer n = luaL_checkinteger(L, 1);
+	luaL_Buffer b;
+	char *buf;
+
+	if (n < 0 || n > RNG_MAX_BYTES)
+		return luaL_error(L, "rng.bytes: n out of range (0-%d)",
+		    RNG_MAX_BYTES);
+
+	buf = luaL_buffinitsize(L, &b, (size_t)n);
+	if (n > 0)
+		esp_fill_random(buf, (size_t)n);
+	luaL_pushresultsize(&b, (size_t)n);
+	return 1;
+}
+
+static const luaL_Reg rnglib[] = {
+	{ "bytes", rng_bytes },
+	{ NULL, NULL }
+};
+
+int luaopen_los_platform_rng(lua_State *L);
+
+int
+luaopen_los_platform_rng(lua_State *L)
+{
+	luaL_newlib(L, rnglib);
+	return 1;
+}
+
 void
 platform_boot_extra_modules(lua_State *L)
 {
+	/* the rng first, and unconditionally: the tcp task is handed this
+	 * function for the rng alone, and a board with no keyboard would
+	 * otherwise leave it unable to open a connection.
+	 */
+	luaL_requiref(L, "los.platform.rng", luaopen_los_platform_rng, 0);
+	lua_pop(L, 1);
+
 	/* say so either way, the way init reports every other device.
 	 * A keyboard that did not answer is otherwise indistinguishable
 	 * from one whose module nobody happened to require, and on the
