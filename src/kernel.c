@@ -6984,7 +6984,7 @@ pump_devkbd(void)
 		msg[5] = (unsigned char)c;
 		port_push(devkbdport, msg, sizeof msg, 0, 0);
 	} while ((c = platform_kbd_read()) >= 0);
-	ipclock_leave_port(devkbdport);
+	ipclock_leave();
 }
 
 static void
