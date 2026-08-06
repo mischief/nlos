@@ -671,6 +671,17 @@ function M.main()
 		return 127
 	end
 	ctx.ns = N
+	-- route require and io.open through this namespace, so a module on a
+	-- mount is found and not only the set the ambient C searcher sees in
+	-- firmware. On a platform whose whole lib tree is one image (efi's
+	-- ESP) the ambient search already finds everything and this changes
+	-- nothing; on esp32, where /lib is the firmware image unioned with
+	-- the luafs partition, it is the difference between a program reaching
+	-- an uploaded lib and not. Skipped for a program given no namespace,
+	-- which keeps the ambient searcher it has nothing to replace with.
+	if ctx.nsdesc then
+		ns.setcurrent(N)
+	end
 	ctx.setexit = setexit(ctx, sys.setexit)
 	return M.run(ctx)
 end
