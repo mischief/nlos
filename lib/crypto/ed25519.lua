@@ -247,5 +247,52 @@ end
 M.SEED_LEN = 32
 M.PUBLIC_LEN = 32
 M.SIG_LEN = 64
+M.pure = M
 
-return M
+-- The C signer, when it is there. Same bargain as x25519 and the
+-- hashes: the Lua is the reference the vectors run against and the only
+-- implementation on a build without the module. Verification is two
+-- scalar multiplications, and every connection pays for one signature.
+--
+-- M is never reassigned, for the reason ssh/crypto/x25519.lua gives:
+-- keypair and sign reach publickey through the upvalue, so pointing M
+-- at the fast table would leave nothing that is actually the pure
+-- implementation for the spec to compare against.
+--
+-- verify keeps the contract of never raising on a malformed key or
+-- signature, because it runs on data an unauthenticated peer chose. The
+-- C side answers false for a wrong length rather than erroring, so the
+-- two agree there as well as on the arithmetic.
+local fast = nil
+local ok, native = pcall(require, "crypto.native")
+
+if ok and type(native) == "table" and native.ed25519_sign then
+  fast = {}
+  for k, v in pairs(M) do fast[k] = v end
+
+  function fast.publickey(seed)
+    assert(#seed == 32, "ed25519 seed must be 32 bytes")
+    return native.ed25519_publickey(seed)
+  end
+
+  function fast.keypair(seed)
+    return fast.publickey(seed), seed
+  end
+
+  function fast.sign(seed, msg)
+    assert(#seed == 32, "ed25519 seed must be 32 bytes")
+    return native.ed25519_sign(seed, msg)
+  end
+
+  function fast.verify(pk, msg, sig)
+    if type(pk) ~= "string" or type(msg) ~= "string" then return false end
+    if type(sig) ~= "string" then return false end
+    return native.ed25519_verify(pk, msg, sig)
+  end
+
+  fast.pure = M
+  fast.native = fast
+  M.native = fast
+end
+
+return fast or M

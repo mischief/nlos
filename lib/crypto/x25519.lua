@@ -70,5 +70,48 @@ end
 
 M.KEY_LEN = 32
 M.BASE = BASE
+M.pure = M
 
-return M
+-- The C ladder, when it is there. Same bargain as the hashes: the Lua
+-- stays, because it is the reference the vectors run against and the
+-- only implementation on a build without the module -- but 255 rounds
+-- of 16-limb field arithmetic is the slowest thing in this library by a
+-- wide margin.
+--
+-- The module table M is never reassigned, and that is not a style
+-- choice: scalarmult_base and shared call M.scalarmult through the
+-- upvalue, so pointing M at the fast table would make the pure
+-- functions dispatch to the C one. .pure would then be a name for the
+-- same thing as .native, and spec/curve_spec.lua would compare the C
+-- implementation against itself and pass.
+local fast = nil
+local ok, native = pcall(require, "crypto.native")
+
+if ok and type(native) == "table" and native.x25519 then
+  fast = {}
+  for k, v in pairs(M) do fast[k] = v end
+
+  function fast.scalarmult(scalar, point)
+    assert(#scalar == 32, "x25519 scalar must be 32 bytes")
+    assert(#point == 32, "x25519 point must be 32 bytes")
+    return native.x25519(scalar, point)
+  end
+
+  function fast.scalarmult_base(scalar)
+    return fast.scalarmult(scalar, BASE)
+  end
+
+  function fast.shared(scalar, peer)
+    local k = fast.scalarmult(scalar, peer)
+    if k == ("\0"):rep(32) then
+      return nil, "x25519: degenerate shared secret"
+    end
+    return k
+  end
+
+  fast.pure = M
+  fast.native = fast
+  M.native = fast
+end
+
+return fast or M

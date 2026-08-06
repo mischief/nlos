@@ -750,6 +750,610 @@ aes_ctr_xor(const struct aes *a, uint8_t ctr[16], uint8_t *restrict out,
 }
 
 /* ------------------------------------------------------------------ */
+/*
+ * X25519 and Ed25519.
+ *
+ * The same TweetNaCl shape the field25519 module carries, in C. The Lua
+ * is the reference the RFC vectors run against and the implementation a
+ * build without this module gets; a caller that has this one gets this
+ * one. Every connection pays for a key exchange and a signature, and
+ * the field arithmetic under both is the slowest part of either.
+ *
+ * The shifts here are arithmetic right shifts, as TweetNaCl's are. The
+ * Lua spells each one as floor division, because Lua's >> is logical
+ * and would be silently wrong on a negative limb -- that is the one
+ * thing that does not survive a move in either direction. Shifts are
+ * also what keeps this inside the freestanding rules at the top of this
+ * file: a shift is not a division, so nothing pulls in libgcc's
+ * __divdi3 on a target without the instruction.
+ *
+ * A field element is 16 signed limbs of radix 2^16. Limbs are allowed
+ * to go negative between reductions and nothing may assume otherwise
+ * before pack25519.
+ */
+
+typedef int64_t gf[16];
+
+static const gf gf0;
+static const gf gf1 = { 1 };
+static const gf _121665 = { 0xDB41, 1 };
+static const gf D = { 0x78a3, 0x1359, 0x4dca, 0x75eb, 0xd8ab, 0x4141,
+	0x0a4d, 0x0070, 0xe898, 0x7779, 0x4079, 0x8cc7, 0xfe73, 0x2b6f,
+	0x6cee, 0x5203 };
+static const gf D2 = { 0xf159, 0x26b2, 0x9b94, 0xebd6, 0xb156, 0x8283,
+	0x149a, 0x00e0, 0xd130, 0xeef3, 0x80f2, 0x198e, 0xfce7, 0x56df,
+	0xd9dc, 0x2406 };
+static const gf X = { 0xd51a, 0x8f25, 0x2d60, 0xc956, 0xa7b2, 0x9525,
+	0xc760, 0x692c, 0xdc5c, 0xfdd6, 0xe231, 0xc0a4, 0x53fe, 0xcd6e,
+	0x36d3, 0x2169 };
+static const gf Y = { 0x6658, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666,
+	0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666,
+	0x6666, 0x6666 };
+static const gf I = { 0xa0b0, 0x4a0e, 0x1b27, 0xc4ee, 0xe478, 0xad2f,
+	0x1806, 0x2f43, 0xd7a7, 0x3dfb, 0x0099, 0x2b4d, 0xdf0b, 0x4fc1,
+	0x2480, 0x2b83 };
+
+/* order of the base point, little-endian */
+static const int64_t Lorder[32] = {
+	0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
+	0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10
+};
+
+static void
+fset(gf r, const gf a)
+{
+	int i;
+
+	for (i = 0; i < 16; i++)
+		r[i] = a[i];
+}
+
+static void
+fA(gf o, const gf a, const gf b)
+{
+	int i;
+
+	for (i = 0; i < 16; i++)
+		o[i] = a[i] + b[i];
+}
+
+static void
+fZ(gf o, const gf a, const gf b)
+{
+	int i;
+
+	for (i = 0; i < 16; i++)
+		o[i] = a[i] - b[i];
+}
+
+static void
+car25519(gf o)
+{
+	int i;
+	int64_t c;
+
+	for (i = 0; i < 16; i++) {
+		o[i] += (int64_t)1 << 16;
+		c = o[i] >> 16;
+		o[(i + 1) * (i < 15)] += c - 1 + 37 * (c - 1) * (i == 15);
+		o[i] -= c << 16;
+	}
+}
+
+static void
+fM(gf o, const gf a, const gf b)
+{
+	int64_t t[31];
+	int i, j;
+
+	for (i = 0; i < 31; i++)
+		t[i] = 0;
+	/* no skip on a zero limb, however tempting: these limbs are
+	 * secret and the branch would be a timing signal.
+	 */
+	for (i = 0; i < 16; i++)
+		for (j = 0; j < 16; j++)
+			t[i + j] += a[i] * b[j];
+	for (i = 0; i < 15; i++)
+		t[i] += 38 * t[i + 16];
+	for (i = 0; i < 16; i++)
+		o[i] = t[i];
+	car25519(o);
+	car25519(o);
+}
+
+static void
+fS(gf o, const gf a)
+{
+	fM(o, a, a);
+}
+
+/* constant-time conditional swap; b is 0 or 1 */
+static void
+sel25519(gf p, gf q, int64_t b)
+{
+	int64_t t, c = ~(b - 1);
+	int i;
+
+	for (i = 0; i < 16; i++) {
+		t = c & (p[i] ^ q[i]);
+		p[i] ^= t;
+		q[i] ^= t;
+	}
+}
+
+static void
+pack25519(uint8_t *o, const gf n)
+{
+	gf m, t;
+	int i, j;
+	int64_t b;
+
+	fset(t, n);
+	car25519(t);
+	car25519(t);
+	car25519(t);
+	for (j = 0; j < 2; j++) {
+		m[0] = t[0] - 0xffed;
+		for (i = 1; i < 15; i++) {
+			m[i] = t[i] - 0xffff - ((m[i - 1] >> 16) & 1);
+			m[i - 1] &= 0xffff;
+		}
+		m[15] = t[15] - 0x7fff - ((m[14] >> 16) & 1);
+		b = (m[15] >> 16) & 1;
+		m[14] &= 0xffff;
+		sel25519(t, m, 1 - b);
+	}
+	for (i = 0; i < 16; i++) {
+		o[2 * i] = (uint8_t)(t[i] & 0xff);
+		o[2 * i + 1] = (uint8_t)((t[i] >> 8) & 0xff);
+	}
+}
+
+static void
+unpack25519(gf o, const uint8_t *n)
+{
+	int i;
+
+	for (i = 0; i < 16; i++)
+		o[i] = n[2 * i] + ((int64_t)n[2 * i + 1] << 8);
+	o[15] &= 0x7fff;
+}
+
+static int
+neq25519(const gf a, const gf b)
+{
+	uint8_t c[32], d[32];
+	int i, diff = 0;
+
+	pack25519(c, a);
+	pack25519(d, b);
+	for (i = 0; i < 32; i++)
+		diff |= c[i] ^ d[i];
+	return diff != 0;
+}
+
+static uint8_t
+par25519(const gf a)
+{
+	uint8_t d[32];
+
+	pack25519(d, a);
+	return d[0] & 1;
+}
+
+static void
+inv25519(gf o, const gf i)
+{
+	gf c;
+	int a;
+
+	fset(c, i);
+	for (a = 253; a >= 0; a--) {
+		fS(c, c);
+		if (a != 2 && a != 4)
+			fM(c, c, i);
+	}
+	fset(o, c);
+}
+
+/* x^((p-5)/8), the square root Ed25519 decompression needs */
+static void
+pow2523(gf o, const gf i)
+{
+	gf c;
+	int a;
+
+	fset(c, i);
+	for (a = 250; a >= 0; a--) {
+		fS(c, c);
+		if (a != 1)
+			fM(c, c, i);
+	}
+	fset(o, c);
+}
+
+/* ---- X25519, RFC 7748 ---- */
+
+/* The Montgomery ladder: 255 iterations of a fixed sequence with two
+ * constant-time swaps around it, so the work is independent of the
+ * scalar.
+ */
+static void
+x25519(uint8_t *q, const uint8_t *n, const uint8_t *p)
+{
+	uint8_t z[32];
+	gf x, a, b, c, d, e, f;
+	int i;
+	int64_t r;
+
+	for (i = 0; i < 31; i++)
+		z[i] = n[i];
+	z[31] = (n[31] & 127) | 64;
+	z[0] &= 248;
+
+	unpack25519(x, p);
+	for (i = 0; i < 16; i++) {
+		b[i] = x[i];
+		a[i] = c[i] = d[i] = 0;
+	}
+	a[0] = d[0] = 1;
+
+	for (i = 254; i >= 0; i--) {
+		r = (z[i >> 3] >> (i & 7)) & 1;
+		sel25519(a, b, r);
+		sel25519(c, d, r);
+		fA(e, a, c);
+		fZ(a, a, c);
+		fA(c, b, d);
+		fZ(b, b, d);
+		fS(d, e);
+		fS(f, a);
+		fM(a, c, a);
+		fM(c, b, e);
+		fA(e, a, c);
+		fZ(a, a, c);
+		fS(b, a);
+		fZ(c, d, f);
+		fM(a, c, _121665);
+		fA(a, a, d);
+		fM(c, c, a);
+		fM(a, d, f);
+		fM(d, b, x);
+		fS(b, e);
+		sel25519(a, b, r);
+		sel25519(c, d, r);
+	}
+	inv25519(c, c);
+	fM(a, a, c);
+	pack25519(q, a);
+}
+
+/* ---- Ed25519, RFC 8032 ---- */
+
+/* sha512 of up to three pieces, so signing hashes prefix||message and
+ * R||A||message without joining them first. The block function is the
+ * one this file already has for the Lua binding.
+ */
+static void
+sha512_3(uint8_t out[64], const uint8_t *a, size_t alen,
+    const uint8_t *b, size_t blen, const uint8_t *c, size_t clen)
+{
+	static const uint8_t iv[64] = {
+		0x6a, 0x09, 0xe6, 0x67, 0xf3, 0xbc, 0xc9, 0x08,
+		0xbb, 0x67, 0xae, 0x85, 0x84, 0xca, 0xa7, 0x3b,
+		0x3c, 0x6e, 0xf3, 0x72, 0xfe, 0x94, 0xf8, 0x2b,
+		0xa5, 0x4f, 0xf5, 0x3a, 0x5f, 0x1d, 0x36, 0xf1,
+		0x51, 0x0e, 0x52, 0x7f, 0xad, 0xe6, 0x82, 0xd1,
+		0x9b, 0x05, 0x68, 0x8c, 0x2b, 0x3e, 0x6c, 0x1f,
+		0x1f, 0x83, 0xd9, 0xab, 0xfb, 0x41, 0xbd, 0x6b,
+		0x5b, 0xe0, 0xcd, 0x19, 0x13, 0x7e, 0x21, 0x79
+	};
+	const uint8_t *piece[3];
+	size_t plen[3];
+	uint8_t buf[256];
+	uint64_t total = 0;
+	size_t n = 0, i, k;
+	int j;
+
+	piece[0] = a;
+	plen[0] = alen;
+	piece[1] = b;
+	plen[1] = blen;
+	piece[2] = c;
+	plen[2] = clen;
+
+	for (i = 0; i < 64; i++)
+		out[i] = iv[i];
+
+	for (j = 0; j < 3; j++) {
+		for (k = 0; k < plen[j]; k++) {
+			buf[n++] = piece[j][k];
+			total++;
+			if (n == 128) {
+				sha512_blocks(out, buf, 1);
+				n = 0;
+			}
+		}
+	}
+
+	/* the tail: 0x80, zeros, then the length in bits as a 128-bit
+	 * big-endian count. Two blocks where the padding does not fit in
+	 * one, which is the only reason buf is 256 bytes.
+	 */
+	buf[n++] = 0x80;
+	while (n % 128 != 112) {
+		buf[n++] = 0;
+		if (n == 256)
+			break;
+	}
+	for (i = 0; i < 8; i++)
+		buf[n++] = 0;
+	total <<= 3;
+	for (i = 0; i < 8; i++)
+		buf[n++] = (uint8_t)((total >> (56 - 8 * i)) & 0xff);
+	sha512_blocks(out, buf, n / 128);
+}
+
+/* a point in extended coordinates: x, y, z, t */
+static void
+ed_add(gf p[4], const gf q[4])
+{
+	gf a, b, c, d, t, e, f, g, h;
+
+	fZ(a, p[1], p[0]);
+	fZ(t, q[1], q[0]);
+	fM(a, a, t);
+	fA(b, p[0], p[1]);
+	fA(t, q[0], q[1]);
+	fM(b, b, t);
+	fM(c, p[3], q[3]);
+	fM(c, c, D2);
+	fM(d, p[2], q[2]);
+	fA(d, d, d);
+	fZ(e, b, a);
+	fZ(f, d, c);
+	fA(g, d, c);
+	fA(h, b, a);
+
+	fM(p[0], e, f);
+	fM(p[1], h, g);
+	fM(p[2], g, f);
+	fM(p[3], e, h);
+}
+
+static void
+ed_cswap(gf p[4], gf q[4], uint8_t b)
+{
+	int i;
+
+	for (i = 0; i < 4; i++)
+		sel25519(p[i], q[i], b);
+}
+
+static void
+ed_pack(uint8_t *r, const gf p[4])
+{
+	gf tx, ty, zi;
+
+	inv25519(zi, p[2]);
+	fM(tx, p[0], zi);
+	fM(ty, p[1], zi);
+	pack25519(r, ty);
+	r[31] ^= par25519(tx) << 7;
+}
+
+static void
+ed_scalarmult(gf p[4], gf q[4], const uint8_t *s)
+{
+	int i;
+	uint8_t b;
+
+	fset(p[0], gf0);
+	fset(p[1], gf1);
+	fset(p[2], gf1);
+	fset(p[3], gf0);
+	for (i = 255; i >= 0; i--) {
+		b = (s[i >> 3] >> (i & 7)) & 1;
+		ed_cswap(p, q, b);
+		ed_add(q, (const gf *)p);
+		ed_add(p, (const gf *)p);
+		ed_cswap(p, q, b);
+	}
+}
+
+static void
+ed_scalarbase(gf p[4], const uint8_t *s)
+{
+	gf q[4];
+
+	fset(q[0], X);
+	fset(q[1], Y);
+	fset(q[2], gf1);
+	fM(q[3], X, Y);
+	ed_scalarmult(p, q, s);
+}
+
+/* x mod L, over a 64-limb little-endian value */
+static void
+modL(uint8_t *r, int64_t x[64])
+{
+	int64_t carry;
+	int i, j;
+
+	for (i = 63; i >= 32; i--) {
+		carry = 0;
+		for (j = i - 32; j < i - 12; j++) {
+			x[j] += carry - 16 * x[i] * Lorder[j - (i - 32)];
+			carry = (x[j] + 128) >> 8;
+			x[j] -= carry << 8;
+		}
+		x[j] += carry;
+		x[i] = 0;
+	}
+	carry = 0;
+	for (j = 0; j < 32; j++) {
+		x[j] += carry - (x[31] >> 4) * Lorder[j];
+		carry = x[j] >> 8;
+		x[j] &= 255;
+	}
+	for (j = 0; j < 32; j++)
+		x[j] -= carry * Lorder[j];
+	for (i = 0; i < 32; i++) {
+		x[i + 1] += x[i] >> 8;
+		r[i] = (uint8_t)(x[i] & 255);
+	}
+}
+
+static void
+reduce(uint8_t *r)
+{
+	int64_t x[64];
+	int i;
+
+	for (i = 0; i < 64; i++)
+		x[i] = r[i];
+	for (i = 0; i < 64; i++)
+		r[i] = 0;
+	modL(r, x);
+}
+
+/* decompress a public key to -P, so verification is one addition */
+static int
+unpackneg(gf r[4], const uint8_t *pk)
+{
+	gf t, chk, num, den, den2, den4, den6;
+
+	fset(r[2], gf1);
+	unpack25519(r[1], pk);
+	fS(num, r[1]);
+	fM(den, num, D);
+	fZ(num, num, r[2]);
+	fA(den, r[2], den);
+
+	fS(den2, den);
+	fS(den4, den2);
+	fM(den6, den4, den2);
+	fM(t, den6, num);
+	fM(t, t, den);
+
+	pow2523(t, t);
+	fM(t, t, num);
+	fM(t, t, den);
+	fM(t, t, den);
+	fM(r[0], t, den);
+
+	fS(chk, r[0]);
+	fM(chk, chk, den);
+	if (neq25519(chk, num))
+		fM(r[0], r[0], I);
+
+	fS(chk, r[0]);
+	fM(chk, chk, den);
+	if (neq25519(chk, num))
+		return 0;
+
+	if (par25519(r[0]) == (pk[31] >> 7))
+		fZ(r[0], gf0, r[0]);
+
+	fM(r[3], r[0], r[1]);
+	return 1;
+}
+
+/* the clamped scalar and the prefix, from a 32-byte seed */
+static void
+ed_expand(uint8_t d[64], const uint8_t *seed)
+{
+	sha512_3(d, seed, 32, 0, 0, 0, 0);
+	d[0] &= 248;
+	d[31] &= 127;
+	d[31] |= 64;
+}
+
+static void
+ed_publickey(uint8_t pk[32], const uint8_t *seed)
+{
+	uint8_t d[64];
+	gf p[4];
+
+	ed_expand(d, seed);
+	ed_scalarbase(p, d);
+	ed_pack(pk, (const gf *)p);
+}
+
+static void
+ed_sign(uint8_t sig[64], const uint8_t *seed, const uint8_t *msg,
+    size_t mlen)
+{
+	uint8_t d[64], pk[32], h[64], r[64];
+	int64_t x[64];
+	gf p[4];
+	int i, j;
+
+	ed_expand(d, seed);
+	ed_publickey(pk, seed);
+
+	/* the nonce is the hash of the key's second half with the
+	 * message, so signing needs no randomness at all.
+	 */
+	sha512_3(r, d + 32, 32, msg, mlen, 0, 0);
+	reduce(r);
+	ed_scalarbase(p, r);
+	ed_pack(sig, (const gf *)p);
+
+	sha512_3(h, sig, 32, pk, 32, msg, mlen);
+	reduce(h);
+
+	for (i = 0; i < 64; i++)
+		x[i] = 0;
+	for (i = 0; i < 32; i++)
+		x[i] = r[i];
+	for (i = 0; i < 32; i++)
+		for (j = 0; j < 32; j++)
+			x[i + j] += (int64_t)h[i] * (int64_t)d[j];
+	modL(sig + 32, x);
+}
+
+static int
+ed_verify(const uint8_t *pk, const uint8_t *msg, size_t mlen,
+    const uint8_t *sig)
+{
+	uint8_t h[64], t[32], s[32];
+	gf q[4], p[4], q2[4];
+	int i, diff = 0;
+
+	if (!unpackneg(q, pk))
+		return 0;
+
+	/* S must be canonical. A non-reduced scalar makes a signature
+	 * malleable, which ssh does not care about and a caller might.
+	 */
+	for (i = 0; i < 32; i++)
+		s[i] = sig[32 + i];
+	for (i = 31; i >= 0; i--) {
+		if (s[i] > Lorder[i])
+			return 0;
+		if (s[i] < Lorder[i])
+			break;
+		if (i == 0)
+			return 0;
+	}
+
+	sha512_3(h, sig, 32, pk, 32, msg, mlen);
+	reduce(h);
+
+	ed_scalarmult(p, q, h);
+	ed_scalarbase(q2, s);
+	ed_add(p, (const gf *)q2);
+	ed_pack(t, (const gf *)p);
+
+	for (i = 0; i < 32; i++)
+		diff |= sig[i] ^ t[i];
+	return diff == 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Lua binding. Everything above this line is freestanding.             */
 
 #include "lua.h"
@@ -936,7 +1540,73 @@ l_aes_ctr_xor(lua_State *L)
  */
 int luaopen_ssh_crypto_native(lua_State *L);
 
+/* x25519(scalar, point) -> 32 bytes */
+static int
+l_x25519(lua_State *L)
+{
+	const uint8_t *n = checkbytes(L, 1, 32, "x25519 scalar");
+	const uint8_t *p = checkbytes(L, 2, 32, "x25519 point");
+	uint8_t q[32];
+
+	x25519(q, n, p);
+	lua_pushlstring(L, (const char *)q, sizeof(q));
+	return 1;
+}
+
+/* ed25519_publickey(seed) -> 32 bytes */
+static int
+l_ed25519_publickey(lua_State *L)
+{
+	const uint8_t *seed = checkbytes(L, 1, 32, "ed25519 seed");
+	uint8_t pk[32];
+
+	ed_publickey(pk, seed);
+	lua_pushlstring(L, (const char *)pk, sizeof(pk));
+	return 1;
+}
+
+/* ed25519_sign(seed, msg) -> 64 bytes, detached */
+static int
+l_ed25519_sign(lua_State *L)
+{
+	const uint8_t *seed = checkbytes(L, 1, 32, "ed25519 seed");
+	size_t mlen;
+	const char *msg = luaL_checklstring(L, 2, &mlen);
+	uint8_t sig[64];
+
+	ed_sign(sig, seed, (const uint8_t *)msg, mlen);
+	lua_pushlstring(L, (const char *)sig, sizeof(sig));
+	return 1;
+}
+
+/* ed25519_verify(pk, msg, sig) -> boolean.
+ *
+ * Never raises on a malformed key or signature: this runs on data an
+ * unauthenticated peer chose, so a wrong length is false and not an
+ * error the caller has to remember to pcall.
+ */
+static int
+l_ed25519_verify(lua_State *L)
+{
+	size_t pklen, mlen, siglen;
+	const char *pk = luaL_checklstring(L, 1, &pklen);
+	const char *msg = luaL_checklstring(L, 2, &mlen);
+	const char *sig = luaL_checklstring(L, 3, &siglen);
+
+	if (pklen != 32 || siglen != 64) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	lua_pushboolean(L, ed_verify((const uint8_t *)pk,
+	    (const uint8_t *)msg, mlen, (const uint8_t *)sig));
+	return 1;
+}
+
 static const luaL_Reg funcs[] = {
+	{ "x25519", l_x25519 },
+	{ "ed25519_publickey", l_ed25519_publickey },
+	{ "ed25519_sign", l_ed25519_sign },
+	{ "ed25519_verify", l_ed25519_verify },
 	{ "chacha20_block", l_chacha20_block },
 	{ "chacha20_xor", l_chacha20_xor },
 	{ "poly1305_auth", l_poly1305_auth },
