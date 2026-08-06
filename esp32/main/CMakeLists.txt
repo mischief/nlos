@@ -117,6 +117,26 @@ set(EMBED_FILES
     lib/blkfs.lua
     task/blksrv.lua
 
+    # the filesystem on the flash partition, and so a bootstrap
+    # dependency: nothing can be read off luafs until this is running,
+    # which includes every program in /bin. gefs/io.lua is here for its
+    # device wrapper over a seekable handle, which is what lib/fat
+    # opens the volume on -- none of the rest of gefs comes with it.
+    lib/fat.lua
+    lib/fat/obj.lua
+    lib/fat/dat.lua
+    lib/fat/pack.lua
+    lib/fat/blk.lua
+    lib/fat/fat.lua
+    lib/fat/dir.lua
+    lib/fat/fsops.lua
+    lib/fat/vol.lua
+    lib/fat/check.lua
+    lib/fat/ram.lua
+    lib/gefs/io.lua
+    lib/fatfs.lua
+    task/fatsrv.lua
+
     # and what a CLIENT needs to mount it. Without these blksrv runs
     # and nothing can open a file on it: require("ns") fails on the
     # board. Not lib/ninep.lua -- that is the 9p wire, and a local dev
@@ -141,10 +161,14 @@ set(EMBED_FILES
     lib/prog.lua
     lib/draw.lua
     lib/dos.lua
-    bin/smiley.lua
-    bin/cat.lua
-    bin/ls.lua
 )
+
+# bin/ is not here. The programs live on the luafs partition, built by
+# tools/mkfatimg.lua and flashed separately, so a new one is an upload
+# rather than a rebuild. What that costs is that a board with an empty
+# or unflashed partition has no programs at all -- the prompt comes up
+# and every name is unknown -- which is the same bargain the other
+# platforms make with their EFI system partition.
 
 # Some modules ship as stripped bytecode rather than source.
 #

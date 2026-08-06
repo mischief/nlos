@@ -3,10 +3,11 @@
 -- injected alternative -- a test payload is chosen at build time by
 -- pointing the embed step at a different file.
 --
--- It asks for nothing but the console. The board has a display, a
--- keyboard, a radio and 16MB of flash, and none of them are wired yet;
--- a payload that blocked in a driver waiting for a device nobody wrote
--- would say nothing on the serial line about why.
+-- It asks for nothing but the console to reach a prompt. The display,
+-- the keyboard and the flash partition arrive through services() below,
+-- each behind its own capability and each optional: a payload that
+-- blocked in a driver waiting for a device nobody wrote would say
+-- nothing on the serial line about why.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -179,9 +180,17 @@ end
 -- skipped rather than started to fail, which is what keeps the panel
 -- terminal out of a build with no keyboard.
 --
--- The namespace comes from lib/romfs.lua: the embedded image, mounted
--- read only. It is described to each service so the child rebuilds the
--- same mount, which is how a program reaches /bin at all.
+-- The namespace has two mounts in it, in plan 9's union order.
+--
+-- lib/romfs.lua is the embedded image: the libs and driver tasks that
+-- have to exist before anything can be mounted at all, read only and
+-- fixed at build time. Over it, searched first, is the luafs partition,
+-- which is where /bin lives and where an uploaded program lands. So a
+-- file on the flash shadows one in the image, and a board whose
+-- partition is empty still boots to a prompt.
+--
+-- Both are described to each service, so a child rebuilds the same two
+-- mounts in the same order.
 local function services()
 	local nsmod = require("ns")
 	local rootns = nsmod.new()
@@ -190,6 +199,28 @@ local function services()
 	if not mok then
 		print("svc: mount: " .. tostring(merr))
 		return
+	end
+
+	-- the flash partition, through a filesystem of its own.
+	--
+	-- task/blksrv.lua holds the raw sectors and this holds a right to
+	-- it; what mounts here is the FAT volume, not the device. Absent
+	-- capability, unopenable volume and unformatted partition are all
+	-- the same case: say so and carry on with the image alone, because
+	-- a prompt that comes up is what makes the partition fixable.
+	if caps.flash then
+		local src = rootns:readfile("/task/fatsrv.lua")
+		local fok, ferr = pcall(function()
+			local _, f = sys.spawn(src, { name = "fatsrv" })
+
+			sys.send(f, { blk = { __right = caps.flash } })
+			assert(rootns:mount("/", require("mnt").new(f), "mnt",
+			    { port = { __right = f } }, "before"))
+		end)
+
+		if not fok then
+			print("svc: luafs: " .. tostring(ferr))
+		end
 	end
 	nsmod.setcurrent(rootns)
 

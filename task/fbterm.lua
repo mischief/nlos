@@ -80,9 +80,22 @@ end
 if src then
 	local _, sh = sys.spawn(src, { name = "fbsh" })
 
+	-- the namespace travels as a description, not as a mount: the
+	-- child rebuilds it from the kinds it has registered, and the
+	-- rights inside it are copied on the way as any other right is.
+	-- Without it the shell sees the embedded image alone, which holds
+	-- no programs.
+	--
+	-- Described from this proc's own namespace rather than taken from
+	-- the spawn message. lib/svc.lua hands the description to
+	-- proc.spawn, which adopts it before this chunk runs; what arrives
+	-- in the message is the capability table alone.
+	local N = require("ns").current()
+
 	sys.send(sh, {
 		cons = { __right = consright },
 		fb = { __right = fb },
+		ns = N and N:describe(),
 	})
 	sys.close(sh)
 else
