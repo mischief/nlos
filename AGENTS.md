@@ -667,12 +667,40 @@ no `#ifdef` in it. The barrier is not nothing: it still stops the
 compiler hoisting a load out of a critical section, which is a bug on
 one cpu too.
 
-**What is per cpu.** `struct cpu` (`src/cpu.h`) holds the two run
-queues and the lock over them, the currently running proc, and the
-counters. A cpu finds its own through `cpu_self()`, which is `%gs` on
-microvm and "the only one" on efi. Both phases of the dispatch lap run
-per cpu over that cpu's own queues, so the progress guarantee is per cpu
-and survives unchanged.
+**What is per cpu.** `struct cpu` (`src/cpu.h`) holds the currently
+running proc, whether the cpu dispatches at all, and the counters. A cpu
+finds its own through `cpu_self()`, which is `%gs` on microvm and "the
+only one" on efi.
+
+The run queues are not there. There is one pair for the machine under
+one lock, so whichever cpu looks next takes the next runnable proc and
+there is no placement to decide at spawn — the decision that cannot be
+made well, since it is made before the proc has done anything. This is
+plan 9's arrangement (`runq[Nrq]` in `port/proc.c` is global there too)
+rather than the per-cpu queues and work stealing of OpenBSD's
+`kern_sched.c`. The usual argument for per-cpu queues is keeping cpus
+off one lock on the hottest path, and it is weak here: every send and
+every wakeup already passes through the single IPC lock, held longer
+than the scheduler lock ever is. The scheduler lock cannot become the
+bottleneck without the IPC lock being one first. If it ever does, plan 9
+has the next step as well — a lock per priority queue rather than one
+over the set.
+
+Both phases of the dispatch lap run over that one pair, so the progress
+guarantee is machine-wide rather than per cpu. The lap ends when the
+run set empties, and whichever cpu empties it swaps the sets: a cpu
+cannot swap on its own schedule without handing the others procs that
+already had a turn.
+
+`p->home` records where a proc last ran. Nothing reads it to decide
+anything; it is what the smp tests ask, and it is the field soft
+affinity would use.
+
+Measured on `test/boot/microvm_spin.lua`, four procs of pure
+computation, wall clock with the 0.22s boot subtracted: 0.49s at
+`-smp 1`, 0.25s at 2, 0.14s at 4. Message-heavy work does not scale
+this way and is not expected to — one 9P server proc is one thread of
+control whatever the cpu count.
 
 **What is shared, and how.** One lock over the whole IPC layer, taken
 at the outermost syscall entry and asserted — not taken — by the inner
@@ -703,18 +731,11 @@ ioapic sends everything to apic id 0 and MSI-X entries name the boot
 cpu. So do the device pumps, `expire_timers`, and everything that
 touches firmware. APs run the scheduler and nothing else.
 
-Driver procs say they belong there too — `proc_new` sets `p->home = 0`
-for anything privileged — but that line cannot currently change any
-placement: `spawn_driver` runs before `smp_start_aps`, so there is one
-cpu to choose from when a driver is made, and `p->home` is never
-reassigned afterwards. What pins drivers today is the boot order, and
-nothing states it as a rule. Nothing else depends on it either: the
-device-path invariants that used to be credited to it hold on any cpu
-now.
-
-So drivers on the boot cpu is a design preference — their interrupts
-land there — rather than a correctness requirement, and if the ordering
-ever changes it should be re-examined rather than defended.
+Driver procs do not. Nothing pins them, and nothing can: there is one
+run queue, so a driver runs wherever a cpu picks it up. Their
+interrupts still land on the boot cpu, which makes running them there a
+preference and not a requirement — the device-path invariants that were
+once credited to pinning hold on any cpu.
 
 **What is per driver rather than per cpu**, and the distinction has
 bitten once: a virtio queue is safe with no lock because exactly one
