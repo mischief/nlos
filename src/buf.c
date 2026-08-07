@@ -42,6 +42,7 @@
  * A second convention in the same program is a bug generator.
  */
 
+#include <stdint.h>
 #include <string.h>
 
 #include "lauxlib.h"
@@ -271,6 +272,124 @@ buf_fill(lua_State *L)
 	return 0;
 }
 
+/* ---- fields ----
+ *
+ * The read side is why these exist rather than being a convenience.
+ * string.unpack reads a field out of a string in place and allocates
+ * nothing, so a sector held as a string costs nothing to read fields
+ * from. A buffer without these would have to make a string per field to
+ * hand to unpack, which is an allocation where there was none -- the
+ * opposite of the point.
+ *
+ * Both byte orders are named, neither is the default. Little-endian is
+ * FAT and 9P, big-endian is every packet header, and both are in this
+ * tree: a default here would be a thing to remember at every call.
+ *
+ * Unsigned only. A signed field is rare in the formats here and would
+ * be a second family of names for something a caller can do with one
+ * subtraction.
+ */
+static uint64_t
+getint(lua_State *L, int nbytes, int be)
+{
+	struct luabuf *b = checkbuf(L, 1);
+	lua_Integer i = luaL_checkinteger(L, 2);
+	uint64_t v = 0;
+	int k;
+
+	if (i < 1 || (size_t)(i - 1) + (size_t)nbytes > b->len)
+		luaL_error(L, "%d bytes at %d is outside the buffer (%d)",
+		    nbytes, (int)i, (int)b->len);
+	for (k = 0; k < nbytes; k++) {
+		unsigned char c = b->p[i - 1 + (be ? k : nbytes - 1 - k)];
+
+		v = (v << 8) | c;
+	}
+	return v;
+}
+
+static void
+setint(lua_State *L, int nbytes, int be)
+{
+	struct luabuf *b = checkwritable(L, 1);
+	lua_Integer i = luaL_checkinteger(L, 2);
+	uint64_t v = (uint64_t)luaL_checkinteger(L, 3);
+	int k;
+
+	if (i < 1 || (size_t)(i - 1) + (size_t)nbytes > b->len)
+		luaL_error(L, "%d bytes at %d is outside the buffer (%d)",
+		    nbytes, (int)i, (int)b->len);
+	for (k = 0; k < nbytes; k++) {
+		unsigned char c = (unsigned char)(v >> (8 * k));
+
+		b->p[i - 1 + (be ? nbytes - 1 - k : k)] = c;
+	}
+}
+
+#define GETTER(name, n, be)					\
+	static int name(lua_State *L)				\
+	{							\
+		lua_pushinteger(L,				\
+		    (lua_Integer)getint(L, (n), (be)));		\
+		return 1;					\
+	}
+
+#define SETTER(name, n, be)					\
+	static int name(lua_State *L)				\
+	{							\
+		setint(L, (n), (be));				\
+		return 0;					\
+	}
+
+GETTER(buf_u8, 1, 0)
+GETTER(buf_u16le, 2, 0)
+GETTER(buf_u16be, 2, 1)
+GETTER(buf_u32le, 4, 0)
+GETTER(buf_u32be, 4, 1)
+GETTER(buf_u64le, 8, 0)
+GETTER(buf_u64be, 8, 1)
+
+SETTER(buf_setu8, 1, 0)
+SETTER(buf_setu16le, 2, 0)
+SETTER(buf_setu16be, 2, 1)
+SETTER(buf_setu32le, 4, 0)
+SETTER(buf_setu32be, 4, 1)
+SETTER(buf_setu64le, 8, 0)
+SETTER(buf_setu64be, 8, 1)
+
+/* view(i, j) -- part of this buffer, sharing its bytes.
+ *
+ * For handing a run of a large buffer to something that takes a payload
+ * -- one band of a screen, one sector of a cluster read -- without
+ * cutting a copy out of it first. A view of a read-only buffer is
+ * read-only; a view of a writable one can be written, since it is the
+ * same owner's memory either way.
+ *
+ * The view holds the buffer as a uservalue, so the bytes outlive it.
+ */
+static int
+buf_view(lua_State *L)
+{
+	struct luabuf *b = checkbuf(L, 1);
+	size_t off, n;
+	struct luabuf *v;
+
+	range(L, b, 2, &off, &n);
+	v = lua_newuserdatauv(L, sizeof *v, 1);
+	v->p = b->p + off;
+	v->len = n;
+	v->ro = b->ro;
+	v->owned = 0;
+	luaL_setmetatable(L, BUFMT);
+
+	/* the parent, not the grandparent: a view of a view keeps the
+	 * view, which keeps what it came from.
+	 */
+	lua_pushvalue(L, 1);
+	lua_setiuservalue(L, -2, 1);
+	return 1;
+}
+
 /* a read-only view of the same bytes.
  *
  * What a refcount would be for, without the count: hand out a view and
@@ -334,6 +453,21 @@ static const luaL_Reg bufmeth[] = {
 	{ "set", buf_set },
 	{ "copy", buf_copy },
 	{ "fill", buf_fill },
+	{ "view", buf_view },
+	{ "u8", buf_u8 },
+	{ "u16le", buf_u16le },
+	{ "u16be", buf_u16be },
+	{ "u32le", buf_u32le },
+	{ "u32be", buf_u32be },
+	{ "u64le", buf_u64le },
+	{ "u64be", buf_u64be },
+	{ "setu8", buf_setu8 },
+	{ "setu16le", buf_setu16le },
+	{ "setu16be", buf_setu16be },
+	{ "setu32le", buf_setu32le },
+	{ "setu32be", buf_setu32be },
+	{ "setu64le", buf_setu64le },
+	{ "setu64be", buf_setu64be },
 	{ "ro", buf_ro },
 	{ "clone", buf_clone },
 	{ NULL, NULL },
