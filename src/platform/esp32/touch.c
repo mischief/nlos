@@ -227,4 +227,42 @@ esp_touch_take(int *x, int *y, int *down)
 	return 1;
 }
 
+#else /* CONFIG_LUAOS_BOARD_TDECK */
+
+/* a board with no panel answers that it has none, the way every other
+ * probe here does. The idle path calls poll unconditionally, so these
+ * have to exist for it to link.
+ */
+int
+esp_touch_present(void)
+{
+	return 0;
+}
+
+int
+esp_touch_poll(void)
+{
+	return 0;
+}
+
+void
+esp_touch_state(int *x, int *y, int *down)
+{
+	if (x)
+		*x = 0;
+	if (y)
+		*y = 0;
+	if (down)
+		*down = 0;
+}
+
+int
+esp_touch_take(int *x, int *y, int *down)
+{
+	(void)x;
+	(void)y;
+	(void)down;
+	return 0;
+}
+
 #endif /* CONFIG_LUAOS_BOARD_TDECK */
