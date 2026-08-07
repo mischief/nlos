@@ -145,6 +145,10 @@ set(EMBED_FILES
     # platform, and flash is the abundant thing here.
     lib/dev.lua
     lib/srv.lua
+    # the pointer's file, which task/mousesrv.lua needs. That proc is
+    # spawned before any namespace exists, so what it requires must be
+    # in the image rather than on the volume.
+    lib/mousefs.lua
     lib/blkfs.lua
     task/blksrv.lua
 
