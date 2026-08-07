@@ -1363,6 +1363,19 @@ test('gefs-host', lua_interp,
 # dev backend over it reads, writes and lists what it should. What this
 # cannot say is that a served volume is wired to the flash driver, which
 # is the boot test's job.
+# the fat WRITE path, which is where task #47 lives: a volume built the
+# way the board's is, written to a little, and then read back in full --
+# plus the same with the cache thrown away, which is what a reset in the
+# middle of a write leaves behind. What this cannot cover is the flash
+# driver under the filesystem, where an erase that completes and a
+# program that does not is a sector of 0xff.
+test('fat-write', lua_interp,
+  args: [files('test/host_fatwrite.lua')],
+  protocol: 'tap',
+  timeout: 120,
+  env: host_env,
+)
+
 test('fat-host', lua_interp,
   args: [files('test/host_fat.lua')],
   protocol: 'tap',
