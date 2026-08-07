@@ -729,7 +729,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'procfs', 'buf', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount', 'p9stream', 'p9flush', 'chanstress', 'torture', 'generator', 'sync', 'readline', 'mntconc',
               'ports',
               'font', 'fb', 'fbprog', 'fbcons',
-              'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'replyright', 'rightsundo', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
+              'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'replyright', 'rightsundo', 'procpriv', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
               'strictglobals', 'bufout', 'bufmove', 'efigefs', 'nsfs', 'vi', 'zmodem', 'atexit']
 foreach t : boot_tests
   test('boot-' + t, boottest,

@@ -60,11 +60,27 @@ granted. New authority arrives as `{__right=h}`, either inside a message
 or in `sys.spawn`'s `arg`. Device access — keyboard, serial, network —
 is a right like any other.
 
-Control over a proc is a right too. `sys.kill` and `sys.reap` take a
-right to the target's self port, which is what `sys.spawn` returns to the
-parent — so a supervisor stops what it started, and a pid learned from
-`sys.procs` names a proc without reaching it. A pid is an identifier, not
-a capability, and nothing that acts on one should read as though it were.
+Control over a proc is a right too. `sys.kill`, `sys.reap` and
+`sys.set_trace` take a right to the target's self port, which is what
+`sys.spawn` returns to the parent — so a supervisor stops what it
+started, and a pid learned from `sys.procs` names a proc without
+reaching it. A pid is an identifier, not a capability, and nothing that
+acts on one should read as though it were.
+
+**The line is between reading a proc and acting on one.** `sys.stack`,
+`sys.trace`, `sys.pidstat` and `sys.wchan` stay ambient beside
+`sys.procs` and `sys.name`, which is what makes a debugger `cat
+/proc/4/stack` (`lib/procfs.lua`). `sys.set_trace` is on the other side
+because it *writes*: it frees and reallocates a ring the target's own
+hook is filling. Ask which side a new call is on before adding it.
+
+A death notice splits the same way. That a proc exited is ambient — a
+child watching the parent it must not outlive (`task/fbsh.lua`) holds no
+right to it — but `reason` and `exitmsg` are the dying proc's own text,
+so they go only to a watcher that held a right **when it called
+`sys.monitor`**. Decided then rather than at death, because the ordinary
+supervisor spawns, monitors, sends the child its work and closes the
+spawn right, and must still hear how the child ended.
 
 `arg` exists because a message is always too late for some things. It is
 delivered before the child's chunk runs and arrives as the chunk's

@@ -504,6 +504,17 @@ struct kproc {
 	unsigned oncpu;
 
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
+	/* did each watcher hold a right to this proc when it asked?
+	 *
+	 * decided at sys.monitor rather than at death, because the two
+	 * differ for the ordinary supervisor: it spawns, monitors, sends
+	 * the child its work and closes the spawn right -- having nothing
+	 * more to say -- and is still the proc that should hear how the
+	 * child ended. asking at death would answer no for exactly that
+	 * shape (test/boot/test_prog.lua), and holding the right open
+	 * merely to be told would keep sys.hungup from ever firing.
+	 */
+	unsigned char wpriv[MAXWATCH];
 	int nwatch;
 	struct luaheap *heap;	/* this proc's lua heap; see kalloc */
 	/* which cpu dispatches this proc. Not p->cpu, which is taken and
@@ -3204,6 +3215,25 @@ out:
  * about when a server has gone: this is checked before parking again in
  * call_k, and that is checked by whoever parked in lua.
  */
+/* may this proc act on that one? holding a right to the target's self
+ * port is the authority -- see api_kill, which explains why.
+ *
+ * the self port outlives the proc's own right to it (see
+ * kproc.selfport), so this answers for a corpse too.
+ *
+ * it gates what ACTS on a proc, not what reads one. sys.stack,
+ * sys.trace and sys.pidstat stay ambient with sys.procs and sys.name,
+ * which is lib/procfs.lua's whole argument: a debugger is `cat
+ * /proc/4/stack`, and what those report is structure rather than any
+ * proc's data. sys.set_trace is on this side of the line because it
+ * writes -- it reallocates a ring the target's own hook is filling.
+ */
+static int
+may_control(struct kproc *p, struct kproc *target)
+{
+	return target->selfport && proc_has_port(p, target->selfport);
+}
+
 static int
 sole_holder(struct kproc *p, struct kport *port)
 {
@@ -3826,7 +3856,7 @@ api_newport(lua_State *L)
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
     int is_file, int reductions, size_t mem_limit, int priv);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason,
-    int status, const char *exitmsg, int broke);
+    int status, const char *exitmsg, int broke, int priv);
 
 struct dumpbuf {
 	char *data;
@@ -4152,7 +4182,7 @@ api_monitor(lua_State *L)
 		target = 0;
 	if (!target) {
 		ipclock_enter();
-		notify_exit(p, pid, "noproc", -1, 0, 0);
+		notify_exit(p, pid, "noproc", -1, 0, 0, 1);
 		ipclock_leave();
 		lua_pushboolean(L, 1);
 		return 1;
@@ -4166,6 +4196,7 @@ api_monitor(lua_State *L)
 		}
 	if (target->nwatch >= MAXWATCH)
 		return luaL_error(L, "too many watchers");
+	target->wpriv[target->nwatch] = may_control(p, target) ? 1 : 0;
 	target->watchers[target->nwatch++] = p->id;
 	lua_pushboolean(L, 1);
 	return 1;
@@ -5004,6 +5035,13 @@ set_trace_k(lua_State *L, int status, lua_KContext ctx)
 		p = find_proc((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
+		/* the one call here that writes to another proc, so the
+		 * one that takes a right to it. reading a trace does not:
+		 * arming is what costs the target ~4.7x and what frees
+		 * and reallocates a ring its hook is filling.
+		 */
+		if (p != self(L) && !may_control(self(L), p))
+			return luaL_error(L, "no right to proc %d", p->id);
 	}
 	n = luaL_checkinteger(L, arg);
 	if (n < 0)
@@ -5360,18 +5398,6 @@ api_syscalls(lua_State *L)
 			lua_setfield(L, -2, kapi[i].name);
 		}
 	return 1;
-}
-
-/* may this proc stop or reap that one? holding a right to the target's
- * self port is the authority -- see api_kill.
- *
- * the self port outlives the proc's own right to it (see kproc.selfport),
- * so this answers for a corpse too.
- */
-static int
-may_control(struct kproc *p, struct kproc *target)
-{
-	return target->selfport && proc_has_port(p, target->selfport);
 }
 
 /* sys.reap(pid): release a corpse.
@@ -7083,8 +7109,34 @@ static void
  * attached -- which is every test, at poweroff.
  */
 notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
-    const char *exitmsg, int broke)
+    const char *exitmsg, int broke, int priv)
 {
+	/* `reason` and `exitmsg` are the dying proc's own text -- an error
+	 * message, whatever it passed to sys.setexit -- and they are the
+	 * only part of this notice that is its data rather than the fact
+	 * of its death. so they go to a watcher that held a right to it
+	 * when it asked to watch (kproc.wpriv) and to nobody else.
+	 *
+	 * that a proc exited stays ambient, which is what monitor is for:
+	 * a child watching the parent that spawned it, so it does not
+	 * outlive the terminal it prompts on (task/fbsh.lua), holds no
+	 * right to that parent and must not need one. gating the notice
+	 * itself would force handing out control of a proc merely to
+	 * permit watching it.
+	 *
+	 * an emptied reason still reads as an abnormal exit -- `normal`
+	 * below is false whenever there was one at all -- so a watcher
+	 * learns that its peer died badly without learning what it said.
+	 *
+	 * priv is 1 for a synthetic notice -- api_monitor's noproc --
+	 * where the reason is our answer about the request rather than
+	 * anything a proc said.
+	 */
+	if (!priv) {
+		reason = reason ? "" : 0;
+		exitmsg = 0;
+	}
+
 	struct wbuf w = { 0 };
 	unsigned int npairs = 3;
 	lua_Integer id = pid;
@@ -7207,7 +7259,7 @@ proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 		if (w)
 			notify_exit(w, p->id, why ? reason : 0,
 			    why ? -1 : p->exitcode,
-			    why ? 0 : p->exitmsg, broke);
+			    why ? 0 : p->exitmsg, broke, p->wpriv[i]);
 	}
 	p->nwatch = 0;
 }

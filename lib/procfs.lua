@@ -14,12 +14,18 @@
 -- reports is ambient kernel state, readable from any proc, so serving it
 -- over a port would buy nothing and cost a round trip per read.
 --
--- READ-ONLY, and that is a decision rather than an omission. everything
+-- read-only, and that is a decision rather than an omission. everything
 -- here is structure: what the machine is doing, not what any proc's data
 -- is. that is why it needs no capability, exactly as sys.procs, sys.name
 -- and sys.wchan need none. locals would be values rather than structure,
 -- and a /proc/n/ctl that could stop or kill a proc would be authority --
 -- both want a capability, and neither is here.
+--
+-- the kernel draws the same line, so this stays a plain reader: what
+-- acts on a proc takes a right to it (sys.kill, sys.reap, sys.set_trace
+-- -- see may_control in src/kernel.c), and what reads one does not.
+-- arming a trace is therefore not something to add here; /proc/n/trace
+-- reports a ring somebody else turned on.
 --
 -- content is generated per open() and cached in the handle, so a read
 -- sees one consistent snapshot rather than a file that changes shape
