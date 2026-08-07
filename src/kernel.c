@@ -3883,6 +3883,9 @@ api_spawn(lua_State *L)
 		if (!lua_isnil(L, -1))
 			mem_limit = (size_t)luaL_checkinteger(L, -1);
 		lua_pop(L, 1);
+		/* both budgets are clamped to the parent's below, so a
+		 * child is never less contained than whoever spawned it.
+		 */
 		lua_getfield(L, 2, "name");
 		if (!lua_isnil(L, -1))
 			snprintf(chunkname, sizeof chunkname, "=%s",
@@ -3890,7 +3893,32 @@ api_spawn(lua_State *L)
 		lua_pop(L, 1);
 	}
 
-	/* opts.arg: one value handed to the child BEFORE its chunk runs,
+	/* the budgets are inherited, and may only be asked downward.
+	 *
+	 * "instruction budgets and memory caps make a proc a real
+	 * containment unit" was true only of procs whose parent chose to
+	 * make it true: both fields went to proc_new as given, so a proc
+	 * held to 2MB could spawn a child with no cap at all, and one cut
+	 * to a short budget could spawn a child that runs between hooks
+	 * long enough to hold a cpu. Neither is a bug a caller sees, which
+	 * is why it stood -- a proc asks for what it wants and gets it.
+	 *
+	 * so absent means the parent's, not the machine default, and a
+	 * larger request is clamped rather than refused. refusing would
+	 * make a supervisor's own containment its children's problem to
+	 * know about; clamping lets the same code run either way and get
+	 * whatever the parent can actually give.
+	 *
+	 * mem_limit 0 is unlimited, so it clamps only when the parent has
+	 * a cap; reductions runs the other way, since a smaller budget is
+	 * the more contained one.
+	 */
+	if (reductions <= 0 || reductions > p->reductions)
+		reductions = p->reductions;
+	if (p->mem_limit && (mem_limit == 0 || mem_limit > p->mem_limit))
+		mem_limit = p->mem_limit;
+
+	/* opts.arg: one value handed to the child before its chunk runs,
 	 * arriving as the chunk's `...`.
 	 *
 	 * a message cannot do this job. the child's first line is typically
@@ -5427,6 +5455,13 @@ api_pidstat(lua_State *L)
 	lua_setfield(L, -2, "limit");
 	lua_pushinteger(L, p->weight);
 	lua_setfield(L, -2, "weight");
+	/* instructions between preempt hooks. Reported because it is a
+	 * containment bound like mem below it, inherited from the parent
+	 * the same way, and otherwise invisible -- there was no way to ask
+	 * a proc what budget it was actually given.
+	 */
+	lua_pushinteger(L, p->reductions);
+	lua_setfield(L, -2, "reductions");
 	/* raw tsc cycles this proc has actually spent running, which the
 	 * scheduler has accumulated since the beginning for its own decay
 	 * and which nothing could read until now.

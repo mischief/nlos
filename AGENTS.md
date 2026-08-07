@@ -47,6 +47,13 @@ spin without taking the machine. No native userspace — no ring 3, no
 ELF loader, no syscall ABI, and the MMU stays optional. If that
 changes, it is a different project.
 
+Both budgets are **inherited, and may only be asked downward**:
+`sys.spawn`'s `opts.mem` and `opts.reductions` are clamped to the
+parent's, and absent means the parent's rather than the machine default.
+Otherwise containment is only as good as each proc's willingness to
+apply it — a capped proc could spawn an uncapped child and a
+tightly-preempted one could spawn a child that holds a cpu.
+
 **No ambient authority.** A proc touches exactly what its rights table
 says: handle 0 (its own receive port) plus whatever was explicitly
 granted. New authority arrives as `{__right=h}`, either inside a message
