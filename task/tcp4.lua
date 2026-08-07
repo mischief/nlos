@@ -46,36 +46,29 @@
 -- reach. Adding it means changing a protocol task/tcp.lua also serves
 -- over the firmware's TCP4, so both sides move together or a client
 -- has to cope with the difference.
-
 local sys = require("los.sys")
 local thread = require("los.thread")
 local ether = require("ether")
 local ip4 = require("ip4")
 local tcp4 = require("tcp4")
 local tcb = require("tcb")
-
 local iph = sys.granted().ip
-
 if not iph then
 	error("tcp: no ip capability granted", 0)
 end
-
 -- 1500 of ethernet, less 20 of IP and 20 of TCP. We advertise it and
 -- the peer decides what it can take; anything larger than the link
 -- would be a datagram the ip layer must fragment, and it does not.
 local MSS = 1500 - ip4.HDRLEN - tcp4.HDRLEN
-
 -- how long a dial waits before giving up. Short, and short on purpose:
 -- until retransmission lands a lost SYN is not resent, so this is the
 -- whole of a dial's patience rather than the last resort behind it.
 local DIAL_MS = 10000
-
 local conns = {}	-- connid -> connection record, or a listener
 local byname = {}	-- "remote address, both ports" -> connid
 local listeners = {}	-- local port -> the listener record
 local nextconn = 1
 local nextephem = 32768
-
 local stat = {
 	dialed = 0,
 	refused = 0,
@@ -89,22 +82,18 @@ local stat = {
 	accepted = 0,
 	backlogged = 0,
 }
-
 -- How many connections may sit completed and unaccepted before the next
 -- one is refused. A listener that is not accepting is a service that is
 -- not serving, and holding an unbounded queue of connections for it only
 -- moves the failure somewhere less obvious -- the peer is better told
 -- now than left in an established connection nobody will ever read.
 local BACKLOG = 8
-
 -- the packets from task/ip.lua arrive here. Registered once, below,
 -- with a right that this proc keeps for as long as it runs.
 local pktport = sys.newport()
-
 -- forward declarations: incoming() calls service(), and on_packet()
 -- calls incoming().
 local service, incoming
-
 -- The clock, read once per pass of the main loop.
 --
 -- Every path that hands time to lib/tcb.lua used to call sys.uptime_ms
@@ -114,32 +103,26 @@ local service, incoming
 -- sys.syscalls is what showed it; a line profile could not, because a
 -- syscall is not a Lua line.
 local now = 0
-
 local function reply_to(m, v)
 	local h = type(m) == "table" and type(m.reply) == "table" and
 	    m.reply.__right or nil
-
 	if h then
 		sys.send(h, v)
 		sys.close(h)
 	end
 end
-
 -- see task/ip.lua's whole(): a client can send a float, and 1.5 reaches
 -- string.pack as an error that kills the task rather than the request.
 local function whole(v, max)
 	if type(v) ~= "number" then
 		return nil
 	end
-
 	local n = math.tointeger(v)
-
 	if not n or n < 0 or n > max then
 		return nil
 	end
 	return n
 end
-
 -- a connection is identified by the pair of ports and the far address.
 -- Our own address is not in the key: it is the same for every
 -- connection on a machine with one interface, and using it would break
@@ -147,11 +130,9 @@ end
 local function name(raddr, rport, lport)
 	return raddr .. string.pack(">I2I2", rport, lport)
 end
-
 local function ipconfig()
 	return thread.rpc(iph, { op = "config" }) or {}
 end
-
 -- The initial sequence number must not be a counter and must not be
 -- guessable from another connection's (RFC 6528): an off-path attacker
 -- who can predict it can inject into the stream. lib/tcb.lua
@@ -162,29 +143,24 @@ end
 -- as an ISN is worse than a refusal, because it looks like it works.
 local function draw_iss()
 	local ok, rng = pcall(require, "los.platform.rng")
-
 	if not ok or not rng then
 		return nil
 	end
 	return string.unpack(">I4", rng.bytes(4))
 end
-
 -- ---- the wire ----
-
 local function output(c, seg)
-	local bytes = tcp4.encode(seg, c.laddr, c.raddr)
-
+	local bytes = tcp4.encode(seg, c.laddr, c.raddr, true)
 	-- no reply asked for: a round trip per segment would put the ip
 	-- task's latency inside every one of them. sendwait rather than
 	-- send, so a full queue parks this proc instead of losing the
 	-- segment -- see lib/caps.lua's requester for why the size
 	-- argument is what makes that park rather than spin.
 	local need = #bytes + 256
-
 	while true do
 		local ok, why = sys.send(iph, { op = "output",
-		    proto = ip4.PROTO_TCP, dst = c.raddr, data = bytes })
-
+		    proto = ip4.PROTO_TCP, dst = c.raddr,
+		    data = bytes })
 		if ok then
 			stat.seg_out = stat.seg_out + 1
 			return true
@@ -195,20 +171,17 @@ local function output(c, seg)
 		sys.sendblock(iph, need)
 	end
 end
-
 -- everything the state machine wants to send, sent.
 local function flush(c)
 	for _, seg in ipairs(c.t:take()) do
 		output(c, seg)
 	end
 end
-
 -- a reset for a segment belonging to no connection we have. This is
 -- what makes a closed port say so instead of swallowing the SYN and
 -- leaving the peer to retransmit into silence for a minute.
 local function refuse(src, dst, seg)
 	local r = tcp4.reset_for(seg)
-
 	if not r then
 		return
 	end
@@ -216,9 +189,7 @@ local function refuse(src, dst, seg)
 	sys.send(iph, { op = "output", proto = ip4.PROTO_TCP, dst = src,
 	    data = tcp4.encode(r, dst, src) })
 end
-
 -- ---- connections ----
-
 local function forget(c)
 	conns[c.id] = nil
 	if c.key then
@@ -228,7 +199,6 @@ local function forget(c)
 		listeners[c.lport] = nil
 	end
 end
-
 -- answer everyone parked on this connection, and say the same thing to
 -- all of them. A client blocked in recv on a connection that has just
 -- been reset must come back with nil rather than waiting for a segment
@@ -244,7 +214,6 @@ local function wake(c, value)
 		reply_to(m, value)
 	end
 	c.readers = {}
-
 	if c.writer then
 		reply_to(c.writer.m, value and true or false)
 		c.writer = nil
@@ -254,13 +223,11 @@ local function wake(c, value)
 		c.dialer = nil
 	end
 end
-
 -- hand out whatever the state machine has for readers, oldest first.
 local function feed(c)
 	while #c.readers > 0 do
 		local m = c.readers[1]
 		local data = c.t:read(m.maxlen or 4096)
-
 		if data == nil then
 			-- the peer closed and there is nothing left: the
 			-- stream ended, which is what nil means here and what
@@ -275,17 +242,13 @@ local function feed(c)
 		end
 	end
 end
-
 -- as much of a parked write as the send buffer will now take.
 local function push(c)
 	local w = c.writer
-
 	if not w then
 		return
 	end
-
 	local n = c.t:write(w.data:sub(w.off + 1), now)
-
 	if n == nil then
 		reply_to(w.m, false)
 		c.writer = nil
@@ -297,7 +260,6 @@ local function push(c)
 		c.writer = nil
 	end
 end
-
 -- one pass over everything a segment or a request may have changed.
 -- Called after every entry point, so that no path has to remember which
 -- of these it might have made possible.
@@ -314,7 +276,6 @@ function service(c)
 				-- whoever is already waiting in accept, or waits
 				-- in the backlog for someone to ask.
 				local l = conns[c.listener_id]
-
 				c.deadline = nil
 				if l and #l.waiters > 0 then
 					stat.accepted = stat.accepted + 1
@@ -336,18 +297,15 @@ function service(c)
 			stat.closing = stat.closing + 1
 		end
 	end
-
 	-- the state machine reaching CLOSED is what ends a connection,
 	-- whether that was a reset, a timeout, or an orderly close that has
 	-- finished waiting out its TIME-WAIT.
 	if c.t.state == tcb.CLOSED then
 		c.dead = true
 	end
-
 	push(c)
 	feed(c)
 	flush(c)
-
 	if c.dead then
 		-- flush first: a reset we were asked to send still has to go
 		-- out before the connection stops existing.
@@ -355,7 +313,6 @@ function service(c)
 		forget(c)
 	end
 end
-
 -- a connection request for a listening port. The child is an ordinary
 -- connection in every respect except that it announces itself to its
 -- listener rather than to a dialer.
@@ -372,18 +329,13 @@ function incoming(l, src, dst, seg)
 		refuse(src, dst, seg)
 		return
 	end
-
 	local iss = draw_iss()
-
 	if not iss then
 		refuse(src, dst, seg)
 		return
 	end
-
 	local id = nextconn
-
 	nextconn = nextconn + 1
-
 	local c = {
 		id = id,
 		laddr = dst, lport = l.lport,
@@ -393,7 +345,6 @@ function incoming(l, src, dst, seg)
 		listener_id = l.id,
 		deadline = now + DIAL_MS,
 	}
-
 	c.t = tcb.new({
 		laddr = dst, lport = l.lport,
 		raddr = src, rport = seg.sport,
@@ -405,17 +356,13 @@ function incoming(l, src, dst, seg)
 	c.t:segment(seg, now)
 	service(c)
 end
-
 -- ---- inbound ----
-
 local function on_packet(m)
 	if type(m) ~= "table" or type(m.data) ~= "string" or
 	    type(m.src) ~= "string" or type(m.dst) ~= "string" then
 		return
 	end
-
 	local seg = tcp4.decode(m.data, m.src, m.dst)
-
 	if not seg then
 		-- a bad checksum or a runt. Counted rather than ignored: a
 		-- climbing number here says the wire or our own encode is
@@ -423,15 +370,11 @@ local function on_packet(m)
 		stat.seg_bad = stat.seg_bad + 1
 		return
 	end
-
 	stat.seg_in = stat.seg_in + 1
-
 	local id = byname[name(m.src, seg.sport, seg.dport)]
 	local c = id and conns[id]
-
 	if not c then
 		local l = listeners[seg.dport]
-
 		-- a SYN with no acknowledgment is a connection request;
 		-- anything else addressed to a listening port belongs to a
 		-- connection that no longer exists, and is refused.
@@ -444,37 +387,29 @@ local function on_packet(m)
 		end
 		return
 	end
-
 	c.t:segment(seg, now)
 	service(c)
 end
-
 -- ---- client requests ----
-
 local function on_request(m)
 	if type(m) ~= "table" then
 		return
 	end
-
 	if m.op == "dial" then
 		local a, b = whole(m.a, 0xff), whole(m.b, 0xff)
 		local cc, d = whole(m.c, 0xff), whole(m.d, 0xff)
 		local port = whole(m.port, 0xffff)
-
 		if not a or not b or not cc or not d or not port or port == 0 then
 			reply_to(m, nil)
 			return
 		end
-
 		local cfg = ipconfig()
 		local raddr = string.char(a, b, cc, d)
-
 		-- Our own address for this connection, which for loopback is
 		-- not our address at all. lib/inet.lua's srcfor makes the same
 		-- choice for the packet; making it here too is what lets the
 		-- TCB checksum and match on the same pair the wire will carry.
 		local laddr = ip4.is_loopback(raddr) and ip4.LOOPBACK or cfg.ip
-
 		-- No address, no connection -- but only off the machine. A SYN
 		-- from 0.0.0.0 would be answered by nobody, so failing here
 		-- says why rather than leaving the caller to wait out the dial
@@ -486,13 +421,9 @@ local function on_request(m)
 			return
 		end
 		local lport = nextephem
-
 		nextephem = 32768 + ((nextephem - 32767) % 28000)
-
 		local id = nextconn
-
 		nextconn = nextconn + 1
-
 		local c = {
 			id = id,
 			laddr = laddr, lport = lport,
@@ -502,14 +433,11 @@ local function on_request(m)
 			dialer = m,
 			deadline = now + DIAL_MS,
 		}
-
 		local iss = draw_iss()
-
 		if not iss then
 			reply_to(m, nil)
 			return
 		end
-
 		c.t = tcb.new({
 			laddr = laddr, lport = lport,
 			raddr = raddr, rport = port,
@@ -519,10 +447,8 @@ local function on_request(m)
 		byname[c.key] = id
 		c.t:connect(now)
 		service(c)
-
 	elseif m.op == "send" then
 		local c = conns[m.connid]
-
 		if not c or type(m.data) ~= "string" then
 			reply_to(m, false)
 			return
@@ -536,24 +462,19 @@ local function on_request(m)
 		end
 		c.writer = { m = m, data = m.data, off = 0 }
 		service(c)
-
 	elseif m.op == "recv" then
 		local c = conns[m.connid]
-
 		if not c then
 			reply_to(m, nil)
 			return
 		end
 		c.readers[#c.readers + 1] = m
 		service(c)
-
 	elseif m.op == "close" then
 		local c = conns[m.connid]
-
 		if not c then
 			return
 		end
-
 		if c.listener then
 			-- closing a listener refuses whoever is waiting in
 			-- accept and gives the port back; connections it
@@ -564,7 +485,6 @@ local function on_request(m)
 			forget(c)
 			return
 		end
-
 		-- A graceful close: the FIN goes out behind everything
 		-- already written, and the connection stays in the table
 		-- until the state machine reaches CLOSED. That is what makes
@@ -579,7 +499,6 @@ local function on_request(m)
 		c.t:close(now)
 		wake(c, nil)
 		service(c)
-
 	elseif m.op == "hwaddr" then
 		-- the NIC's address belongs to the layer that owns the NIC,
 		-- so this is a question forwarded rather than answered. It
@@ -591,20 +510,15 @@ local function on_request(m)
 		-- ip task answers in the six raw bytes it keeps, so the
 		-- conversion belongs on this side of the forward.
 		local hw = ipconfig().mac
-
 		reply_to(m, hw and ether.mac_str(hw) or nil)
-
 	elseif m.op == "setaddr" then
 		local a, b = whole(m.a, 0xff), whole(m.b, 0xff)
 		local cc, d = whole(m.c, 0xff), whole(m.d, 0xff)
-
 		if not a or not b or not cc or not d then
 			reply_to(m, false)
 			return
 		end
-
 		local cfg = { op = "configure", ip = string.char(a, b, cc, d) }
-
 		if whole(m.ma, 0xff) and whole(m.mb, 0xff) and
 		    whole(m.mc, 0xff) and whole(m.md, 0xff) then
 			cfg.mask = string.char(m.ma, m.mb, m.mc, m.md)
@@ -614,10 +528,8 @@ local function on_request(m)
 			cfg.gw = string.char(m.ga, m.gb, m.gc, m.gd)
 		end
 		reply_to(m, thread.rpc(iph, cfg) and true or false)
-
 	elseif m.op == "listen" then
 		local port = whole(m.port, 0xffff)
-
 		if not port or port == 0 or listeners[port] then
 			-- an occupied port is refused rather than shared:
 			-- two services on one port is a mistake, not a
@@ -625,18 +537,14 @@ local function on_request(m)
 			reply_to(m, nil)
 			return
 		end
-
 		local id = nextconn
-
 		nextconn = nextconn + 1
 		conns[id] = { id = id, listener = true, lport = port,
 		    backlog = {}, waiters = {}, readers = {} }
 		listeners[port] = conns[id]
 		reply_to(m, id)
-
 	elseif m.op == "accept" then
 		local l = conns[m.connid]
-
 		if not l or not l.listener then
 			reply_to(m, nil)
 			return
@@ -650,10 +558,8 @@ local function on_request(m)
 		-- client of this protocol expects and what task/sshd.lua's
 		-- loop is written around.
 		l.waiters[#l.waiters + 1] = m
-
 	elseif m.op == "stats" then
 		local s = { conns = 0 }
-
 		for k, v in pairs(stat) do
 			s[k] = v
 		end
@@ -668,23 +574,18 @@ local function on_request(m)
 			end
 		end
 		reply_to(m, s)
-
 	else
 		reply_to(m, nil)
 	end
 end
-
 -- ---- deadlines ----
-
 local function expire(now)
 	-- a copy, because service() may remove a connection from conns and
 	-- modifying a table while iterating it with pairs is undefined.
 	local live = {}
-
 	for id, c in pairs(conns) do
 		live[id] = c
 	end
-
 	for _, c in pairs(live) do
 		if c.listener then
 			goto continue
@@ -711,23 +612,19 @@ local function expire(now)
 		::continue::
 	end
 end
-
 -- one timer for the whole task, re-armed to the nearest deadline. See
 -- the header: MAXTIMERS is 32 machine-wide, so this is not an
 -- optimisation but the only arrangement that scales past 32 conns.
 local timer
 local armed		-- the deadline `timer` was set for, or nil
-
 local function rearm()
 	local soonest
-
 	for _, c in pairs(conns) do
 		if not c.listener then
 		-- two deadlines per connection and one timer for the task:
 		-- the dial timeout above, and whatever the state machine
 		-- wants next -- a retransmission, or the end of a TIME-WAIT.
 		local want = c.t:deadline()
-
 		if c.deadline and (not want or c.deadline < want) then
 			want = c.deadline
 		end
@@ -736,7 +633,6 @@ local function rearm()
 		end
 		end
 	end
-
 	-- Only re-arm to fire SOONER. A timer already set for an earlier
 	-- moment than we now need is harmless: it wakes us, we find nothing
 	-- due, and we come back through here to set the real one. A timer
@@ -760,57 +656,44 @@ local function rearm()
 		end
 		return
 	end
-
 	if timer and armed and soonest >= armed then
 		return			-- the one we have fires early enough
 	end
-
 	if timer then
 		sys.close(timer)
 	end
-
 	local ms = soonest - now
-
 	timer = sys.timer(ms > 1 and ms or 1)
 	armed = timer and soonest or nil
 end
-
 -- ---- start ----
-
 -- claim tcp from the ip task. Without this nothing is ever delivered,
 -- so a failure here is fatal rather than something to carry on past.
 if not thread.rpc(iph, { op = "raw", proto = ip4.PROTO_TCP,
     port = thread.giveright(pktport) }) then
 	error("tcp: the ip task refused the tcp protocol", 0)
 end
-
 -- Built once and edited in place. Rebuilding these three tables per
 -- message allocated four tables a segment for a set that changes only
 -- when the timer does.
 local cases = { { port = sys.SELF }, { port = pktport }, nil }
 local timercase = { port = 0 }
-
 now = sys.uptime_ms()
-
 while true do
 	rearm()
-
 	if timer then
 		timercase.port = timer
 		cases[3] = timercase
 	else
 		cases[3] = nil
 	end
-
 	local which, m = thread.alt(cases)
-
 	-- AFTER the alt, not before: the alt is where this proc waits, and
 	-- a clock read on the other side of it would be stale by exactly
 	-- the interval that matters to a timer. rearm() at the top of the
 	-- next pass then uses the time this event arrived, which is one
 	-- handler old -- microseconds against deadlines in milliseconds.
 	now = sys.uptime_ms()
-
 	if which == 2 then
 		on_packet(m)
 	elseif which == 3 then

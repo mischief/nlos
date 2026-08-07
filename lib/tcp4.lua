@@ -16,6 +16,7 @@
 -- is checked that way, and the half we cannot is driven by a table.
 
 local ip4 = require("ip4")
+local buf = require("los.buf")
 
 local tcp4 = {}
 
@@ -283,11 +284,48 @@ end
 -- seg is { sport, dport, seq, ack, flags, wnd, urp, opt, data }; src and
 -- dst are the addresses it is about to be wrapped in, needed for the
 -- checksum for the same reason udp4.encode needs them.
-function tcp4.encode(seg, src, dst)
+-- `out` and `at` write the segment into a frame the caller allocated,
+-- where the payload is copied once. Without them it is built by
+-- concatenation, which copies the data three times: into the body, in
+-- front of the pseudo-header to be summed, and again to splice the
+-- checksum in.
+function tcp4.encode(seg, src, dst, out, at)
 	local opts = tcp4.encode_options(seg.opt)
 	local hlen = tcp4.HDRLEN + #opts
 	local data = seg.data or ""
 	local off = (hlen // 4) << 12
+
+	-- `true` asks for a buffer of exactly this segment, for a sender
+	-- that has no frame to write into and is going to hand the bytes
+	-- to whoever does.
+	if out then
+		local len = hlen + #data
+
+		local alloced = out == true
+
+		if alloced then
+			out, at = buf.new(len), 1
+		end
+
+		out:setu16be(at, seg.sport)
+		out:setu16be(at + 2, seg.dport)
+		out:setu32be(at + 4, seg.seq & MASK)
+		out:setu32be(at + 8, (seg.ack or 0) & MASK)
+		out:setu16be(at + 12, off | (seg.flags & 0xff))
+		out:setu16be(at + 14, seg.wnd or 0)
+		out:setu16be(at + 16, 0)
+		out:setu16be(at + 18, seg.urp or 0)
+		if #opts > 0 then
+			out:copy(at + tcp4.HDRLEN, opts)
+		end
+		if #data > 0 then
+			out:copy(at + hlen, data)
+		end
+		out:setu16be(at + 16, ip4.checksum(out:view(at, at + len - 1),
+		    (~ip4.checksum(pseudo(src, dst, len))) & 0xffff))
+		return alloced and out or len
+	end
+
 	local hdr = string.pack(">I2I2I4I4I2I2I2I2",
 	    seg.sport, seg.dport, seg.seq & MASK, (seg.ack or 0) & MASK,
 	    off | (seg.flags & 0xff), seg.wnd or 0, 0, seg.urp or 0)

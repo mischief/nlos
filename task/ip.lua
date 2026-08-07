@@ -67,6 +67,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local ip4 = require("ip4")
+local buf = require("los.buf")
 local udp4 = require("udp4")
 local arp = require("arp")
 local inet = require("inet")
@@ -445,7 +446,7 @@ local function on_request(m)
 		local proto = whole(m.proto, 0xff)
 
 		if not proto or type(m.dst) ~= "string" or #m.dst ~= ip4.LEN or
-		    type(m.data) ~= "string" then
+		    (type(m.data) ~= "string" and not buf.is(m.data)) then
 			reply_to(m, false)
 			return
 		end
