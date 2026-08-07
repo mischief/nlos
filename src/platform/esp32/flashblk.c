@@ -1,4 +1,4 @@
-/* the luafs partition, as a block device.
+/* the data partitions, as block devices.
  *
  * Deliberately not esp_vfs_fat_spiflash_mount, for the reason blk.c
  * gives for refusing the microSD equivalent: that mounts a filesystem
@@ -8,10 +8,11 @@
  * serves the card and the flash alike, and is testable on a host
  * against a plain file.
  *
- * No wear levelling under this. The partition holds bin/ and lib/: it
- * is read every boot and written when someone uploads a program, and at
- * that rate the erase count of the busiest sector stays far inside what
- * NOR flash is rated for. A partition taking constant writes would need
+ * No wear levelling under this. The partitions hold bin/ and lib/ and
+ * what the machine knows about itself: they are read every boot and
+ * written when someone uploads a program or sets a network, and at that
+ * rate the erase count of the busiest sector stays far inside what NOR
+ * flash is rated for. A partition taking constant writes would need
  * more than this file provides.
  */
 
@@ -23,43 +24,48 @@
 #include "flashblk.h"
 #include "platform.h"
 
-/* the name in esp32/partitions.csv. Found by name rather than by
- * subtype: the subtype says what the bytes are meant to be, and more
- * than one partition may claim it.
+/* the names in esp32/partitions.csv, in volume order. Found by name
+ * rather than by subtype: the subtype says what the bytes are meant to
+ * be, and more than one partition claims it -- both of these do.
+ *
+ * Volume 0 is luafs and must stay first: it is what a board with no
+ * config partition still has, and what the single-volume calls reach.
  */
-#define LUAFS_LABEL "luafs"
+static const char *const labels[ESP_FLASHBLK_NVOL] = { "luafs", "config" };
 
-static const esp_partition_t *part;
-static int probed;
+static const esp_partition_t *part[ESP_FLASHBLK_NVOL];
+static int probed[ESP_FLASHBLK_NVOL];
 
 int
-esp_flashblk_present(void)
+esp_flashblk_present(int vol)
 {
-	if (!probed) {
-		probed = 1;
-		part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
-		    ESP_PARTITION_SUBTYPE_DATA_FAT, LUAFS_LABEL);
+	if (vol < 0 || vol >= ESP_FLASHBLK_NVOL)
+		return 0;
+	if (!probed[vol]) {
+		probed[vol] = 1;
+		part[vol] = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+		    ESP_PARTITION_SUBTYPE_DATA_FAT, labels[vol]);
 	}
-	return part != NULL;
+	return part[vol] != NULL;
 }
 
 uint32_t
-esp_flashblk_secsz(void)
+esp_flashblk_secsz(int vol)
 {
-	if (!esp_flashblk_present())
+	if (!esp_flashblk_present(vol))
 		return 0;
 	/* the erase block, which is what makes a write one erase. */
-	return part->erase_size;
+	return part[vol]->erase_size;
 }
 
 uint64_t
-esp_flashblk_sectors(void)
+esp_flashblk_sectors(int vol)
 {
-	uint32_t secsz = esp_flashblk_secsz();
+	uint32_t secsz = esp_flashblk_secsz(vol);
 
 	if (secsz == 0)
 		return 0;
-	return part->size / secsz;
+	return part[vol]->size / secsz;
 }
 
 /* the caller's buffer is written into directly. esp_partition_read maps
@@ -67,13 +73,13 @@ esp_flashblk_sectors(void)
  * DMA buffer blk.c needs.
  */
 int
-esp_flashblk_read(uint64_t lba, uint32_t nsec, void *buf)
+esp_flashblk_read(int vol, uint64_t lba, uint32_t nsec, void *buf)
 {
-	uint32_t secsz = esp_flashblk_secsz();
+	uint32_t secsz = esp_flashblk_secsz(vol);
 
-	if (secsz == 0 || lba + nsec > esp_flashblk_sectors())
+	if (secsz == 0 || lba + nsec > esp_flashblk_sectors(vol))
 		return -1;
-	if (esp_partition_read(part, (size_t)(lba * secsz), buf,
+	if (esp_partition_read(part[vol], (size_t)(lba * secsz), buf,
 	    (size_t)nsec * secsz) != ESP_OK)
 		return -1;
 	return 0;
@@ -87,20 +93,20 @@ esp_flashblk_read(uint64_t lba, uint32_t nsec, void *buf)
  * reads, and the file being written is the one that is lost.
  */
 int
-esp_flashblk_write(uint64_t lba, const void *buf, uint32_t nbytes)
+esp_flashblk_write(int vol, uint64_t lba, const void *buf, uint32_t nbytes)
 {
-	uint32_t secsz = esp_flashblk_secsz();
+	uint32_t secsz = esp_flashblk_secsz(vol);
 	size_t off;
 
 	if (secsz == 0 || nbytes == 0 || nbytes % secsz != 0)
 		return -1;
-	if (lba + nbytes / secsz > esp_flashblk_sectors())
+	if (lba + nbytes / secsz > esp_flashblk_sectors(vol))
 		return -1;
 
 	off = (size_t)(lba * secsz);
-	if (esp_partition_erase_range(part, off, nbytes) != ESP_OK)
+	if (esp_partition_erase_range(part[vol], off, nbytes) != ESP_OK)
 		return -1;
-	if (esp_partition_write(part, off, buf, nbytes) != ESP_OK)
+	if (esp_partition_write(part[vol], off, buf, nbytes) != ESP_OK)
 		return -1;
 	return 0;
 }

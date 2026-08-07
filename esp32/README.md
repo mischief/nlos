@@ -143,8 +143,14 @@ or, to write the filesystem alongside the firmware:
 The firmware and the filesystem are independent. Reflashing `0x10000`
 alone keeps whatever is on `luafs`, and reflashing `0x310000` alone
 replaces the programs without touching the kernel. Reflashing the
-filesystem does remove anything written on the board, `/etc/wifi.lua`
-included.
+filesystem does remove anything written on `luafs`.
+
+`config` at `0x710000` is not in that command and is not written by any
+build. It is what the machine knows about itself -- the network to join
+lives there -- and it survives every reflash above. `task/fatsrv.lua`
+reams it the first time it finds it empty, and serves it as `/config`
+in the same proc that serves `luafs`, so a second partition costs a
+mount point rather than a second server.
 
 ## Tests
 
@@ -172,8 +178,14 @@ Lua the other platforms run: `task/eth.lua`, then `ip`, then `tcp4`,
 with `dhcpd` acquiring the lease and serving it as `/net`. There is no
 lwip in the image.
 
-The network to join is `/etc/wifi.lua` on the filesystem:
+The network to join is `/config/wifi.lua`, on the partition a reflash
+does not write:
 
     return { ssid = "...", psk = "..." }
 
 `bin/wifi.lua` writes that file. The boot payload reads it and joins.
+A board whose partition table has no `config` keeps the same file in
+`/etc`, which is read where the other is absent.
+
+The passphrase is stored in the clear. There is no secure element here,
+and whoever holds the board can read the flash out over USB.

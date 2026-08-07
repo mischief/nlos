@@ -1,6 +1,10 @@
-/* the luafs flash partition as raw sectors, the same surface blk.h
+/* the flash data partitions as raw sectors, the same surface blk.h
  * gives for the microSD slot. lib/blkfs.lua turns either into /data and
  * lib/fat sits above, knowing about neither.
+ *
+ * A volume is an index into the partition table this knows about:
+ * 0 is luafs, 1 is config. They are separate devices with separate
+ * sector spaces, so nothing above can reach one through the other.
  *
  * A sector here is one flash erase block, not 512 bytes. NOR flash
  * erases in 4KB units and cannot rewrite a byte without erasing what
@@ -22,10 +26,16 @@
  */
 #define ESP_FLASHBLK_MAXSEC 8
 
-int esp_flashblk_present(void);		/* found the partition; cached */
-uint64_t esp_flashblk_sectors(void);	/* partition size in sectors */
-uint32_t esp_flashblk_secsz(void);	/* bytes per sector: the erase block */
-int esp_flashblk_read(uint64_t lba, uint32_t nsec, void *buf);	/* 0 ok */
-int esp_flashblk_write(uint64_t lba, const void *buf, uint32_t nbytes);
+/* how many volumes this knows names for. A board whose table has only
+ * luafs answers present() false for the rest, which is the case an
+ * older partition table gives.
+ */
+#define ESP_FLASHBLK_NVOL 2
+
+int esp_flashblk_present(int vol);	/* found the partition; cached */
+uint64_t esp_flashblk_sectors(int vol);	/* partition size in sectors */
+uint32_t esp_flashblk_secsz(int vol);	/* bytes per sector: the erase block */
+int esp_flashblk_read(int vol, uint64_t lba, uint32_t nsec, void *buf);	/* 0 ok */
+int esp_flashblk_write(int vol, uint64_t lba, const void *buf, uint32_t nbytes);
 
 #endif

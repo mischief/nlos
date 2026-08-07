@@ -180,6 +180,11 @@ set(EMBED_FILES
     lib/mnt.lua
     lib/nsio.lua
     lib/romfs.lua
+    # a namespace served as one backend, which is how blksrv offers two
+    # flash partitions on one port and how fatsrv serves both volumes as
+    # one tree. Two partitions cost a mount point here rather than two
+    # more procs.
+    lib/nsfs.lua
 
     # the network, from the wire up. The radio hands up 802.3 frames
     # and everything above them is the same Lua the other platforms

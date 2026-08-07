@@ -217,7 +217,11 @@ local function services()
 		local fok, ferr = pcall(function()
 			local _, f = sys.spawn(src, { name = "fatsrv" })
 
-			sys.send(f, { blk = { __right = caps.flash } })
+			-- one server, both partitions: /config is the
+			-- second flash volume, mounted inside fatsrv so
+			-- it costs a mount point rather than a proc.
+			sys.send(f, { blk = { __right = caps.flash },
+			    mounts = { "/config" } })
 			assert(rootns:mount("/", require("mnt").new(f), "mnt",
 			    { port = { __right = f } }, "before"))
 		end)
@@ -282,7 +286,7 @@ local function services()
 	end
 	nsmod.setcurrent(rootns)
 
-	-- the network this machine is on, from /etc/wifi.lua.
+	-- the network this machine is on, from /config/wifi.lua.
 	--
 	--	return { ssid = "labratory", psk = "..." }
 	--
@@ -298,12 +302,22 @@ local function services()
 	-- Absent is the ordinary case on a machine nobody has configured.
 	-- Nothing is retried and nothing is watched: this joins once, and
 	-- bin/wifi.lua is how it is done again.
+	--
+	-- /config is the partition the build never writes, so a network
+	-- set once survives a reflash. /etc/wifi.lua is read where there
+	-- is no config volume, which is what an older board has.
 	if caps.eth then
-		local src = rootns:readfile("/etc/wifi.lua")
+		local where = "/config/wifi.lua"
+		local src = rootns:readfile(where)
+
+		if not src then
+			where = "/etc/wifi.lua"
+			src = rootns:readfile(where)
+		end
 
 		if src then
 			local ok, conf = pcall(function()
-				return assert(load(src, "=/etc/wifi.lua", "t",
+				return assert(load(src, "=" .. where, "t",
 				    {}))()
 			end)
 
@@ -313,7 +327,7 @@ local function services()
 				    psk = conf.psk })
 				print("wifi: joining " .. conf.ssid)
 			else
-				print("wifi: /etc/wifi.lua: " ..
+				print("wifi: " .. where .. ": " ..
 				    tostring(conf))
 			end
 		end

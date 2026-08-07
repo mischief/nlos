@@ -4,7 +4,8 @@
 --   > wifi labratory hunter2    save without asking
 --   > wifi -s                   say what is saved
 --
--- Writes /etc/wifi.lua, which boot/esp32.lua reads and joins at startup.
+-- Writes /config/wifi.lua, which boot/esp32.lua reads and joins at
+-- startup.
 -- It does not join now: joining needs los.platform.wifi, which lives in
 -- task/eth.lua and is granted to nothing else, and a program run from a
 -- shell holds no right to that task. Reaching it would mean either
@@ -27,7 +28,11 @@ local unistd = require("posix.unistd")
 local prog = require("prog")
 
 local N = assert(prog.ns(), "wifi: no namespace")
-local CONF = "/etc/wifi.lua"
+
+-- /config is the partition a reflash does not write, so a network saved
+-- there survives one. A machine without that volume keeps its network
+-- in /etc, and loses it the next time the filesystem is rebuilt.
+local CONF = N:stat("/config") and "/config/wifi.lua" or "/etc/wifi.lua"
 
 local function out(s)
 	unistd.write(1, s)

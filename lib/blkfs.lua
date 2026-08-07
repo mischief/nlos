@@ -26,10 +26,10 @@
 -- file works either way and a client cannot tell from the outside which
 -- it mounted. Asking for both and taking the one that answers is how a
 -- proc discovers what its own capability was.
-local blk = select(2, pcall(require, "los.platform.blk"))
+local defaultblk = select(2, pcall(require, "los.platform.blk"))
 
-if type(blk) ~= "table" then
-	blk = require("los.platform.flash")
+if type(defaultblk) ~= "table" then
+	defaultblk = require("los.platform.flash")
 end
 
 local buf = require("los.buf")
@@ -39,7 +39,12 @@ local M = {}
 
 local err = dev.error
 
-function M.new()
+-- new(device) -> a backend over that device, where a device is capacity,
+-- read, write and maxsec. A driver holding more than one -- the flash
+-- partitions -- hands the one it means; with none named, this is the
+-- single device the proc's capability brought.
+function M.new(device)
+	local blk = device or defaultblk
 	local nsec, secsz = blk.capacity()
 
 	if not nsec then

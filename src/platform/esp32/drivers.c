@@ -228,7 +228,7 @@ platform_have_blk(void)
 int
 platform_have_flash(void)
 {
-	return esp_flashblk_present();
+	return esp_flashblk_present(0);
 }
 
 int
@@ -534,21 +534,37 @@ luaopen_los_platform_wifi(lua_State *L)
 	return 1;
 }
 
-/* ---- los.platform.flash: the luafs partition, raw sectors ----
+/* ---- los.platform.flash: the data partitions, raw sectors ----
  *
  * The same three calls los.platform.blk gives, so lib/blkfs.lua serves
  * either without knowing which it holds. A sector is 4KB here and 512
  * on the card, which is why nothing above asks for a sector count
  * without asking capacity() first.
+ *
+ * There is more than one partition, so the three calls are closures
+ * over a volume index and flash.volume(i) is what hands out a set of
+ * them. The module's own capacity/read/write are volume 1, which is
+ * what a caller that knows of only one device gets.
  */
+
+/* the volume a closure was made for. flash.volume() sets it; the
+ * module-level calls have it as 0.
+ */
+static int
+flashvol(lua_State *L)
+{
+	return (int)lua_tointeger(L, lua_upvalueindex(1));
+}
 
 static int
 flash_capacity(lua_State *L)
 {
-	if (!esp_flashblk_present())
+	int v = flashvol(L);
+
+	if (!esp_flashblk_present(v))
 		return 0;		/* nil: no partition */
-	lua_pushinteger(L, (lua_Integer)esp_flashblk_sectors());
-	lua_pushinteger(L, (lua_Integer)esp_flashblk_secsz());
+	lua_pushinteger(L, (lua_Integer)esp_flashblk_sectors(v));
+	lua_pushinteger(L, (lua_Integer)esp_flashblk_secsz(v));
 	return 2;
 }
 
@@ -557,7 +573,8 @@ flash_read(lua_State *L)
 {
 	lua_Integer lba = luaL_checkinteger(L, 1);
 	lua_Integer nsec = luaL_checkinteger(L, 2);
-	uint32_t secsz = esp_flashblk_secsz();
+	int v = flashvol(L);
+	uint32_t secsz = esp_flashblk_secsz(v);
 	unsigned char *p;
 	size_t len;
 
@@ -574,7 +591,7 @@ flash_read(lua_State *L)
 	if (!p)
 		return luaL_error(L, "flash.read: no room for %d bytes",
 		    (int)len);
-	if (esp_flashblk_read((uint64_t)lba, (uint32_t)nsec, (char *)p) != 0)
+	if (esp_flashblk_read(v, (uint64_t)lba, (uint32_t)nsec, (char *)p) != 0)
 		return luaL_error(L, "flash.read: device error");
 	return 1;
 }
@@ -585,7 +602,8 @@ flash_write(lua_State *L)
 	lua_Integer lba = luaL_checkinteger(L, 1);
 	size_t n;
 	const char *data = luabuf_check(L, 2, &n);
-	uint32_t secsz = esp_flashblk_secsz();
+	int v = flashvol(L);
+	uint32_t secsz = esp_flashblk_secsz(v);
 
 	if (lba < 0)
 		return luaL_error(L, "flash.write: negative sector");
@@ -594,7 +612,7 @@ flash_write(lua_State *L)
 		    "flash.write: not a whole number of sectors");
 	if (n > (size_t)ESP_FLASHBLK_MAXSEC * secsz)
 		return luaL_error(L, "flash.write: too large");
-	if (esp_flashblk_write((uint64_t)lba, data, (uint32_t)n) != 0)
+	if (esp_flashblk_write(v, (uint64_t)lba, data, (uint32_t)n) != 0)
 		return luaL_error(L, "flash.write: device error");
 	lua_pushinteger(L, (lua_Integer)(n / secsz));
 	return 1;
@@ -607,18 +625,69 @@ static const luaL_Reg flash_lib[] = {
 	{ NULL, NULL },
 };
 
+/* one volume's three calls, plus maxsec: the shape lib/blkfs.lua takes
+ * as a device, so a caller hands it this and the filesystem above never
+ * learns which partition it sits on.
+ */
+static void
+pushvolume(lua_State *L, int vol)
+{
+	const luaL_Reg *f;
+
+	lua_createtable(L, 0, 4);
+	for (f = flash_lib; f->name != NULL; f++) {
+		lua_pushinteger(L, vol);
+		lua_pushcclosure(L, f->func, 1);
+		lua_setfield(L, -2, f->name);
+	}
+	lua_pushinteger(L, ESP_FLASHBLK_MAXSEC);
+	lua_setfield(L, -2, "maxsec");
+	lua_pushinteger(L, vol + 1);
+	lua_setfield(L, -2, "index");	/* which one this is, for a name */
+}
+
+/* flash.volume(i) -> a device table, or nil where the partition table
+ * has no such partition. 1-based, as every other index a lua caller
+ * gives.
+ */
+static int
+flash_volume(lua_State *L)
+{
+	lua_Integer i = luaL_checkinteger(L, 1);
+
+	if (i < 1 || i > ESP_FLASHBLK_NVOL || !esp_flashblk_present((int)i - 1))
+		return 0;
+	pushvolume(L, (int)i - 1);
+	return 1;
+}
+
+/* how many of them this board actually has. A partition table without
+ * config answers 1, and the caller serves what is there.
+ */
+static int
+flash_count(lua_State *L)
+{
+	int n = 0;
+
+	while (n < ESP_FLASHBLK_NVOL && esp_flashblk_present(n))
+		n++;
+	lua_pushinteger(L, n);
+	return 1;
+}
+
 int luaopen_los_platform_flash(lua_State *L);
 
 int
 luaopen_los_platform_flash(lua_State *L)
 {
-	luaL_newlib(L, flash_lib);
-	/* what one call may carry, in sectors. lib/blkfs.lua steps by
-	 * this rather than by a number of its own, because the two
-	 * devices here disagree about it.
+	/* the module IS volume 1, so a caller holding it reaches luafs
+	 * with the same three calls los.platform.blk gives.
 	 */
-	lua_pushinteger(L, ESP_FLASHBLK_MAXSEC);
-	lua_setfield(L, -2, "maxsec");
+	pushvolume(L, 0);
+	lua_pushcfunction(L, flash_volume);
+	lua_setfield(L, -2, "volume");
+	lua_pushcfunction(L, flash_count);
+	lua_setfield(L, -2, "count");
 	return 1;
 }
 

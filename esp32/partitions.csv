@@ -12,7 +12,7 @@
 # the build rather than the filesystem.
 #
 # An app partition must start on a 64KB boundary, a data partition on a
-# 4KB one. 0x750000 in total, which fits the Cardputer's 8MB as well as
+# 4KB one. 0x790000 in total, which fits the Cardputer's 8MB as well as
 # the T-Deck's 16MB, so one table serves every target.
 #
 # luafs is 4MB because it carries lib/ and task/ as well as bin/: the
@@ -30,13 +30,16 @@
 # whole volume, and anything the machine learned about itself goes with
 # it. /etc/wifi.lua lived there and was lost exactly that way.
 #
-# 256KB, which is 64 sectors of the 4096-byte erase block. Small on
-# purpose: what belongs here is what a machine knows about itself and
-# cannot be told again by a build.
+# 512KB, which is 128 sectors of the 4096-byte erase block. That is the
+# smallest volume lib/fat will ream: a FAT needs a boot sector, two
+# copies of the table, a root directory and a data region, and below
+# this there is not enough left over for one. What belongs here is what
+# a machine knows about itself and cannot be told again by a build, so
+# the floor is the size.
 #
 # Name,     Type, SubType,  Offset,   Size,     Flags
 nvs,        data, nvs,      0x9000,   0x6000,
 phy_init,   data, phy,      0xf000,   0x1000,
 factory,    app,  factory,  0x10000,  0x300000,
 luafs,      data, fat,      0x310000, 0x400000,
-config,     data, fat,      0x710000, 0x40000,
+config,     data, fat,      0x710000, 0x80000,

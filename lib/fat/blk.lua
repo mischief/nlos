@@ -57,11 +57,12 @@ function Fs:cacheinit(limit)
   self.dirty = {}
   self.ndirty = 0
   self.nclean = 0
-  -- 256 sectors, 128KB with the usual sector. Larger buys nothing
-  -- measurable: streaming a file never revisits a sector, and the ones
-  -- that are revisited -- the FAT, a directory -- are far fewer than
-  -- this. Set `cache` to trade the other way on a small machine.
-  self.limit = limit or 256
+  -- 128 sectors, which is 512KB of a 4096-byte one and the largest
+  -- thing a fat server holds. Larger buys nothing measurable:
+  -- streaming a file never revisits a sector, and the ones that are
+  -- revisited -- the FAT, a directory -- are far fewer than this. Set
+  -- `cache` to trade the other way.
+  self.limit = limit or 128
   self.nread = 0
   self.nwrite = 0
 end
