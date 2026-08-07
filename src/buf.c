@@ -49,7 +49,10 @@
 #include "lua.h"
 
 #include "buf.h"
-#include "platform.h"
+
+/* the chunk source, which the kernel and the host tests each supply */
+void *platform_chunk_alloc(size_t n);
+void platform_chunk_free(void *p, size_t n);
 
 #define BUFMT "los.buf"
 

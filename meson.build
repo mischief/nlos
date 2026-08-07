@@ -441,6 +441,30 @@ else
           'equivalent for test/hostutil.c).')
 endif
 
+# src/buf.c is los.buf, which lib/ files use for anything with bytes in
+# it. The host tests run those files under the host's own lua5.4, so it
+# has to exist there too: the same source, built against test/hostbuf.c
+# for the two things it wants from the kernel. One implementation, and
+# test/boot/test_buf.lua covers it on the other side.
+#
+# Named los.so for the same reason gefs.so is: the C-path searcher takes
+# a.b to a.so and calls luaopen_a_b, so require("los.buf") finds
+# luaopen_los_buf with no build subdirectory to arrange.
+host_env = environment()
+if lua54_dep.found()
+  buf_native_host = shared_module('los',
+    ['src/buf.c', 'test/hostbuf.c'],
+    name_prefix: '',
+    include_directories: include_directories('src'),
+    dependencies: lua54_dep,
+    native: true,
+    build_by_default: true,
+  )
+  host_env.append('LUA_CPATH',
+    meson.current_build_dir() / '?.so', separator: ';')
+endif
+
+
 
 # tests that ask nothing of either platform's hardware, so the same file
 # runs on both and is named without a platform prefix. Keeping one copy
@@ -1159,6 +1183,7 @@ test('tcp4-codec', lua_interp,
   args: [files('test/host_tcp4.lua')],
   protocol: 'tap',
   timeout: 20,
+  env: host_env,
 )
 
 # lib/tcb.lua is one connection's state machine, and sans-io for the
@@ -1213,6 +1238,7 @@ test('tcb-statemachine', lua_interp,
   args: [files('test/host_tcb.lua')],
   protocol: 'tap',
   timeout: 20,
+  env: host_env,
 )
 
 # the same state machine over a link that loses, reorders, duplicates
@@ -1231,6 +1257,7 @@ test('tcb-lossy', lua_interp,
   args: [files('test/host_tcbloss.lua')],
   protocol: 'tap',
   timeout: 20,
+  env: host_env,
 )
 
 # lib/gefs is a port of 9front's Bε-tree filesystem, and it is sans-io in
@@ -1256,6 +1283,8 @@ test('tcb-lossy', lua_interp,
 #
 # LUA_CPATH is appended rather than set, so a caller's own is kept.
 gefs_host_env = environment()
+gefs_host_env.append('LUA_CPATH',
+  meson.current_build_dir() / '?.so', separator: ';')
 if lua54_dep.found()
   gefs_native_host = shared_module('gefs',
     ['src/gefs_native.c'],
@@ -1286,6 +1315,7 @@ test('fat-host', lua_interp,
   args: [files('test/host_fat.lua')],
   protocol: 'tap',
   timeout: 60,
+  env: host_env,
 )
 
 # lib/p9serve.lua is the 9P server over a dev backend -- the bridge
