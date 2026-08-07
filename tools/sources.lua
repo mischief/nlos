@@ -25,7 +25,7 @@ local groups = {}
 -- The seam under them is src/platform.h plus the per-platform include
 -- dir, so nothing here knows which machine it is on.
 groups.kernel = {
-	"src/native.c",
+	"src/native_glue.c",
 	"src/gefs_native.c",
 	"src/debug.c",
 	"src/dirs.c",
