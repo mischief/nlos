@@ -8,6 +8,16 @@
 -- whose request it is holding and cannot charge anyone for it. A
 -- per-proc cap can, because the proc that asks is the proc that pays.
 --
+-- What is counted is what a proc HOLDS -- its receive rights -- not
+-- what it made. That is unix's rule for RLIMIT_NOFILE, it needs no
+-- record of who created which port, and it is the honest measure: a
+-- port nobody holds a right to is freed, so holding is what keeps the
+-- table full. A right handed to another proc becomes that proc's cost,
+-- which the last case here shows.
+--
+-- Handle 0 counts, exactly as fds 0-2 count against RLIMIT_NOFILE, so a
+-- cap of N leaves N-1 for sys.newport.
+--
 -- Inherited and clamped like opts.mem, and unlimited by default, so
 -- nothing gets a budget it was not given one.
 
@@ -15,7 +25,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(13)
+tap.plan(15)
 
 -- ---- the cap itself ----
 
@@ -52,7 +62,8 @@ local _, h = sys.spawn([[
 
 local m = thread.recv(sys.SELF)
 
-tap.is(m.made, CAP, "a proc makes exactly its budget of ports")
+tap.is(m.made, CAP - 1,
+    "a proc makes its budget of ports, less handle 0")
 tap.ok(m.err:find("port limit"), "then is refused: " .. m.err)
 tap.is(m.limit, CAP, "pidstat reports the cap")
 tap.is(m.ports, CAP, "and what is held against it")
@@ -105,9 +116,42 @@ local _, h3 = sys.spawn([[
 
 local t = thread.recv(sys.SELF)
 
-tap.ok(t.timers <= 3, "timers come out of the same budget (" ..
-    tostring(t.timers) .. " of 3)")
+tap.is(t.timers, 2, "timers come out of the same budget")
 sys.close(h3)
+
+-- ---- the holder pays, not the maker ----
+--
+-- the distinguishing case. this proc makes a port and sends a right to
+-- it away; under creator-based accounting the cost would stay here,
+-- and under hold-based it moves.
+
+local _, h4 = sys.spawn([[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+	local a = ...
+	local out = a.reply.__right
+	local before = sys.pidstat().ports
+	local m
+
+	repeat
+		m = thread.recv(sys.SELF)
+	until type(m) == "table" and m.gift
+
+	sys.send(out, { before = before, after = sys.pidstat().ports })
+]], { name = "receiver", arg = { reply = { __right = back } } })
+
+local gift = sys.newport()
+local mine_before = sys.pidstat().ports
+
+sys.send(h4, { gift = { __right = gift } })
+
+local g = thread.recv(sys.SELF)
+
+tap.is(g.after, g.before + 1, "a receive right costs the proc that gets it")
+sys.close(gift)
+tap.ok(sys.pidstat().ports < mine_before,
+    "and closing ours gives it back here")
+sys.close(h4)
 
 -- ---- the case this exists for: a client spending a server's budget ----
 --
@@ -145,8 +189,8 @@ end
 
 tap.ok(refused ~= nil, "the server refuses past its budget: " ..
     tostring(refused))
-tap.ok(got > 0 and got <= 4,
-    "after handing out what it had (" .. got .. " sessions)")
+-- 3, not 4: the server's own handle 0 is the fourth
+tap.is(got, 3, "after handing out what it had")
 
 sys.close(sh)
 

@@ -321,24 +321,15 @@ struct kproc;
 struct kport {
 	unsigned short idx;	/* its slot in portv; what the wire carries */
 	int used;
-	/* set only for a proc's own handle-0 port, and only so freeing it
-	 * can clear that proc's selfport in one step instead of scanning
-	 * every proc. null for every other port.
-	 */
-	struct kproc *owner;
-
-	/* who pays for this port, for sys.newport and sys.timer: the proc
-	 * that asked for it, credited back when the port is freed. null
-	 * for a port the kernel made for itself.
+	/* which port this slot has held, counted from 1 and never reused.
 	 *
-	 * the id is carried beside the pointer because a proc slot is
-	 * reused in place, so a port outliving its creator would otherwise
-	 * credit whichever proc landed in that slot next. ids are unique
-	 * forever, so the pair either still names the same proc or names
-	 * nothing.
+	 * portv slots are, so an index alone cannot say whether the port
+	 * behind it is the one you meant. anything that must name a port
+	 * across time keeps the pair -- see kproc.selfidx -- and nothing
+	 * has to be told when a port dies, which is what keeps kport free
+	 * of pointers back to procs.
 	 */
-	struct kproc *charged;
-	int charged_id;
+	unsigned long long gen;
 	TAILQ_HEAD(, waiter) waiters;
 	/* rights + in-flight message refs + kernel refs, and the receive
 	 * rights among those.
@@ -437,13 +428,22 @@ struct kproc {
 	 * to it. sys.spawn hands the parent one, so a supervisor may stop
 	 * what it started and a proc that merely guessed a pid may not.
 	 *
-	 * no reference is taken. it needs none: the right being tested for
-	 * is itself a reference, so the port cannot be freed while any
-	 * answer but "no" is possible. port_unref clears this on the way
-	 * out (via kport.owner), which is what keeps a corpse whose last
-	 * right went away from naming a port index since reused.
+	 * named by (slot, generation) rather than by pointer, and read
+	 * through proc_selfport. no reference is taken and none is needed:
+	 * the right being tested for is itself a reference, so the port
+	 * cannot be freed while any answer but "no" is possible. what the
+	 * generation settles is the case after that -- a corpse whose last
+	 * right went away, whose portv slot has since been handed to a
+	 * different port.
+	 *
+	 * the direction matters. a pointer the other way, from the port to
+	 * the proc, would have to be cleared when a proc slot is recycled
+	 * -- and a proc slot is recycled in place, so nothing would fault
+	 * to say it had not been. this way nothing has to be told anything.
+	 * 0 means none.
 	 */
-	struct kport *selfport;
+	unsigned short selfidx;
+	unsigned long long selfgen;
 	SLIST_HEAD(, waiter) waiters;	/* ports this proc is blocked on */
 	/* almost every block waits on exactly one port, so the first record
 	 * is inline and costs no allocation on what is the hot path for
@@ -549,8 +549,8 @@ struct kproc {
 	size_t buf_used;	/* the pooled half of mem_used, on its own */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
-	/* ports this proc has made and not yet given back, against a cap
-	 * inherited from its parent the way mem_limit is.
+	/* receive rights this proc holds, against a cap inherited from its
+	 * parent the way mem_limit is.
 	 *
 	 * ports are a machine-wide table, so one proc looping on
 	 * sys.newport starves every other -- and it need not be its own
@@ -560,9 +560,19 @@ struct kproc {
 	 * because a port carries no sender identity and a server cannot
 	 * tell whose request it is holding.
 	 *
-	 * only sys.newport and sys.timer are charged. a proc's own handle
-	 * 0 is not: there is exactly one per proc, and MAXPROCS already
-	 * bounds it.
+	 * counted as what the proc HOLDS rather than what it made, which
+	 * is unix's rule for RLIMIT_NOFILE and needs no record of who
+	 * created what. it is also the honest measure: a port nobody holds
+	 * a right to is freed, so what keeps the table full is holding,
+	 * and a right handed to another proc becomes that proc's cost.
+	 *
+	 * receive rights, because those are one per port in the ordinary
+	 * case where send rights are not -- a reply port is one receive
+	 * right and one send right to the same port. a proc that contrives
+	 * to hold two receive rights to one port is counted twice, which
+	 * errs toward the limit rather than past it.
+	 *
+	 * handle 0 counts, exactly as fds 0-2 count against RLIMIT_NOFILE.
 	 */
 	int nports;
 	int nports_peak;
@@ -903,6 +913,11 @@ ipclock_leave(void)
 
 static struct kport *portv[MAXPORTS];
 static int porthigh;		/* one past the highest slot ever used */
+/* stamped into every port so a slot can be told from the port in it;
+ * see kport.gen. 64-bit and incremented once per port, so it does not
+ * wrap in any run this machine could have.
+ */
+static unsigned long long portgen;
 static struct kport *kbdport;
 
 /* the second terminal's keys, where the machine has a keyboard that is
@@ -1463,6 +1478,7 @@ port_new(void)
 				return 0;
 			memset(port, 0, sizeof *port);
 			port->idx = (unsigned short)i;
+			port->gen = ++portgen;
 			port->used = 1;
 			TAILQ_INIT(&port->waiters);
 			portv[i] = port;
@@ -1473,41 +1489,35 @@ port_new(void)
 	return 0;
 }
 
-/* a port on `p`'s account, or null if it has spent its budget.
+/* has this proc room for another port?
  *
- * the cap is tested before the table is searched, so a proc over its
- * limit costs nothing to refuse and cannot take the last free slot from
- * a proc still under one.
+ * asked before the table is searched, so a proc over its limit costs
+ * nothing to refuse and cannot take the last free slot from one still
+ * under. the count itself is kept by right_new and right_drop, which is
+ * where a receive right is gained and lost.
  */
-static struct kport *
-port_new_charged(struct kproc *p)
+static int
+port_budget_left(struct kproc *p)
 {
-	if (p->port_limit && p->nports >= p->port_limit)
-		return 0;
-
-	struct kport *port = port_new();
-
-	if (!port)
-		return 0;
-	port->charged = p;
-	port->charged_id = p->id;
-	if (++p->nports > p->nports_peak)
-		p->nports_peak = p->nports;
-	return port;
+	return !p->port_limit || p->nports < p->port_limit;
 }
 
-/* give a port back to whoever paid for it. */
-static void
-port_uncharge(struct kport *port)
+/* the port behind this proc's handle 0, or null if it has gone.
+ *
+ * see kproc.selfidx: the pair is checked rather than a pointer chased,
+ * so a portv slot reused since says no instead of yes about a stranger.
+ */
+static struct kport *
+proc_selfport(struct kproc *p)
 {
-	struct kproc *p = port->charged;
+	if (!p->selfgen)
+		return 0;
 
-	/* the id is what makes this safe against a reused proc slot; see
-	 * kport.charged.
-	 */
-	if (p && p->id == port->charged_id && p->nports > 0)
-		p->nports--;
-	port->charged = 0;
+	struct kport *port = portv[p->selfidx];
+
+	if (!port || port->gen != p->selfgen)
+		return 0;
+	return port;
 }
 
 static void port_unref(struct kport *port);
@@ -1558,19 +1568,6 @@ port_unref(struct kport *port)
 		 * could be this one's last reference from a queued message
 		 */
 		port_flush(port);
-		/* the index is about to be reusable, so no proc may go on
-		 * naming it (see kproc.selfport).
-		 *
-		 * the identity test is not redundant. a proc slot is reused
-		 * in place, so a port that outlives its owner as a corpse's
-		 * -- the parent still holds the spawn right -- points at
-		 * memory that may since have become a different proc. that
-		 * one has a self port of its own, and clearing it would
-		 * leave it beyond its own parent's reach.
-		 */
-		if (port->owner && port->owner->selfport == port)
-			port->owner->selfport = 0;
-		port_uncharge(port);
 		portv[port->idx] = 0;
 		free(port);
 		return;
@@ -1668,8 +1665,14 @@ right_new(struct kproc *p, struct kport *port, int recv)
 			r->port = port;
 			r->recv = recv;
 			port->nrights++;
-			if (recv)
+			if (recv) {
 				port->nrecv++;
+				/* what this proc is charged for; see
+				 * kproc.nports
+				 */
+				if (++p->nports > p->nports_peak)
+					p->nports_peak = p->nports;
+			}
 			p->rhint = i + 1;
 			if (i + 1 > p->rhigh)
 				p->rhigh = i + 1;
@@ -1680,17 +1683,21 @@ right_new(struct kproc *p, struct kport *port, int recv)
 }
 
 static void
-right_drop(struct right *r)
+right_drop(struct kproc *p, struct right *r)
 {
 	/* caller holds ipclock.
-	 * CONTEXT: api_close, proc_detach, proc_new.
+	 * CONTEXT: api_close, proc_detach, proc_new, grant_named,
+	 * minted_undo.
 	 */
 	IPC_ASSERT_LOCKED();
 	struct kport *port = r->port;
 
 	r->used = 0;
-	if (r->recv)
+	if (r->recv) {
 		port->nrecv--;
+		if (p->nports > 0)
+			p->nports--;
+	}
 	port_unref(port);
 }
 
@@ -1722,7 +1729,7 @@ grant_named(struct kproc *p, const char *name, struct kport *port, int recv)
 		struct right *r = right_slot(p, h);
 
 		if (r)
-			right_drop(r);
+			right_drop(p, r);
 		return;
 	}
 	g->name = name;
@@ -2055,7 +2062,7 @@ minted_undo(struct kproc *p, struct minted *mt)
 		struct right *r = right_slot(p, mt->h[i]);
 
 		if (r && r->used)
-			right_drop(r);
+			right_drop(p, r);
 		if (mt->h[i] < p->rhint)
 			p->rhint = mt->h[i];
 	}
@@ -3288,7 +3295,7 @@ out:
  * port is the authority -- see api_kill, which explains why.
  *
  * the self port outlives the proc's own right to it (see
- * kproc.selfport), so this answers for a corpse too.
+ * kproc.selfidx), so this answers for a corpse too.
  *
  * it gates what ACTS on a proc, not what reads one. sys.stack,
  * sys.trace and sys.pidstat stay ambient with sys.procs and sys.name,
@@ -3300,7 +3307,9 @@ out:
 static int
 may_control(struct kproc *p, struct kproc *target)
 {
-	return target->selfport && proc_has_port(p, target->selfport);
+	struct kport *port = proc_selfport(target);
+
+	return port && proc_has_port(p, port);
 }
 
 static int
@@ -3911,8 +3920,8 @@ api_newport(lua_State *L)
 	int over;
 
 	ipclock_enter();
-	over = p->port_limit && p->nports >= p->port_limit;
-	port = port_new_charged(p);
+	over = !port_budget_left(p);
+	port = over ? 0 : port_new();
 	if (port)
 		h = right_new(p, port, 1);
 	ipclock_leave();
@@ -4305,7 +4314,7 @@ api_close(lua_State *L)
 	ipclock_enter();
 	r = right_get(p, h);
 	if (r && h != 0)
-		right_drop(r);
+		right_drop(p, r);
 	ipclock_leave();
 
 	if (!r)
@@ -5770,10 +5779,10 @@ api_timer(lua_State *L)
 		return 0;
 	}
 
-	/* charged like sys.newport: a timer is a port, and a loop asking
+	/* capped like sys.newport: a timer is a port, and a loop asking
 	 * for timers spends the table just as fast.
 	 */
-	struct kport *port = port_new_charged(p);
+	struct kport *port = port_budget_left(p) ? port_new() : 0;
 
 	if (!port) {
 		ipclock_leave();
@@ -5784,10 +5793,6 @@ api_timer(lua_State *L)
 
 	if (h < 0) {
 		port->used = 0;
-		/* port_unref never runs on a port that took no rights, so
-		 * the charge has to come back here
-		 */
-		port_uncharge(port);
 		ipclock_leave();
 		return 0;
 	}
@@ -6948,8 +6953,8 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		proc_freestate(p);
 		return -1;
 	}
-	p->selfport = port;
-	port->owner = p;
+	p->selfidx = port->idx;
+	p->selfgen = port->gen;
 
 	/* register the los.* modules in package.preload so chunks pull in
 	 * the layers they need with an explicit require -- no globals, no
@@ -7171,7 +7176,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		kputs("proc load error: ");
 		kputs(lua_tostring(p->co, -1));
 		kputs("\n");
-		right_drop(&p->rights[0]);
+		right_drop(p, &p->rights[0]);
 		proc_freestate(p);
 		return -1;
 	}
@@ -7343,7 +7348,7 @@ proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 		struct right *r = right_slot(p, i);
 
 		if (r && r->used)
-			right_drop(r);
+			right_drop(p, r);
 	}
 	free(p->xrights);
 	p->xrights = 0;

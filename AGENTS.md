@@ -60,9 +60,24 @@ on `newport` to drain it: `lib/srv.lua` mints a port per session on
 demand, so a client looping on `session` spends the *server's* budget. A
 per-server quota cannot answer that — a port carries no sender identity,
 so a server cannot tell whose request it is holding — but a per-proc cap
-can, because the proc that asks is the proc that pays. Unlimited by
-default, and a proc's own handle 0 is not charged: there is one per
-proc, and `MAXPROCS` already bounds those.
+can. Unlimited by default.
+
+**What is counted is what a proc holds** — its receive rights — not what
+it made, which is Unix's rule for `RLIMIT_NOFILE`. It needs no record of
+who created which port, and it is the honest measure: a port nobody
+holds a right to is freed, so holding is what keeps the table full, and
+a right handed to another proc becomes that proc's cost. Handle 0
+counts, exactly as fds 0-2 do.
+
+**Nothing points from a `kport` back to a `kproc`,** and new code must
+not add such a field. A proc slot is reused in place, so a stale pointer
+that way names a live stranger and nothing faults to say so. Both
+directions this needed are already solved: the count is kept where a
+right is gained and lost (`right_new`/`right_drop`, which hold the proc
+anyway), and `kproc.selfidx` names a port by slot *and generation*
+(`kport.gen`), read through `proc_selfport`, so a reused slot answers no
+rather than yes about a stranger. Unix has no such back pointer either —
+processes hold files, files never hold processes.
 
 Inherited rather than divided, as `opts.mem` is: a parent capped at 8
 may spawn two children of 8. What a cap bounds is any one proc, which is
