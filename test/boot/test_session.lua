@@ -16,7 +16,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(16)
+tap.plan(19)
 
 local SERVER = [[
 local dev = require("dev")
@@ -170,5 +170,115 @@ end
 tap.ok(sys.stats().ports <= before,
     "unmount released the session rather than leaking the port (" ..
     before .. " -> " .. sys.stats().ports .. ")")
+
+-- ---- a client that dies still gives its fids back ----
+--
+-- The ordinary way a client leaves: killed, or dead, holding an open
+-- file. 9P clunks a connection's fids when the connection ends, and a
+-- backend that keeps anything per handle needs that -- an exclusive
+-- device is where it shows, since one interrupted reader would lock
+-- everyone else out for as long as the server lives.
+
+local EXCL = [[
+local dev = require("dev")
+
+require("srv").main(function()
+	local B = {}
+	local owner = nil
+
+	function B.attach()
+		return { path = "/" }
+	end
+	function B.walk(h, name)
+		if name == "." or name == ".." then
+			return { path = h.path }
+		end
+		if h.path ~= "/" or name ~= "one" then
+			dev.error(dev.Enonexist)
+		end
+		return { path = "/one" }
+	end
+	function B.stat(h)
+		return { name = h.path, size = 0, dir = h.path == "/" }
+	end
+	function B.open(h)
+		if h.path == "/" then
+			return { path = h.path }
+		end
+		if owner then
+			dev.error("in use")
+		end
+		local fh = { path = h.path, holder = true }
+
+		owner = fh
+		return fh
+	end
+	function B.read(h, off, n)
+		return off == 0 and "held\n" or ""
+	end
+	function B.readdir()
+		return { { name = "one", size = 0, dir = false } }
+	end
+	function B.create()
+		dev.error(dev.Eperm)
+	end
+	function B.write()
+		dev.error(dev.Eperm)
+	end
+	function B.clunk(h)
+		if h and h.holder and owner == h then
+			owner = nil
+		end
+	end
+	return B
+end)
+]]
+
+local _, xh = require("proc").spawn(EXCL, { name = "exclsrv" })
+
+-- a proc that opens the file and then never gets to close it
+local HOLDER = [[
+local a = ...
+local sys = require("los.sys")
+local ns = require("ns")
+local mnt = require("mnt")
+local N = ns.new()
+
+N:mount("/x", mnt.new(a.srv.__right), "mnt",
+    { port = { __right = a.srv.__right } })
+
+local f = N:open("/x/one", "r")
+
+sys.send(a.done.__right, f ~= nil)
+-- parked on its own mailbox, holding the file open, until it is killed
+require("los.thread").recv(sys.SELF)
+]]
+
+local rport = sys.newport()
+local hpid, hh = require("proc").spawn(HOLDER, { name = "holder",
+    arg = { srv = { __right = xh }, done = { __right = rport } } })
+
+tap.ok(thread.recvtimeout(rport, 5000) == true, "a holder opened the file")
+
+-- while it holds it, nobody else may
+local X = ns.new()
+
+X:mount("/x", mnt.new(xh), "mnt", { port = { __right = xh } })
+tap.ok(X:open("/x/one", "r") == nil,
+    "a second open is refused while the holder lives")
+
+sys.kill(hpid)
+sys.close(hh)
+for _ = 1, 8 do
+	sys.yield()
+end
+
+local f2, ferr = X:open("/x/one", "r")
+
+tap.ok(f2 ~= nil,
+    "and it opens once the holder is gone: " .. tostring(ferr))
+if f2 then
+	f2:close()
+end
 
 tap.done()

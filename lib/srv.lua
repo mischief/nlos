@@ -401,6 +401,22 @@ end
 
 M.dispatch = dispatch
 
+-- every fid this loop still holds, released.
+--
+-- A client that goes away without clunking is the ordinary case, not
+-- the exception: it was killed, or it died, or it simply exited holding
+-- an open file. 9P closes a connection's fids when the connection ends
+-- for that reason, and a backend that keeps anything per handle needs
+-- the same. An exclusive device is where it shows first -- one
+-- interrupted reader of lib/mousefs.lua and nothing can open the mouse
+-- again until the server proc is restarted.
+local function clunkall(S)
+	for fid, h in pairs(S.fids) do
+		S.fids[fid] = nil
+		pcall(S.B.clunk, h)
+	end
+end
+
 -- serve `backend` on `port` until every client has gone away.
 --
 -- this parks rather than spinning: tryrecv, and if there is nothing,
@@ -490,6 +506,7 @@ function M.serve(backend, port, opts)
 						tick.fn(st.B)
 					end)
 					if sys.hungup(port) then
+						clunkall(S)
 						return
 					end
 				else
@@ -499,6 +516,7 @@ function M.serve(backend, port, opts)
 				local m, why = thread.await(port)
 
 				if why then
+					clunkall(S)
 					return
 				end
 				serialized(dispatch, m)
@@ -545,6 +563,7 @@ function M.serve(backend, port, opts)
 			for _ = 1, workers do
 				slots:acquire()
 			end
+			clunkall(S)
 			return
 		elseif inflight() > 0 then
 			-- workers are runnable, so parking the whole proc on
