@@ -435,9 +435,7 @@ function M.writeloop(iounit, one, off, data)
 			want = room
 		end
 
-		local chunk = buf.is(data) and data:view(done + 1, done + want) or
-		    data:sub(done + 1, done + want)
-		local w = one(off + done, chunk)
+		local w = one(off + done, data:sub(done + 1, done + want))
 
 		if not w or w <= 0 then
 			break
