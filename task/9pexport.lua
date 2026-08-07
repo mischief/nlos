@@ -32,11 +32,14 @@ local backend = nsfs.new(ns.current(), m0.root or "/")
 
 -- the tcp task's request/reply protocol, as init's tcp9srv uses it
 local replyport = sys.newport()
+-- send only; {__right=} copies the recv flag, and the tcp task has no
+-- business receiving on our reply port
+local replyright = sys.sendright(replyport)
 
 local function req(op, extra)
 	extra = extra or {}
 	extra.op = op
-	extra.reply = { __right = replyport }
+	extra.reply = { __right = replyright }
 	sys.send(net, extra)
 	return thread.recv(replyport)
 end

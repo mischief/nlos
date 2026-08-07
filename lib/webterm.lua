@@ -363,11 +363,19 @@ local function create(S)
 		sys.close(port)
 		return nil, "out of procs"
 	end
+	-- send only. the visitor talks TO its console; {__right=} copies
+	-- the recv flag, so the port as created would let it receive the
+	-- console requests it is supposed to be making.
+	local consright = sys.sendright(port)
+
 	sys.send(h, {
-		cons = { __right = port },
+		cons = { __right = consright },
 		nsdesc = S.nsdesc,
 		banner = S.banner,
 	})
+	-- rights are copied, not moved: the visitor has its own now, and
+	-- ours would keep sys.hungup below from ever firing
+	sys.close(consright)
 	-- nothing further is ever said to the visitor: its console is the
 	-- port, and this right only existed to deliver that one message.
 	sys.close(h)

@@ -3123,17 +3123,44 @@ out:
  * waiting. this is where thread.recv's rule does not apply: recv cannot
  * treat a quiet port as an ending, because a right that can send is not
  * distinguishable from one that will (see api_hungup). but the port
- * here is a REPLY port, and while a request is in flight it has two
- * rights -- ours and the one that travelled with the message. so a drop
- * back to one with nothing queued says the message was consumed and
- * whoever held the other right is gone, and no answer can ever arrive.
- * lib/mnt.lua has always made that test by hand after each wake; doing
- * it here is what lets it stop.
+ * here is a reply port, and while a request is in flight someone else
+ * holds a right to it: the one that travelled with the message. so a
+ * drop back to what we hold ourselves, with nothing queued, says the
+ * message was consumed and whoever held that right is gone, and no
+ * answer can ever arrive. lib/mnt.lua has always made that test by hand
+ * after each wake; doing it here is what lets it stop.
  *
  * it is not a timeout, and deliberately: a slow server is not a broken
  * one and no deadline tells them apart, but the refcount does. a caller
  * that wants a deadline anyway still composes sys.timer with alt().
  */
+
+/* is this proc the only holder of a right to `port`?
+ *
+ * that is our eof, and it counts every right the proc holds rather than
+ * testing nrights against one. a caller may hold several to the same
+ * port -- a reply port is a receive right to wait on plus a send right
+ * to publish, which is what lib/thread.lua's replyport hands out -- and
+ * a right it holds itself is not one that can answer it.
+ *
+ * sys.hungup asks the same question, and must, or the two disagree
+ * about when a server has gone: this is checked before parking again in
+ * call_k, and that is checked by whoever parked in lua.
+ */
+static int
+sole_holder(struct kproc *p, struct kport *port)
+{
+	int mine = 0;
+
+	for (int i = 0; i < p->rhigh; i++) {
+		struct right *q = right_slot(p, i);
+
+		if (q && q->used && q->port == port)
+			mine++;
+	}
+	return port->nrights <= mine;
+}
+
 static int
 call_k(lua_State *L, int status, lua_KContext ctx)
 {
@@ -3169,7 +3196,7 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 		 * receivers), and after the queue test so a reply that did
 		 * arrive is delivered even when the server answered and died.
 		 */
-		if (rr->port->nrights <= 1) {
+		if (sole_holder(p, rr->port)) {
 			ipclock_leave();
 			lua_pushnil(L);
 			lua_pushliteral(L, "hungup");
@@ -5580,7 +5607,7 @@ api_timer(lua_State *L)
 	return 1;
 }
 
-/* sys.hungup(h): is this proc the ONLY holder of the port behind h?
+/* sys.hungup(h): is this proc the only holder of the port behind h?
  *
  * that is our eof, and the formulation matters. plan 9's devpipe counts
  * opens of each end (qref) and calls qhangup on the peer's queue when a
@@ -5607,7 +5634,8 @@ api_hungup(lua_State *L)
 
 	if (!r)
 		return luaL_error(L, "bad right");
-	lua_pushboolean(L, r->port->nrights <= 1);
+
+	lua_pushboolean(L, sole_holder(p, r->port));
 	return 1;
 }
 

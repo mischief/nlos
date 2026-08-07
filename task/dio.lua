@@ -125,9 +125,9 @@ local screen = caps.fb(fb)
 -- app's. So the raw request/reply is here as well.
 
 local function ask(m)
-	local rp = thread.replyport()
+	local rp, send = thread.replyport()
 
-	m.reply = { __right = rp }
+	m.reply = { __right = send }
 	sys.send(fb, m)
 
 	local r = thread.recv(rp)

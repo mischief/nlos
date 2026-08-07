@@ -107,9 +107,9 @@ local hostpub = ed25519.publickey(hostseed)
 -- file had a flush stealing the network data and leaving the send's
 -- reply to be mistaken for it.
 local function netreq(extra)
-	local rp = thread.replyport()
+	local rp, send = thread.replyport()
 
-	extra.reply = { __right = rp }
+	extra.reply = { __right = send }
 	sys.send(NET, extra)
 	return thread.recv(rp)
 end

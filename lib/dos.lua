@@ -781,7 +781,7 @@ function Sh:run(line)
 	-- stopped -- and that is the program you want to interrupt.
 	if self.cons then
 		sys.send(self.cons, { op = "intr",
-		    reply = { __right = sys.SELF } })
+		    reply = { __right = thread.selfright() } })
 	end
 
 	while left > 0 do

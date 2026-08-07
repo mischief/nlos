@@ -113,9 +113,9 @@ M.sendwait = sendwait
 -- to wait out.
 local function requester(target)
 	return function(extra)
-		local reply = thread.replyport()
+		local reply, send = thread.replyport()
 
-		extra.reply = { __right = reply }
+		extra.reply = { __right = send }
 
 		while true do
 			local result, why = thread.call(target, extra, reply)
@@ -261,18 +261,23 @@ function M.fb(handle, chunk)
 	-- one reply port per call, for the reason requester() gives above.
 	local function ask(m)
 		local replyport = sys.newport()
+		-- send only: {__right=} copies the recv flag, so publishing
+		-- the port as created would let the server receive on it
+		local sr = sys.sendright(replyport)
 
-		m.reply = { __right = replyport }
+		m.reply = { __right = sr }
 
 		local ok, why = put(m)
 
 		if not ok then
+			sys.close(sr)
 			sys.close(replyport)
 			return nil, why
 		end
 
 		local r = thread.recv(replyport)
 
+		sys.close(sr)
 		sys.close(replyport)
 		if r.err then
 			return nil, r.err
@@ -513,7 +518,19 @@ end
 -- scheduler and would race the console over who consumed the byte.
 function M.tty(handle)
 	local t = { handle = handle }	-- for re-granting: {__right = t.handle}
-	local replyport
+	-- the port to wait on, and the send right to publish. minted
+	-- together on first use: {__right=} copies the recv flag, so the
+	-- port as created would hand the console the ability to receive
+	-- our answers.
+	local replyport, replyright
+
+	local function reply()
+		if not replyport then
+			replyport = sys.newport()
+			replyright = sys.sendright(replyport)
+		end
+		return replyright
+	end
 
 	function t.write(s)
 		sys.send(handle, { op = "write", data = s })
@@ -530,22 +547,16 @@ function M.tty(handle)
 	-- reply port: a full-screen editor reads one key at a time, never
 	-- concurrently, so there is nothing to cross-deliver.
 	function t.getch(timeout)
-		if not replyport then
-			replyport = sys.newport()
-		end
 		sys.send(handle, { op = "getch", timeout = timeout,
-		    reply = { __right = replyport } })
+		    reply = { __right = reply() } })
 		return thread.recv(replyport)
 	end
 	-- how wide and how tall, or nil when the far end does not know.
 	-- A program that lays out columns asks once and falls back to its
 	-- own default; nil means a serial line, not an error.
 	function t.size()
-		if not replyport then
-			replyport = sys.newport()
-		end
 		sys.send(handle, { op = "size",
-		    reply = { __right = replyport } })
+		    reply = { __right = reply() } })
 
 		-- Bounded, because "the far end does not know" and "the far
 		-- end does not answer" are the same thing to a caller and

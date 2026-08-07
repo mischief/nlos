@@ -99,6 +99,21 @@ created with `sys.newport()` therefore hands out the ability to *receive*
 on it, and for a port several clients share that lets one take another's
 requests. Use `sys.sendright` for anything you publish.
 
+**A reply port is the case that matters**, because every request/reply
+in the tree carries one and it is the same port for every server a
+thread talks to. `thread.replyport()` returns two handles for that
+reason — the port to wait on, and a send right to put in the message —
+and `thread.selfright()` is the same thing for `sys.SELF`, which must
+never be published raw: it is where a proc's monitor notices arrive.
+`test/boot/test_replyright.lua` proves a server cannot take back the
+reply it just sent.
+
+Both are minted once and cached, so the leak-free property of naming the
+port directly survives: there is still nothing for a caller to close.
+When a call site must make its own, close the send right on every path
+that closes the port — a right held past its use keeps `sys.hungup` from
+ever firing.
+
 **Handle numbers are not an ABI.** Handle 0 is the only well-known
 handle there can be, because it is how a proc receives at all. Every
 other capability is granted at whatever slot the first-free allocator
