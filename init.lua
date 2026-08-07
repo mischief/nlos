@@ -209,6 +209,19 @@ if caps_of.blk then
 	    "gefs: no volume mounted this boot")
 end
 
+-- the lease as a filesystem, at /net: addr, mask, gw, dns, ntp, domain,
+-- one per file. This is how a program finds the resolver without
+-- holding a right to dhcpd or being told an address at spawn -- see
+-- task/dns.lua and bin/host.lua, which both just read /net/dns.
+--
+-- The right is the kernel's dhcpd driver task, not the one the block
+-- above would spawn: that block asks for a "udp" capability, which no
+-- task publishes, so it never runs.
+if caps_of.dhcpd then
+	rootns:mount("/net", require("mnt").new(caps_of.dhcpd), "mnt",
+	    { port = { __right = caps_of.dhcpd } })
+end
+
 -- RE-taken, because neither /net nor /srv existed when the first
 -- description was made. dhcpd deliberately keeps the earlier one: it
 -- SERVES /net, and a namespace containing a mount to itself is a loop
@@ -367,7 +380,10 @@ local repl_worker_src = [[
 	local powerh = m.power.__right
 	local diskh = m.disk.__right
 	local tcph = m.tcp and m.tcp.__right
-	local udph = m.udp and m.udp.__right
+	-- the udp server is task/ip.lua: it answers open/send/recv/close
+	-- on the datagram side of the same right that carries the stack's
+	-- own config ops, and nothing publishes a capability called "udp".
+	local udph = (m.udp and m.udp.__right) or (m.ip and m.ip.__right)
 	local dnsh = m.dns and m.dns.__right
 	local fbh = m.fb and m.fb.__right
 
@@ -446,7 +462,7 @@ local repl_worker_src = [[
 			-- A public session gets no such grant.
 			launcher.start({ ns = require("ns").current(),
 			    cons = consh, fb = fbh, net = tcph,
-			    power = powerh },
+			    udp = udph, power = powerh },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")
 			return "back at the lua repl"
@@ -546,6 +562,11 @@ while true do
 	end
 	if has_udp then
 		grant.udp = { __right = caps_of.udp }
+	end
+	-- the stack itself, which is what actually serves udp; see the
+	-- worker's udph above.
+	if caps_of.ip then
+		grant.ip = { __right = caps_of.ip }
 	end
 	if has_dns then
 		grant.dns = { __right = dnssrv }

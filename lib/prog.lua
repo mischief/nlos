@@ -667,6 +667,8 @@ function M.main()
 	ctx.tty = ctx.tty and ctx.tty.__right or nil
 	-- the network, if the launcher lent us one. see M.net below.
 	ctx.net = ctx.net and ctx.net.__right or nil
+	-- and udp, which is a task of its own. see M.udp below.
+	ctx.udp = ctx.udp and ctx.udp.__right or nil
 	-- the power task, if the launcher lent us one. see M.power below.
 	ctx.power = ctx.power and ctx.power.__right or nil
 
@@ -719,6 +721,7 @@ function M.corun(spec)
 		-- wire -- see Sh:pipecoro. either way M.tty() reads ctx.tty.
 		tty = spec.tty,
 		net = spec.net,
+		udp = spec.udp,
 	}
 
 	if not ctx.ns then
@@ -790,6 +793,18 @@ function M.net()
 		return nil
 	end
 	return require("caps").tcp(ctx.net)
+end
+
+-- udp, wrapped, or nil where the launcher lent none. A separate task
+-- from tcp and separately granted, so a program asks for the one it
+-- speaks rather than for "the network".
+function M.udp()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.udp then
+		return nil
+	end
+	return require("caps").udp(ctx.udp)
 end
 
 -- the terminal, wrapped, or nil if the launcher lent none -- the same

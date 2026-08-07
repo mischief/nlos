@@ -137,6 +137,10 @@ function M.new(caps)
 		-- the tcp task, lent on the same terms as the screen: a
 		-- shell given none hands out none.
 		net = caps.net,
+		-- and the udp task, separately: the two soft-fail
+		-- independently (see kernel.c's driver table), so a machine
+		-- with one and not the other lends what it has.
+		udp = caps.udp,
 		-- the power task, on the same terms again. This one is the
 		-- machine itself, so a public session (sshd, webterm) is
 		-- given none and its programs cannot reset the machine --
@@ -427,6 +431,11 @@ function Sh:spawn1(path, argv, streams)
 	if self.net then
 		msg.net = { __right = self.net }
 	end
+	-- udp, for the programs that ask a server one question and read one
+	-- answer (prog.udp -> host, date).
+	if self.udp then
+		msg.udp = { __right = self.udp }
+	end
 	-- and the power task, for bin/reboot.lua. Every program gets it
 	-- where the shell has it, like the screen and the network: the
 	-- authority is the grant, and a program that never asks
@@ -576,6 +585,9 @@ function Sh:pipecoro(stages)
 			-- the same way a spawned one does. bare handle, not
 			-- {__right=}: corun takes objects, not wire rights.
 			tty = self.cons,
+			-- likewise udp, as a bare handle: a coro stage
+			-- reaches the same tasks a spawned one does.
+			udp = self.udp,
 		}
 
 		thread.spawn(function()
