@@ -51,8 +51,12 @@ local M = {}
 -- the estimate only has to avoid under-asking. Named rather than
 -- inlined because requester needs the same number.
 local function needof(m)
-	if type(m) == "table" and type(m.data) == "string" then
-		return #m.data + 256
+	local d = type(m) == "table" and m.data
+
+	-- a buffer travels as its bytes, so it needs the room its bytes
+	-- need. #d works for either.
+	if type(d) == "string" or type(d) == "userdata" then
+		return #d + 256
 	end
 	return 0
 end
@@ -325,6 +329,18 @@ function M.fb(handle, chunk)
 	-- design that survives it is the one that only ever ships the
 	-- rectangle that changed. plan 9 pays it too, down a 9P pipe.
 	local CHUNK = chunk or (sys.MAXMSG - 512)
+
+	-- part of a payload, without a copy where the payload is a
+	-- buffer. A string has to be cut; a buffer is viewed, which is why
+	-- an image drawn into a buffer reaches the screen without being
+	-- rebuilt on the way.
+	local function piece(data, from, to)
+		if type(data) == "userdata" then
+			return data:view(from, to)
+		end
+		return data:sub(from, to)
+	end
+
 	local function loadband(r, data, wait)
 		local stride = r.w * 4
 		local perband = stride > 0 and (CHUNK // stride) or 0
@@ -349,7 +365,7 @@ function M.fb(handle, chunk)
 				return nil, "message limit below one pixel"
 			end
 			for y = 0, r.h - 1 do
-				local row = data:sub(y * stride + 1,
+				local row = piece(data, y * stride + 1,
 				    (y + 1) * stride)
 				local x = 0
 
@@ -364,7 +380,7 @@ function M.fb(handle, chunk)
 					local ok, err = tell({ op = "load",
 					    r = { x = r.x + x, y = r.y + y,
 					        w = n, h = 1 },
-					    data = row:sub(x * 4 + 1,
+					    data = piece(row, x * 4 + 1,
 					        (x + n) * 4) }, last)
 
 					if not ok then
@@ -386,7 +402,7 @@ function M.fb(handle, chunk)
 			end
 			local band = { x = r.x, y = r.y + y, w = r.w, h = n }
 			local from = y * stride + 1
-			local slice = data:sub(from, from + n * stride - 1)
+			local slice = piece(data, from, from + n * stride - 1)
 			-- only the LAST band waits: the task handles messages
 			-- in order, so its reply reports the whole sequence.
 			local last = y + n >= r.h

@@ -1810,8 +1810,29 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		memcpy(w->p + countpos + 1, &n, sizeof n);
 		return 0;
 	}
+	case LUA_TUSERDATA: {
+		/* a los.buf travels as its bytes, which is what a payload
+		 * is: the receiver gets a string, exactly as if the sender
+		 * had cut one. The copy is still here -- handing the bytes
+		 * over rather than copying them is a change of owner and
+		 * needs the kernel to hold the storage, which is a
+		 * different piece of work. What this saves is the string
+		 * the sender would have had to make first, which for a
+		 * banded screen is one per band.
+		 */
+		size_t n;
+		const char *s = luabuf_bytes(L, idx, &n);
+		unsigned int len;
+
+		if (!s)
+			return -1;
+		len = (unsigned int)n;
+		if (wbyte(w, 'S') || wput(w, &len, sizeof len))
+			return -1;
+		return wput(w, s, n);
+	}
 	default:
-		return -1;	/* functions, userdata: no travel */
+		return -1;	/* functions, other userdata: no travel */
 	}
 }
 

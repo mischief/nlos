@@ -20,22 +20,23 @@
 -- which is what anyone writing one by hand expects; the packing to BGRx
 -- happens once, here.
 --
--- ---- why rows and not one buffer ----
+-- ---- one buffer, written in place ----
 --
--- plan 9's Memimage is one flat byte array. lua strings are immutable,
--- so the flat version would rebuild the whole image on every write, and
--- a table of per-pixel integers costs sixteen bytes to store four.
+-- plan 9's Memimage is one flat byte array, and so is this: a los.buf
+-- of w*h*4, which is the layout task/fb.lua's load already wants.
 --
--- so an image is a table of one string per row. a fill or a blit
--- touches only the rows in its rectangle and rebuilds each of those
--- once, which makes the cost proportional to the area changed rather
--- than to the image -- the property that actually matters. a single-
--- pixel write is the bad case (it rebuilds a whole row) and it is the
--- operation you should not be writing loops of anyway; use fill.
+-- A buffer is what makes that possible. Lua strings are immutable, so a
+-- flat image made of them would rebuild itself on every write, and a
+-- table of per-pixel integers costs sixteen bytes to store four. With
+-- neither of those, a fill is bytes written where they belong and
+-- allocates nothing at all.
 --
--- this shape is not load-bearing for anything outside this file:
--- bytes() is how pixels leave, and only it and the drawing operations
--- know about rows.
+-- bytes() is how pixels leave. For a whole image it is a view -- the
+-- same bytes, no copy -- and a message takes a buffer wherever it takes
+-- a string, so a picture reaches the screen without being cut up on the
+-- way.
+
+local buf = require("los.buf")
 
 local M = {}
 
@@ -106,13 +107,16 @@ Image.__index = Image
 -- between image and screen coordinates in libmemlayer; there is no
 -- reason to inherit that here before something needs it.
 function M.image(w, h, color)
-	local row = M.pixel(color or M.black):rep(w)
-	local rows = {}
+	local px = M.pixel(color or M.black)
+	local img = setmetatable({ w = w, h = h,
+	    b = buf.new(w * h * 4) }, Image)
 
-	for y = 1, h do
-		rows[y] = row
+	-- black is already what a new buffer holds, and it is the common
+	-- case: a buffer arrives zeroed.
+	if px ~= "\0\0\0\0" then
+		img:fill(img:rect(), color)
 	end
-	return setmetatable({ w = w, h = h, rows = rows }, Image)
+	return img
 end
 
 function Image:rect()
@@ -128,14 +132,13 @@ function Image:fill(r, color)
 		return self
 	end
 
+	-- one run, copied into every row of the rectangle. The run is the
+	-- only allocation, and it is one whatever the height.
 	local run = M.pixel(color):rep(c.w)
-	local head = c.x * 4
-	local tail = (c.x + c.w) * 4 + 1
+	local stride = self.w * 4
 
-	for y = c.y + 1, c.y + c.h do
-		local old = self.rows[y]
-
-		self.rows[y] = old:sub(1, head) .. run .. old:sub(tail)
+	for y = c.y, c.y + c.h - 1 do
+		self.b:copy(y * stride + c.x * 4 + 1, run)
 	end
 	return self
 end
@@ -166,14 +169,16 @@ function Image:draw(p, src, sr)
 	local head = dst.x * 4
 	local tail = (dst.x + dst.w) * 4 + 1
 
-	for i = 0, dst.h - 1 do
-		local from = src.rows[sr.y + skipy + i + 1]
-		local piece = from:sub((sr.x + skipx) * 4 + 1,
-		    (sr.x + skipx + dst.w) * 4)
-		local old = self.rows[dst.y + i + 1]
+	local dstride = self.w * 4
+	local sstride = src.w * 4
+	local sx = (sr.x + skipx) * 4
 
-		self.rows[dst.y + i + 1] = old:sub(1, head) .. piece ..
-		    old:sub(tail)
+	for i = 0, dst.h - 1 do
+		local sfrom = (sr.y + skipy + i) * sstride + sx
+
+		-- buffer to buffer: no piece is cut out on the way
+		self.b:copy((dst.y + i) * dstride + dst.x * 4 + 1, src.b,
+		    sfrom + 1, sfrom + dst.w * 4)
 	end
 	return self
 end
@@ -187,14 +192,25 @@ function M.bytes(img, r)
 		return ""
 	end
 
-	local out = {}
-	local from = r.x * 4 + 1
-	local to = (r.x + r.w) * 4
-
-	for i = 1, r.h do
-		out[i] = img.rows[r.y + i]:sub(from, to)
+	-- the whole image is the common case and costs nothing: a view is
+	-- the same bytes, and a message takes one wherever it takes a
+	-- string.
+	if r.x == 0 and r.y == 0 and r.w == img.w and r.h == img.h then
+		return img.b:view()
 	end
-	return table.concat(out)
+
+	-- a part of it has to be gathered, since the rows it wants are not
+	-- next to each other. One buffer, and each row copied in once.
+	local out = buf.new(r.w * r.h * 4)
+	local stride = img.w * 4
+	local rw = r.w * 4
+
+	for i = 0, r.h - 1 do
+		local from = (r.y + i) * stride + r.x * 4
+
+		out:copy(i * rw + 1, img.b, from + 1, from + rw)
+	end
+	return out
 end
 
 Image.bytes = function(self, r) return M.bytes(self, r) end
@@ -202,28 +218,23 @@ Image.bytes = function(self, r) return M.bytes(self, r) end
 -- the inverse: wrap raw BGRx bytes as an image, so pixels read back off
 -- a screen can be drawn into and compared like any other image.
 function M.fromBytes(w, h, data)
-	local rows = {}
-	local stride = w * 4
+	local img = setmetatable({ w = w, h = h,
+	    b = buf.new(w * h * 4) }, Image)
 
-	for y = 1, h do
-		rows[y] = data:sub((y - 1) * stride + 1, y * stride)
-	end
-	return setmetatable({ w = w, h = h, rows = rows }, Image)
+	img.b:copy(1, data)
+	return img
 end
 
 -- read one pixel as 0xRRGGBB. for tests and for asking questions at the
 -- repl, not for loops.
 function M.at(img, x, y)
-	local row = img.rows[y + 1]
-
-	if not row then
+	if x < 0 or y < 0 or x >= img.w or y >= img.h then
 		return nil
 	end
-	local b, g, r = row:byte(x * 4 + 1, x * 4 + 3)
 
-	if not b then
-		return nil
-	end
+	local i = (y * img.w + x) * 4
+	local b, g, r = img.b:byte(i + 1, i + 3)
+
 	return (r << 16) | (g << 8) | b
 end
 
