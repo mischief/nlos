@@ -43,6 +43,18 @@ local MAXRAW = 512
 -- about.
 local INTR = "\3"
 
+-- how many lines of history a terminal remembers. Small on purpose:
+-- this is per console and lives for the life of the machine, and a
+-- serial console's value is in the last few lines, not in a searchable
+-- archive.
+local HISTMAX = 64
+
+-- how long to wait for the rest of an escape sequence before deciding
+-- there is none and the key was a bare Escape. The bytes of a real
+-- arrow key arrive together at any line speed; a human cannot follow
+-- Escape with [ this fast.
+local ESCWAIT = 50
+
 local M = {}
 local Console = {}
 
@@ -62,6 +74,12 @@ function M.new(backend)
 		-- done, so a getch or a second reader that arrived during editing
 		-- is not lost.
 		deferred = {},
+		-- edited lines, oldest first, shared by every readline on this
+		-- terminal. It belongs to the console rather than to the shell
+		-- because the editor is here: a repl, a dos shell and anything
+		-- else that asks for a line all get the same up-arrow, and none
+		-- of them has to keep a ring of its own.
+		history = {},
 	}, Console)
 end
 
@@ -83,12 +101,86 @@ end
 -- redisplays. No cursor addressing: a plain serial backend has no assumed
 -- escape support, so the redraw is \r\n plus a reprint, the same
 -- primitives the backspace erase already uses.
+-- remember a line, unless there is nothing to remember: a blank line,
+-- or the line that is already on top. A history full of the same
+-- command repeated is a history you have to page through.
+function Console:remember(line)
+	local h = self.history
+
+	if line == "" or h[#h] == line then
+		return
+	end
+	h[#h + 1] = line
+	if #h > HISTMAX then
+		table.remove(h, 1)
+	end
+end
+
 function Console:readline(prompt)
 	local io = self.io
 	local buf = {}
+	-- where in the history the line being edited came from. #history+1
+	-- means "the line you are typing", which is not in the history yet
+	-- and is kept in `live` while you are looking at older ones.
+	local hpos = #self.history + 1
+	local live = ""
 
 	local function erase(n)
 		io.write(("\8 \8"):rep(n))
+	end
+
+	-- swap the line under the cursor for another one. No cursor
+	-- addressing: erase what is there with the backspaces the editor
+	-- already uses and print the replacement, so this works on a serial
+	-- line that answers no escape sequence at all.
+	local function replace(s)
+		erase(#buf)
+		buf = {}
+		for i = 1, #s do
+			buf[i] = s:sub(i, i)
+		end
+		io.write(s)
+	end
+
+	-- an escape sequence, or a bare Escape. Called with the \27 already
+	-- taken; returns "up", "down" or nil, plus any byte it read that
+	-- turned out not to belong to a sequence. The caller types that
+	-- second value: Escape followed by an ordinary letter is two
+	-- keystrokes, and dropping the letter would be the editor eating
+	-- input. The wait is what tells the two apart -- see ESCWAIT.
+	--
+	-- Both cursor-key forms are read: a terminal in application mode
+	-- sends ESC O A where the normal mode sends ESC [ A, and which one
+	-- arrives is the far end's business, not ours.
+	local function arrow(final)
+		if final == "A" then
+			return "up"
+		elseif final == "B" then
+			return "down"
+		end
+		return nil	-- left, right, home, a mouse report: swallowed
+	end
+
+	local function escape()
+		local c = thread.recvtimeout(self.inq, ESCWAIT)
+
+		if c == "O" then
+			return arrow(thread.recvtimeout(self.inq, ESCWAIT))
+		end
+		if c ~= "[" then
+			-- a bare Escape, and c is whatever was typed next
+			return nil, c
+		end
+		-- a CSI sequence runs to its final byte (0x40-0x7e) and the
+		-- parameters before it are any length -- Delete is ESC [ 3 ~.
+		-- Reading to the final byte is what keeps the tail of a
+		-- sequence we ignore from being typed into the line.
+		local f
+
+		repeat
+			f = thread.recvtimeout(self.inq, ESCWAIT)
+		until f == nil or f:match("[@-~]")
+		return arrow(f)
 	end
 
 	local function redraw(msg)
@@ -104,25 +196,41 @@ function Console:readline(prompt)
 		io.write(prompt)
 	end
 
-	while true do
-		local which, m = thread.alt({ { port = self.inq },
-		    { port = sys.SELF } })
+	-- one byte of pushback: what escape() read looking for a sequence
+	-- that was not there. It is handled by the loop below rather than
+	-- pushed back onto the port, so it keeps its place -- returning it
+	-- to the queue would put it BEHIND anything already waiting there,
+	-- which reorders a paste that contains an escape.
+	local pending
 
-		if which ~= 1 then
-			-- a mailbox message mid-line: a write shows now; anything
-			-- else waits for serve, so nothing is dropped.
-			if type(m) == "table" and
+	while true do
+		local c = pending
+
+		pending = nil
+		if c == nil then
+			local which, m = thread.alt({ { port = self.inq },
+			    { port = sys.SELF } })
+
+			if which == 1 then
+				c = m
+			-- a mailbox message mid-line: a write shows now;
+			-- anything else waits for serve, so nothing is
+			-- dropped.
+			elseif type(m) == "table" and
 			    (m.op == "write" or m.op == "log") then
 				redraw(m.data)
 			else
 				self.deferred[#self.deferred + 1] = m
 			end
-		else
-			local c = m
+		end
 
+		if c ~= nil then
 			if c == "\r" or c == "\n" then
+				local line = table.concat(buf)
+
 				io.write("\n")
-				return table.concat(buf)
+				self:remember(line)
+				return line
 			elseif c == "\4" then
 				if #buf == 0 then
 					return nil
@@ -136,6 +244,27 @@ function Console:readline(prompt)
 				-- ctrl-u: kill the whole line
 				erase(#buf)
 				buf = {}
+			elseif c == "\27" then
+				local key
+				local h = self.history
+
+				key, pending = escape()
+
+				-- the line you were typing is kept at
+				-- #history+1 and comes back when you walk
+				-- down past the newest entry, so a recall
+				-- you did not want costs nothing.
+				if key == "up" and hpos > 1 then
+					if hpos == #h + 1 then
+						live = table.concat(buf)
+					end
+					hpos = hpos - 1
+					replace(h[hpos])
+				elseif key == "down" and hpos <= #h then
+					hpos = hpos + 1
+					replace(hpos == #h + 1 and live
+					    or h[hpos])
+				end
 			elseif #c == 1 and c >= " " then
 				buf[#buf + 1] = c
 				io.write(c)
