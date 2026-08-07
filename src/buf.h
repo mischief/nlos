@@ -41,8 +41,20 @@ int	luabuf_give(lua_State *L, void *p, size_t len);
 /* push a buffer of n bytes and return its storage, for a C function
  * that fills one -- a device read. Null, pushing nothing, when the proc
  * cannot afford it. The bytes are not initialised.
+ *
+ * Making the lua object can collect, and a finalizer can run any lua,
+ * including code that reaches the same driver. So this is for a caller
+ * that fills the storage AFTER it is handed back. A caller copying out
+ * of memory the device still owns must not hold that pointer across
+ * this: allocate with luabuf_alloc, copy, and hand the result to
+ * luabuf_give once nothing borrowed is left.
  */
 unsigned char *luabuf_push(lua_State *L, size_t n);
+
+/* pooled storage with no lua object attached, and its release for a
+ * caller that never reaches luabuf_give. Neither touches lua. */
+void	*luabuf_alloc(size_t n);
+void	 luabuf_free(void *p, size_t n);
 
 /* buffers allocated since boot, for sys.stats() */
 unsigned long long luabuf_allocs(void);

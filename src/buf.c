@@ -73,6 +73,12 @@ static atomic_ullong nallocs;
  * the lua heap looks idle.
  *
  * A step per kilobyte, which is the same currency lua counts in.
+ *
+ * Called from buf.new alone. A step runs finalizers, so it may run any
+ * lua the collector reaches -- including api_close. That is what an
+ * ordinary table constructor already risks, so a lua-called allocator
+ * is where it belongs and a C function holding a device or a lock is
+ * not. luabuf_push and luabuf_give take no step for that reason.
  */
 static void
 gcpressure(lua_State *L, size_t n)
@@ -645,6 +651,19 @@ luabuf_detach(lua_State *L, void *handle)
 	b->p = 0;
 }
 
+void *
+luabuf_alloc(size_t n)
+{
+	return n ? platform_chunk_alloc(n) : 0;
+}
+
+void
+luabuf_free(void *p, size_t n)
+{
+	if (p)
+		platform_chunk_free(p, n);
+}
+
 unsigned char *
 luabuf_push(lua_State *L, size_t n)
 {
@@ -660,7 +679,6 @@ luabuf_push(lua_State *L, size_t n)
 		return 0;
 	}
 	atomic_fetch_add_explicit(&nallocs, 1, memory_order_relaxed);
-	gcpressure(L, n);
 	return p;
 }
 

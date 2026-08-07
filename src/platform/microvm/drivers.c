@@ -521,13 +521,23 @@ blk_read_k(lua_State *L, int status, lua_KContext ctx)
 	/* a buffer, so the sectors can be given to whoever asked for them
 	 * rather than copied there. A string would be copied again by the
 	 * serializer and once more by the client.
+	 *
+	 * The copy happens before the lua object exists. `data` is the
+	 * device's slot, and making a lua object can collect, which runs
+	 * finalizers, which may reach this driver and start a transfer
+	 * into that same slot.
 	 */
-	unsigned char *p = luabuf_push(L, (size_t)len);
+	void *p = luabuf_alloc((size_t)len);
 
 	if (!p)
 		return luaL_error(L, "blk.read: no room for %d bytes",
 		    (int)len);
 	memcpy(p, data, (size_t)len);
+	if (!luabuf_give(L, p, (size_t)len)) {
+		luabuf_free(p, (size_t)len);
+		return luaL_error(L, "blk.read: no room for %d bytes",
+		    (int)len);
+	}
 	return 1;
 }
 
