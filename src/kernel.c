@@ -504,6 +504,7 @@ struct kproc {
 	size_t mem_used;	/* live bytes in this proc's lua heap, plus its
 				 * pooled buffer bytes -- see kbuf_charge */
 	size_t buf_used;	/* the pooled half of mem_used, on its own */
+	size_t buf_debt;	/* pooled bytes since the last collector step */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
 	/* bytes lua has asked for since this proc's collector last ran.
@@ -5885,6 +5886,23 @@ kbuf_uncharge(lua_State *L, size_t n)
 
 	p->mem_used -= n;
 	p->buf_used -= n;
+}
+
+/* pooled bytes a proc may allocate between collector steps. Per proc
+ * and unlocked, like every other counter here.
+ */
+#define GCDEBT	(64 * 1024)
+
+int
+kbuf_step_due(lua_State *L, size_t n)
+{
+	struct kproc *p = self(L);
+
+	p->buf_debt += n;
+	if (p->buf_debt < GCDEBT)
+		return 0;
+	p->buf_debt = 0;
+	return 1;
 }
 
 size_t

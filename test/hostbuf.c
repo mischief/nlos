@@ -50,3 +50,19 @@ kbuf_pooled(void)
 {
 	return 0;
 }
+
+/* the guest counts this per proc; here one counter serves the one
+ * state a host test runs in.
+ */
+int
+kbuf_step_due(lua_State *L, size_t n)
+{
+	static size_t debt;
+
+	(void)L;
+	debt += n;
+	if (debt < 64 * 1024)
+		return 0;
+	debt = 0;
+	return 1;
+}

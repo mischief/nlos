@@ -68,6 +68,14 @@ unsigned long long luabuf_allocs(void);
 int	kbuf_charge(lua_State *L, size_t n);
 void	kbuf_uncharge(lua_State *L, size_t n);
 
+/* has this proc allocated enough pooled bytes to owe the collector a
+ * step? Charging every allocation makes a small buffer pay far more for
+ * collection than for its own memory; what has to keep up with the
+ * allocation rate is the collection rate, so the debt is counted and
+ * paid in whole steps.
+ */
+int	kbuf_step_due(lua_State *L, size_t n);
+
 /* every proc's pooled bytes, for sys.stats() */
 size_t	kbuf_pooled(void);
 

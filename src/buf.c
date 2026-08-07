@@ -75,9 +75,10 @@ static atomic_ullong nallocs;
  * unreachable, the memory is not freed, and the machine runs out while
  * the lua heap looks idle.
  *
- * A step per kilobyte, which is the same currency lua counts in, up to
- * GCSTEPMAX. A step does work in proportion to what it is asked for, so
- * without the ceiling one large buffer pays for a whole marking pass.
+ * One step of GCSTEPMAX kilobytes for every kbuf_step_due says is owed,
+ * rather than a step per allocation. A step costs about what it is
+ * asked for, so charging each buffer made a 4KB one pay more for
+ * collection than for its own memory.
  *
  * Called from buf.new alone. A step runs finalizers, so it may run any
  * lua the collector reaches -- including api_close. That is what an
@@ -88,11 +89,8 @@ static atomic_ullong nallocs;
 static void
 gcpressure(lua_State *L, size_t n)
 {
-	int kb = (int)(n / 1024) + 1;
-
-	if (kb > GCSTEPMAX)
-		kb = GCSTEPMAX;
-	lua_gc(L, LUA_GCSTEP, kb);
+	if (kbuf_step_due(L, n))
+		lua_gc(L, LUA_GCSTEP, GCSTEPMAX);
 }
 
 unsigned long long
