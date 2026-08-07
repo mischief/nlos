@@ -180,6 +180,14 @@ const char *platform_arch(void);
  */
 void platform_meminfo(unsigned long long *total, unsigned long long *avail);
 
+/* the pool the lua heap's chunks come from, which is not always the one
+ * above. On a board with PSRAM the chunks are there and everything else
+ * -- ports, message payloads, DMA -- is in internal sram, so the memory
+ * that runs out first is invisible to platform_meminfo. A platform
+ * whose chunks come from the same pool answers with the same figures.
+ */
+void platform_chunkinfo(unsigned long long *total, unsigned long long *avail);
+
 /* the C heap's own accounting: bytes live, the most ever live, blocks
  * live, and allocations since boot. A platform that cannot answer one
  * of them leaves it alone; the caller zeroes first.

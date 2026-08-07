@@ -160,12 +160,24 @@ stats_mt.__tostring = function()
 	local broke = (s.broke or 0) > 0
 	    and string.format(" broke=%d", s.broke) or ""
 
+	-- the chunk pool, where it is not the memory reported above: on a
+	-- board with PSRAM the heaps are there and everything else is in
+	-- internal sram, and it is this pool that bounds how many procs
+	-- there can be. Shown only when the two differ, since on every
+	-- other machine it would be the same number twice.
+	local chunk = ""
+
+	if (s.chunktotal or 0) > 0 and s.chunktotal ~= s.memtotal then
+		chunk = string.format(" chunks=%dK/%dK free",
+		    (s.chunkavail or 0) // 1024, s.chunktotal // 1024)
+	end
+
 	return string.format(
-	    "procs=%d%s ports=%d heap=%dK lua=%dK/%dK (%.2fx) mem=%dK/%dK free",
+	    "procs=%d%s ports=%d heap=%dK lua=%dK/%dK (%.2fx) mem=%dK/%dK free%s",
 	    s.procs, broke, s.ports, (s.heap_used or 0) // 1024,
 	    live // 1024, mapped // 1024,
 	    live > 0 and mapped / live or 0,
-	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024)
+	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024, chunk)
 end
 M.stats = setmetatable({}, stats_mt)
 

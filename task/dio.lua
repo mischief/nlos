@@ -228,24 +228,22 @@ local nextid = 1
 --
 -- The count is the backstop; the memory is the real answer, because
 -- what a program costs is not something a number written here can know.
--- Measured on a T-Deck, a terminal and its shell take about 32KB of
--- INTERNAL memory -- not the lua heap, which is in PSRAM and was never
--- the thing that ran out. Eight of them left 12KB of 355KB free, one
--- proc dead and not enough room to draw.
 --
--- So the floor is three more instances' worth, kept clear: what is left
--- has to run the programs typed into those terminals, not merely hold
--- the terminals.
+-- The memory to ask about is the pool the lua heaps come from, which on
+-- this board is PSRAM and is not the one sys.stats calls memavail. A
+-- terminal and its shell are about half a megabyte of heap and some 3KB
+-- of internal sram, so watching the sram would let six of them fill the
+-- heap while the figure being watched barely moved.
 local MAXAPPS = 6
-local APPMEM = 32 * 1024
-local MEMFLOOR = 3 * APPMEM
+local APPHEAP = 512 * 1024
+local HEAPFLOOR = 2 * APPHEAP
 
--- what the machine has left, or nil where it cannot say. A platform
--- with no meminfo answers 0, and then the count above is the whole of
--- the limit.
-local function memleft()
+-- what the pool has left, or nil where the machine cannot say -- then
+-- the count above is the whole of the limit.
+local function heapleft()
 	local ok, st = pcall(sys.stats)
-	local avail = ok and type(st) == "table" and st.memavail
+	local avail = ok and type(st) == "table" and
+	    (st.chunkavail or st.memavail)
 
 	if type(avail) ~= "number" or avail <= 0 then
 		return nil
@@ -723,7 +721,11 @@ local function startterm(a, entry, desc)
 		-- and bin/date.lua ask a server one question each.
 		ip = ip and { __right = ip } or nil,
 	})
-	sys.close(h)
+	-- the handle is kept, not closed: it is a right to the app's
+	-- own port, and sys.kill asks whether the caller holds one. Drop
+	-- it and the tray can start an app it can never stop -- which is
+	-- what a second tap did for as long as this closed it here.
+	a.ctl = h
 	return pid
 end
 
@@ -772,10 +774,10 @@ local function start(i)
 		    :format(MAXAPPS)
 	end
 
-	local left = memleft()
+	local left = heapleft()
 
-	if left and left < MEMFLOOR + APPMEM then
-		return nil, ("%dK free is not enough to start another")
+	if left and left < HEAPFLOOR + APPHEAP then
+		return nil, ("%dK of heap left is not enough to start another")
 		    :format(left // 1024)
 	end
 
@@ -810,7 +812,7 @@ local function start(i)
 				stdout = cons and { __right = cons } or nil,
 				stderr = cons and { __right = cons } or nil,
 			})
-			sys.close(h)
+			a.ctl = h	-- kept, as in startterm: see there
 		else
 			err = "spawn failed"
 		end
@@ -890,7 +892,12 @@ local BADMAX = 8
 -- how close two taps on one button have to be to mean "close it". Long
 -- enough for a finger on a panel, short enough that switching to an app
 -- and back does not stop it by accident.
-local DOUBLE = 500
+--
+-- 800 rather than 500: a panel tap is a press and a release with the
+-- finger settling between them, and two of them measured over half a
+-- second apart -- so at 500 the gesture could not be made at all, by a
+-- finger or by an injected record.
+local DOUBLE = 800
 local lasttap, lastms = nil, 0
 
 -- the wheel, as lib/mousefs.lua reports it: 8 up, 16 down, one click
@@ -971,7 +978,16 @@ thread.spawn(function()
 						-- as an app ending rather
 						-- than as an app dying.
 						apps[hit].stopped = true
-						pcall(sys.kill, apps[hit].pid)
+
+						local kok, kerr =
+						    pcall(sys.kill,
+						    apps[hit].pid)
+
+						if not kok then
+							apps[hit].stopped = nil
+							say("kill: " ..
+							    tostring(kerr))
+						end
 					elseif hit and apps[hit] then
 						-- running, behind: bring it
 						-- forward. It keeps running
@@ -1030,6 +1046,14 @@ thread.spawn(function()
 			-- until something reaps it.
 			if a.stopped then
 				pcall(sys.reap, m.exit)
+			end
+			-- and only now the right to it goes back: sys.reap
+			-- asks the same question sys.kill does, so closing
+			-- this any earlier leaves the corpse held -- with
+			-- the whole working set that made it worth reaping.
+			if a.ctl then
+				sys.close(a.ctl)
+				a.ctl = nil
 			end
 			-- the list closed up over it, so every button below
 			-- where it was has moved

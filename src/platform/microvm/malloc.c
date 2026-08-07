@@ -155,6 +155,17 @@ realloc(void *p, size_t n)
 void *platform_chunk_alloc(size_t n);
 void platform_chunk_free(void *p, size_t n);
 
+/* the lua heap's chunks come from malloc here, which is the same pool
+ * platform_meminfo reports: one kind of memory, one set of figures.
+ */
+void platform_chunkinfo(unsigned long long *total, unsigned long long *avail);
+
+void
+platform_chunkinfo(unsigned long long *total, unsigned long long *avail)
+{
+	platform_meminfo(total, avail);
+}
+
 void *
 platform_chunk_alloc(size_t n)
 {

@@ -82,6 +82,32 @@ platform_meminfo(unsigned long long *total, unsigned long long *avail)
 		*avail = info.total_free_bytes;
 }
 
+/* the pool the lua heap's chunks come from: PSRAM where the board has
+ * it, and the same internal sram as above where it has not.
+ *
+ * This is the figure that matters on a T-Deck. The heaps are the bulk
+ * of what the machine allocates and they are all in PSRAM, so a board
+ * can be out of room for another proc while platform_meminfo still
+ * reports 170KB free -- which is what made an out-of-memory look like
+ * a per-proc cost that was never there.
+ */
+void
+platform_chunkinfo(unsigned long long *total, unsigned long long *avail)
+{
+	multi_heap_info_t info;
+	uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+
+#if CONFIG_SPIRAM
+	if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0)
+		caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#endif
+	heap_caps_get_info(&info, caps);
+	if (total)
+		*total = info.total_free_bytes + info.total_allocated_bytes;
+	if (avail)
+		*avail = info.total_free_bytes;
+}
+
 /* the C heap, for sys.stats.
  *
  * The other platforms count this in their own malloc; here the
@@ -124,20 +150,38 @@ kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
  * we want makes the chunk size a tuning decision again instead of a
  * placement one.
  *
- * The fallback is not an error path: it is the board with no PSRAM,
- * where heap_caps_malloc(MALLOC_CAP_SPIRAM) simply has nothing to give.
+ * The fallback is for the board with no PSRAM, where
+ * heap_caps_malloc(MALLOC_CAP_SPIRAM) has nothing to give whatever is
+ * asked -- and it is taken only where the board has none at all, which
+ * is decided once and not per call.
+ *
+ * A board WITH PSRAM must be refused instead, because the fallback on
+ * that board is not an error path but a disaster. luaheap answers a
+ * refusal by returning its cached large blocks and its empty chunks and
+ * asking again (see chunk_new): the whole reclaim path is driven by the
+ * chunk source saying no. Falling back to internal sram means it never
+ * says no, so nothing is ever reclaimed, and the machine quietly spends
+ * the sram that everything else needs -- ports, message payloads, DMA.
+ * Measured: eight terminals took PSRAM to its ceiling and then took
+ * internal sram from 175KB to 12KB, killing a proc and leaving no room
+ * to draw. Refused, the heap gives back what it is holding and the
+ * board stays alive.
  */
 void *
 platform_chunk_alloc(size_t n)
 {
-	void *p = 0;
-
 #if CONFIG_SPIRAM
-	p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	/* asked once: heap_caps_get_info walks the pool, and this is the
+	 * allocator's hot path. A board's PSRAM does not come and go.
+	 */
+	static int havepsram = -1;
+
+	if (havepsram < 0)
+		havepsram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+	if (havepsram)
+		return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #endif
-	if (!p)
-		p = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-	return p;
+	return heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
 void

@@ -4437,6 +4437,19 @@ api_stats(lua_State *L)
 	lua_pushinteger(L, (lua_Integer)mavail);
 	lua_setfield(L, -2, "memavail");
 
+	/* and the pool the lua heaps are carved from, which on a board
+	 * with PSRAM is a different one. What bounds how many procs can
+	 * exist is this, not the figures above: a machine can be out of
+	 * room for another heap with plenty of sram left.
+	 */
+	unsigned long long ctotal = 0, cavail = 0;
+
+	platform_chunkinfo(&ctotal, &cavail);
+	lua_pushinteger(L, (lua_Integer)ctotal);
+	lua_setfield(L, -2, "chunktotal");
+	lua_pushinteger(L, (lua_Integer)cavail);
+	lua_setfield(L, -2, "chunkavail");
+
 	/* the c heap, i.e. everything not on a per-proc lua heap: port
 	 * messages, net tokens and payload copies, loadfile buffers.
 	 * sys.meminfo(pid) covers the lua side.
