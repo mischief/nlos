@@ -519,3 +519,20 @@ luabuf_check(lua_State *L, int idx, size_t *len)
 		    idx);
 	return s;
 }
+
+/* the bytes of a writable buffer, for a C function that produces into
+ * one. Null for a string, a read-only view, or anything else: what a
+ * result is written into has to be something the caller may write.
+ */
+unsigned char *
+luabuf_writable(lua_State *L, int idx, size_t *len)
+{
+	struct luabuf *b = luaL_testudata(L, idx, BUFMT);
+
+	if (!b || b->ro)
+		return 0;
+	if (!b->p)
+		luaL_error(L, "buffer has been given away");
+	*len = b->len;
+	return b->p;
+}

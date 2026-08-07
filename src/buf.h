@@ -15,6 +15,10 @@ const char *luabuf_bytes(lua_State *L, int idx, size_t *len);
  * is a payload. */
 const char *luabuf_check(lua_State *L, int idx, size_t *len);
 
+/* the bytes of a writable buffer, or null for anything a caller may not
+ * write: for a C function that produces its result into one. */
+unsigned char *luabuf_writable(lua_State *L, int idx, size_t *len);
+
 /* pooled bytes, charged to the proc running L against the same cap as
  * its lua memory. charge returns 0 when the cap would be exceeded.
  *

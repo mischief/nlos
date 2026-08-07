@@ -20,6 +20,37 @@
 #include "lua.h"
 #include "lauxlib.h"
 
+/* where a bulk result goes.
+ *
+ * These functions produce as many bytes as they were given, and the
+ * caller usually has somewhere for them already -- the payload region
+ * of a frame it is building, or the very buffer it passed in. An
+ * optional trailing buffer says so: the bytes are written there and no
+ * string is made at all.
+ *
+ * Writing into the input buffer is allowed and is the ordinary case for
+ * a stream cipher, which is why the algorithms take separate in and out
+ * pointers that may be equal.
+ *
+ * Without one the result comes back as a string, as it always has.
+ */
+static char *
+outbuf(lua_State *L, int idx, size_t len)
+{
+	size_t have;
+	char *p;
+
+	if (lua_isnoneornil(L, idx))
+		return 0;
+	p = (char *)luabuf_writable(L, idx, &have);
+	if (!p)
+		luaL_error(L, "bad argument #%d (a buffer to write into)", idx);
+	if (have < len)
+		luaL_error(L, "the output buffer holds %d bytes, not %d",
+		    (int)have, (int)len);
+	return p;
+}
+
 static const uint8_t *
 checkbytes(lua_State *L, int idx, size_t want, const char *what)
 {
@@ -46,7 +77,7 @@ l_chacha20_block(lua_State *L)
 	return 1;
 }
 
-/* chacha20_xor(key, counter, nonce, data) -> data */
+/* chacha20_xor(key, counter, nonce, data [, out]) -> data or out */
 static int
 l_chacha20_xor(lua_State *L)
 {
@@ -60,6 +91,14 @@ l_chacha20_xor(lua_State *L)
 
 	if (len == 0) {
 		lua_pushliteral(L, "");
+		return 1;
+	}
+
+	out = outbuf(L, 5, len);
+	if (out) {
+		chacha20_xor((uint8_t *)out, (const uint8_t *)in, len, key,
+		    counter, nonce);
+		lua_pushvalue(L, 5);
 		return 1;
 	}
 
@@ -138,9 +177,15 @@ l_keccak_squeeze(lua_State *L)
 	for (i = 0; i < sizeof(state); i++)
 		state[i] = in[i];
 
-	out = luaL_buffinitsize(L, &b, (size_t)n);
-	keccak_squeeze(state, (uint8_t *)out, (size_t)n, rate);
-	luaL_pushresultsize(&b, (size_t)n);
+	out = outbuf(L, 4, (size_t)n);
+	if (out) {
+		keccak_squeeze(state, (uint8_t *)out, (size_t)n, rate);
+		lua_pushvalue(L, 4);
+	} else {
+		out = luaL_buffinitsize(L, &b, (size_t)n);
+		keccak_squeeze(state, (uint8_t *)out, (size_t)n, rate);
+		luaL_pushresultsize(&b, (size_t)n);
+	}
 
 	lua_pushlstring(L, (const char *)state, sizeof(state));
 	return 2;
@@ -262,6 +307,13 @@ l_aes_ctr_xor(lua_State *L)
 
 	for (i = 0; i < 16; i++)
 		ctr[i] = ctr0[i];
+
+	out = outbuf(L, 4, len);
+	if (out) {
+		aes_ctr_xor(&a, ctr, (uint8_t *)out, (const uint8_t *)in, len);
+		lua_pushvalue(L, 4);
+		return 1;
+	}
 
 	out = luaL_buffinitsize(L, &b, len);
 	aes_ctr_xor(&a, ctr, (uint8_t *)out, (const uint8_t *)in, len);
