@@ -96,6 +96,52 @@ local Cons = {}
 
 Cons.__index = Cons
 
+-- The grid is rows*cols cells, and every per-cell fact about it lives in
+-- a los.buf rather than a Lua table: five tables of one number per cell
+-- cost sixteen bytes a cell and sit in the Lua heap, which on the esp32
+-- is the memory a terminal is competing for. As buffers they are one
+-- byte a cell for the character and four for a color, out of the heap
+-- and in PSRAM.
+--
+-- The rows are a ring. `top` is the slot logical row 0 occupies, and a
+-- scroll advances it, so moving the screen up costs one addition instead
+-- of a copy of the whole grid. Nothing outside this file sees a slot:
+-- every method takes the logical row y and asks slot() for it.
+--
+-- `grid` stays a Lua table of one string per row, because paintspan
+-- slices it for font.render, and it is indexed by slot + 1.
+
+-- the slot holding logical row y.
+function Cons:slot(y)
+	return (self.top + y) % self.rows
+end
+
+-- fill one row's colors, which a cleared or freshly scrolled row needs:
+-- buf:fill writes one byte, and these are four-byte cells.
+function Cons:rowcolor(slot, fg, bg)
+	local o = slot * self.cols * 4
+
+	for c = 0, self.cols - 1 do
+		self.fgc:setu32le(o + c * 4 + 1, fg)
+		self.bgc:setu32le(o + c * 4 + 1, bg)
+	end
+end
+
+-- forget what the glass shows for k rows starting at logical row y.
+--
+-- The character is the sentinel: a cell of the shown grid reads 0 when
+-- nothing is drawn there, and 0 is not a character putc will place, so a
+-- cleared cell never matches the grid and is always redrawn. The colors
+-- are left as they are because nothing reads them without the character
+-- matching first.
+function Cons:forget(y, k)
+	for i = y, y + k - 1 do
+		local o = self:slot(i) * self.cols
+
+		self.shownch:fill(0, o + 1, o + self.cols)
+	end
+end
+
 -- the foreground and background a cell would be written with now, after
 -- the active reverse-video attribute.
 function Cons:pen()
@@ -128,22 +174,25 @@ function Cons:paintspan(y, from, to)
 		return
 	end
 
-	local i = y + 1
-	local line = self.grid[i] or ""
+	local slot = self:slot(y)
+	local line = self.grid[slot + 1] or ""
 
 	if #line < to then
 		line = line .. string.rep(" ", to - #line)
 	end
 
-	local fgc, bgc = self.fgc[i], self.bgc[i]
-	local sch, sfg, sbg = self.shownch[i], self.shownfg[i], self.shownbg[i]
-	local deffg, defbg = self.deffg, self.defbg
+	local fgc, bgc = self.fgc, self.bgc
+	local sch, sfg, sbg = self.shownch, self.shownfg, self.shownbg
+	local o = slot * self.cols		-- one byte a cell
+	local o4 = o * 4			-- four bytes a cell
 
 	-- does the glass already show cell c (0-based) as the grid wants it?
 	local function same(c)
-		return sch[c + 1] == line:byte(c + 1)
-		    and sfg[c + 1] == (fgc[c + 1] or deffg)
-		    and sbg[c + 1] == (bgc[c + 1] or defbg)
+		local k = o4 + c * 4 + 1
+
+		return sch:u8(o + c + 1) == line:byte(c + 1)
+		    and sfg:u32le(k) == fgc:u32le(k)
+		    and sbg:u32le(k) == bgc:u32le(k)
 	end
 
 	local c = from
@@ -152,19 +201,20 @@ function Cons:paintspan(y, from, to)
 		if same(c) then
 			c = c + 1
 		else
-			local fg = fgc[c + 1] or deffg
-			local bg = bgc[c + 1] or defbg
+			local fg = fgc:u32le(o4 + c * 4 + 1)
+			local bg = bgc:u32le(o4 + c * 4 + 1)
 			local e = c + 1
 
-			while e < to and (fgc[e + 1] or deffg) == fg
-			    and (bgc[e + 1] or defbg) == bg and not same(e) do
+			while e < to and fgc:u32le(o4 + e * 4 + 1) == fg
+			    and bgc:u32le(o4 + e * 4 + 1) == bg
+			    and not same(e) do
 				e = e + 1
 			end
 
 			for k = c, e - 1 do
-				sch[k + 1] = line:byte(k + 1)
-				sfg[k + 1] = fg
-				sbg[k + 1] = bg
+				sch:setu8(o + k + 1, line:byte(k + 1))
+				sfg:setu32le(o4 + k * 4 + 1, fg)
+				sbg:setu32le(o4 + k * 4 + 1, bg)
 			end
 
 			-- rendered into a buffer and handed to the screen:
@@ -201,11 +251,7 @@ end
 -- believes is already there is a cell it would not send. So the record
 -- of what is shown is dropped first, and then everything goes.
 function Cons:redraw()
-	for y = 1, self.rows do
-		self.shownch[y] = {}
-		self.shownfg[y] = {}
-		self.shownbg[y] = {}
-	end
+	self.shownch:fill(0)
 	self:repaint()
 	self:cursor(self.curon)
 end
@@ -259,7 +305,8 @@ function Cons:cursor(on)
 		-- no longer shows exactly its content; forget it, or
 		-- paintspan would take what is there for the character and
 		-- leave the outline behind when the cursor moves.
-		self.shownch[self.row + 1][self.col + 1] = nil
+		self.shownch:setu8(self:slot(self.row) * self.cols +
+		    self.col + 1, 0)
 	else
 		-- just the cell it was drawn over
 		self:paintspan(self.row, self.col, self.col + 1)
@@ -283,18 +330,22 @@ function Cons:doscroll(k)
 	return ok and type(r) == "table" and r.err == nil
 end
 
--- one line off the top: shift the grid up and count it. The glass is not
--- touched here. A write that scrolls many lines -- a screen of ps output
--- landing on a full screen -- would otherwise move the whole frame once
--- per line; the count is spent once, at the end of the write, as a
--- single move of k rows.
+-- one line off the top: turn the ring by one and blank what is now the
+-- bottom row. The glass is not touched here. A write that scrolls many
+-- lines -- a screen of ps output landing on a full screen -- would
+-- otherwise move the whole frame once per line; the count is spent once,
+-- at the end of the write, as a single move of k rows.
+--
+-- The shown grid turns with the ring, which is what the glass does when
+-- the framebuffer scrolls. write() blanks the rows that arrive, or the
+-- whole record if the scroll did not happen.
 function Cons:scroll()
-	table.remove(self.grid, 1)
-	table.remove(self.fgc, 1)
-	table.remove(self.bgc, 1)
-	self.grid[self.rows] = ""
-	self.fgc[self.rows] = {}
-	self.bgc[self.rows] = {}
+	self.top = (self.top + 1) % self.rows
+
+	local slot = self:slot(self.rows - 1)
+
+	self.grid[slot + 1] = ""
+	self:rowcolor(slot, self.deffg, self.defbg)
 	self.row = self.rows - 1
 	self.scrolled = self.scrolled + 1
 end
@@ -303,20 +354,21 @@ end
 -- short row with default-colored spaces so a write after a \r or a
 -- cursor jump lands mid-line.
 function Cons:setcell(y, col, c)
-	local i = y + 1
-	local line = self.grid[i]
+	local slot = self:slot(y)
+	local line = self.grid[slot + 1]
 	local fg, bg = self:pen()
+	local o4 = slot * self.cols * 4
 
 	if #line < col then
 		for k = #line, col - 1 do
-			self.fgc[i][k + 1] = self.deffg
-			self.bgc[i][k + 1] = self.defbg
+			self.fgc:setu32le(o4 + k * 4 + 1, self.deffg)
+			self.bgc:setu32le(o4 + k * 4 + 1, self.defbg)
 		end
 		line = line .. string.rep(" ", col - #line)
 	end
-	self.grid[i] = line:sub(1, col) .. c .. line:sub(col + 2)
-	self.fgc[i][col + 1] = fg
-	self.bgc[i][col + 1] = bg
+	self.grid[slot + 1] = line:sub(1, col) .. c .. line:sub(col + 2)
+	self.fgc:setu32le(o4 + col * 4 + 1, fg)
+	self.bgc:setu32le(o4 + col * 4 + 1, bg)
 end
 
 -- blank a run of a row to spaces in the active background, the way an
@@ -326,18 +378,19 @@ function Cons:clearrow(y, from, to)
 		return
 	end
 
-	local i = y + 1
-	local line = self.grid[i]
+	local slot = self:slot(y)
+	local line = self.grid[slot + 1]
 	local fg, bg = self:pen()
+	local o4 = slot * self.cols * 4
 
 	if #line < to then
 		line = line .. string.rep(" ", to - #line)
 	end
-	self.grid[i] = line:sub(1, from) .. string.rep(" ", to - from) ..
+	self.grid[slot + 1] = line:sub(1, from) .. string.rep(" ", to - from) ..
 	    line:sub(to + 1)
 	for c = from, to - 1 do
-		self.fgc[i][c + 1] = fg
-		self.bgc[i][c + 1] = bg
+		self.fgc:setu32le(o4 + c * 4 + 1, fg)
+		self.bgc:setu32le(o4 + c * 4 + 1, bg)
 	end
 	self:dirtyspan(y, from, to)
 end
@@ -598,20 +651,9 @@ function Cons:write(s)
 			self.canscroll = moved
 		end
 		if moved then
-			for _ = 1, k do
-				table.remove(self.shownch, 1)
-				table.remove(self.shownfg, 1)
-				table.remove(self.shownbg, 1)
-				self.shownch[self.rows] = {}
-				self.shownfg[self.rows] = {}
-				self.shownbg[self.rows] = {}
-			end
+			self:forget(self.rows - k, k)
 		else
-			for i = 1, self.rows do
-				self.shownch[i] = {}
-				self.shownfg[i] = {}
-				self.shownbg[i] = {}
-			end
+			self.shownch:fill(0)
 		end
 		self:repaint()
 	end
@@ -626,30 +668,31 @@ function M.new(o)
 	local cw, ch = o.font.size()
 	local deffg = o.fg or 0xc0c0c0
 	local defbg = o.bg or 0x000000
+	local cols, rows = mode.w // cw, mode.h // ch
+	local cells = cols * rows
 	local self = setmetatable({
 		fb = o.fb, font = o.font,
 		cw = cw, ch = ch,
-		cols = mode.w // cw, rows = mode.h // ch,
-		col = 0, row = 0, curon = false,
+		cols = cols, rows = rows,
+		col = 0, row = 0, curon = false, top = 0,
 		deffg = deffg, defbg = defbg,
 		lfg = deffg, lbg = defbg,
 		bold = false, rev = false,
 		state = "ground", parm = "",
 		dirty = {},
-		grid = {}, fgc = {}, bgc = {},
+		grid = {},
+		fgc = buf.new(cells * 4), bgc = buf.new(cells * 4),
 		-- what the glass shows, per cell, so a redraw only sends the
-		-- cells that changed. Empty means "nothing drawn yet", which
-		-- the fill below makes true for the whole panel.
-		shownch = {}, shownfg = {}, shownbg = {},
+		-- cells that changed. A character of 0 means "nothing drawn
+		-- yet", which buf.new's zero fill makes true for the whole
+		-- panel; the two color grids are read only where it is not.
+		shownch = buf.new(cells),
+		shownfg = buf.new(cells * 4), shownbg = buf.new(cells * 4),
 	}, Cons)
 
-	for i = 1, self.rows do
+	for i = 1, rows do
 		self.grid[i] = ""
-		self.fgc[i] = {}
-		self.bgc[i] = {}
-		self.shownch[i] = {}
-		self.shownfg[i] = {}
-		self.shownbg[i] = {}
+		self:rowcolor(i - 1, deffg, defbg)
 	end
 	thread.rpc(self.fb, { op = "fill",
 	    r = { x = 0, y = 0, w = mode.w, h = mode.h }, color = self.defbg })
