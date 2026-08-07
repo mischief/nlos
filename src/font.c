@@ -20,6 +20,7 @@
 
 #include "lauxlib.h"
 #include "lua.h"
+#include "buf.h"
 
 #include "font_spleen.h"
 
@@ -36,6 +37,7 @@ font_render(lua_State *L)
 	const char *s = luaL_checklstring(L, 1, &n);
 	lua_Unsigned fg = (lua_Unsigned)luaL_checkinteger(L, 2);
 	lua_Unsigned bg = (lua_Unsigned)luaL_optinteger(L, 3, 0);
+	int wantbuf = lua_toboolean(L, 4);
 	size_t w = n * FONT_W;
 	size_t need = w * FONT_H * 4;
 	luaL_Buffer b;
@@ -56,7 +58,17 @@ font_render(lua_State *L)
 		return luaL_error(L, "font.render: %d chars is too many",
 		    (int)n);
 
-	out = (unsigned char *)luaL_buffinitsize(L, &b, need);
+	/* a buffer where the caller asked for one. Every byte is written
+	 * below, so it is allocated rather than made: nothing to zero.
+	 */
+	if (wantbuf) {
+		out = luabuf_push(L, need);
+		if (!out)
+			return luaL_error(L, "font.render: no room for %d "
+			    "bytes", (int)need);
+	} else {
+		out = (unsigned char *)luaL_buffinitsize(L, &b, need);
+	}
 
 	for (row = 0; row < FONT_H; row++) {
 		for (i = 0; i < n; i++) {
@@ -79,7 +91,8 @@ font_render(lua_State *L)
 			}
 		}
 	}
-	luaL_pushresultsize(&b, need);
+	if (!wantbuf)
+		luaL_pushresultsize(&b, need);
 	lua_pushinteger(L, (lua_Integer)w);
 	lua_pushinteger(L, FONT_H);
 	return 3;

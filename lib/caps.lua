@@ -441,8 +441,11 @@ function M.fb(handle, chunk)
 		return true
 	end
 
-	function f.load(r, data, wait)
-		return loadband(r, data, wait)
+	-- give: the bytes are the caller's to lose, so a load that fits one
+	-- message hands them over instead of copying them in. A banded load
+	-- copies either way, since a band is part of the payload.
+	function f.load(r, data, wait, give)
+		return loadband(r, give and given(data) or data, wait)
 	end
 	-- the reply is a message too, so readback needs the same banding as
 	-- load above -- the limit is on messages, not on direction. plan 9

@@ -76,14 +76,17 @@ end
 -- a round trip per glyph. Parking when the queue is full is what keeps
 -- that from becoming an unbounded backlog: the writer waits for room
 -- rather than dropping or spinning.
-local function post(h, msg)
+-- `need` is what the payload will cost the queue. Without it parksend
+-- only asks whether the queue is non-full, which stays true while a
+-- large message is refused by one already in it, and the retry spins.
+local function post(h, msg, need)
 	while true do
 		local ok, why = sys.send(h, msg)
 
 		if ok or why ~= "full" then
 			return
 		end
-		thread.parksend(h)
+		thread.parksend(h, (need or 0) + 256)
 	end
 end
 
@@ -163,12 +166,15 @@ function Cons:paintspan(y, from, to)
 				sbg[k + 1] = bg
 			end
 
+			-- rendered into a buffer and handed to the screen:
+			-- the pixels are never a string, and the message
+			-- carries the bytes rather than a copy of them.
 			local pix, w, h = self.font.render(line:sub(c + 1, e),
-			    fg, bg)
+			    fg, bg, true)
 
 			post(self.fb, { op = "load",
 			    r = { x = c * self.cw, y = y * self.ch, w = w, h = h },
-			    data = pix })
+			    data = { __buf = pix } }, w * h * 4)
 			c = e
 		end
 	end
