@@ -72,8 +72,18 @@ local OPEN_RETRY_MS = 250
 
 -- ---- transport: manual send + poll-with-deadline (see header) ----
 
-local m0 = thread.recv(sys.SELF)
-local udph = m0.udp.__right
+-- the udp right comes in the spawn arg when lib/svc.lua starts this,
+-- and in a first message when a payload spawns it by hand. Named `ip`
+-- by a machine whose udp is task/ip.lua, and `udp` by one whose udp is
+-- the firmware's.
+local a = ...
+local udph = type(a) == "table" and
+    ((a.ip and a.ip.__right) or (a.udp and a.udp.__right)) or nil
+
+if not udph then
+	udph = thread.recv(sys.SELF).udp.__right
+end
+
 local udp = caps.udp(udph)
 
 local conn

@@ -46,6 +46,11 @@ return {
 	-- { path = "/task/webterm.lua", caps = { "tcp" },
 	--   args = { port = 80 } },
 
+	-- names to addresses, for anything above it. udp is served by
+	-- task/ip.lua here and by the firmware elsewhere, so it is named
+	-- by whichever this machine has.
+	{ path = "/task/dns.lua", caps = { "ip" } },
+
 	-- an ssh server, putting a visitor at the same lua console the
 	-- serial port gives. same bargain as webterm -- an anonymous
 	-- visitor gets a shell -- and additionally it accepts ANY public
