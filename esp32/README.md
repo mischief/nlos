@@ -107,6 +107,7 @@ The layout is in `partitions.csv`:
 | `phy_init` | `0xf000` | 4K |
 | `factory` | `0x10000` | 3M |
 | `luafs` | `0x310000` | 4M |
+| `config` | `0x710000` | 512K |
 
 Build the image from the top of the tree, which is where these
 directories are:
