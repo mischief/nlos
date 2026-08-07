@@ -343,8 +343,13 @@ local function on_request(m)
 		-- one the packet is stamped with in output() have to be the
 		-- same one, or the receiver discards it as corrupt.
 		local src = host:srcfor(dst)
-		local ok, why = host:output(dst, ip4.PROTO_UDP,
-		    udp4.encode(c.port, port, m.data, src, dst))
+		local data = m.data
+		local ok, why = host:output(dst, ip4.PROTO_UDP, {
+			len = udp4.HDRLEN + #data,
+			fill = function(f, off)
+				udp4.encode(c.port, port, data, src, dst, f, off)
+			end,
+		})
 
 		if not ok then
 			stat.frames_out_fail = stat.frames_out_fail + 1

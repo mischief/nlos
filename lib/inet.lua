@@ -90,21 +90,47 @@ function Host:nexthop(dst)
 	return self.gw
 end
 
--- lay a frame on the wire for a packet whose mac we already have.
--- One buffer for the whole frame, each header written where it belongs
--- and the payload copied in once. Encoding a layer at a time made a
--- packet, then a frame around it, copying everything again per layer.
+-- a payload is bytes, or {len =, fill = } for a layer that writes
+-- itself into the frame. The second is how a udp datagram is built
+-- where it belongs instead of being made and then copied in.
+local function paylen(p)
+	return type(p) == "table" and p.len or #p
+end
+
+local function payfill(p, f, off)
+	if type(p) == "table" then
+		p.fill(f, off)
+	else
+		f:copy(off, p)
+	end
+end
+
+-- bytes, for the paths that hold a payload rather than send it
+local function paybytes(p)
+	if type(p) ~= "table" then
+		return p
+	end
+
+	local b = buf.new(p.len)
+
+	p.fill(b, 1)
+	return b
+end
+
+-- lay a frame on the wire for a packet whose mac we already have. One
+-- buffer for the whole frame, each header written where it belongs.
 local function emit(self, mac, dst, proto, payload)
 	self.id = (self.id + 1) & 0xffff
 
 	local off = ether.HDRLEN + 1
-	local f = buf.new(ether.HDRLEN + ip4.HDRLEN + #payload)
+	local n = paylen(payload)
+	local f = buf.new(ether.HDRLEN + ip4.HDRLEN + n)
 
 	ether.header(f, mac, self.mac, ether.IPV4)
 	ip4.header(f, off, {
 		src = self.ip, dst = dst, proto = proto, id = self.id,
-	}, #payload)
-	f:copy(off + ip4.HDRLEN, payload)
+	}, n)
+	payfill(payload, f, off + ip4.HDRLEN)
 	return self.wire.send(f)
 end
 
@@ -150,7 +176,7 @@ function Host:output(dst, proto, payload)
 
 		q[#q + 1] = {
 			src = self:srcfor(dst), dst = dst,
-			proto = proto, payload = payload,
+			proto = proto, payload = paybytes(payload),
 		}
 		return true, "loop"
 	end
@@ -227,8 +253,14 @@ end
 -- checksum covers the addresses it is about to be wrapped in, so the
 -- two layers cannot be composed blindly (see lib/udp4.lua).
 function Host:udp_send(dst, sport, dport, data)
-	return self:send(dst, ip4.PROTO_UDP,
-	    udp4.encode(sport, dport, data, self.ip, dst))
+	local src = self.ip
+
+	return self:send(dst, ip4.PROTO_UDP, {
+		len = udp4.HDRLEN + #data,
+		fill = function(f, off)
+			udp4.encode(sport, dport, data, src, dst, f, off)
+		end,
+	})
 end
 
 -- one frame's worth of work. Returns the decoded IP packet when one

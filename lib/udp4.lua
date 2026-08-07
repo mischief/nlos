@@ -15,6 +15,7 @@
 -- addresses it is about to be wrapped in.
 
 local ip4 = require("ip4")
+local buf = require("los.buf")
 
 local udp4 = {}
 
@@ -25,8 +26,30 @@ local function pseudo(src, dst, len)
 	return src .. dst .. string.pack(">I1I1I2", 0, ip4.PROTO_UDP, len)
 end
 
-function udp4.encode(sport, dport, data, src, dst)
+-- `out` and `off` write the datagram into a frame the caller already
+-- allocated, which is where the payload is copied exactly once. The
+-- pseudo-header is summed on its own and carried in as the running sum
+-- rather than concatenated in front of the bytes.
+function udp4.encode(sport, dport, data, src, dst, out, off)
 	local len = udp4.HDRLEN + #data
+
+	if out then
+		out:setu16be(off, sport)
+		out:setu16be(off + 2, dport)
+		out:setu16be(off + 4, len)
+		out:setu16be(off + 6, 0)
+		out:copy(off + udp4.HDRLEN, data)
+
+		local ck = ip4.checksum(out:view(off, off + len - 1),
+		    (~ip4.checksum(pseudo(src, dst, len))) & 0xffff)
+
+		if ck == 0 then
+			ck = 0xffff
+		end
+		out:setu16be(off + 6, ck)
+		return len
+	end
+
 	local hdr = string.pack(">I2I2I2I2", sport, dport, len, 0)
 	local ck = ip4.checksum(pseudo(src, dst, len) .. hdr .. data)
 
@@ -47,20 +70,32 @@ end
 -- required to verify -- pass them when the caller has them, which the
 -- ip layer always does.
 function udp4.decode(p, src, dst)
-	if type(p) ~= "string" or #p < udp4.HDRLEN then
+	local isbuf = buf.is(p)
+
+	if (type(p) ~= "string" and not isbuf) or #p < udp4.HDRLEN then
 		return nil
 	end
 
-	local sport, dport, len, ck = string.unpack(">I2I2I2I2", p)
+	local sport, dport, len, ck
+
+	if isbuf then
+		sport, dport, len, ck = p:u16be(1), p:u16be(3), p:u16be(5),
+		    p:u16be(7)
+	else
+		sport, dport, len, ck = string.unpack(">I2I2I2I2", p)
+	end
 
 	if len < udp4.HDRLEN or len > #p then
 		return nil
 	end
 
-	local body = p:sub(1, len)
+	local body = isbuf and p:view(1, len) or p:sub(1, len)
 
 	if ck ~= 0 and src and dst then
-		if ip4.checksum(pseudo(src, dst, len) .. body) ~= 0 then
+		-- the pseudo-header is summed on its own and carried in,
+		-- so the datagram is not copied to be checked
+		if ip4.checksum(body,
+		    (~ip4.checksum(pseudo(src, dst, len))) & 0xffff) ~= 0 then
 			return nil
 		end
 	end
@@ -68,7 +103,8 @@ function udp4.decode(p, src, dst)
 	return {
 		sport = sport,
 		dport = dport,
-		data = body:sub(udp4.HDRLEN + 1),
+		data = isbuf and body:view(udp4.HDRLEN + 1, len) or
+		    body:sub(udp4.HDRLEN + 1),
 	}
 end
 
