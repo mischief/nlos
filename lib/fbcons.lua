@@ -184,6 +184,24 @@ function Cons:repaint()
 	end
 end
 
+-- put the whole grid back on a screen that no longer shows it.
+--
+-- paintspan sends only the cells that differ from what the glass shows,
+-- which is right while this console is the only thing drawing and wrong
+-- the moment something else has drawn over it -- a terminal in a window
+-- comes back to an area another app has painted, and every cell it
+-- believes is already there is a cell it would not send. So the record
+-- of what is shown is dropped first, and then everything goes.
+function Cons:redraw()
+	for y = 1, self.rows do
+		self.shownch[y] = {}
+		self.shownfg[y] = {}
+		self.shownbg[y] = {}
+	end
+	self:repaint()
+	self:cursor(self.curon)
+end
+
 -- mark a span of a row as needing paint before the write returns. The
 -- range widens as more of the row changes, so a write that touches one
 -- row at several columns paints it once.
@@ -597,6 +615,11 @@ function M.new(o)
 	return {
 		write = function(s)
 			self:write(s)
+		end,
+		-- for a terminal in a window: what to call when it is told
+		-- to draw itself again.
+		redraw = function()
+			self:redraw()
 		end,
 		keyport = o.keyport,
 		cols = self.cols,

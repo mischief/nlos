@@ -82,10 +82,24 @@ arc(face, c, c - math.floor(10 * unit), math.floor(105 * unit),
 
 -- compose off-screen, ship once: the whole picture arrives as one
 -- banded load rather than assembling itself in front of you.
-fb.fill(draw.rect(0, 0, W, H), BG)
-fb.load(draw.rect((W - size) // 2, (H - size) // 2, size, size),
-    draw.bytes(face))
-fb.sync()
+--
+-- The pixels are kept and the image dropped, so drawing the face again
+-- is one load rather than another composition. Composing costs about
+-- 900KB while it runs and these bytes are 230KB, so for a program that
+-- may be asked to redraw at any moment the copy is the cheaper of the
+-- two -- and it is the only thing here that is kept.
+local pixels = draw.bytes(face)
+local at = draw.rect((W - size) // 2, (H - size) // 2, size, size)
+
+face = nil
+
+local function paint()
+	fb.fill(draw.rect(0, 0, W, H), BG)
+	fb.load(at, pixels)
+	fb.sync()
+end
+
+paint()
 
 -- Under a launcher with a keyboard this waits to be dismissed. Under a
 -- window system there is no keyboard to dismiss it with -- an app is
@@ -97,9 +111,30 @@ fb.sync()
 -- eof at once, which is indistinguishable from a person pressing enter
 -- the instant it drew.
 if not prog.stdin() then
-	-- parked, not spinning: nothing will ever be sent here, and the
-	-- point is to be somewhere that costs nothing until killed.
-	require("los.thread").recv(require("los.sys").SELF)
+	local N = prog.ns()
+	local wctl = N and N:open("/dev/wctl", "r")
+
+	if not wctl then
+		-- parked, not spinning: nothing will ever be sent here,
+		-- and the point is to cost nothing until killed.
+		require("los.thread").recv(require("los.sys").SELF)
+		return
+	end
+
+	-- an app keeps no pixels on the glass: another app draws over
+	-- them while this one is behind, so coming back to the front is
+	-- being told to paint again.
+	while true do
+		local s = wctl:read(16)
+
+		if not s then
+			break
+		end
+		if s:match("redraw") then
+			paint()
+		end
+	end
+	wctl:close()
 	return
 end
 

@@ -2,9 +2,9 @@
 --
 -- The panel and the keyboard, as the machine's own interface: started
 -- from /etc/services.lua the way task/fbterm.lua is, and in its place.
--- A launcher tray down the left, and one app filling everything right
--- of it. The tray starts an app, and an app that ends leaves the screen
--- to the next one. What the tray holds is /etc/dio.lua.
+-- A launcher tray down the left, and the app in front filling everything
+-- right of it. Several apps run at once and one is on the glass.
+-- What the tray holds is /etc/dio.lua.
 --
 -- The terminal is one of those apps, so a prompt is a thing you switch
 -- to rather than the thing everything else is launched from. It starts
@@ -55,23 +55,34 @@
 --
 -- ---- the tray ----
 --
--- A button starts its app when nothing is running, and stops it when it
--- is the one running. Stopping has to be there rather than being left
--- to the app: an app is given a screen and a pointer and no keyboard,
--- so bin/smiley.lua, which ends when a key is pressed, would otherwise
--- hold the screen for as long as the machine is up.
+-- A tap starts an app, or brings a running one to the front. A second
+-- tap on the same button within half a second stops it: closing has to
+-- be there, since an app has a screen and a pointer and no keyboard and
+-- bin/smiley.lua ends on a keystroke -- and it has to be the rarer
+-- gesture, since switching is the one done constantly.
 --
--- ---- what is not here yet ----
+-- ---- several apps, one window ----
 --
--- Switching. A second entry tapped while another app runs does
--- nothing. Switching wants /dev/wctl, so a backgrounded app is told to
--- redraw rather than keeping pixels it cannot afford.
+-- Every app keeps running whether or not it is in front. What being in
+-- front buys is the glass and the pointer: a draw from any other app is
+-- dropped here, and the pointer's records go to one /dev/mouse.
+--
+-- Dropped rather than refused. An app behind has nothing to fix, and an
+-- error per drawing call would make every program handle a window
+-- system it otherwise need not know about. It is told to draw itself
+-- again through /dev/wctl when it comes back.
+--
+-- So there are no saved pixels anywhere: coming to the front is a
+-- cleared rectangle and one line on a file. An app that cannot redraw
+-- itself comes back empty, which is the price of a window system on a
+-- board with 4MB.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local font = require("los.font")
 local caps = require("caps")
 local mousefs = require("mousefs")
+local wctlfs = require("wctlfs")
 local proc = require("proc")
 local srv = require("srv")
 
@@ -188,14 +199,40 @@ local function buttonat(x, y)
 	return nil
 end
 
-local running = nil		-- { pid, index }
+-- the apps that are up, indexed by tray entry, and which of them is on
+-- the glass. Declared here because the tray is drawn from them and
+-- filled in further down, where the windows are made.
+local apps = {}
+local front = nil
+
+-- a button says three things, and each has its own mark:
+--	full colour	running
+--	dimmed		not running, but here to be started
+--	nearly black	no such program on this machine
+--	white border	the one in front
+--
+-- Brightness for running and a border for focus, rather than one mark
+-- doing both: with several apps up, "which are alive" and "which am I
+-- looking at" are different questions.
+local DIM = 70			-- per cent, for an app that is not running
+
+local function shade(color, pct)
+	local r = ((color >> 16) & 0xff) * pct // 100
+	local g = ((color >> 8) & 0xff) * pct // 100
+	local b = (color & 0xff) * pct // 100
+
+	return (r << 16) | (g << 8) | b
+end
 
 local function drawbutton(i)
 	local a = conf.apps[i]
 	local r = buttonrect(i)
-	local on = running and running.index == i
+	local on = front == i
 	local color = a.color or 0x808080
 
+	if not apps[i] then
+		color = shade(color, DIM)
+	end
 	-- a program that is not on this machine is drawn dark, so a
 	-- missing file looks like one rather than like a button that does
 	-- nothing when touched.
@@ -344,59 +381,105 @@ function ops.cursor(m)
 	return forward({ op = "cursor", x = m.x, y = m.y, on = m.on }, false)
 end
 
--- ---- serving both of them ----
+-- ---- one window each, and one of them in front ----
+--
+-- Every app gets its own framebuffer port, its own /dev/mouse and its
+-- own /dev/wctl. A port carries no sender identity, so a shared port
+-- could not tell whose draw had arrived -- and knowing that is the
+-- whole of what focus means here.
+--
+-- apps is indexed by tray entry:
+--	{ pid, fbrecv, fbport, mouse, wctl, mport, wport, kind }
+-- what is dropped when an app is not in front. mode, modes and setmode
+-- are answers rather than marks on the glass, and an app asks for them
+-- whenever it likes.
+local DRAWS = { fill = true, load = true, unload = true, scroll = true,
+    cursor = true }
 
-local fbrecv = sys.newport()
-local fbport = sys.sendright(fbrecv)
-local app = mousefs.new()
-local mrecv = sys.newport()
-local mport = sys.sendright(mrecv)
+local function serveapp(i)
+	local a = apps[i]
 
-thread.spawn(function()
-	srv.serve(app.backend, mrecv)
-end)
+	thread.spawn(function()
+		while true do
+			local m = thread.recv(a.fbrecv)
 
-thread.spawn(function()
-	while true do
-		local m = thread.recv(fbrecv)
+			if type(m) == "table" then
+				local fn = ops[m.op]
+				local reply = m.reply and m.reply.__right
+				local ok, err
 
-		if type(m) == "table" then
-			local fn = ops[m.op]
-			local reply = m.reply and m.reply.__right
-
-			if not fn then
-				if reply then
-					sys.send(reply, { err = "no such op: " ..
-					    tostring(m.op) })
+				if not fn then
+					err = "no such op: " .. tostring(m.op)
+				elseif front ~= i and DRAWS[m.op] then
+					-- dropped, not refused: an app that
+					-- is not in front has nothing to
+					-- fix, and telling it so would turn
+					-- a switch into an error every
+					-- program had to handle. It is told
+					-- to draw again through /dev/wctl
+					-- when it comes back.
+					ok = true
+				else
+					ok, err = fn(m, reply ~= nil)
 				end
-			else
-				local ok, err = fn(m, reply ~= nil)
-
 				if reply then
 					sys.send(reply, ok ~= nil and
 					    { ok = ok } or
 					    { err = err or "failed" })
+					sys.close(reply)
 				end
 			end
-			if reply then
-				sys.close(reply)
-			end
 		end
-	end
-end)
+	end)
+	thread.spawn(function()
+		srv.serve(a.mouse.backend, a.mrecv)
+	end)
+	thread.spawn(function()
+		srv.serve(a.wctl.backend, a.wrecv)
+	end)
+end
 
--- ---- starting an app ----
---
--- The namespace an app gets is dio's own, with dio's mouse in front of
--- the machine's at /dev. Union order is list order, so a mount put
--- first is what /dev/mouse resolves to -- and the app reads a pointer
--- that has never left this proc.
-local function appns()
+-- the namespace an app gets: dio's own, with this app's mouse and wctl
+-- in front of the machine's /dev. Union order is list order, and a walk
+-- that fails in one mount falls through to the next -- so wctl resolves
+-- in the first, mouse in the second, and everything else in the
+-- machine's.
+local function appns(a)
 	local desc = N:describe()
 
 	table.insert(desc, 1, { prefix = "/dev", kind = "mnt",
-	    args = { port = { __right = mport } } })
+	    args = { port = { __right = a.mport } } })
+	table.insert(desc, 1, { prefix = "/dev", kind = "mnt",
+	    args = { port = { __right = a.wport } } })
 	return desc
+end
+
+-- make an app's windows before it is spawned, since what it is handed
+-- is rights to them.
+local function newapp(i, kind)
+	local fbrecv = sys.newport()
+	local mrecv = sys.newport()
+	local wrecv = sys.newport()
+	-- a keyboard port per app, not one shared: a key belongs to
+	-- whichever terminal is in front, and a port handed to two of them
+	-- would give it to whichever asked first.
+	local keys = sys.newport()
+	local a = {
+		kind = kind,
+		fbrecv = fbrecv, fbport = sys.sendright(fbrecv),
+		mrecv = mrecv, mport = sys.sendright(mrecv),
+		wrecv = wrecv, wport = sys.sendright(wrecv),
+		keys = keys, keysend = sys.sendright(keys),
+		mouse = mousefs.new(),
+		-- starts hidden and is shown by the switch below, so an app
+		-- reads one "redraw" rather than a state and then an event
+		-- saying the same thing
+		wctl = wctlfs.new(false),
+	}
+
+	apps[i] = a
+	serveapp(i)
+	return a
 end
 
 -- ---- a terminal in the window ----
@@ -412,28 +495,28 @@ end
 -- once: a right is copied and never revoked, so an app that has had the
 -- keyboard keeps reading it after it stops being the one in front.
 --
--- One pump for the life of this proc, parked on the port. A key that
--- arrives with no terminal running is dropped, which is what "nothing
--- is listening" means -- the pointer, not the keyboard, is how an app
--- is started.
-local keys = sys.newport()
-local keysend = sys.sendright(keys)
+-- One pump for the life of this proc, parked on the port, delivering to
+-- whichever terminal is in front. A key that arrives with no terminal
+-- there is dropped, which is what "nothing is listening" means -- the
+-- pointer, not the keyboard, is how an app is reached.
 local wantkeys = false
 
 if kbd then
 	thread.spawn(function()
 		while true do
 			local c = thread.recv(kbd)
+			local a = front and apps[front]
 
-			if wantkeys and type(c) == "string" and c ~= "" then
-				sys.send(keysend, c)
+			if wantkeys and a and type(c) == "string" and
+			    c ~= "" then
+				sys.send(a.keysend, c)
 			end
 		end
 	end)
 end
 
-local function startterm(a, desc)
-	local src, serr = N:readfile(a.cmd)
+local function startterm(a, entry, desc)
+	local src, serr = N:readfile(entry.cmd)
 
 	if not src then
 		return nil, tostring(serr)
@@ -443,15 +526,15 @@ local function startterm(a, desc)
 		return nil, "no keyboard on this machine"
 	end
 
-	local pid, h = proc.spawn(src, { name = a.name, ns = desc })
+	local pid, h = proc.spawn(src, { name = entry.name, ns = desc })
 
 	if not pid then
 		return nil, "spawn failed"
 	end
 
 	sys.send(h, {
-		fb = { __right = fbport },
-		kbd = { __right = keys },
+		fb = { __right = a.fbport },
+		kbd = { __right = a.keys },
 		-- the serial line, for what the terminal cannot report
 		-- about itself. Its own output goes to the glass.
 		cons = cons and { __right = cons } or nil,
@@ -461,48 +544,80 @@ local function startterm(a, desc)
 	return pid
 end
 
--- start records `running` itself. What is in front decides where keys
--- go, so it must be true before the app can ask for one.
-local function start(i)
-	local a = conf.apps[i]
-	local desc = appns()
-
-	if a.kind == "term" then
-		local pid, err = startterm(a, desc)
-
-		if not pid then
-			return nil, err
-		end
-		running = { pid = pid, index = i }
-		sys.monitor(pid)
-		wantkeys = true
-		return pid
+-- ---- switching ----
+--
+-- The app in front owns the glass and the pointer; every other one
+-- keeps running with its draws dropped. Coming to the front is an area
+-- cleared and a "redraw" on /dev/wctl, so an app paints from its own
+-- state onto a known-empty rectangle -- which is what buys a machine
+-- this size a window system with no saved pixels anywhere.
+local function focus(i)
+	if front == i then
+		return
 	end
 
-	local pid, h = proc.spawn('require("prog").main()',
-	    { name = a.name, ns = desc })
+	local was = front
+
+	front = i
+	if was and apps[was] then
+		apps[was].wctl.show(false)
+	end
+	clearapp()
+	if i and apps[i] then
+		apps[i].wctl.show(true)
+	end
+	-- keys follow the front, and only a terminal reads them
+	wantkeys = i ~= nil and apps[i] ~= nil and apps[i].kind == "term"
+	if was then
+		drawbutton(was)
+	end
+	if i then
+		drawbutton(i)
+	end
+end
+
+local function start(i)
+	local entry = conf.apps[i]
+	local a = newapp(i, entry.kind)
+	local desc = appns(a)
+	local pid, err
+
+	if entry.kind == "term" then
+		pid, err = startterm(a, entry, desc)
+	else
+		local h
+
+		pid, h = proc.spawn('require("prog").main()',
+		    { name = entry.name, ns = desc })
+		if pid then
+			-- a program's own output goes to the serial line
+			-- rather than to the console on the glass, which
+			-- draws where its grid says and would write over
+			-- the window the program is drawing in.
+			sys.send(h, {
+				path = entry.cmd,
+				name = entry.name,
+				args = { entry.name },
+				env = { PATH = "/bin", HOME = "/" },
+				cwd = "/",
+				nsdesc = desc,
+				fb = { __right = a.fbport },
+				stdout = cons and { __right = cons } or nil,
+				stderr = cons and { __right = cons } or nil,
+			})
+			sys.close(h)
+		else
+			err = "spawn failed"
+		end
+	end
 
 	if not pid then
-		return nil, "spawn failed"
+		apps[i] = nil
+		return nil, err
 	end
-
-	-- a program's own output goes to the serial line rather than to
-	-- the console on the glass, which draws where its grid says and
-	-- would write over the window the program is drawing in.
-	sys.send(h, {
-		path = a.cmd,
-		name = a.name,
-		args = { a.name },
-		env = { PATH = "/bin", HOME = "/" },
-		cwd = "/",
-		nsdesc = desc,
-		fb = { __right = fbport },
-		stdout = cons and { __right = cons } or nil,
-		stderr = cons and { __right = cons } or nil,
-	})
-	sys.close(h)
-	running = { pid = pid, index = i }
+	a.pid = pid
 	sys.monitor(pid)
+	focus(i)
 	return pid
 end
 
@@ -524,20 +639,45 @@ clearapp()
 
 local BUT1 = 1
 
+-- A run of unreadable records is a broken pointer rather than a stray
+-- one. Losing the pointer is losing the tray, which is the only way to
+-- start or stop anything, so it is said out loud rather than left as a
+-- window system that stops answering.
+local BADMAX = 8
+
+-- how close two taps on one button have to be to mean "close it". Long
+-- enough for a finger on a panel, short enough that switching to an app
+-- and back does not stop it by accident.
+local DOUBLE = 500
+local lasttap, lastms = nil, 0
+
 thread.spawn(function()
 	local down = false
+	local bad = 0
 
 	while true do
 		local rec, rerr = mouse:read(49)
 
-		if not rec or rec == "" then
+		if not rec then
 			say("mouse: " .. tostring(rerr))
 			break
 		end
 
 		local x, y, b = mousefs.parse(rec)
 
-		if x then
+		if not x then
+			bad = bad + 1
+			if bad == 1 then
+				say(("mouse: not a record: %d bytes, %q")
+				    :format(#rec, rec:sub(1, 24)))
+			end
+			if bad >= BADMAX then
+				say(("mouse: %d bad records; the tray is "
+				    .. "no longer answering"):format(bad))
+				break
+			end
+		else
+			bad = 0
 			local pressed = (b & BUT1) ~= 0
 
 			if x < TRAY then
@@ -548,71 +688,104 @@ thread.spawn(function()
 				if pressed and not down then
 					local i = buttonat(x, y)
 
-					if i and running and
-					    running.index == i then
-						-- the same button again stops
-						-- it, which is the only way
-						-- out an app has here: it was
-						-- given no keyboard, so a
-						-- program that ends on a
-						-- keystroke would never end.
+					local now = sys.uptime_ms()
+					local twice = i and i == lasttap and
+					    now - lastms < DOUBLE
+
+					lasttap, lastms = i, now
+					if i and apps[i] and twice then
+						-- twice on a running app
+						-- stops it. An app is given
+						-- a screen and a pointer and
+						-- no keyboard, so a program
+						-- that ends on a keystroke
+						-- has no other way out --
+						-- and once must stay
+						-- reserved for switching,
+						-- which is the thing done
+						-- constantly.
 						--
 						-- Marked as asked-for, so
-						-- what follows is reported as
-						-- an app ending rather than
-						-- as an app dying.
-						running.stopped = true
-						pcall(sys.kill, running.pid)
-					elseif i and not running then
+						-- what follows is reported
+						-- as an app ending rather
+						-- than as an app dying.
+						apps[i].stopped = true
+						pcall(sys.kill, apps[i].pid)
+					elseif i and apps[i] then
+						-- running, behind: bring it
+						-- forward. It keeps running
+						-- either way -- what changes
+						-- is whose draws reach the
+						-- glass.
+						focus(i)
+					elseif i then
 						local pid, serr = start(i)
 
-						if pid then
-							drawbutton(i)
-						else
+						if not pid then
 							say(conf.apps[i].name ..
 							    ": " ..
 							    tostring(serr))
 						end
 					end
 				end
-			else
-				app.post(mousefs.format(x - APPX, y - APPY, b))
+			elseif front and apps[front] then
+				-- the pointer belongs to the app in front,
+				-- and to nothing else: an app behind sees no
+				-- part of a stroke it is not in.
+				apps[front].mouse.post(
+				    mousefs.format(x - APPX, y - APPY, b))
 			end
 			down = pressed
 		end
 	end
 end)
 
+-- which entry a pid belongs to, since an exit arrives as a pid
+local function appof(pid)
+	for i, a in ipairs(apps) do
+		if a.pid == pid then
+			return i
+		end
+	end
+	-- ipairs stops at the first hole, and the tray is not dense once
+	-- something in the middle has been closed
+	for i, a in pairs(apps) do
+		if a.pid == pid then
+			return i
+		end
+	end
+	return nil
+end
+
 -- ---- what is left of this thread ----
 --
--- The exits. An app that ends gives the screen back, so the area it had
--- is cleared and its button stops being marked -- which is the whole of
--- what "the app ended" means when there is nothing behind it.
+-- The exits. An app that ends gives up its windows, and the front goes
+-- to nothing rather than to a guess: with no ordering worth the name,
+-- picking a successor would be inventing one.
 thread.spawn(function()
 	while true do
 		local m = thread.recv(sys.SELF)
+		local i = type(m) == "table" and m.exit and appof(m.exit)
 
-		if type(m) == "table" and m.exit and running and
-		    m.exit == running.pid then
-			local i = running.index
-			local asked = running.stopped
+		if i then
+			local a = apps[i]
 
-			running = nil
-			-- keys have nowhere to go with no terminal in
-			-- front, and forwarding them to a port nothing
-			-- receives on would fill it.
-			wantkeys = false
+			apps[i] = nil
+			if front == i then
+				front = nil
+				wantkeys = false
+				clearapp()
+			end
 			-- a proc killed on purpose is held as a corpse like
 			-- any other, and nothing is going to inspect this
 			-- one: the person who tapped the button knows why it
 			-- stopped, and a corpse holds the whole working set
 			-- until something reaps it.
-			if asked then
+			if a.stopped then
 				pcall(sys.reap, m.exit)
 			end
 			drawbutton(i)
-			clearapp()
-			if not m.normal and not asked then
+			if not m.normal and not a.stopped then
 				say(tostring(conf.apps[i].name) .. ": " ..
 				    tostring(m.reason))
 			end
@@ -628,12 +801,10 @@ end)
 -- button it is -- so the terminal is marked, and dio replaces the shell
 -- it replaces rather than merely covering it.
 for i, a in ipairs(conf.apps) do
-	if a.boot and not running then
+	if a.boot and not front then
 		local pid, serr = start(i)
 
-		if pid then
-			drawbutton(i)
-		else
+		if not pid then
 			say(a.name .. ": " .. tostring(serr))
 		end
 	end

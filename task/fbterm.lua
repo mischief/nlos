@@ -67,6 +67,36 @@ thread.spawn(function()
 	con:serve()
 end)
 
+-- ---- the window, where there is one ----
+--
+-- Under task/dio.lua this terminal has an app's namespace, and
+-- /dev/wctl in it answers "redraw" when the terminal comes to the
+-- front. Its pixels are gone by then -- an app keeps none here -- but
+-- its grid is intact, so drawing itself again is all it takes.
+--
+-- On a machine with no window system there is no such file, and this
+-- thread never starts. Nothing else in the terminal differs.
+do
+	local N = require("ns").current()
+	local wctl = N and N:open("/dev/wctl", "r")
+
+	if wctl then
+		thread.spawn(function()
+			while true do
+				local s = wctl:read(16)
+
+				if not s then
+					break
+				end
+				if s:match("redraw") then
+					backend.redraw()
+				end
+			end
+			wctl:close()
+		end)
+	end
+end
+
 -- The shell runs in a proc of its own.
 --
 -- lib/console.lua serves on this proc's mailbox, and a shell waits on
