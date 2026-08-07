@@ -326,6 +326,19 @@ struct kport {
 	 * every proc. null for every other port.
 	 */
 	struct kproc *owner;
+
+	/* who pays for this port, for sys.newport and sys.timer: the proc
+	 * that asked for it, credited back when the port is freed. null
+	 * for a port the kernel made for itself.
+	 *
+	 * the id is carried beside the pointer because a proc slot is
+	 * reused in place, so a port outliving its creator would otherwise
+	 * credit whichever proc landed in that slot next. ids are unique
+	 * forever, so the pair either still names the same proc or names
+	 * nothing.
+	 */
+	struct kproc *charged;
+	int charged_id;
 	TAILQ_HEAD(, waiter) waiters;
 	/* rights + in-flight message refs + kernel refs, and the receive
 	 * rights among those.
@@ -536,6 +549,24 @@ struct kproc {
 	size_t buf_used;	/* the pooled half of mem_used, on its own */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
+	/* ports this proc has made and not yet given back, against a cap
+	 * inherited from its parent the way mem_limit is.
+	 *
+	 * ports are a machine-wide table, so one proc looping on
+	 * sys.newport starves every other -- and it need not be its own
+	 * loop: lib/srv.lua mints one per session on demand, so a client
+	 * calling `session` in a loop spends the server's budget. that is
+	 * the shape a per-proc cap answers and a per-server quota cannot,
+	 * because a port carries no sender identity and a server cannot
+	 * tell whose request it is holding.
+	 *
+	 * only sys.newport and sys.timer are charged. a proc's own handle
+	 * 0 is not: there is exactly one per proc, and MAXPROCS already
+	 * bounds it.
+	 */
+	int nports;
+	int nports_peak;
+	int port_limit;		/* 0 = unlimited */
 	/* bytes lua has asked for since this proc's collector last ran.
 	 * The collector is stopped, so lua's own GCdebt no longer
 	 * decides when a step happens; this is what gc_step reads
@@ -1442,6 +1473,43 @@ port_new(void)
 	return 0;
 }
 
+/* a port on `p`'s account, or null if it has spent its budget.
+ *
+ * the cap is tested before the table is searched, so a proc over its
+ * limit costs nothing to refuse and cannot take the last free slot from
+ * a proc still under one.
+ */
+static struct kport *
+port_new_charged(struct kproc *p)
+{
+	if (p->port_limit && p->nports >= p->port_limit)
+		return 0;
+
+	struct kport *port = port_new();
+
+	if (!port)
+		return 0;
+	port->charged = p;
+	port->charged_id = p->id;
+	if (++p->nports > p->nports_peak)
+		p->nports_peak = p->nports;
+	return port;
+}
+
+/* give a port back to whoever paid for it. */
+static void
+port_uncharge(struct kport *port)
+{
+	struct kproc *p = port->charged;
+
+	/* the id is what makes this safe against a reused proc slot; see
+	 * kport.charged.
+	 */
+	if (p && p->id == port->charged_id && p->nports > 0)
+		p->nports--;
+	port->charged = 0;
+}
+
 static void port_unref(struct kport *port);
 
 /* free one message: the in-flight right refs it carries, and any
@@ -1502,6 +1570,7 @@ port_unref(struct kport *port)
 		 */
 		if (port->owner && port->owner->selfport == port)
 			port->owner->selfport = 0;
+		port_uncharge(port);
 		portv[port->idx] = 0;
 		free(port);
 		return;
@@ -3839,12 +3908,21 @@ api_newport(lua_State *L)
 	 * outside it: luaL_error longjmps, so nothing that raises may
 	 * run while this is held.
 	 */
+	int over;
+
 	ipclock_enter();
-	port = port_new();
+	over = p->port_limit && p->nports >= p->port_limit;
+	port = port_new_charged(p);
 	if (port)
 		h = right_new(p, port, 1);
 	ipclock_leave();
 
+	/* told apart, because they are different faults: the machine is
+	 * full, or this proc has spent what it was given.
+	 */
+	if (over)
+		return luaL_error(L, "port limit: %d of %d in use",
+		    p->nports, p->port_limit);
 	if (!port)
 		return luaL_error(L, "out of ports");
 	if (h < 0)
@@ -3854,7 +3932,7 @@ api_newport(lua_State *L)
 }
 
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
-    int is_file, int reductions, size_t mem_limit, int priv);
+    int is_file, int reductions, size_t mem_limit, int port_limit, int priv);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason,
     int status, const char *exitmsg, int broke, int priv);
 
@@ -3971,6 +4049,7 @@ api_spawn(lua_State *L)
 	}
 	int reductions = 0;
 	int trace = 0;
+	int port_limit = 0;
 	size_t mem_limit = 0;
 	char chunkname[32] = "=spawn";
 
@@ -3996,6 +4075,10 @@ api_spawn(lua_State *L)
 		lua_getfield(L, 2, "mem");
 		if (!lua_isnil(L, -1))
 			mem_limit = (size_t)luaL_checkinteger(L, -1);
+		lua_pop(L, 1);
+		lua_getfield(L, 2, "ports");
+		if (!lua_isnil(L, -1))
+			port_limit = (int)luaL_checkinteger(L, -1);
 		lua_pop(L, 1);
 		/* both budgets are clamped to the parent's below, so a
 		 * child is never less contained than whoever spawned it.
@@ -4023,14 +4106,23 @@ api_spawn(lua_State *L)
 	 * know about; clamping lets the same code run either way and get
 	 * whatever the parent can actually give.
 	 *
-	 * mem_limit 0 is unlimited, so it clamps only when the parent has
-	 * a cap; reductions runs the other way, since a smaller budget is
-	 * the more contained one.
+	 * mem_limit and port_limit are 0 for unlimited, so they clamp only
+	 * when the parent has a cap; reductions runs the other way, since
+	 * a smaller budget is the more contained one.
+	 *
+	 * a port cap is inherited rather than divided: a parent held to 8
+	 * ports may spawn two children of 8 each, exactly as it may with
+	 * mem. What it bounds is any one proc, which is what makes a
+	 * runaway loop cost its own proc first -- dividing would bound a
+	 * whole tree, and needs an accounting of who spawned whom that
+	 * nothing here keeps.
 	 */
 	if (reductions <= 0 || reductions > p->reductions)
 		reductions = p->reductions;
 	if (p->mem_limit && (mem_limit == 0 || mem_limit > p->mem_limit))
 		mem_limit = p->mem_limit;
+	if (p->port_limit && (port_limit == 0 || port_limit > p->port_limit))
+		port_limit = p->port_limit;
 
 	/* opts.arg: one value handed to the child before its chunk runs,
 	 * arriving as the chunk's `...`.
@@ -4080,7 +4172,7 @@ api_spawn(lua_State *L)
 	 */
 	ipclock_enter();
 	int pid = proc_new(code, n, chunkname, 0, reductions, mem_limit,
-	    PRIV_NONE);
+	    port_limit, PRIV_NONE);
 	struct kproc *child = pid >= 0 ? find_proc(pid) : 0;
 
 	ipclock_leave();
@@ -5575,6 +5667,13 @@ api_pidstat(lua_State *L)
 	 */
 	lua_pushinteger(L, p->reductions);
 	lua_setfield(L, -2, "reductions");
+	/* ports held and the cap on them, the third inherited budget */
+	lua_pushinteger(L, p->nports);
+	lua_setfield(L, -2, "ports");
+	lua_pushinteger(L, p->nports_peak);
+	lua_setfield(L, -2, "portspeak");
+	lua_pushinteger(L, p->port_limit);
+	lua_setfield(L, -2, "portlimit");
 	/* raw tsc cycles this proc has actually spent running, which the
 	 * scheduler has accumulated since the beginning for its own decay
 	 * and which nothing could read until now.
@@ -5671,7 +5770,10 @@ api_timer(lua_State *L)
 		return 0;
 	}
 
-	struct kport *port = port_new();
+	/* charged like sys.newport: a timer is a port, and a loop asking
+	 * for timers spends the table just as fast.
+	 */
+	struct kport *port = port_new_charged(p);
 
 	if (!port) {
 		ipclock_leave();
@@ -5682,6 +5784,10 @@ api_timer(lua_State *L)
 
 	if (h < 0) {
 		port->used = 0;
+		/* port_unref never runs on a port that took no rights, so
+		 * the charge has to come back here
+		 */
+		port_uncharge(port);
 		ipclock_leave();
 		return 0;
 	}
@@ -6686,7 +6792,7 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 
 static int
 proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
-    int reductions, size_t mem_limit, int priv)
+    int reductions, size_t mem_limit, int port_limit, int priv)
 {
 	struct kproc *p = 0;
 
@@ -7076,6 +7182,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	lua_sethook(p->co, preempt_hook, proc_hookmask(p), p->reductions);
 	p->priv = priv;
 	p->mem_limit = mem_limit;
+	p->port_limit = port_limit;
 	p->weight = 1;
 	p->cputime = 0;
 	p->cpu = 0;
@@ -7665,7 +7772,7 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 	/* caller holds ipclock: spawn_init calls this in a loop and
 	 * holds it across all of them.
 	 */
-	int pid = proc_new(path, 0, chunkname, 1, 0, 0, priv);
+	int pid = proc_new(path, 0, chunkname, 1, 0, 0, 0, priv);
 	char buf[160];
 
 	if (pid < 0) {
@@ -7902,7 +8009,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		}
 	}
 
-	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_BOOT);
+	int pid = proc_new(code, len, "=init", is_file, 0, 0, 0, PRIV_BOOT);
 
 	if (pid < 0) {
 		ipclock_leave();

@@ -47,12 +47,28 @@ spin without taking the machine. No native userspace — no ring 3, no
 ELF loader, no syscall ABI, and the MMU stays optional. If that
 changes, it is a different project.
 
-Both budgets are **inherited, and may only be asked downward**:
-`sys.spawn`'s `opts.mem` and `opts.reductions` are clamped to the
-parent's, and absent means the parent's rather than the machine default.
-Otherwise containment is only as good as each proc's willingness to
-apply it — a capped proc could spawn an uncapped child and a
-tightly-preempted one could spawn a child that holds a cpu.
+The budgets are **inherited, and may only be asked downward**:
+`sys.spawn`'s `opts.mem`, `opts.reductions` and `opts.ports` are clamped
+to the parent's, and absent means the parent's rather than the machine
+default. Otherwise containment is only as good as each proc's
+willingness to apply it — a capped proc could spawn an uncapped child
+and a tightly-preempted one could spawn a child that holds a cpu.
+
+`opts.ports` caps what `sys.newport` and `sys.timer` will hand out. It
+exists because ports are one machine-wide table and a proc need not spin
+on `newport` to drain it: `lib/srv.lua` mints a port per session on
+demand, so a client looping on `session` spends the *server's* budget. A
+per-server quota cannot answer that — a port carries no sender identity,
+so a server cannot tell whose request it is holding — but a per-proc cap
+can, because the proc that asks is the proc that pays. Unlimited by
+default, and a proc's own handle 0 is not charged: there is one per
+proc, and `MAXPROCS` already bounds those.
+
+Inherited rather than divided, as `opts.mem` is: a parent capped at 8
+may spawn two children of 8. What a cap bounds is any one proc, which is
+what makes a runaway cost its own proc first. Dividing would bound a
+whole tree and needs an accounting of who spawned whom that nothing here
+keeps.
 
 **No ambient authority.** A proc touches exactly what its rights table
 says: handle 0 (its own receive port) plus whatever was explicitly
