@@ -67,12 +67,34 @@ local function roundtrip_empty(_, iters)
 	sys.close(p)
 end
 
+-- the same round trip with the payload handed over rather than copied.
+--
+-- A fresh buffer per iteration, because a send empties the handle: what
+-- is being compared is a whole message, and the string case allocates
+-- its payload once. That makes this the pessimistic reading -- an
+-- allocation the string case does not repeat -- and it is still the
+-- honest one, since a sender that gives its bytes away has to have got
+-- them from somewhere.
+local buf = require("los.buf")
+
+local function roundtrip_buf(sz, iters)
+	local p = sys.newport()
+
+	for _ = 1, iters do
+		sys.send(p, { __buf = buf.new(sz) })
+		sys.tryrecv(p)
+	end
+	sys.close(p)
+end
+
 print("# cycles_per_ms=" .. CPMS .. ", best of " .. ROUNDS)
 print("# --- intra-proc (no scheduler involved) ---")
 bench("empty (bool)", 1, 20000, roundtrip_empty)
 bench("string", 64, 20000, roundtrip)
 bench("string", 4096, 5000, roundtrip)
 bench("string", 60000, 1000, roundtrip)
+bench("buf", 4096, 5000, roundtrip_buf)
+bench("buf", 60000, 1000, roundtrip_buf)
 
 -- ---- cross-proc: the same work plus two scheduler wakeups ----
 local echo = [[
@@ -90,6 +112,38 @@ local echo = [[
 		sys.send(back, v)
 	end
 ]]
+
+-- the echo above hands what it was given straight back, so a buffer
+-- has to be wrapped again: what arrives is the receiver's, and sending
+-- it on is a second transfer rather than the same one continuing.
+local echobuf = [[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+	local m = thread.recv(sys.SELF)
+	local back = m.reply.__right
+
+	while true do
+		local v = thread.recv(sys.SELF)
+
+		if v == "done" then
+			break
+		end
+		sys.send(back, { __buf = v })
+	end
+]]
+
+local function crossproc_buf(sz, iters)
+	local _, h = sys.spawn(echobuf, { name = "echobuf" })
+	local rp = sys.newport()
+
+	sys.send(h, { reply = { __right = rp } })
+	for _ = 1, iters do
+		sys.send(h, { __buf = buf.new(sz) })
+		thread.recv(rp)
+	end
+	sys.send(h, "done")
+	sys.close(rp)
+end
 
 local function crossproc(sz, iters)
 	local _, h = sys.spawn(echo, { name = "echo" })
@@ -177,6 +231,8 @@ bench("xproc empty", 1, 2000, function(_, n) crossproc(1, n) end)
 bench("xproc string", 64, 2000, crossproc)
 bench("xproc string", 4096, 2000, crossproc)
 bench("xproc string", 60000, 500, crossproc)
+bench("xproc buf", 4096, 2000, crossproc_buf)
+bench("xproc buf", 60000, 500, crossproc_buf)
 
 print("# --- cross-proc via sys.call (one kernel entry per round trip) ---")
 bench("call empty", 1, 2000, function(_, n) crossproc_call(1, n) end)
