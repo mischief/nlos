@@ -12,6 +12,16 @@ local buf = require("los.buf")
 
 local ip4 = {}
 
+-- a 16-bit big-endian field of a packet, which is a string off the wire
+-- or a buffer built here. Every other read a decoder makes -- byte, sub
+-- -- is spelled the same way on both.
+local function u16be(p, i)
+	if type(p) == "string" then
+		return (string.unpack(">I2", p, i))
+	end
+	return p:u16be(i)
+end
+
 ip4.LEN = 4
 
 ip4.ANY = string.rep("\0", 4)
@@ -97,7 +107,7 @@ function ip4.luachecksum(s, init)
 	local i = 1
 
 	while i + 1 <= n do
-		sum = sum + string.unpack(">I2", s, i)
+		sum = sum + u16be(s, i)
 		i = i + 2
 	end
 	if i <= n then
@@ -152,7 +162,9 @@ end
 -- act on. Like ether.decode, this is a filter: a receiver is fed
 -- whatever arrives.
 function ip4.decode(p)
-	if type(p) ~= "string" or #p < ip4.HDRLEN then
+	local t = type(p)
+
+	if (t ~= "string" and t ~= "userdata") or #p < ip4.HDRLEN then
 		return nil
 	end
 
@@ -175,8 +187,8 @@ function ip4.decode(p)
 		return nil
 	end
 
-	local total = string.unpack(">I2", p, 3)
-	local frag = string.unpack(">I2", p, 7)
+	local total = u16be(p, 3)
+	local frag = u16be(p, 7)
 
 	-- more-fragments set, or a nonzero offset: a piece, not a packet.
 	if (frag & 0x2000) ~= 0 or (frag & 0x1fff) ~= 0 then
@@ -192,7 +204,7 @@ function ip4.decode(p)
 	return {
 		proto = p:byte(10),
 		ttl = p:byte(9),
-		id = string.unpack(">I2", p, 5),
+		id = u16be(p, 5),
 		src = p:sub(13, 16),
 		dst = p:sub(17, 20),
 		payload = p:sub(ihl + 1, total),
