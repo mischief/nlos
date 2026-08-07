@@ -43,6 +43,7 @@
 #include "efi.h"
 #include "lua.h"
 #include "lauxlib.h"
+#include "buf.h"
 #include "snp.h"
 
 static EFI_GUID snp_guid = { 0xA19832B9, 0xAC25, 0x11D3,
@@ -263,7 +264,7 @@ static int
 eth_send(lua_State *L)
 {
 	size_t n;
-	const char *frame = luaL_checklstring(L, 1, &n);
+	const char *frame = luabuf_check(L, 1, &n);
 
 	/* false rather than an error when the card refuses: a caller
 	 * pacing itself against the wire is doing something ordinary.

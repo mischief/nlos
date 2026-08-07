@@ -19,6 +19,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
+local buf = require("los.buf")
 
 local ethwire = {}
 
@@ -46,8 +47,13 @@ function ethwire.new(cap)
 		return r and r.mac
 	end
 
+	-- a frame built here is ours, so it is handed to the driver rather
+	-- than copied into the message and out again as a string. One a
+	-- caller passed straight through is not ours to give.
 	function w.send(frame)
-		local r = rpc({ op = "send", data = frame })
+		local r = rpc({ op = "send",
+		    data = buf.is(frame) and frame:movable() and
+		        { __buf = frame } or frame })
 
 		return r and r.ok
 	end

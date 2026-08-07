@@ -49,6 +49,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local eth = require("los.platform.eth")
+local buf = require("los.buf")
 
 -- the radio, where the wire is one. Absent on a machine whose NIC has
 -- nothing to associate with, and the "wifi" op below says so rather
@@ -145,8 +146,8 @@ while true do
 	elseif m.op == "mac" then
 		reply(m, { mac = eth.mac() })
 	elseif m.op == "send" then
-		reply(m, { ok = type(m.data) == "string" and
-		    eth.send(m.data) or false })
+		reply(m, { ok = (type(m.data) == "string" or
+		    buf.is(m.data)) and eth.send(m.data) or false })
 	elseif m.op == "listen" then
 		local h = type(m.port) == "table" and m.port.__right or nil
 

@@ -387,7 +387,7 @@ static int
 eth_send(lua_State *L)
 {
 	size_t n;
-	const char *frame = luaL_checklstring(L, 1, &n);
+	const char *frame = luabuf_check(L, 1, &n);
 
 	/* false rather than an error when the queue is full: a caller
 	 * pacing itself against the wire is doing something ordinary, not

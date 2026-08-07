@@ -19,6 +19,7 @@ local ip4 = require("ip4")
 local arp = require("arp")
 local icmp = require("icmp")
 local udp4 = require("udp4")
+local buf = require("los.buf")
 
 local inet = {}
 
@@ -90,15 +91,21 @@ function Host:nexthop(dst)
 end
 
 -- lay a frame on the wire for a packet whose mac we already have.
+-- One buffer for the whole frame, each header written where it belongs
+-- and the payload copied in once. Encoding a layer at a time made a
+-- packet, then a frame around it, copying everything again per layer.
 local function emit(self, mac, dst, proto, payload)
 	self.id = (self.id + 1) & 0xffff
 
-	local pkt = ip4.encode({
-		src = self.ip, dst = dst, proto = proto,
-		id = self.id, payload = payload,
-	})
+	local off = ether.HDRLEN + 1
+	local f = buf.new(ether.HDRLEN + ip4.HDRLEN + #payload)
 
-	return self.wire.send(ether.encode(mac, self.mac, ether.IPV4, pkt))
+	ether.header(f, mac, self.mac, ether.IPV4)
+	ip4.header(f, off, {
+		src = self.ip, dst = dst, proto = proto, id = self.id,
+	}, #payload)
+	f:copy(off + ip4.HDRLEN, payload)
+	return self.wire.send(f)
 end
 
 -- put a packet on the wire, or hold it while we ask who to send it to.

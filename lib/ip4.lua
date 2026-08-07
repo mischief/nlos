@@ -136,6 +136,27 @@ end
 -- id defaults to 0, which is allowed for anything that will not be
 -- fragmented (RFC 6864) and is every packet this sends. ttl defaults to
 -- 64, the usual unix choice.
+-- the twenty bytes, written into a frame someone else allocated, with
+-- the payload length given rather than the payload itself. For a sender
+-- building one buffer for the whole frame.
+function ip4.header(p, off, t, paylen)
+	local total = ip4.HDRLEN + paylen
+
+	p:setu8(off, VERSION_IHL)
+	p:setu8(off + 1, 0)			-- dscp and ecn
+	p:setu16be(off + 2, total)
+	p:setu16be(off + 4, t.id or 0)
+	p:setu16be(off + 6, 0)			-- flags and fragment offset
+	p:setu8(off + 8, t.ttl or 64)
+	p:setu8(off + 9, t.proto)
+	p:setu16be(off + 10, 0)			-- summed as zero, then filled
+	p:copy(off + 12, t.src)
+	p:copy(off + 16, t.dst)
+	p:setu16be(off + 10,
+	    ip4.checksum(p:view(off, off + ip4.HDRLEN - 1)))
+	return p
+end
+
 function ip4.encode(t)
 	local total = ip4.HDRLEN + #t.payload
 	local p = buf.new(total)

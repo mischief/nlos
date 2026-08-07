@@ -423,7 +423,7 @@ static int
 eth_send(lua_State *L)
 {
 	size_t n;
-	const char *data = luaL_checklstring(L, 1, &n);
+	const char *data = luabuf_check(L, 1, &n);
 
 	lua_pushboolean(L, esp_wifi_send_frame(data, n) == 0);
 	return 1;
