@@ -121,7 +121,21 @@ struct virtio_transport {
 	 * needs two registers for that and PCI clears on read.
 	 */
 	uint32_t (*isr_ack)(struct virtio_dev *d);
+
+	/* device configuration space, at the width the field is.
+	 *
+	 * The width is not a detail the caller may pick. Virtio 1.3
+	 * 4.1.3.1 requires a driver to access a configuration field with
+	 * one naturally aligned access of the field's own size, and a
+	 * 64-bit field as two 32-bit ones. A device is entitled to
+	 * enforce that: OpenBSD vmd answers a byte-wide read of
+	 * virtio-blk's capacity with zero and logs "unaligned read from
+	 * capacity register", which is a disk of no sectors and no
+	 * error anywhere. qemu is lenient and hid this for as long as it
+	 * was the only device we drove.
+	 */
 	uint8_t	(*config8)(struct virtio_dev *d, unsigned off);
+	uint32_t (*config32)(struct virtio_dev *d, unsigned off);
 };
 
 /* bit 32, so everything touching features has to be 64 bits wide. This
@@ -190,6 +204,7 @@ void	virtio_msi_route(int vector);
  * than off d->regs, which only one of the two transports has.
  */
 uint8_t	virtio_config8(struct virtio_dev *d, unsigned off);
+uint32_t virtio_config32(struct virtio_dev *d, unsigned off);
 
 /* ---- setup, in three steps ----
  *

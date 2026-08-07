@@ -70,14 +70,13 @@ virtio_blk_init(void)
 	if (virtio_dev_init(&blkdev, BLK_QSIZE) != 0)
 		return -1;
 
-	/* capacity is a u64 at config offset 0. Assembled a byte at a
-	 * time because virtio_config8 is the only accessor both
-	 * transports have -- the 32-bit register reads elsewhere in this
-	 * platform are mmio-only.
+	/* capacity is a u64 at config offset 0, read as the two 32-bit
+	 * halves the specification asks for (virtio 1.3, 4.1.3.1). A
+	 * device may refuse any other width and answer zero, which is
+	 * what OpenBSD vmd does -- see the config32 comment in virtio.h.
 	 */
-	blk_sectors = 0;
-	for (unsigned i = 0; i < 8; i++)
-		blk_sectors |= (uint64_t)virtio_config8(&blkdev, i) << (8 * i);
+	blk_sectors = virtio_config32(&blkdev, 0) |
+	    ((uint64_t)virtio_config32(&blkdev, 4) << 32);
 
 	blk_ready = 1;
 	return 0;

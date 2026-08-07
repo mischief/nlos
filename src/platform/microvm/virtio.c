@@ -51,6 +51,12 @@ virtio_config8(struct virtio_dev *d, unsigned off)
 	return d->t->config8(d, off);
 }
 
+uint32_t
+virtio_config32(struct virtio_dev *d, unsigned off)
+{
+	return d->t->config32(d, off);
+}
+
 /* which transport to look on, decided by whether the machine has a PCI
  * bus at all.
  *

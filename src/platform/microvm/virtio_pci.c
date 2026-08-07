@@ -327,6 +327,12 @@ pci_config8(struct virtio_dev *d, unsigned off)
 	return vp_read8(d, d->cfg_device + off);
 }
 
+static uint32_t
+pci_config32(struct virtio_dev *d, unsigned off)
+{
+	return vp_read32(d, d->cfg_device + off);
+}
+
 static const struct virtio_transport pci_transport = {
 	.name = "pci",
 	.required_features = VIRTIO_F_VERSION_1,
@@ -339,6 +345,7 @@ static const struct virtio_transport pci_transport = {
 	.notify = pci_notify,
 	.isr_ack = pci_isr_ack,
 	.config8 = pci_config8,
+	.config32 = pci_config32,
 };
 
 /* walk the capability list, remembering where each virtio structure

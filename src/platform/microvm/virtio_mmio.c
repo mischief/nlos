@@ -149,6 +149,15 @@ mmio_config8(struct virtio_dev *d, unsigned off)
 	return cfg[off];
 }
 
+static uint32_t
+mmio_config32(struct virtio_dev *d, unsigned off)
+{
+	volatile uint32_t *cfg = (volatile uint32_t *)
+	    ((volatile uint8_t *)d->regs + REG_CONFIG);
+
+	return cfg[off / 4];
+}
+
 static const struct virtio_transport mmio_transport = {
 	.name = "mmio",
 	.required_features = 0,		/* legacy by construction */
@@ -161,6 +170,7 @@ static const struct virtio_transport mmio_transport = {
 	.notify = mmio_notify,
 	.isr_ack = mmio_isr_ack,
 	.config8 = mmio_config8,
+	.config32 = mmio_config32,
 };
 
 int
