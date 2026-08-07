@@ -74,24 +74,56 @@ local function restore()
 	term:clear()
 end
 
+-- one frame, assembled whole and written once.
+--
+-- Written once because a write is a message: a line at a time is two
+-- dozen sends per frame, each one a string copied into the console's
+-- proc, for a picture that is redrawn as a unit anyway.
+--
+-- The buffer is reused rather than built fresh. A frame is a few tens
+-- of kilobytes of strings whichever way it is done -- the table itself
+-- is the small part -- but the loop below runs forever, and a program
+-- that allocates nothing it can avoid is one whose footprint says
+-- something when it moves.
+local buf = {}
+
 local function frame()
 	local rows = term.rows or 24
+	local n = 0
 
-	term:home()
+	local function put(s)
+		n = n + 1
+		buf[n] = s
+	end
 
-	-- the header, then as much of the table as fits. Written line by
-	-- line with clear_eol rather than clearing the screen first: a
-	-- full clear between frames is what makes a terminal flicker.
-	local lines = { tostring(ps.stats), "" }
+	-- home, then each line with a clear-eol after it. Clearing line by
+	-- line rather than clearing the screen first is what stops the
+	-- terminal flickering between frames.
+	put("\27[H")
+	put(tostring(ps.stats))
+	put("\27[K\r\n\27[K\r\n")
+
+	local shown = 2
 
 	for line in (ps.psfmt(term.cols) .. "\n"):gmatch("([^\n]*)\n") do
-		lines[#lines + 1] = line
+		if shown >= rows - 1 then
+			break
+		end
+		put(line)
+		put("\27[K\r\n")
+		shown = shown + 1
 	end
 
-	for n = 1, rows - 1 do
-		term:write((lines[n] or "") .. "\27[K\r\n")
+	-- blank the rest, so a proc that exited leaves no row behind
+	for _ = shown, rows - 2 do
+		put("\27[K\r\n")
 	end
-	term:write("q to quit\27[K")
+	put("q to quit\27[K")
+
+	term:write(table.concat(buf, "", 1, n))
+	for i = 1, n do
+		buf[i] = nil
+	end
 end
 
 -- xpcall, so a fault still restores the terminal and says where it
@@ -107,6 +139,13 @@ local run, err = xpcall(function()
 		if frames > 0 and n >= frames then
 			return
 		end
+
+		-- collect before sleeping rather than when the allocator
+		-- next decides to. A frame's worth of strings is dead the
+		-- moment it is written, and this program is idle between
+		-- frames -- so the pass is free here, and it keeps `top`
+		-- from being the reason `top` shows memory climbing.
+		collectgarbage("collect")
 
 		-- the wait is the keyboard read: a key ends the frame early,
 		-- and "" means the delay elapsed with nothing typed.
