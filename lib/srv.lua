@@ -242,6 +242,12 @@ function ops.session(S)
 		M.serve(ro and dev.readonly(S.B) or S.B, recv,
 		    { establish = false, workers = S.workers,
 		      lock = S.lock })
+		-- serve returns when the client has gone, and the port it
+		-- was serving belongs to this proc: without this a server
+		-- keeps one port per client it has ever had. Closed here
+		-- rather than by whoever called session, because this is
+		-- the thread that was parked on it.
+		sys.close(recv)
 	end)
 
 	-- the second return is closed once the reply has been sent. the

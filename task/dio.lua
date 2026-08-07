@@ -639,10 +639,18 @@ local DRAWS = { fill = true, load = true, unload = true, scroll = true,
 -- is running waits on the port like any other.
 local function serveapp(a)
 
+	-- Each of the three owns its pair of rights and closes them when
+	-- it ends, which is when the app has gone: dio is then the only
+	-- holder left, which is what sys.hungup answers and what stops
+	-- these loops. Closing them anywhere else would be closing a port
+	-- another thread of this proc is parked on.
 	thread.spawn(function()
 		while true do
-			local m = thread.recv(a.fbrecv)
+			local m, why = thread.await(a.fbrecv)
 
+			if why then
+				break		-- the app has gone
+			end
 			if type(m) == "table" then
 				local fn = ops[m.op]
 				local reply = m.reply and m.reply.__right
@@ -670,12 +678,18 @@ local function serveapp(a)
 				end
 			end
 		end
+		sys.close(a.fbport)
+		sys.close(a.fbrecv)
 	end)
 	thread.spawn(function()
 		srv.serve(a.mouse.backend, a.mrecv)
+		sys.close(a.mport)
+		sys.close(a.mrecv)
 	end)
 	thread.spawn(function()
 		srv.serve(a.wctl.backend, a.wrecv)
+		sys.close(a.wport)
+		sys.close(a.wrecv)
 	end)
 end
 
@@ -1219,6 +1233,12 @@ thread.spawn(function()
 				sys.close(a.ctl)
 				a.ctl = nil
 			end
+			-- the keyboard pair, which no thread waits on: the
+			-- app received on it and dio only ever sent. The
+			-- other three pairs are closed by the threads that
+			-- serve them, since those are parked on them.
+			sys.close(a.keysend)
+			sys.close(a.keys)
 			-- the list closed up over it, so every button below
 			-- where it was has moved
 			drawlist()
