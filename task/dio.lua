@@ -55,11 +55,24 @@
 --
 -- ---- the tray ----
 --
--- A tap starts an app, or brings a running one to the front. A second
--- tap on the same button within half a second stops it: closing has to
--- be there, since an app has a screen and a pointer and no keyboard and
--- bin/smiley.lua ends on a keystroke -- and it has to be the rarer
--- gesture, since switching is the one done constantly.
+-- A launcher pinned at the top, and below it one button per RUNNING
+-- app. What is in /etc/dio.lua is a catalogue of what may be started
+-- rather than a set of slots, so an entry may be started more than
+-- once: two terminals are two instances of one entry, with windows and
+-- keyboards of their own.
+--
+-- A tap brings an instance to the front. A second tap on the same
+-- button within half a second stops it: closing has to be there, since
+-- an app has a screen and a pointer and no keyboard and bin/smiley.lua
+-- ends on a keystroke -- and it has to be the rarer gesture, since
+-- switching is the one done constantly.
+--
+-- The wheel over the tray scrolls the list -- the trackball rolled
+-- vertically, which is this machine's scroll and what lib/mousefs.lua
+-- already reports as buttons 8 and 16. So how many apps may run is a
+-- question about memory rather than about how tall the screen is. The
+-- launcher does not scroll with them: it is the way to start anything,
+-- so it stays where it can be reached.
 --
 -- ---- several apps, one window ----
 --
@@ -178,82 +191,141 @@ local TRAYBG = 0x202830
 local EDGE = 0x506070
 local RUNNING = 0xffffff
 
--- one button per entry, stacked from the top. Square, so the glyph sits
--- in the middle of it whatever the tray's width is.
+-- one button per instance, stacked from the top. Square, so the glyph
+-- sits in the middle of it whatever the tray's width is.
 local BUTTON = TRAY - 6
 local GAP = 4
+local PITCH = BUTTON + GAP
 
-local function buttonrect(i)
-	return { x = 3, y = GAP + (i - 1) * (BUTTON + GAP),
-	    w = BUTTON, h = BUTTON }
+-- the launcher is pinned above them and does not scroll: it is how an
+-- app is started, so it must be reachable whatever the list below has
+-- been scrolled to.
+local PLUS = { x = 3, y = GAP, w = BUTTON, h = BUTTON }
+local PLUSCOLOR = 0x404c5c
+local LISTY = GAP + BUTTON + GAP + 3	-- below the plus and its rule
+
+-- how many instances the tray shows at once, and where the list has
+-- been scrolled to. Whole buttons rather than pixels: a button is
+-- either drawn or it is not, which is what keeps this from needing to
+-- clip one against the bottom of the screen.
+local VISIBLE = (mode.h - LISTY) // PITCH
+local trayoff = 0
+
+-- the apps that are up, keyed by an id of their own, in the order they
+-- were started. A running app is no longer the same thing as an entry
+-- in the config: several may come from one entry, and the config is a
+-- catalogue of what CAN be started rather than a set of slots.
+--
+-- Declared here because the tray is drawn from them and filled in
+-- further down, where the windows are made.
+local catalog = conf.apps
+local apps = {}		-- id -> instance
+local order = {}	-- ids, top to bottom in the tray
+local front = nil	-- the id on the glass
+local nextid = 1
+
+-- what stops another app being started.
+--
+-- The count is the backstop; the memory is the real answer, because
+-- what a program costs is not something a number written here can know.
+-- Measured on a T-Deck, a terminal and its shell take about 32KB of
+-- INTERNAL memory -- not the lua heap, which is in PSRAM and was never
+-- the thing that ran out. Eight of them left 12KB of 355KB free, one
+-- proc dead and not enough room to draw.
+--
+-- So the floor is three more instances' worth, kept clear: what is left
+-- has to run the programs typed into those terminals, not merely hold
+-- the terminals.
+local MAXAPPS = 6
+local APPMEM = 32 * 1024
+local MEMFLOOR = 3 * APPMEM
+
+-- what the machine has left, or nil where it cannot say. A platform
+-- with no meminfo answers 0, and then the count above is the whole of
+-- the limit.
+local function memleft()
+	local ok, st = pcall(sys.stats)
+	local avail = ok and type(st) == "table" and st.memavail
+
+	if type(avail) ~= "number" or avail <= 0 then
+		return nil
+	end
+	return avail
 end
 
--- which entry a point in the tray is on, or nil for the space between.
-local function buttonat(x, y)
-	for i = 1, #conf.apps do
-		local r = buttonrect(i)
-
-		if x >= r.x and x < r.x + r.w and
-		    y >= r.y and y < r.y + r.h then
-			return i
+local function slotof(id)
+	for k, v in ipairs(order) do
+		if v == id then
+			return k
 		end
 	end
 	return nil
 end
 
--- the apps that are up, indexed by tray entry, and which of them is on
--- the glass. Declared here because the tray is drawn from them and
--- filled in further down, where the windows are made.
-local apps = {}
-local front = nil
+-- the rectangle for the k'th instance in the list, or nil where the
+-- scroll has it off the screen.
+local function slotrect(k)
+	local at = k - trayoff
 
--- a button says three things, and each has its own mark:
---	full colour	running
---	dimmed		not running, but here to be started
---	nearly black	no such program on this machine
---	white border	the one in front
---
--- Brightness for running and a border for focus, rather than one mark
--- doing both: with several apps up, "which are alive" and "which am I
--- looking at" are different questions.
-local DIM = 70			-- per cent, for an app that is not running
-
-local function shade(color, pct)
-	local r = ((color >> 16) & 0xff) * pct // 100
-	local g = ((color >> 8) & 0xff) * pct // 100
-	local b = (color & 0xff) * pct // 100
-
-	return (r << 16) | (g << 8) | b
+	if at < 1 or at > VISIBLE then
+		return nil
+	end
+	return { x = 3, y = LISTY + (at - 1) * PITCH, w = BUTTON, h = BUTTON }
 end
 
-local function drawbutton(i)
-	local a = conf.apps[i]
-	local r = buttonrect(i)
-	local on = front == i
-	local color = a.color or 0x808080
+local function inrect(r, x, y)
+	return r and x >= r.x and x < r.x + r.w and
+	    y >= r.y and y < r.y + r.h
+end
 
-	if not apps[i] then
-		color = shade(color, DIM)
+-- what a point in the tray is on: "plus", an instance id, or nil for
+-- the space between.
+local function buttonat(x, y)
+	if inrect(PLUS, x, y) then
+		return "plus"
 	end
-	-- a program that is not on this machine is drawn dark, so a
-	-- missing file looks like one rather than like a button that does
-	-- nothing when touched.
-	if not N:stat(a.cmd) then
-		color = 0x303030
+	for k, id in ipairs(order) do
+		if inrect(slotrect(k), x, y) then
+			return id
+		end
 	end
+	return nil
+end
+
+-- the scroll, clamped to what there is to show. Returns true if it
+-- moved, so a drag redraws only when something changed.
+local function scrollto(n)
+	local most = #order - VISIBLE
+
+	if most < 0 then
+		most = 0
+	end
+	if n < 0 then
+		n = 0
+	elseif n > most then
+		n = most
+	end
+	if n == trayoff then
+		return false
+	end
+	trayoff = n
+	return true
+end
+
+-- every button in the list is a running app, so there is nothing to say
+-- about whether it is running. What is left to mark is which one is on
+-- the glass, and that is the border.
+
+-- one button: a filled square, a border saying whether it is in front,
+-- and a glyph in the middle.
+local function drawface(r, color, label, edge)
 	screen.fill(r, color)
-
-	-- the border says which app is running. Nothing else has to: with
-	-- one app there is no ordering to show.
-	local edge = on and RUNNING or TRAYBG
-
 	screen.fill({ x = r.x - 1, y = r.y - 1, w = r.w + 2, h = 1 }, edge)
 	screen.fill({ x = r.x - 1, y = r.y + r.h, w = r.w + 2, h = 1 }, edge)
 	screen.fill({ x = r.x - 1, y = r.y - 1, w = 1, h = r.h + 2 }, edge)
 	screen.fill({ x = r.x + r.w, y = r.y - 1, w = 1, h = r.h + 2 }, edge)
 
-	local label = (a.label or a.name or "?"):sub(1, 1)
-	local pix, gw, gh = font.render(label, 0x000000, color)
+	local pix, gw, gh = font.render(label:sub(1, 1), 0x000000, color)
 
 	if gw > 0 and gw <= r.w and gh <= r.h then
 		screen.load({ x = r.x + (r.w - gw) // 2,
@@ -261,12 +333,67 @@ local function drawbutton(i)
 	end
 end
 
+local function drawplus()
+	drawface(PLUS, PLUSCOLOR, "+", TRAYBG)
+	-- a rule under it, so the launcher reads as a fixture rather than
+	-- as the first of the list that scrolls beneath it.
+	screen.fill({ x = 3, y = LISTY - 3, w = BUTTON, h = 1 }, EDGE)
+end
+
+-- an instance's button, or nothing where the scroll has it off screen.
+local function drawslot(k)
+	local r = slotrect(k)
+
+	if not r then
+		return
+	end
+
+	local a = apps[order[k]]
+	local e = a and catalog[a.entry]
+
+	drawface(r, (e and e.color) or 0x808080,
+	    (e and (e.label or e.name)) or "?",
+	    (front == order[k]) and RUNNING or TRAYBG)
+end
+
+local function drawbutton(id)
+	local k = slotof(id)
+
+	if k then
+		drawslot(k)
+	end
+end
+
+-- a mark at the top or the bottom of the list where there is more of it
+-- in that direction: a tray that scrolls has to say that it does, or
+-- the apps out of sight are apps you have lost.
+local function drawmore()
+	local up = (trayoff > 0) and RUNNING or TRAYBG
+	local down = (#order - trayoff > VISIBLE) and RUNNING or TRAYBG
+
+	screen.fill({ x = 3 + BUTTON // 2 - 3, y = LISTY - 2, w = 6, h = 1 },
+	    up)
+	screen.fill({ x = 3 + BUTTON // 2 - 3, y = LISTY + VISIBLE * PITCH - 2,
+	    w = 6, h = 1 }, down)
+end
+
+local function drawlist()
+	-- the band the instances live in, cleared first: a scroll moves
+	-- every button in it and the one that was at the bottom has to
+	-- stop being drawn there.
+	screen.fill({ x = 0, y = LISTY - 1, w = TRAY - 1,
+	    h = mode.h - LISTY + 1 }, TRAYBG)
+	for k = 1, #order do
+		drawslot(k)
+	end
+	drawmore()
+end
+
 local function drawtray()
 	screen.fill({ x = 0, y = 0, w = TRAY - 1, h = mode.h }, TRAYBG)
 	screen.fill({ x = TRAY - 1, y = 0, w = 1, h = mode.h }, EDGE)
-	for i = 1, #conf.apps do
-		drawbutton(i)
-	end
+	drawplus()
+	drawlist()
 end
 
 local function clearapp()
@@ -390,16 +517,27 @@ end
 -- could not tell whose draw had arrived -- and knowing that is the
 -- whole of what focus means here.
 --
--- apps is indexed by tray entry:
---	{ pid, fbrecv, fbport, mouse, wctl, mport, wport, kind }
+-- an instance is:
+--	{ id, entry, name, pid, fbrecv, fbport, mouse, wctl, mport,
+--	  wport, kind }
 -- what is dropped when an app is not in front. mode, modes and setmode
 -- are answers rather than marks on the glass, and an app asks for them
 -- whenever it likes.
 local DRAWS = { fill = true, load = true, unload = true, scroll = true,
     cursor = true }
 
-local function serveapp(i)
-	local a = apps[i]
+-- Started once the app it serves exists, and not before.
+--
+-- srv.serve gives up when its port hangs up, and sys.hungup is
+-- sole_holder: it is true while THIS proc holds every right to the
+-- port. Between making an app's ports and spawning the app, dio holds
+-- them all -- so a serve thread that runs in that window sees a port
+-- nobody is left to talk on and returns, and the app's first walk of
+-- /dev/wctl then waits for an answer that will never come.
+--
+-- Nothing is lost by starting late: a message sent before the thread
+-- is running waits on the port like any other.
+local function serveapp(a)
 
 	thread.spawn(function()
 		while true do
@@ -412,7 +550,7 @@ local function serveapp(i)
 
 				if not fn then
 					err = "no such op: " .. tostring(m.op)
-				elseif front ~= i and DRAWS[m.op] then
+				elseif front ~= a.id and DRAWS[m.op] then
 					-- dropped, not refused: an app that
 					-- is not in front has nothing to
 					-- fix, and telling it so would turn
@@ -456,9 +594,30 @@ local function appns(a)
 	return desc
 end
 
+-- a name for this instance, unique among the ones running: the second
+-- terminal is term(2). Two windows are opened to look at two things,
+-- and ps naming them both `term` would undo half of that.
+local function instname(entry, self)
+	local base = entry.name or "app"
+	local n = 0
+
+	-- everything already running from this entry, the one being named
+	-- excluded: it is in the table by now, and counting it would make
+	-- the first terminal term(2).
+	for id, a in pairs(apps) do
+		if a.entry == entry.idx and id ~= self then
+			n = n + 1
+		end
+	end
+	if n == 0 then
+		return base
+	end
+	return ("%s(%d)"):format(base, n + 1)
+end
+
 -- make an app's windows before it is spawned, since what it is handed
 -- is rights to them.
-local function newapp(i, kind)
+local function newapp(entryidx, kind)
 	local fbrecv = sys.newport()
 	local mrecv = sys.newport()
 	local wrecv = sys.newport()
@@ -467,6 +626,8 @@ local function newapp(i, kind)
 	-- would give it to whichever asked first.
 	local keys = sys.newport()
 	local a = {
+		id = nextid,
+		entry = entryidx,
 		kind = kind,
 		fbrecv = fbrecv, fbport = sys.sendright(fbrecv),
 		mrecv = mrecv, mport = sys.sendright(mrecv),
@@ -479,9 +640,22 @@ local function newapp(i, kind)
 		wctl = wctlfs.new(false),
 	}
 
-	apps[i] = a
-	serveapp(i)
+	nextid = nextid + 1
+	apps[a.id] = a
+	order[#order + 1] = a.id
 	return a
+end
+
+-- an instance and everything the tray knows about it, gone.
+local function forget(id)
+	local k = slotof(id)
+
+	apps[id] = nil
+	if k then
+		table.remove(order, k)
+	end
+	-- the list is shorter, so the scroll may now be past its end
+	scrollto(trayoff)
 end
 
 -- ---- a terminal in the window ----
@@ -528,7 +702,7 @@ local function startterm(a, entry, desc)
 		return nil, "no keyboard on this machine"
 	end
 
-	local pid, h = proc.spawn(src, { name = entry.name, ns = desc })
+	local pid, h = proc.spawn(src, { name = a.name, ns = desc })
 
 	if not pid then
 		return nil, "spawn failed"
@@ -560,34 +734,56 @@ end
 -- cleared and a "redraw" on /dev/wctl, so an app paints from its own
 -- state onto a known-empty rectangle -- which is what buys a machine
 -- this size a window system with no saved pixels anywhere.
-local function focus(i)
-	if front == i then
+local function focus(id)
+	if front == id then
 		return
 	end
 
 	local was = front
 
-	front = i
+	front = id
 	if was and apps[was] then
 		apps[was].wctl.show(false)
 	end
 	clearapp()
-	if i and apps[i] then
-		apps[i].wctl.show(true)
+	if id and apps[id] then
+		apps[id].wctl.show(true)
 	end
 	-- keys follow the front, and only a terminal reads them
-	wantkeys = i ~= nil and apps[i] ~= nil and apps[i].kind == "term"
+	wantkeys = id ~= nil and apps[id] ~= nil and apps[id].kind == "term"
 	if was then
 		drawbutton(was)
 	end
-	if i then
-		drawbutton(i)
+	if id then
+		drawbutton(id)
 	end
 end
 
 local function start(i)
-	local entry = conf.apps[i]
+	local entry = catalog[i]
+
+	if not entry then
+		return nil, "no such entry"
+	end
+	-- asked before the instance is made, so the one being started is
+	-- not counted against itself.
+	if #order >= MAXAPPS then
+		return nil, ("%d apps is all this machine has room for")
+		    :format(MAXAPPS)
+	end
+
+	local left = memleft()
+
+	if left and left < MEMFLOOR + APPMEM then
+		return nil, ("%dK free is not enough to start another")
+		    :format(left // 1024)
+	end
+
+	entry.idx = i
 	local a = newapp(i, entry.kind)
+
+	a.name = instname(entry, a.id)
+
 	local desc = appns(a)
 	local pid, err
 
@@ -597,7 +793,7 @@ local function start(i)
 		local h
 
 		pid, h = proc.spawn('require("prog").main()',
-		    { name = entry.name, ns = desc })
+		    { name = a.name, ns = desc })
 		if pid then
 			-- a program's own output goes to the serial line
 			-- rather than to the console on the glass, which
@@ -605,7 +801,7 @@ local function start(i)
 			-- the window the program is drawing in.
 			sys.send(h, {
 				path = entry.cmd,
-				name = entry.name,
+				name = a.name,
 				args = { entry.name },
 				env = { PATH = "/bin", HOME = "/" },
 				cwd = "/",
@@ -621,13 +817,50 @@ local function start(i)
 	end
 
 	if not pid then
-		apps[i] = nil
+		forget(a.id)
 		return nil, err
 	end
 	a.pid = pid
+	-- the app holds rights to its ports now, so the serves may
+	-- start: see serveapp for what starting them sooner does.
+	serveapp(a)
 	sys.monitor(pid)
-	focus(i)
-	return pid
+	-- the list grew, so every button below the new one moved
+	drawlist()
+	focus(a.id)
+	return a.id
+end
+
+-- what the launcher does. Another of the entry marked `boot`, which is
+-- the terminal on every machine that has one: what a second window is
+-- wanted for is nearly always a second prompt.
+local function launch()
+	local pick
+
+	for i, e in ipairs(catalog) do
+		if e.boot then
+			pick = i
+			break
+		end
+	end
+	pick = pick or 1
+
+	local id, serr = start(pick)
+
+	if not id then
+		say(((catalog[pick] and catalog[pick].name) or "app") ..
+		    ": " .. tostring(serr))
+		-- and on the glass, because the serial line is not where
+		-- the person who touched the button is looking. The
+		-- launcher goes red for a moment: what was refused is
+		-- obvious, and the reason is on the console for whoever
+		-- wants it.
+		thread.spawn(function()
+			drawface(PLUS, 0xcc0000, "+", TRAYBG)
+			thread.sleep(700)
+			drawplus()
+		end)
+	end
 end
 
 -- ---- the pointer ----
@@ -660,6 +893,13 @@ local BADMAX = 8
 local DOUBLE = 500
 local lasttap, lastms = nil, 0
 
+-- the wheel, as lib/mousefs.lua reports it: 8 up, 16 down, one click
+-- per record. On the T-Deck that is the trackball rolled vertically,
+-- which is the machine's scroll and is already what a list scrolls
+-- with -- so the tray uses it rather than a gesture of its own.
+local WHEELUP = 8
+local WHEELDOWN = 16
+
 thread.spawn(function()
 	local down = false
 	local bad = 0
@@ -690,19 +930,31 @@ thread.spawn(function()
 			local pressed = (b & BUT1) ~= 0
 
 			if x < TRAY then
-				-- the press edge, not the state: a finger
-				-- held on a button must start one app, and a
-				-- drag out of the tray must not start
-				-- another.
-				if pressed and not down then
-					local i = buttonat(x, y)
+				if (b & (WHEELUP | WHEELDOWN)) ~= 0 then
+					-- the wheel over the tray scrolls
+					-- the list, and never starts or
+					-- stops anything: a roll is not a
+					-- press.
+					local by = ((b & WHEELDOWN) ~= 0)
+					    and 1 or -1
 
+					if scrollto(trayoff + by) then
+						drawlist()
+					end
+				elseif pressed and not down then
+					-- the press edge, not the state: a
+					-- finger held on a button must act
+					-- once, and a drag out of the tray
+					-- must not act again.
+					local hit = buttonat(x, y)
 					local now = sys.uptime_ms()
-					local twice = i and i == lasttap and
+					local twice = hit and hit == lasttap and
 					    now - lastms < DOUBLE
 
-					lasttap, lastms = i, now
-					if i and apps[i] and twice then
+					lasttap, lastms = hit, now
+					if hit == "plus" then
+						launch()
+					elseif hit and apps[hit] and twice then
 						-- twice on a running app
 						-- stops it. An app is given
 						-- a screen and a pointer and
@@ -718,23 +970,15 @@ thread.spawn(function()
 						-- what follows is reported
 						-- as an app ending rather
 						-- than as an app dying.
-						apps[i].stopped = true
-						pcall(sys.kill, apps[i].pid)
-					elseif i and apps[i] then
+						apps[hit].stopped = true
+						pcall(sys.kill, apps[hit].pid)
+					elseif hit and apps[hit] then
 						-- running, behind: bring it
 						-- forward. It keeps running
 						-- either way -- what changes
 						-- is whose draws reach the
 						-- glass.
-						focus(i)
-					elseif i then
-						local pid, serr = start(i)
-
-						if not pid then
-							say(conf.apps[i].name ..
-							    ": " ..
-							    tostring(serr))
-						end
+						focus(hit)
 					end
 				end
 			elseif front and apps[front] then
@@ -749,18 +993,11 @@ thread.spawn(function()
 	end
 end)
 
--- which entry a pid belongs to, since an exit arrives as a pid
+-- which instance a pid belongs to, since an exit arrives as a pid
 local function appof(pid)
-	for i, a in ipairs(apps) do
+	for id, a in pairs(apps) do
 		if a.pid == pid then
-			return i
-		end
-	end
-	-- ipairs stops at the first hole, and the tray is not dense once
-	-- something in the middle has been closed
-	for i, a in pairs(apps) do
-		if a.pid == pid then
-			return i
+			return id
 		end
 	end
 	return nil
@@ -774,13 +1011,14 @@ end
 thread.spawn(function()
 	while true do
 		local m = thread.recv(sys.SELF)
-		local i = type(m) == "table" and m.exit and appof(m.exit)
+		local id = type(m) == "table" and m.exit and appof(m.exit)
 
-		if i then
-			local a = apps[i]
+		if id then
+			local a = apps[id]
+			local e = catalog[a.entry]
 
-			apps[i] = nil
-			if front == i then
+			forget(id)
+			if front == id then
 				front = nil
 				wantkeys = false
 				clearapp()
@@ -793,10 +1031,12 @@ thread.spawn(function()
 			if a.stopped then
 				pcall(sys.reap, m.exit)
 			end
-			drawbutton(i)
+			-- the list closed up over it, so every button below
+			-- where it was has moved
+			drawlist()
 			if not m.normal and not a.stopped then
-				say(tostring(conf.apps[i].name) .. ": " ..
-				    tostring(m.reason))
+				say(tostring(a.name or (e and e.name)) ..
+				    ": " .. tostring(m.reason))
 			end
 		end
 	end
@@ -809,12 +1049,12 @@ end)
 -- empty rectangle, and the only way to a prompt would be to know which
 -- button it is -- so the terminal is marked, and dio replaces the shell
 -- it replaces rather than merely covering it.
-for i, a in ipairs(conf.apps) do
-	if a.boot and not front then
-		local pid, serr = start(i)
+for i, e in ipairs(catalog) do
+	if e.boot and not front then
+		local id, serr = start(i)
 
-		if not pid then
-			say(a.name .. ": " .. tostring(serr))
+		if not id then
+			say(e.name .. ": " .. tostring(serr))
 		end
 	end
 end

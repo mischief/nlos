@@ -1,4 +1,8 @@
--- what the tray holds, read by bin/dio.lua at startup.
+-- what may be started, read by task/dio.lua at startup.
+--
+-- A catalogue rather than a set of tray slots: the tray shows what is
+-- RUNNING, and an entry here may be started more than once. Two
+-- terminals are two instances of the one entry below.
 --
 -- A lua chunk rather than a data format, for the reason
 -- etc/services.lua is one: the machine decides what it offers from what
@@ -6,17 +10,17 @@
 --
 -- Each entry:
 --	name	what it is called, and what the tray says if there is no
---		label. Also the name the proc runs under.
---	cmd	the program, as a path in the namespace dio was given. A
---		program that is not there is drawn dimmed rather than
---		left out, so a missing file looks like a missing file.
+--		label. The proc runs under it too, numbered where more
+--		than one instance is up: term, term(2).
+--	cmd	the program, as a path in the namespace dio was given.
 --	label	one character for the button. The tray is 28 pixels wide
 --		and a glyph is 8, so a word does not fit.
 --	color	the button, 0xRRGGBB.
 --	kind	"term" for the console stack, which takes a framebuffer
 --		and a keyboard rather than the program ABI. Anything else
 --		is an ordinary program.
---	boot	start this one when dio starts. One entry at most.
+--	boot	start this one when dio starts, and the one the launcher
+--		starts another of. One entry at most.
 --
 -- width is the tray, in pixels. Everything right of it is the app, and
 -- an app is told that rectangle is the screen.
