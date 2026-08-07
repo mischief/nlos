@@ -23,7 +23,7 @@ if not tap.ok(caps.eth ~= nil, "an eth capability was granted") then
 end
 
 local function rpc(msg)
-	local reply = sys.newport()
+	local reply = sys.newport("microvm_eth.rep")
 
 	msg.reply = { __right = sys.sendright(reply) }
 	sys.send(caps.eth, msg)
@@ -63,7 +63,7 @@ end
 
 -- listen before sending, not after. slirp answers in microseconds, so
 -- a listener registered after the request would miss the reply to it.
-local frames = sys.newport()
+local frames = sys.newport("microvm_eth.fra")
 local lr = rpc({ op = "listen", port = { __right = sys.sendright(frames) } })
 
 tap.ok(lr and lr.ok, "the wire accepts a listener")
@@ -141,7 +141,7 @@ tap.diag(string.format("10.0.2.2 is at %02x:%02x:%02x:%02x:%02x:%02x",
 -- failing. That is a property of rpc, which every other caller here
 -- uses a bounded number of times.
 local irqs
-local irqport = sys.newport()
+local irqport = sys.newport("microvm_eth.irq")
 local irqright = sys.sendright(irqport)
 local irqdeadline = sys.uptime_ms() + 500
 

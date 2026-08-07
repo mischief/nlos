@@ -29,7 +29,7 @@ local _, sh = require("proc").spawn(SERVER, { name = "fidsrv" })
 
 -- ---- the establishment port refuses fid work ----
 
-local rp = sys.newport()
+local rp = sys.newport("test_session.rp")
 
 sys.send(sh, { op = "attach", seq = 1, reply = { __right = rp } })
 
@@ -74,7 +74,7 @@ local reached = 0
 
 for fid = 1, 40 do
 	local ok, res = pcall(function()
-		local rp2 = sys.newport()
+		local rp2 = sys.newport("test_session.rp")
 
 		sys.send(sess, { op = "read", fid = fid, off = 0, n = 8,
 		    seq = 1000 + fid, reply = { __right = rp2 } })
@@ -123,7 +123,7 @@ local N = ns.restore(a.nsdesc)
 sys.send(a.reply.__right, { got = N and N:readfile("/a") })
 ]]
 
-local crp = sys.newport()
+local crp = sys.newport("test_session.cr")
 local cpid, ch = sys.spawn(CHILD, { name = "sessionchild" })
 
 sys.monitor(cpid)
@@ -254,7 +254,7 @@ sys.send(a.done.__right, f ~= nil)
 require("los.thread").recv(sys.SELF)
 ]]
 
-local rport = sys.newport()
+local rport = sys.newport("test_session.rp")
 local hpid, hh = require("proc").spawn(HOLDER, { name = "holder",
     arg = { srv = { __right = xh }, done = { __right = rport } } })
 

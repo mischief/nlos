@@ -40,7 +40,7 @@ N:mount("/srv", srvfs.new(srvd), "srvfs")
 -- asserted on rather than just not crashing.
 -- NOTE the shell is given no registry capability. Everything mount
 -- needs it finds in the namespace.
-local consport = sys.newport()
+local consport = sys.newport("test_mountcmd.c")
 local sh = dos.new({ ns = N, cons = sys.sendright(consport) })
 
 local function said()

@@ -90,7 +90,7 @@ local stat = {
 local BACKLOG = 8
 -- the packets from task/ip.lua arrive here. Registered once, below,
 -- with a right that this proc keeps for as long as it runs.
-local pktport = sys.newport()
+local pktport = sys.newport("tcp4.pktport")
 -- forward declarations: incoming() calls service(), and on_packet()
 -- calls incoming().
 local service, incoming

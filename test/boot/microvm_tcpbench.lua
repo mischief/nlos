@@ -74,8 +74,8 @@ tap.ok(granted.ip ~= nil, "and the ip task under it")
 --
 -- One port round trip. Every hop on the segment path is at least this,
 -- so anything at or near a multiple of it is not the protocol's to lose.
-local echoin = sys.newport()
-local echoout = sys.newport()
+local echoin = sys.newport("microvm_tcpbenc")
+local echoout = sys.newport("microvm_tcpbenc")
 local toecho = sys.sendright(echoin)
 
 sys.spawn([[

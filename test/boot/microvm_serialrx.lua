@@ -28,7 +28,7 @@ end
 
 print("SERIALRX ready")
 
-local rp = sys.newport()
+local rp = sys.newport("microvm_serialr")
 local deadline = sys.uptime_ms() + 15000
 local got = {}
 

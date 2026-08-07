@@ -209,7 +209,7 @@ function M.new()
 			return nextrec():sub(1, n)
 		end
 
-		local rp = sys.newport()
+		local rp = sys.newport("mousefs.rp")
 
 		waiters[#waiters + 1] = { reply = rp }
 

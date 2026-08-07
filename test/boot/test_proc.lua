@@ -36,8 +36,8 @@ tap.is(ok, false, "send to dead proc port returns false")
 -- spawn rights are closed
 local pid3, w3 = sys.spawn([[
 	local sys = require("los.sys")
-	sys.newport()
-	sys.newport()
+	sys.newport("test_proc")
+	sys.newport("test_proc")
 	sys.send(0, "queued to self, never received")
 	error("die messy")
 ]])

@@ -40,7 +40,7 @@ local _, h = sys.spawn([[
 	local err
 
 	while true do
-		local ok, h = pcall(sys.newport)
+		local ok, h = pcall(sys.newport, "portlimit")
 
 		if not ok then
 			err = tostring(h)
@@ -54,7 +54,7 @@ local _, h = sys.spawn([[
 	-- give one back and take it again: the budget is what is held,
 	-- not what has ever been made
 	sys.close(held[#held])
-	local reuse = pcall(sys.newport)
+	local reuse = pcall(sys.newport, "portlimit")
 
 	sys.send(out, { made = #held, err = err, reuse = reuse,
 	    ports = st.ports, limit = st.portlimit, peak = st.portspeak })
@@ -140,7 +140,7 @@ local _, h4 = sys.spawn([[
 	sys.send(out, { before = before, after = sys.pidstat().ports })
 ]], { name = "receiver", arg = { reply = { __right = back } } })
 
-local gift = sys.newport()
+local gift = sys.newport("test_portlimit.")
 local mine_before = sys.pidstat().ports
 
 sys.send(h4, { gift = { __right = gift } })

@@ -24,7 +24,7 @@ local pid, h = sys.spawn([[
 	local ok, err = pcall(sys.set_priority, sys.self(), 16)
 	sys.send(m.reply.__right, { ok = ok, err = tostring(err) })
 ]], { name = "victim" })
-local rp = sys.newport()
+local rp = sys.newport("test_sched.rp")
 sys.send(h, { reply = { __right = rp } })
 local r = thread.recv(rp)
 tap.ok(not r.ok, "spawn child denied set_priority")
@@ -47,7 +47,7 @@ local idlepid = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
 
-	thread.recv(sys.newport())
+	thread.recv(sys.newport("test_sched"))
 ]], { name = "idler" })
 
 -- long enough for the decay window to fill: cpu is an average over

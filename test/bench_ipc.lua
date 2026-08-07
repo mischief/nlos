@@ -47,7 +47,7 @@ end
 
 -- ---- same proc: serialize + queue + deserialize, no scheduling ----
 local function roundtrip(sz, iters)
-	local p = sys.newport()
+	local p = sys.newport("bench_ipc")
 	local payload = string.rep("x", sz)
 
 	for _ = 1, iters do
@@ -58,7 +58,7 @@ local function roundtrip(sz, iters)
 end
 
 local function roundtrip_empty(_, iters)
-	local p = sys.newport()
+	local p = sys.newport("bench_ipc")
 
 	for _ = 1, iters do
 		sys.send(p, true)
@@ -78,7 +78,7 @@ end
 local buf = require("los.buf")
 
 local function roundtrip_buf(sz, iters)
-	local p = sys.newport()
+	local p = sys.newport("bench_ipc")
 
 	for _ = 1, iters do
 		sys.send(p, { __buf = buf.new(sz) })
@@ -134,7 +134,7 @@ local echobuf = [[
 
 local function crossproc_buf(sz, iters)
 	local _, h = sys.spawn(echobuf, { name = "echobuf" })
-	local rp = sys.newport()
+	local rp = sys.newport("bench_ipc.rp")
 
 	sys.send(h, { reply = { __right = rp } })
 	for _ = 1, iters do
@@ -147,7 +147,7 @@ end
 
 local function crossproc(sz, iters)
 	local _, h = sys.spawn(echo, { name = "echo" })
-	local rp = sys.newport()
+	local rp = sys.newport("bench_ipc.rp")
 
 	sys.send(h, { reply = { __right = rp } })
 
@@ -167,7 +167,7 @@ end
 -- worth on its own, before any scheduling change -- so run both.
 local function crossproc_call(sz, iters)
 	local _, h = sys.spawn(echo, { name = "echo" })
-	local rp = sys.newport()
+	local rp = sys.newport("bench_ipc.rp")
 
 	sys.send(h, { reply = { __right = rp } })
 
@@ -189,7 +189,7 @@ local function revdriver(loop)
 		local m = thread.recv(sys.SELF)
 		local eh, done, sz, iters = m.eh.__right, m.done.__right,
 		    m.sz, m.iters
-		local rp = sys.newport()
+		local rp = sys.newport("bench_ipc.rp")
 
 		sys.send(eh, { reply = { __right = rp } })
 
@@ -216,7 +216,7 @@ local revcall = revdriver("sys.call(eh, payload, rp)")
 local function crossproc_rev(sz, iters, src)
 	local _, eh = sys.spawn(echo, { name = "echo" })
 	local _, dh = sys.spawn(src or revsend, { name = "driver" })
-	local donep = sys.newport()
+	local donep = sys.newport("bench_ipc.donep")
 
 	sys.send(dh, { eh = { __right = eh }, done = { __right = donep },
 	    sz = sz, iters = iters })
@@ -265,7 +265,7 @@ bench("rev call string", 4096, 1000,
 -- happens and what is timed is the scan and the construction alone.
 -- the parking path is measured separately below.
 local function alt_inline(_, iters)
-	local a, b = sys.newport(), sys.newport()
+	local a, b = sys.newport("bench_ipc"), sys.newport("bench_ipc")
 
 	for _ = 1, iters do
 		sys.send(b, true)
@@ -276,7 +276,7 @@ local function alt_inline(_, iters)
 end
 
 local function alt_hoisted(_, iters)
-	local a, b = sys.newport(), sys.newport()
+	local a, b = sys.newport("bench_ipc"), sys.newport("bench_ipc")
 	local cases = { { port = a }, { port = b } }
 
 	for _ = 1, iters do
@@ -291,7 +291,7 @@ end
 -- returns on the first hit, so the pair bounds how much the scan itself
 -- contributes.
 local function alt_first(_, iters)
-	local a, b = sys.newport(), sys.newport()
+	local a, b = sys.newport("bench_ipc"), sys.newport("bench_ipc")
 	local cases = { { port = a }, { port = b } }
 
 	for _ = 1, iters do
@@ -310,8 +310,8 @@ end
 -- top-level alt goes to sys.altblock instead and never touches marks.
 local function alt_park(sz, iters)
 	local _, h = sys.spawn(echo, { name = "echo" })
-	local rp = sys.newport()
-	local idle = sys.newport()
+	local rp = sys.newport("bench_ipc.rp")
+	local idle = sys.newport("bench_ipc.idle")
 
 	sys.send(h, { reply = { __right = rp } })
 

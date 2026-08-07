@@ -17,7 +17,7 @@ tap.plan(12)
 
 -- ---- it arrives as the chunk's `...`, at the very first line ----
 
-local rp = sys.newport()
+local rp = sys.newport("test_spawnarg.r")
 
 sys.spawn([[
 	-- line one. no recv has happened and none can have.
@@ -53,7 +53,7 @@ tap.is(m and m.nested, "nested value", "nested tables survive")
 -- the child never received a message before using it, so the right came
 -- in through spawn itself.
 
-local back = sys.newport()
+local back = sys.newport("test_spawnarg.b")
 local pid2, h2 = sys.spawn([[
 	local a = ...
 	local sys = require("los.sys")
@@ -100,7 +100,7 @@ end
 -- compatibility case: the extra resume argument must be absent, not nil
 -- padding.
 
-local n2 = sys.newport()
+local n2 = sys.newport("test_spawnarg.n")
 local _, nh = sys.spawn([[
 	local a = ...
 	local sys = require("los.sys")
@@ -134,7 +134,7 @@ tap.ok(m3 ~= nil and m3.none == true,
 
 local function batch(n, tag)
 	for i = 1, n do
-		local p = sys.newport()
+		local p = sys.newport("test_spawnarg")
 		local pid, ch = sys.spawn([[
 			local a = ...
 			require("los.sys").send(a.out.__right, { i = a.i })

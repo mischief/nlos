@@ -20,7 +20,7 @@ tap.plan(17)
 -- a collector stands in for a terminal: drain everything queued and
 -- return it, clearing as it goes.
 local function collector()
-	local port = sys.newport()
+	local port = sys.newport("test_stdout")
 	local acc = {}
 
 	return port, function()
@@ -83,7 +83,7 @@ tap.is(drainother(), "", "and stdout does not see it")
 
 stdout.set(other)
 
-local childdone = sys.newport()
+local childdone = sys.newport("test_stdout.chi")
 
 proc.spawn([[
 	print("from the child")
@@ -98,7 +98,7 @@ tap.is(drainother(), "from the child\nand io.write too\n",
 -- ---- a child pointed somewhere else ----
 
 local elsewhere, drainelse = collector()
-local done2 = sys.newport()
+local done2 = sys.newport("test_stdout.don")
 
 proc.spawn([[
 	print("redirected")
@@ -115,7 +115,7 @@ tap.is(drainother(), "", "and not to its parent's")
 -- with no port, or the child keeps the raw C print and writes to the
 -- physical console. the child reports whether it is installed, since a
 -- test proc cannot observe the console it is printing to.
-local done3 = sys.newport()
+local done3 = sys.newport("test_stdout.don")
 
 proc.spawn([[
 	print("this must not reach the console")

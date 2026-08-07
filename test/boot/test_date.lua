@@ -74,7 +74,7 @@ local function serve()
 end
 
 local function collector()
-	local port = sys.newport()
+	local port = sys.newport("test_date")
 	local out = {}
 
 	return sys.sendright(port), function()

@@ -30,7 +30,7 @@ end
 
 local function newport_watched()
 	local before = indices()
-	local h = sys.newport()
+	local h = sys.newport("test_ports")
 	local idx
 
 	for _, r in ipairs(sys.ports()) do

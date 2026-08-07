@@ -23,7 +23,7 @@ tap.ok(type(caps.sendwait) == "function", "caps exposes sendwait")
 -- big enough that two cannot be queued at once: MAXQUEUE and MAXMSG are
 -- both 64KiB, so one of these fills the queue on its own.
 local BIG = string.rep("x", 40000)
-local port = sys.newport()
+local port = sys.newport("test_sendwait")
 local right = sys.sendright(port)
 
 tap.ok(sys.send(right, { data = BIG }), "the first big message fits")
@@ -62,7 +62,7 @@ tap.ok(sent, "sendwait delivers once the reader drains: " .. tostring(serr))
 tap.ok(sent == true, "and reports success rather than a silent drop")
 
 -- a dead port is a different failure and must not spin forever
-local dead = sys.newport()
+local dead = sys.newport("test_sendwait.d")
 local dright = sys.sendright(dead)
 
 sys.close(dead)
@@ -77,7 +77,7 @@ tap.ok(not dok or derr == nil,
 -- Parking is legal only for the coroutine the kernel resumed, so the
 -- wait differs inside a thread. It is reached only when the far end is
 -- full, so a full queue is what the test has to arrange.
-local tport = sys.newport()
+local tport = sys.newport("test_sendwait.t")
 local tright = sys.sendright(tport)
 
 sys.send(tright, { data = BIG })		-- full before we start

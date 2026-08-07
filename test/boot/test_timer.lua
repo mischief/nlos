@@ -42,14 +42,14 @@ local slept = sys.uptime_ms() - b
 tap.ok(slept >= 100 and slept < 300, "thread.sleep(100) slept " .. slept .. "ms")
 
 -- ---- recv timeout: the whole reason a timer is a port ----
-local dead = sys.newport()
+local dead = sys.newport("test_timer.dead")
 local m, why = thread.recvtimeout(dead, 50)
 
 tap.ok(m == nil and why == "timeout",
     "recvtimeout on a silent port times out (" .. tostring(why) .. ")")
 
 -- and returns the message when one is actually there
-local live = sys.newport()
+local live = sys.newport("test_timer.live")
 sys.send(live, "hello")
 tap.ok(thread.recvtimeout(live, 1000) == "hello",
     "recvtimeout returns a waiting message")

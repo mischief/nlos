@@ -55,7 +55,7 @@ tap.diag("we are " .. ip4.str(cfg.ip))
 
 -- ---- claiming a protocol ----
 
-local rawport = sys.newport()
+local rawport = sys.newport("microvm_ipraw.r")
 
 tap.ok(thread.rpc(iph, { op = "raw", proto = ip4.PROTO_TCP,
     port = thread.giveright(rawport) }) == true,
@@ -65,7 +65,7 @@ tap.ok(thread.rpc(iph, { op = "raw", proto = ip4.PROTO_TCP,
 -- not move them anywhere -- it would quietly stop every udp conn the
 -- task is already serving, including the dhcp client that gave us the
 -- address above.
-local stolen = sys.newport()
+local stolen = sys.newport("microvm_ipraw.s")
 
 tap.ok(thread.rpc(iph, { op = "raw", proto = ip4.PROTO_UDP,
     port = thread.giveright(stolen) }) == false,
@@ -171,7 +171,7 @@ tap.ok(s.raw_in >= 1, "and the ip task counted the delivery")
 -- A restarted tcp task has to be able to take its protocol back. The
 -- previous owner's right is closed rather than left behind, which is
 -- the whole reason this is a replace and not a refusal.
-local second = sys.newport()
+local second = sys.newport("microvm_ipraw.s")
 
 tap.ok(thread.rpc(iph, { op = "raw", proto = ip4.PROTO_TCP,
     port = thread.giveright(second) }) == true,

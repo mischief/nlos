@@ -245,7 +245,7 @@ end
 -- explicit cancel, because caps' blocking recv has no deadline of its
 -- own. same shape as lib/dns.lua's try_once and for the same reason.
 local function exchange(udp, udph, conn, pkt, xid, want, ms, dest)
-	local replyport = sys.newport()
+	local replyport = sys.newport("dhcp.replyport")
 	-- send only; {__right=} copies the recv flag, and udp has no
 	-- business receiving on our reply port
 	local replyright = sys.sendright(replyport)

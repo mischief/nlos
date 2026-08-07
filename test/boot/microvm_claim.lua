@@ -57,7 +57,7 @@ local RECV = [==[
 	local set, rights = {}, {}
 
 	for i = 1, nport do
-		set[i] = sys.newport()
+		set[i] = sys.newport("microvm_claim")
 		rights[i] = { __right = sys.sendright(set[i]) }
 	end
 	sys.send(parent, { ports = rights })

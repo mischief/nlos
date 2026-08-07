@@ -10,7 +10,7 @@ if not caps_of.tcp then
 	return
 end
 
-local replyport = sys.newport()
+local replyport = sys.newport("srvnet.replypor")
 
 local function req(op, extra)
 	extra = extra or {}

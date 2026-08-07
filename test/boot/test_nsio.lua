@@ -103,7 +103,7 @@ tap.is(N:readfile("/synth/made.txt"), "written through io\n",
 -- file that plainly exists on the ESP. that was impossible before: io
 -- went to the ESP whatever the namespace said.
 
-local rp = sys.newport()
+local rp = sys.newport("test_nsio.rp")
 local Empty = ns.new()
 
 Empty:mount("/tmp", dev.mem({ only = "in the mount\n" }), "mem",
@@ -136,7 +136,7 @@ tap.is(m and m.mounted, "in the mount\n",
 -- io.open back only for a proc that has a namespace. so this is not a
 -- gate that returns nil -- there is nothing to call.
 
-local np = sys.newport()
+local np = sys.newport("test_nsio.np")
 
 require("proc").spawn([[
 	local sys = require("los.sys")

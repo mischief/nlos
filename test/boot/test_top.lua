@@ -23,7 +23,7 @@ N:mount("/", require("mnt").new(caps_of.esp), "mnt",
 -- 80x24, answered rather than left nil: a serial line answers nil and
 -- top falls back, which is the other path and is not this one.
 local function console()
-	local port = sys.newport()
+	local port = sys.newport("test_top")
 	local out = {}
 
 	local function serve()

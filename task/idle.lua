@@ -5,4 +5,4 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 
-thread.recv(sys.newport())
+thread.recv(sys.newport("idle"))

@@ -726,7 +726,7 @@ function Sh:run(line)
 				self:print("dos: cannot open " .. r.stdin .. "\n")
 				return 1
 			end
-			local rp = sys.newport()
+			local rp = sys.newport("dos.rp")
 
 			thread.spawn(M.filereader(f, rp))
 			servers[#servers + 1] = rp
@@ -739,7 +739,7 @@ function Sh:run(line)
 
 		-- stdout: a pipe to the next stage, a redirect, or the console
 		if i < #stages then
-			local pipe = sys.newport()
+			local pipe = sys.newport("dos.pipe")
 
 			streams.stdout = pipe
 			prev = pipe
@@ -756,7 +756,7 @@ function Sh:run(line)
 				    r.stdout .. "\n")
 				return 1
 			end
-			local wp = sys.newport()
+			local wp = sys.newport("dos.wp")
 
 			thread.spawn(M.filewriter(f, wp))
 			servers[#servers + 1] = wp

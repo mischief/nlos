@@ -150,7 +150,7 @@ end
 
 function PortStream:read(_)
 	if not self.replyport then
-		self.replyport = sys.newport()
+		self.replyport = sys.newport("prog.replyport")
 		-- send only: {__right=} copies the recv flag, and the far
 		-- end has no business receiving our own answers
 		self.replyright = sys.sendright(self.replyport)

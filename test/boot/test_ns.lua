@@ -189,7 +189,7 @@ local pid, h = sys.spawn([[
 	})
 ]], { name = "nschild" })
 
-local rp = sys.newport()
+local rp = sys.newport("test_ns.rp")
 
 sys.send(h, { nsdesc = desc, reply = { __right = rp } })
 
@@ -292,7 +292,7 @@ R:mount("/", dev.mem({
 	},
 }, "before")
 
-local reqport = sys.newport()
+local reqport = sys.newport("test_ns.reqport")
 
 local desc = R:describe()
 

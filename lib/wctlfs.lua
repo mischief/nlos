@@ -109,7 +109,7 @@ function M.new(visible)
 			return (state .. "\n"):sub(1, n)
 		end
 
-		local rp = sys.newport()
+		local rp = sys.newport("wctlfs.rp")
 
 		waiters[#waiters + 1] = { reply = rp }
 

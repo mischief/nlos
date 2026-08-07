@@ -33,7 +33,7 @@ function ethwire.new(cap)
 	--
 	-- frames land here, and only frames: a port of its own so a reply
 	-- to a send() cannot be mistaken for an arriving frame.
-	local framePort = sys.newport()
+	local framePort = sys.newport("ethwire.framePo")
 
 	local function rpc(msg)
 		return thread.rpc(cap, msg)

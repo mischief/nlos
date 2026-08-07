@@ -406,8 +406,8 @@ end
 --
 -- Both reads are posted by hand: the caps.lua wrappers wait for their
 -- own reply, which a program watching two things cannot do.
-local sockport = sys.newport()
-local keyport = sys.newport()
+local sockport = sys.newport("irc.sockport")
+local keyport = sys.newport("irc.keyport")
 local reader = irc.reader()
 
 local function postrecv()

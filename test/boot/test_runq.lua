@@ -16,7 +16,7 @@ tap.plan(10)
 -- ---- competing with spinners ----
 
 local N = 20
-local rp = sys.newport()
+local rp = sys.newport("test_runq.rp")
 local pids = {}
 
 for i = 1, N do
@@ -77,8 +77,8 @@ tap.ok(allfull, "none was starved short of its work")
 -- message to an unrelated port wakes a proc that is not waiting for it,
 -- or the pool leaks.
 
-local a, b, c = sys.newport(), sys.newport(), sys.newport()
-local arp = sys.newport()
+local a, b, c = sys.newport("test_runq"), sys.newport("test_runq"), sys.newport("test_runq")
+local arp = sys.newport("test_runq.arp")
 local apid, ah = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
@@ -118,11 +118,11 @@ tap.is(am and am.n, 3 + 1 + 2,
 -- alts, so run a lot of them and check we still work
 -- the waiter pool is finite and a leak would show as blocking forever, so
 -- do enough alts to have consumed it several times over
-local lrp = sys.newport()
+local lrp = sys.newport("test_runq.lrp")
 local completed = 0
 
 for round = 1, 40 do
-	local p1, p2 = sys.newport(), sys.newport()
+	local p1, p2 = sys.newport("test_runq.p2"), sys.newport("test_runq")
 	local _, lh = sys.spawn([[
 		local sys = require("los.sys")
 		local thread = require("los.thread")
@@ -149,6 +149,6 @@ end
 tap.is(completed, 40,
     "40 rounds of alt-and-wake all completed, so no waiter leaked (" ..
     completed .. ")")
-tap.ok(sys.newport() ~= nil, "and ports still allocate")
+tap.ok(sys.newport("test_runq") ~= nil, "and ports still allocate")
 
 tap.done()

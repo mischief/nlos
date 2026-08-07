@@ -88,7 +88,7 @@ function M.resolve(udp, name, server)
 	local answer, why
 
 	for _ = 1, M.TRIES do
-		local replyport = sys.newport()
+		local replyport = sys.newport("resolv.replypor")
 
 		sys.send(udp.handle, { op = "recv", connid = conn,
 		    maxlen = 512, reply = { __right = replyport } })

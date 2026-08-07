@@ -32,7 +32,7 @@ N:mount("/", require("mnt").new(caps_of.esp), "mnt",
 -- own, so its writes are already queued on this port when it exits, and
 -- a loop that tests a flag at the top returns without draining them.
 local function console()
-	local port = sys.newport()
+	local port = sys.newport("test_reboot")
 	local out = {}
 
 	local function serve()
@@ -67,7 +67,7 @@ end
 -- reason -- the reset is the last thing the program sends before it
 -- exits, so it is exactly the message a flag test would drop.
 local function powersink()
-	local port = sys.newport()
+	local port = sys.newport("test_reboot")
 	local got = {}
 
 	local function serve()

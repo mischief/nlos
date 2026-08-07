@@ -27,7 +27,7 @@ N:mount("/", require("mnt").new(espcaps.esp), "mnt",
 -- ---- a collector: stands in for a terminal, so we can read what a
 -- ---- program actually wrote
 local function collector()
-	local port = sys.newport()
+	local port = sys.newport("test_prog")
 	local out = {}
 
 	-- drain everything queued without blocking, and CLEAR: each call

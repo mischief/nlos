@@ -42,8 +42,8 @@ local cons, fb = job.cons.__right, job.fb.__right
 -- so fb and cons both have replies in flight and a single port would
 -- hand a reader whichever landed first. task/9pexport.lua keeps a
 -- replyport for the same reason.
-local fbport = sys.newport()
-local consport = sys.newport()
+local fbport = sys.newport("shot.fbport")
+local consport = sys.newport("shot.consport")
 -- send only for the far end: {__right=} copies the recv flag, so the
 -- ports as created would let fb and cons receive our own answers
 local fbright = sys.sendright(fbport)

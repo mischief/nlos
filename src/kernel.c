@@ -376,6 +376,23 @@ struct kport {
 	unsigned long long ndrop_full;
 	unsigned long long ndrop_dead;
 	size_t qpeak;
+
+	/* who made it and where, for finding a leak.
+	 *
+	 * A port that is never closed is a slow fault: the machine runs
+	 * out of them weeks later, and the count alone says nothing about
+	 * which of fifty call sites is the one at fault. sys.newport takes
+	 * a tag naming what the port is FOR, and the location is taken
+	 * from the caller, so sys.ports() answers "who made these" rather
+	 * than leaving arithmetic on a total.
+	 *
+	 * Inline and short rather than a pointer to a lua string: the
+	 * string would have to outlive the port and nothing guarantees
+	 * that, and a kport is malloc'd per LIVE port, so this costs
+	 * 48 bytes times what is open rather than times MAXPORTS.
+	 */
+	char tag[16];
+	char where[32];
 };
 
 struct right {
@@ -3918,6 +3935,16 @@ api_newport(lua_State *L)
 	struct kproc *p = self(L);
 	struct kport *port;
 	int h = -1;
+	/* Required, not optional. A tag that may be left out is a tag
+	 * that is left out at exactly the call site that later leaks.
+	 */
+	const char *tag = luaL_checkstring(L, 1);
+	const char *where;
+
+	luaL_where(L, 1);
+	where = lua_tostring(L, -1);
+	if (!where || !*where)
+		where = "?";
 
 	/* both allocations inside one region, and the errors raised
 	 * outside it: luaL_error longjmps, so nothing that raises may
@@ -3942,6 +3969,12 @@ api_newport(lua_State *L)
 		return luaL_error(L, "out of ports");
 	if (h < 0)
 		return luaL_error(L, "out of rights");
+
+	strncpy(port->tag, tag, sizeof port->tag - 1);
+	port->tag[sizeof port->tag - 1] = 0;
+	strncpy(port->where, where, sizeof port->where - 1);
+	port->where[sizeof port->where - 1] = 0;
+
 	lua_pushinteger(L, h);
 	return 1;
 }
@@ -4323,6 +4356,58 @@ api_monitor(lua_State *L)
 	return 1;
 }
 
+/* sys.owned(h): the right, as a to-be-closed value.
+ *
+ *	local recv = sys.newport("srv.session")
+ *	local guard <close> = sys.owned(recv)
+ *
+ * Lua 5.4 closes it when the block ends -- by return, by break, or by
+ * an error raised anywhere inside -- so a port's lifetime becomes a
+ * scope rather than a discipline. Every hand-written close is a path
+ * somebody has to remember, and the paths that get forgotten are the
+ * error ones, which is where a leak is hardest to see.
+ *
+ * __close only, deliberately not __gc: a right can travel in a message,
+ * and a finalizer runs at whatever safepoint the collector chooses. The
+ * whole value here is that the moment is known.
+ */
+static int
+owned_close(lua_State *L)
+{
+	struct kproc *p = self(L);
+	int *ud = luaL_checkudata(L, 1, "los.owned");
+	struct right *r;
+
+	if (*ud < 0)
+		return 0;		/* closed already, or by hand */
+
+	ipclock_enter();
+	r = right_get(p, *ud);
+	if (r && *ud != 0)
+		right_drop(p, r);
+	ipclock_leave();
+
+	if (r && *ud != 0 && *ud < p->rhint)
+		p->rhint = *ud;
+	*ud = -1;
+	return 0;
+}
+
+static int
+api_owned(lua_State *L)
+{
+	int h = (int)luaL_checkinteger(L, 1);
+	int *ud = lua_newuserdatauv(L, sizeof *ud, 0);
+
+	*ud = h;
+	if (luaL_newmetatable(L, "los.owned")) {
+		lua_pushcfunction(L, owned_close);
+		lua_setfield(L, -2, "__close");
+	}
+	lua_setmetatable(L, -2);
+	return 1;
+}
+
 /* explicitly drop a right. handle 0 (self port) is not closable. */
 static int
 api_close(lua_State *L)
@@ -4700,6 +4785,10 @@ api_ports(lua_State *L)
 			lua_pushinteger(L, owner);
 			lua_setfield(L, -2, "owner");
 		}
+		lua_pushstring(L, port->tag);
+		lua_setfield(L, -2, "tag");
+		lua_pushstring(L, port->where);
+		lua_setfield(L, -2, "where");
 		lua_pushinteger(L, port->nrights);
 		lua_setfield(L, -2, "rights");
 		lua_pushinteger(L, port->nrecv);
@@ -5971,6 +6060,7 @@ static const luaL_Reg kapi[] = {
 	{ "altrecvnb", api_altrecvnb },
 	{ "yield", api_yield },
 	{ "newport", api_newport },
+	{ "owned", api_owned },
 	{ "sendright", api_sendright },
 	{ "spawn", api_spawn },
 	{ "monitor", api_monitor },

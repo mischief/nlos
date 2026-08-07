@@ -73,7 +73,7 @@ local a = ...
 -- directions. It found both of this file's bugs, so it stays.
 local TRACE = a.args and a.args.trace
 
-local consport = sys.newport()
+local consport = sys.newport("sshd.consport")
 
 local NET = a.tcp.__right
 local PORT = (a.args and a.args.port) or 2222
@@ -586,7 +586,7 @@ local function session(connid)
 			gettimer = nil
 		end
 		sys.close(consport)
-		consport = sys.newport()
+		consport = sys.newport("sshd.consport")
 	end
 
 	-- Fire and forget, and this is NOT a style choice: tcp.lua's

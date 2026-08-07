@@ -41,7 +41,7 @@ local CHILD = [==[
 	local ports, set = {}, {}
 
 	for i = 1, nport do
-		ports[i] = sys.newport()
+		ports[i] = sys.newport("microvm_altpend")
 		set[i] = ports[i]
 	end
 

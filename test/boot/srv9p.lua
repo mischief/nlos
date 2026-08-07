@@ -7,7 +7,7 @@ local thread = require("los.thread")
 local p9 = require("ninep")
 local caps_of = sys.granted()
 
-local readreply = sys.newport()
+local readreply = sys.newport("srv9p.readreply")
 
 local function wire_read()
 	sys.send(caps_of.wire, { op = "read", reply = { __right = readreply } })

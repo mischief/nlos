@@ -231,7 +231,7 @@ end
 -- accident.
 function ops.session(S)
 	local ro = S.ro
-	local recv = sys.newport()
+	local recv = sys.newport("srv.recv")
 	local port = sys.sendright(recv)
 
 	-- the session inherits the window, and this is the serve that
@@ -266,7 +266,7 @@ end
 -- guessing a number in the read-write server's space.
 function ops.readonly(S)
 	if not S.roport then
-		local recv = sys.newport()
+		local recv = sys.newport("srv.recv")
 
 		-- send only for the client. {__right=} copies the recv flag,
 		-- so handing out the port as created would let a holder

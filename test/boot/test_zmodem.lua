@@ -105,9 +105,9 @@ end
 
 -- ---- the child: sender first, then receiver ----
 
-local up = sys.newport()	-- child -> parent
-local down = sys.newport()	-- parent -> child
-local report = sys.newport()
+local up = sys.newport("test_zmodem.up")	-- child -> parent
+local down = sys.newport("test_zmodem.dow")	-- parent -> child
+local report = sys.newport("test_zmodem.rep")
 
 proc.spawn(LINE .. GEN .. [[
 	local sys = require("los.sys")

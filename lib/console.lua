@@ -68,7 +68,7 @@ function M.new(backend)
 		-- here by the pump. readline and getch take from this
 		-- rather than from the keyboard, so every byte has been
 		-- looked at by the time either sees one.
-		inq = sys.newport(),
+		inq = sys.newport("console.inq"),
 		-- messages that landed on sys.SELF while readline was mid-line
 		-- and are not its business: serve drains them once the line is
 		-- done, so a getch or a second reader that arrived during editing

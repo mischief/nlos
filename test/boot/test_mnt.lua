@@ -221,7 +221,7 @@ local localf = N:readfile("/init.lua")
 sys.send(m.reply.__right, { remote = remote, err = rerr, ["local"] = localf })
 ]]
 
-local rp = sys.newport()
+local rp = sys.newport("test_mnt.rp")
 local cpid, ch = sys.spawn(CHILD, { name = "inheritor" })
 
 sys.send(ch, { nsdesc = N:describe(), reply = { __right = rp } })

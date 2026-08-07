@@ -26,7 +26,7 @@ N:mount("/", require("mnt").new(caps_of.esp), "mnt",
     { port = { __right = caps_of.esp } })
 
 local function collector()
-	local port = sys.newport()
+	local port = sys.newport("test_host")
 	local out = {}
 
 	return sys.sendright(port), function()

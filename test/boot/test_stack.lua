@@ -23,8 +23,8 @@ local _, h = sys.spawn([[
 
 	-- two threads, both parked on ports nobody will ever send to, so
 	-- both live in _parked as keys
-	thread.spawn(function() thread.recv(sys.newport()) end)
-	thread.spawn(function() thread.recv(sys.newport()) end)
+	thread.spawn(function() thread.recv(sys.newport("test_stack")) end)
+	thread.spawn(function() thread.recv(sys.newport("test_stack")) end)
 	thread.run()
 ]], { name = "threads" })
 

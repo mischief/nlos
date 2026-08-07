@@ -30,7 +30,7 @@ local fb = caps.fb(caps_of.fb)
 local cw, ch = font.size()
 local con = fbcons.new({
 	fb = caps_of.fb, font = font,
-	keyport = sys.newport(),	-- fbcons only passes it through
+	keyport = sys.newport("test_fbcons.key"),	-- fbcons only passes it through
 })
 
 tap.ok(con.cols > 0 and con.rows > 0,

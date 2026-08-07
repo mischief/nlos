@@ -20,7 +20,7 @@ local worker_code = [[
 	sys.send(m.report.__right, { ok = true, attempt = m.attempt })
 ]]
 
-local report = sys.newport()
+local report = sys.newport("test_recovery.r")
 local restarts = 0
 local attempt = 0
 local result

@@ -20,8 +20,8 @@ sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
 
-	thread.spawn(function() thread.recv(sys.newport()) end)
-	thread.spawn(function() thread.recv(sys.newport()) end)
+	thread.spawn(function() thread.recv(sys.newport("test_idle")) end)
+	thread.spawn(function() thread.recv(sys.newport("test_idle")) end)
 	thread.run()
 ]], { name = "parked" })
 

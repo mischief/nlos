@@ -39,6 +39,36 @@ reboot. A feature goes in Lua unless C can argue its way in. Adding
 TCP, UDP, DNS, HTTP and JSON-RPC grew C by one file of raw primitives
 and nothing else; keep it that way.
 
+**A port is named, and somebody owns it.** `sys.newport(tag)` takes a
+tag saying what the port is for -- required, not optional, because a tag
+that may be left out is left out at exactly the call site that later
+leaks. The kernel records the caller's file and line beside it, and
+`sys.ports()` reports both, so a leak is answered by reading a list
+rather than by doing arithmetic on a total.
+
+Ownership is a rule, not a hope: **a port belongs to the thread that
+receives on it, and that thread closes it.** Closing from anywhere else
+means closing a port another thread of the same proc is parked on. Where
+a port outlives every thread, it belongs to the object holding it and
+that object gets a close method.
+
+Prefer the scope to the discipline:
+
+    local recv = sys.newport("srv.session")
+    local guard <close> = sys.owned(recv)
+
+Lua 5.4 closes it when the block ends -- by return, by break, or by an
+error raised anywhere inside. Every hand-written close is a path
+somebody has to remember, and the forgotten ones are the error paths.
+`sys.owned` gives `__close` and deliberately not `__gc`: a right can
+travel in a message, and a finalizer runs at whatever safepoint the
+collector picks. The point is that the moment is known.
+
+Every tap test reports what it left holding, and `tap.noleaks()` asserts
+a test gave back everything it took. A test that leaves a server running
+leaves its ports too and that is fine -- what matters is a number that
+grows when nothing else changed.
+
 **Procs are isolated Lua states, and that is the whole process model.**
 No shared heap between procs, ever. Communication is message copy or
 right transfer, nothing else. Instruction budgets and memory caps make

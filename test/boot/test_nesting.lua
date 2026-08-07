@@ -69,7 +69,7 @@ sys.close(h)
 -- is unlinked in kernel_cofree, which the collector reaches through
 -- ordinary collection and through lua_close alike, so a proc that
 -- churns coroutines past the collector and then exits exercises both.
-local rep = sys.newport()
+local rep = sys.newport("test_nesting.re")
 local _, h3 = sys.spawn([[
 	local a = ...
 	local sys = require("los.sys")

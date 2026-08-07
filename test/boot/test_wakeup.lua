@@ -31,10 +31,10 @@ local NMSG = 6
 local ports = {}
 
 for i = 1, NTHREAD do
-	ports[i] = sys.newport()
+	ports[i] = sys.newport("test_wakeup")
 end
 
-local done = sys.newport()
+local done = sys.newport("test_wakeup.don")
 
 local pid = sys.spawn(([[
 	local a = ...

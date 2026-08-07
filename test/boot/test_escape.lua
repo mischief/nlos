@@ -20,7 +20,7 @@ local Jail = ns.new()
 Jail:mount("/", dev.mem({ ["only.txt"] = "nothing else here\n" }), "mem",
     { tree = { ["only.txt"] = "nothing else here\n" } })
 
-local rp = sys.newport()
+local rp = sys.newport("test_escape.rp")
 
 require("proc").spawn([[
 local sys = require("los.sys")

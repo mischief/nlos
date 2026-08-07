@@ -90,7 +90,7 @@ end
 --
 -- The assertion is that another proc got turns while the io below was
 -- happening, so it counts ticks rather than merely surviving.
-local counter = sys.newport()
+local counter = sys.newport("microvm_p9mount")
 sys.spawn([[
 	local sys = require("los.sys")
 	local a = ...

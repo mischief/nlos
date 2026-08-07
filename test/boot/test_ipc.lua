@@ -17,7 +17,7 @@ local _, w = sys.spawn([[
 	end
 ]])
 
-local rp = sys.newport()
+local rp = sys.newport("test_ipc.rp")
 
 local function roundtrip(v)
 	sys.send(w, { value = v, reply = { __right = rp } })
@@ -71,7 +71,7 @@ tap.ok(not toobig, "a payload genuinely over MAXMSG is still refused")
 
 -- right transfer chain: pass a fresh recv right THROUGH the echo,
 -- then use it
-local chain = sys.newport()
+local chain = sys.newport("test_ipc.chain")
 local got = roundtrip({ carried = { __right = chain } })
 tap.ok(type(got.carried) == "table" and got.carried.__right ~= nil,
     "right survived a proc hop")
@@ -107,7 +107,7 @@ tap.is(n, 50, "50 consecutive calls all delivered in order")
 
 -- a send failure is REPORTED, not raised, exactly as sys.send reports
 -- it: nil plus a reason, so the caller keeps its own policy.
-local dead = sys.newport()
+local dead = sys.newport("test_ipc.dead")
 
 sys.close(dead)
 local dok, derr = pcall(sys.call, dead, "x", rp)
@@ -138,7 +138,7 @@ local _, mute = sys.spawn([[
 	local thread = require("los.thread")
 	thread.recv(sys.SELF)
 ]])
-local hrp = sys.newport()
+local hrp = sys.newport("test_ipc.hrp")
 local hres, hwhy = sys.call(mute, { reply = { __right = hrp } }, hrp)
 
 tap.ok(hres == nil and hwhy == "hungup",
@@ -175,7 +175,7 @@ sys.send(w, { stop = true })
 -- so ordinary threaded code never reaches this. Requiring that module
 -- under a name other than "los.thread" gets a second scheduler with its
 -- own _current, which is one way to arrive here.
-local pa, pb = sys.newport(), sys.newport()
+local pa, pb = sys.newport("test_ipc.pb"), sys.newport("test_ipc")
 local blocked = coroutine.create(function() sys.block(pa) end)
 local again = coroutine.create(function() sys.block(pb) end)
 

@@ -40,7 +40,7 @@ tap.ok(listener ~= nil, "listening on " .. PORT)
 -- a recv with a deadline. caps.tcp's blocks forever, and a server
 -- thread parked in one is a test that never returns from thread.run.
 local function recvfor(conn, ms)
-	local reply = sys.newport()
+	local reply = sys.newport("test_irc.reply")
 
 	sys.send(caps_of.tcp, { op = "recv", connid = conn, maxlen = 2048,
 	    reply = { __right = reply } })
@@ -105,7 +105,7 @@ end
 -- does not fall back to its cursor-position probe -- that probe reads
 -- keys, and would eat the script below.
 local function console(script)
-	local port = sys.newport()
+	local port = sys.newport("test_irc")
 	local out = {}
 	local at = 0
 

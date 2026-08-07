@@ -11,7 +11,7 @@ tap.plan(11)
 -- r->recv), so "no senders left" is not a question this model can
 -- answer. "nobody else holds it" is, and for a pipe it means the same:
 -- if no other right exists, nothing can ever write again.
-local p = sys.newport()
+local p = sys.newport("test_hangup")
 
 tap.ok(sys.hungup(p), "a port only I hold is already hungup")
 
@@ -52,7 +52,7 @@ tap.ok(not sys.tryrecv(p), "and then the queue is empty")
 -- the message queue -- counted in nrights but NOT in nrecv -- so nrecv
 -- hit zero, the port was declared dead and everything on it was thrown
 -- away, while a live receive right was in flight.
-local q = sys.newport()
+local q = sys.newport("test_hangup")
 local wpid, wh = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
@@ -63,7 +63,7 @@ local wpid, wh = sys.spawn([[
 	sys.send(out, { got = ok and v or "NOTHING" })
 ]], { name = "late" })
 
-local reply = sys.newport()
+local reply = sys.newport("test_hangup.rep")
 
 sys.send(q, "queued before anyone else holds it")
 -- hand the right over and IMMEDIATELY drop ours, before the child runs
@@ -87,7 +87,7 @@ tap.is(got.got, "queued before anyone else holds it",
 -- ceiling instead of applying backpressure. the blocked-on-write proc
 -- state this comment used to list as "still to do" is sys.sendblock,
 -- and lib/prog.lua's PipeStream:write is the loop built on it.
-local big = sys.newport()
+local big = sys.newport("test_hangup.big")
 local chunk = string.rep("x", 8000)
 local sent, why = 0, nil
 
@@ -111,7 +111,7 @@ tap.ok(sys.send(big, chunk), "draining frees space for another send")
 
 -- and a dead port is a DIFFERENT answer, so a writer can tell "wait"
 -- from "give up" -- which is the whole reason the reason string exists
-local dead = sys.newport()
+local dead = sys.newport("test_hangup.dea")
 
 sys.close(dead)
 local dok, dwhy = pcall(sys.send, dead, "x")

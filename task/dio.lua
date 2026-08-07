@@ -732,13 +732,13 @@ end
 -- make an app's windows before it is spawned, since what it is handed
 -- is rights to them.
 local function newapp(entryidx, kind)
-	local fbrecv = sys.newport()
-	local mrecv = sys.newport()
-	local wrecv = sys.newport()
+	local fbrecv = sys.newport("dio.fbrecv")
+	local mrecv = sys.newport("dio.mrecv")
+	local wrecv = sys.newport("dio.wrecv")
 	-- a keyboard port per app, not one shared: a key belongs to
 	-- whichever terminal is in front, and a port handed to two of them
 	-- would give it to whichever asked first.
-	local keys = sys.newport()
+	local keys = sys.newport("dio.keys")
 	local a = {
 		id = nextid,
 		entry = entryidx,

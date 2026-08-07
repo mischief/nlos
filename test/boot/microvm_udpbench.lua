@@ -63,8 +63,8 @@ end
 --
 -- one udp round trip is four requests to the ip task, so this is what
 -- those cost before the stack does anything with them.
-local echoin = sys.newport()
-local echoout = sys.newport()
+local echoin = sys.newport("microvm_udpbenc")
+local echoout = sys.newport("microvm_udpbenc")
 local toecho = sys.sendright(echoin)
 
 sys.spawn([[

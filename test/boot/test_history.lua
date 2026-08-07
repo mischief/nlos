@@ -31,7 +31,7 @@ local function backend()
 		write = function(s)
 			out[#out + 1] = s
 		end,
-		keyport = sys.newport(),
+		keyport = sys.newport("test_history.ke"),
 		drain = function()
 			local s = table.concat(out)
 

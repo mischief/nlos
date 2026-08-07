@@ -79,7 +79,7 @@ if not tap.ok(caps.eth ~= nil, "an eth capability was granted") then
 end
 
 local function rpc(msg)
-	local reply = sys.newport()
+	local reply = sys.newport("arp-lan.reply")
 
 	msg.reply = { __right = sys.sendright(reply) }
 	sys.send(caps.eth, msg)

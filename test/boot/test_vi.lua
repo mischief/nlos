@@ -29,7 +29,7 @@ N:mount("/", require("mnt").new(espcaps.esp), "mnt",
 -- first is the cursor-position report vi's detect_size asks for, so it
 -- does not eat the script.
 local function terminal(bursts)
-	local port = sys.newport()
+	local port = sys.newport("test_vi")
 	local bi, ci = 1, 1
 	local writes = {}
 
@@ -105,7 +105,7 @@ end
 local function run_vi(path, script, cwd)
 	local report = "\27[24;80R"
 	local port, serve = terminal({ report, table.unpack(script) })
-	local errport = sys.newport()
+	local errport = sys.newport("test_vi.errport")
 	local pid, h = sys.spawn('require("prog").main()', { name = "vi" })
 
 	sys.monitor(pid)

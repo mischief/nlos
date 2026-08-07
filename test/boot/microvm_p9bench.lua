@@ -71,7 +71,7 @@ end
 -- else's. Reading the rate of a proc that actually competes is the
 -- question this test is asking.
 
-local counter = sys.newport()
+local counter = sys.newport("microvm_p9bench")
 
 sys.spawn([[
 	local sys = require("los.sys")
@@ -141,8 +141,8 @@ end
 -- accounts for is cost that pipelining the wire cannot remove, because
 -- it is not on the wire.
 
-local echoin = sys.newport()
-local echoout = sys.newport()
+local echoin = sys.newport("microvm_p9bench")
+local echoout = sys.newport("microvm_p9bench")
 local toecho = sys.sendright(echoin)
 
 sys.spawn([[

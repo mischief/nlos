@@ -352,7 +352,7 @@ local function create(S)
 	if S.count >= M.MAXSESSIONS then
 		return nil, "too many sessions"
 	end
-	local port = sys.newport()
+	local port = sys.newport("webterm")
 
 	if not port then
 		return nil, "out of ports"

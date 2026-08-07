@@ -22,7 +22,7 @@ local _, w = sys.spawn([[
 	local m = thread.recv(sys.SELF)
 	sys.send(m.reply.__right, "still alive")
 ]])
-local rp = sys.newport()
+local rp = sys.newport("test_budget.rp")
 sys.send(w, { reply = { __right = rp } })
 local m = thread.recv(rp)
 tap.is(m, "still alive", "echo responsive while spinner runs")

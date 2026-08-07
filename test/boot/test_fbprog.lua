@@ -42,7 +42,7 @@ N:mount("/", require("mnt").new(caps_of.esp), "mnt",
 -- thread is dead, so a console loop that never ends would hang the
 -- whole test rather than fail it. it stops when the line is done.
 local function console(feed)
-	local port = sys.newport()
+	local port = sys.newport("test_fbprog")
 	local out = {}
 	local done = false
 

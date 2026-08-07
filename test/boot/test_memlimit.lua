@@ -68,7 +68,7 @@ local cpid, wc = sys.spawn([[
 	sys.send(m.reply.__right, { mine = select(3, sys.meminfo()),
 	    greedy = gl, silent = sl })
 ]], { mem = cap })
-local rp = sys.newport()
+local rp = sys.newport("test_memlimit.r")
 
 sys.send(wc, { reply = { __right = rp } })
 m = thread.recv(rp)

@@ -22,7 +22,7 @@ local tap = require("tap")
 
 tap.plan(4)
 
-local cons = sys.newport()
+local cons = sys.newport("test_readline.c")
 local consh = sys.sendright(cons)
 
 tap.ok(cons and consh, "a port to play cons on")

@@ -14,7 +14,7 @@ tap.plan(27)
 
 -- ---- it arrives, and the sender loses it ----
 
-local rp = sys.newport()
+local rp = sys.newport("test_bufmove.rp")
 local b = buf.new(64, 0x41)
 
 b:copy(1, "moved")
@@ -74,7 +74,7 @@ tap.is(mm.parts[1]:str() .. mm.parts[2]:str(), "1111111122222222",
 -- MAXQUEUE counts transferred bytes, so filling the queue is what the
 -- refusal has to come from.
 
-local full = sys.newport()
+local full = sys.newport("test_bufmove.fu")
 local kept = buf.new(4096)
 local n = 0
 
@@ -110,7 +110,7 @@ tap.ok(select(4, sys.meminfo()) >= after + 8192,
 -- Two procs have two lua heaps. The bytes are in neither, so this is
 -- the same handover as above and not a special case of it.
 
-local from = sys.newport()
+local from = sys.newport("test_bufmove.fr")
 local out = buf.new(1024, 0x7a)
 
 local pid, h = sys.spawn([[

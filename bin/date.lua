@@ -90,7 +90,7 @@ local TRIES = 3
 local reply, why
 
 for _ = 1, TRIES do
-	local replyport = sys.newport()
+	local replyport = sys.newport("date.replyport")
 
 	sys.send(udp.handle, { op = "recv", connid = conn, maxlen = 512,
 	    reply = { __right = replyport } })

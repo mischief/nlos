@@ -1083,7 +1083,7 @@ local function replyport()
 	local p = replyports[co]
 
 	if not p then
-		local h = sys.newport()
+		local h = sys.newport("thread")
 
 		if not h then
 			error("out of ports", 0)

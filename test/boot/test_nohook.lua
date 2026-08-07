@@ -24,7 +24,7 @@ tap.ok(debug ~= nil and debug.traceback ~= nil,
     "proc 0 keeps debug.traceback")
 
 -- A spawned proc reports what it can reach, over a port.
-local reply = sys.newport()
+local reply = sys.newport("test_nohook.rep")
 
 local _, h = sys.spawn([[
 	local sys = require("los.sys")

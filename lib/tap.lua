@@ -12,13 +12,52 @@ local emit = io.write
 
 local M = { n = 0, failed = 0 }
 
+-- how many ports this proc held when the test started, so done() can
+-- say what it left behind. A leak is otherwise invisible until a
+-- machine runs out of them weeks later, which is a long way from the
+-- change that caused it.
+local function myports()
+	local ok, all = pcall(sys.ports)
+
+	if not ok or type(all) ~= "table" then
+		return nil
+	end
+
+	local me = sys.self and sys.self() or nil
+	local n = 0
+
+	for _, port in ipairs(all) do
+		if not me or port.owner == me then
+			n = n + 1
+		end
+	end
+	return n
+end
+
 function M.plan(n)
+	M.ports0 = myports()
 	emit(("1..%d"):format(n) .. "\n")
 	-- arm the power-off for when the payload's main chunk returns, so a
 	-- test that runs off the end without calling done() still exits
 	-- cleanly instead of leaving the guest to the harness timeout. done()
 	-- is idempotent, so a test that still calls it explicitly is fine.
 	sys.atexit(M.done)
+end
+
+-- assert this proc gave back every port it took. For a test whose
+-- whole point is that something is released -- open a session, close
+-- it, and say so -- rather than for one that leaves a server up.
+function M.noleaks(name)
+	local now = myports()
+
+	if not M.ports0 or not now then
+		return M.ok(true, (name or "ports") .. " (cannot count here)")
+	end
+	if not M.ok(now <= M.ports0,
+	    name or "every port taken was given back") then
+		emit(("# %d at start, %d now, %d leaked\n")
+		    :format(M.ports0, now, now - M.ports0))
+	end
 end
 
 function M.ok(cond, name)
@@ -53,6 +92,18 @@ function M.done()
 		return
 	end
 	M.finished = true
+
+	-- what this proc is still holding. Reported rather than failed:
+	-- a test that leaves a server running leaves its ports too, and
+	-- that is the test working. A number that grows when nothing else
+	-- changed is the signal, and tap.noleaks() below is for a test
+	-- that means to end clean.
+	local now = myports()
+
+	if M.ports0 and now and now ~= M.ports0 then
+		emit(("# ports: %d at start, %d at end (%+d)\n")
+		    :format(M.ports0, now, now - M.ports0))
+	end
 	emit("# test complete, powering off\n")
 	-- a tap payload is always the boot payload (injected via fw_cfg in
 	-- place of init.lua), so the power capability is in its own grant

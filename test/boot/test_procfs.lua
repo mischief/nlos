@@ -23,7 +23,7 @@ local pid = sys.spawn([[
 		thread.recv(p)
 	end
 
-	inner(sys.newport())
+	inner(sys.newport("test_procfs"))
 ]], { name = "wedged" })
 
 thread.sleep(200)

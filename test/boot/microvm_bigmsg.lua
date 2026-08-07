@@ -235,7 +235,7 @@ local duplexcode = [[
 ]]
 
 local DUPN, DUPSZ = 80, 32000
-local doneport = sys.newport()
+local doneport = sys.newport("microvm_bigmsg.")
 local doneright = sys.sendright(doneport)
 local dup = spawnkid(duplexcode, {
 	name = "bigduplex",
@@ -358,7 +358,7 @@ local rbad, rfirst = 0, nil
 
 for i = 1, RN do
 	local want = payload(i, RSZ)
-	local port = sys.newport()
+	local port = sys.newport("microvm_bigmsg")
 
 	if not port then
 		rfirst = ("ran out of ports at %d, which is a leak"):format(i)

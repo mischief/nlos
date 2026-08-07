@@ -14,7 +14,7 @@ local tap = require("tap")
 tap.plan(3)
 
 local N = 40
-local rp = sys.newport()
+local rp = sys.newport("microvm_spawnra")
 local myright = sys.sendright(rp)
 
 local child = [[

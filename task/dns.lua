@@ -100,7 +100,7 @@ local nextid = 1
 -- one query attempt: send, wait up to `ms` for our own reply port,
 -- cancel-and-give-up if nothing arrived.
 local function try_once(query, id, ms)
-	local replyport = sys.newport()
+	local replyport = sys.newport("dns.replyport")
 	-- send only; {__right=} copies the recv flag, and udp has no
 	-- business receiving on our reply port
 	local replyright = sys.sendright(replyport)

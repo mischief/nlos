@@ -267,7 +267,7 @@ function M.fb(handle, chunk)
 
 	-- one reply port per call, for the reason requester() gives above.
 	local function ask(m)
-		local replyport = sys.newport()
+		local replyport = sys.newport("caps.replyport")
 		-- send only: {__right=} copies the recv flag, so publishing
 		-- the port as created would let the server receive on it
 		local sr = sys.sendright(replyport)
@@ -548,7 +548,7 @@ function M.tty(handle)
 
 	local function reply()
 		if not replyport then
-			replyport = sys.newport()
+			replyport = sys.newport("caps.replyport")
 			replyright = sys.sendright(replyport)
 		end
 		return replyright
