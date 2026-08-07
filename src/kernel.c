@@ -316,9 +316,16 @@ struct kmsg {
 	unsigned char *data;	/* owned; freed by msg_free */
 };
 
+struct kproc;
+
 struct kport {
 	unsigned short idx;	/* its slot in portv; what the wire carries */
 	int used;
+	/* set only for a proc's own handle-0 port, and only so freeing it
+	 * can clear that proc's selfport in one step instead of scanning
+	 * every proc. null for every other port.
+	 */
+	struct kproc *owner;
 	TAILQ_HEAD(, waiter) waiters;
 	/* rights + in-flight message refs + kernel refs, and the receive
 	 * rights among those.
@@ -412,6 +419,18 @@ struct kproc {
 	int id;			/* unique forever; slots are reused, ids not */
 	lua_State *L;		/* owning state */
 	lua_State *co;		/* thread the chunk runs on */
+	/* the port behind handle 0, and the capability to control this
+	 * proc: sys.kill and sys.reap ask whether the caller holds a right
+	 * to it. sys.spawn hands the parent one, so a supervisor may stop
+	 * what it started and a proc that merely guessed a pid may not.
+	 *
+	 * no reference is taken. it needs none: the right being tested for
+	 * is itself a reference, so the port cannot be freed while any
+	 * answer but "no" is possible. port_unref clears this on the way
+	 * out (via kport.owner), which is what keeps a corpse whose last
+	 * right went away from naming a port index since reused.
+	 */
+	struct kport *selfport;
 	SLIST_HEAD(, waiter) waiters;	/* ports this proc is blocked on */
 	/* almost every block waits on exactly one port, so the first record
 	 * is inline and costs no allocation on what is the hot path for
@@ -1460,6 +1479,18 @@ port_unref(struct kport *port)
 		 * could be this one's last reference from a queued message
 		 */
 		port_flush(port);
+		/* the index is about to be reusable, so no proc may go on
+		 * naming it (see kproc.selfport).
+		 *
+		 * the identity test is not redundant. a proc slot is reused
+		 * in place, so a port that outlives its owner as a corpse's
+		 * -- the parent still holds the spawn right -- points at
+		 * memory that may since have become a different proc. that
+		 * one has a self port of its own, and clearing it would
+		 * leave it beyond its own parent's reach.
+		 */
+		if (port->owner && port->owner->selfport == port)
+			port->owner->selfport = 0;
 		portv[port->idx] = 0;
 		free(port);
 		return;
@@ -5216,20 +5247,24 @@ api_syscalls(lua_State *L)
 	return 1;
 }
 
+/* may this proc stop or reap that one? holding a right to the target's
+ * self port is the authority -- see api_kill.
+ *
+ * the self port outlives the proc's own right to it (see kproc.selfport),
+ * so this answers for a corpse too.
+ */
+static int
+may_control(struct kproc *p, struct kproc *target)
+{
+	return target->selfport && proc_has_port(p, target->selfport);
+}
+
 /* sys.reap(pid): release a corpse.
  *
- * ambient for the same reason sys.stack is, and the reasoning survives
- * the fact that this one destroys something: what it destroys is
- * already dead. a corpse holds no rights and will never run again, so
- * the only thing lost is a debugging record that MAXBROKE was going to
- * discard on the next crash anyway. the threat model here is buggy lua,
- * not a proc that wants to hide its own death -- and a proc that wanted
- * to could simply not break.
- *
- * this is also why it cannot be PRIV_BOOT: /proc is a dev backend, so
- * writing /proc/<pid>/ctl runs procfs code inside whichever proc has it
- * mounted, which for any shell is not proc 0. gating on boot would
- * leave the file there and always failing.
+ * takes the same right as sys.kill. what it destroys is already dead,
+ * but it is not nothing: a corpse carries the line trace and the stack
+ * that explain the death, and the supervisor about to read them is the
+ * one proc that must not have it pulled out from under it.
  */
 static int
 api_reap(lua_State *L)
@@ -5238,6 +5273,8 @@ api_reap(lua_State *L)
 
 	if (!p)
 		return luaL_error(L, "no such proc");
+	if (!may_control(self(L), p))
+		return luaL_error(L, "no right to proc %d", p->id);
 	if (p->status != BROKE)
 		return luaL_error(L, "proc %d is not broke", p->id);
 	proc_reap(p);
@@ -5261,10 +5298,11 @@ api_reap(lua_State *L)
  * its state is freed later by reap, not here; killing self is refused
  * because freeing the caller mid-syscall is not a thing to smuggle in.
  *
- * Ambient, like sys.reap and sys.monitor beside it: proc management here
- * is deliberately not gated, and a kill capability can narrow it later
- * without changing this shape. The threat model is a wedged proc, not a
- * hostile one -- a hostile proc could as easily spin and never die.
+ * The authority is a right to the target's self port, which sys.spawn
+ * returns to the parent. So a supervisor may stop what it started, and
+ * a proc that learned a pid from sys.procs may not stop a stranger. The
+ * pid still names the target because that is what a monitor message and
+ * a job table carry; the right is what is checked.
  */
 static int
 api_kill(lua_State *L)
@@ -5275,6 +5313,8 @@ api_kill(lua_State *L)
 
 	if (target == p)
 		return luaL_error(L, "cannot kill self");
+	if (target && !may_control(p, target))
+		return luaL_error(L, "no right to proc %d", pid);
 	if (!target || target->status == BROKE || target->status == DEAD) {
 		lua_pushboolean(L, 0);	/* nothing to kill: already gone */
 		return 1;
@@ -6653,6 +6693,8 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		proc_freestate(p);
 		return -1;
 	}
+	p->selfport = port;
+	port->owner = p;
 
 	/* register the los.* modules in package.preload so chunks pull in
 	 * the layers they need with an explicit require -- no globals, no

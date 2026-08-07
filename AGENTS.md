@@ -53,6 +53,12 @@ granted. New authority arrives as `{__right=h}`, either inside a message
 or in `sys.spawn`'s `arg`. Device access — keyboard, serial, network —
 is a right like any other.
 
+Control over a proc is a right too. `sys.kill` and `sys.reap` take a
+right to the target's self port, which is what `sys.spawn` returns to the
+parent — so a supervisor stops what it started, and a pid learned from
+`sys.procs` names a proc without reaching it. A pid is an identifier, not
+a capability, and nothing that acts on one should read as though it were.
+
 `arg` exists because a message is always too late for some things. It is
 delivered before the child's chunk runs and arrives as the chunk's
 `...`, so a proc can hold a capability on its first line — which is
