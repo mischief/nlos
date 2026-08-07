@@ -19,7 +19,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(10)
+tap.plan(11)
 
 if not tap.ok(caps_of.tcp ~= nil, "the tcp task is running") then
 	tap.done()
@@ -179,7 +179,19 @@ tap.ok(sent("QUIT"), "/x in the server window quit")
 
 local out = con.drain()
 
-tap.ok(out:find("<friend> hello from the server", 1, true),
+-- the nick wears a color of its own, so the escape sequences around it
+-- are part of what was drawn. Stripped rather than matched: what this
+-- is about is that the line reached the screen attributed to whoever
+-- said it, and the color has its own case below.
+local plain = out:gsub("\27%[[%d;]*m", "")
+
+tap.ok(plain:find("<friend> hello from the server", 1, true),
     "the server's message reached the screen, attributed")
+
+-- and the nick alone is colored: the color opens before it and the pen
+-- goes back to default before the words, so a wrapped message does not
+-- tint the rows below it either.
+tap.ok(out:find("\27%[9?%d+m<friend>\27%[0m hello"),
+    "the nick is colored and the words are not")
 
 tap.done()

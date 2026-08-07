@@ -124,22 +124,60 @@ local SYSTEM = "90"		-- joins, parts, what this program says
 local SERVER = "36"		-- a numeric, or anything unrecognised
 local NOTICE = "33"
 
--- a nick's color, from the nick. The same person is the same color for
--- as long as they keep the name, on every window and across a restart,
--- which is what makes a channel readable at a glance -- and it needs no
--- table, because the name is the key.
+-- a nick's color, remembered in a table: the same person keeps the same
+-- color for as long as the client runs, on every window, which is what
+-- makes a busy channel readable at a glance.
 --
--- Six of the bright half. Not the two greys: one is the default pen and
--- the other is the color the system lines already use.
-local NICKCOLORS = { "91", "92", "93", "94", "95", "96" }
+-- The first choice comes from the name rather than from the rng, so a
+-- nick usually lands on the same color across a restart and on two
+-- machines watching the same channel. Where that color is already
+-- somebody else's the next free one is taken instead -- two people in
+-- one window sharing a color is the thing this exists to avoid, and
+-- with ten colors and a table it only has to happen when they run out.
+--
+-- Not 33, 36 or 90: the notices, the server lines and this program's
+-- own are those, and a nick wearing one would read as the machine
+-- talking.
+local NICKCOLORS = {
+	"31", "32", "34", "35", "91", "92", "93", "94", "95", "96",
+}
+
+local nickcolors = {}		-- nick (lowercased) -> SGR number
+local nicktaken = {}		-- SGR number -> the nick holding it
 
 local function nickcolor(name)
+	-- irc case folding: Nick and nick are one person, so they are one
+	-- color. lib/irc.lua's same() is the same rule.
+	local key = name:lower()
+	local have = nickcolors[key]
+
+	if have then
+		return have
+	end
+
 	local h = 0
 
-	for i = 1, #name do
-		h = (h * 31 + name:byte(i)) % 65521
+	for i = 1, #key do
+		h = (h * 31 + key:byte(i)) % 65521
 	end
-	return NICKCOLORS[h % #NICKCOLORS + 1]
+
+	local first = h % #NICKCOLORS
+
+	for k = 0, #NICKCOLORS - 1 do
+		local c = NICKCOLORS[(first + k) % #NICKCOLORS + 1]
+
+		if not nicktaken[c] then
+			nickcolors[key] = c
+			nicktaken[c] = key
+			return c
+		end
+	end
+
+	-- more people than colors: share, starting where the name pointed.
+	local c = NICKCOLORS[first + 1]
+
+	nickcolors[key] = c
+	return c
 end
 
 -- a line, with an optional color over the first `pre` characters of it:
@@ -175,16 +213,25 @@ local buf = {}
 -- in the middle of a word where there is not, so a long word cannot
 -- stall the wrap. Truncating instead loses the end of what somebody
 -- said, which on a 53-column panel is most of a sentence.
-local function wrap(s, cols, out)
+--
+-- `offs` takes where each row starts in the line it came from, which is
+-- what lets the color follow a span of the line across the rows it
+-- wrapped onto rather than stopping at the first.
+local function wrap(s, cols, out, offs)
 	local i, n = 1, #s
 
+	local function piece(from, to)
+		out[#out + 1] = s:sub(from, to)
+		offs[#offs + 1] = from
+	end
+
 	if n == 0 then
-		out[#out + 1] = ""
+		piece(1, 0)
 		return
 	end
 	while i <= n do
 		if n - i + 1 <= cols then
-			out[#out + 1] = s:sub(i)
+			piece(i, n)
 			return
 		end
 
@@ -201,7 +248,7 @@ local function wrap(s, cols, out)
 				end
 			end
 		end
-		out[#out + 1] = s:sub(i, i + cut - 1)
+		piece(i, i + cut - 1)
 		i = i + cut
 		while s:sub(i, i) == " " do	-- the space it broke at
 			i = i + 1
@@ -227,27 +274,41 @@ local function draw()
 	-- filled from the bottom, because how many rows a line takes is
 	-- not known until it is wrapped: a line whose wrapping overflows
 	-- the window keeps its end, which is where the sentence finished.
-	-- a row is the text plus what to color and how much of it. The
-	-- colored part is the head of a line, so only the row that starts
-	-- one carries it.
+	-- a row is the text plus how much of its head to color. The color
+	-- belongs to the first `pre` characters of the LINE, so a row that
+	-- wrapped takes whatever part of that span falls on it: a line
+	-- colored end to end stays colored to its last row, and a nick
+	-- colored at the start of a message that wraps does not tint the
+	-- rows below it.
 	local shownrows = {}
-	local segs = {}
+	local segs, offs = {}, {}
 
 	for k = #w.lines, 1, -1 do
 		local line = w.lines[k]
 
 		for j = 1, #segs do
-			segs[j] = nil
+			segs[j], offs[j] = nil, nil
 		end
-		wrap(line.s, cols, segs)
+		wrap(line.s, cols, segs, offs)
 		for j = #segs, 1, -1 do
 			if #shownrows >= body then
 				break
 			end
+
+			local pre = 0
+
+			if line.c then
+				pre = line.pre - (offs[j] - 1)
+				if pre < 0 then
+					pre = 0
+				elseif pre > #segs[j] then
+					pre = #segs[j]
+				end
+			end
 			table.insert(shownrows, 1, {
 				s = segs[j],
-				c = (j == 1) and line.c or nil,
-				pre = line.pre,
+				c = (pre > 0) and line.c or nil,
+				pre = pre,
 			})
 		end
 		if #shownrows >= body then
@@ -362,7 +423,12 @@ end
 -- silence before we ask whether the server is still there, for a
 -- connection that has gone away without saying so.
 local IDLE_MS = 120000
+-- and before then, while the server has yet to say anything at all: a
+-- registration that never finishes is a screen that says "connecting"
+-- and nothing else, and that is worth naming rather than waiting out.
+local REGISTER_MS = 15000
 local pinged = false
+local toldnotimer = false
 
 local running = true
 local registered = false
@@ -639,11 +705,20 @@ draw()
 
 local ok, err = xpcall(function()
 	while running do
-		local timer = sys.timer(IDLE_MS)
+		-- a short wait until the server has spoken, the long one
+		-- after. A connection that is up and silent is the failure
+		-- that looks like nothing at all: the socket is fine, the
+		-- program is waiting, and the screen says "connecting"
+		-- forever. Saying so does not mend it, but it tells the two
+		-- apart from where you are sitting.
+		local timer = sys.timer(registered and IDLE_MS or REGISTER_MS)
 		local cases = { { port = sockport }, { port = keyport } }
 
 		if timer then
 			cases[3] = { port = timer }
+		elseif not toldnotimer then
+			toldnotimer = true
+			say("* no timer left: the idle check is off")
 		end
 
 		local which, m = thread.alt(cases)
@@ -677,6 +752,13 @@ local ok, err = xpcall(function()
 				onkey(m)
 				postkey()
 			end
+		elseif not registered then
+			-- the connection came up and the server has said
+			-- nothing. Not an error yet -- a server checking
+			-- ident with nowhere to check it can take this long
+			-- -- so this waits on, having said where it is.
+			say("* connected, but the server has not spoken in " ..
+			    (REGISTER_MS // 1000) .. "s")
 		else
 			-- nothing from the server for a long time. Ask once;
 			-- a second silence means the connection is gone
