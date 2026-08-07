@@ -10,6 +10,8 @@
 -- Addresses are 6-byte strings and stay that way. Formatting one for a
 -- human is a separate function nobody on the wire path calls.
 
+local buf = require("los.buf")
+
 local ether = {}
 
 ether.HDRLEN = 14
@@ -23,8 +25,17 @@ ether.IPV4 = 0x0800
 
 -- everything on the wire is big-endian, which is what ">" means to
 -- string.pack -- so no byte order helpers appear anywhere below.
+-- One frame, written where each part belongs. The payload is copied
+-- once, into the frame, rather than the frame being grown around it by
+-- concatenation -- which copied everything again at every layer.
 function ether.encode(dst, src, etype, payload)
-	return dst .. src .. string.pack(">I2", etype) .. payload
+	local f = buf.new(ether.HDRLEN + #payload)
+
+	f:copy(1, dst)
+	f:copy(7, src)
+	f:setu16be(13, etype)
+	f:copy(ether.HDRLEN + 1, payload)
+	return f
 end
 
 -- nil for anything too short to have a header, rather than an error: a

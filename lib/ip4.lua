@@ -8,6 +8,8 @@
 -- a number and never dotted quad. Numbers reintroduce byte order, and
 -- strings compare and concatenate directly into a packet.
 
+local buf = require("los.buf")
+
 local ip4 = {}
 
 ip4.LEN = 4
@@ -126,14 +128,24 @@ end
 -- 64, the usual unix choice.
 function ip4.encode(t)
 	local total = ip4.HDRLEN + #t.payload
-	local hdr = string.pack(">I1I1I2I2I2I1I1I2", VERSION_IHL, 0, total,
-	    t.id or 0, 0, t.ttl or 64, t.proto, 0) .. t.src .. t.dst
-	local ck = ip4.checksum(hdr)
+	local p = buf.new(total)
 
-	-- the checksum is computed over the header with its own field
-	-- zeroed, then written into it.
-	return hdr:sub(1, 10) .. string.pack(">I2", ck) .. hdr:sub(13) ..
-	    t.payload
+	p:setu8(1, VERSION_IHL)
+	p:setu8(2, 0)			-- dscp and ecn
+	p:setu16be(3, total)
+	p:setu16be(5, t.id or 0)
+	p:setu16be(7, 0)		-- flags and fragment offset
+	p:setu8(9, t.ttl or 64)
+	p:setu8(10, t.proto)
+	p:setu16be(11, 0)		-- summed as zero, then filled in
+	p:copy(13, t.src)
+	p:copy(17, t.dst)
+
+	-- summed over the header alone, which a view names without
+	-- copying it out
+	p:setu16be(11, ip4.checksum(p:view(1, ip4.HDRLEN)))
+	p:copy(ip4.HDRLEN + 1, t.payload)
+	return p
 end
 
 -- nil for anything that is not a whole, unfragmented IPv4 packet we can
