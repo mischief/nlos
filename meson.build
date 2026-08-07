@@ -834,7 +834,7 @@ if fw_network
   # net boot tests: same harness, but NET=1 gives the guest a real NIC
   # on qemu's usermode network. separated because dhcp costs real boot
   # seconds that the tests above have no reason to pay.
-  foreach t : ['netboot', 'dns', 'dhcp', 'efiprobe', 'host', 'date']
+  foreach t : ['netboot', 'dns', 'dhcp', 'efiprobe', 'host', 'date', 'irc']
     test('boot-' + t, boottest,
       args: [luaos_img, files('test/boot/test_' + t + '.lua')],
       protocol: 'tap',
