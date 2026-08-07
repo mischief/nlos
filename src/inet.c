@@ -28,6 +28,7 @@
 
 #include <stddef.h>
 
+#include "buf.h"
 #include "lua.h"
 #include "lauxlib.h"
 
@@ -44,7 +45,10 @@ static int
 l_checksum(lua_State *L)
 {
 	size_t n = 0;
-	const char *s = luaL_checklstring(L, 1, &n);
+	/* a string or a los.buf: a header being built lives in a buffer,
+	 * and cutting a string out of it to sum would undo the point of
+	 * building it there. */
+	const char *s = luabuf_check(L, 1, &n);
 	const unsigned char *p = (const unsigned char *)s;
 	unsigned long long sum = (unsigned long long)luaL_optinteger(L, 2, 0);
 	size_t i = 0;

@@ -11,6 +11,10 @@
  */
 const char *luabuf_bytes(lua_State *L, int idx, size_t *len);
 
+/* the same, raising for anything else: for a C function whose argument
+ * is a payload. */
+const char *luabuf_check(lua_State *L, int idx, size_t *len);
+
 /* pooled bytes, charged to the proc running L against the same cap as
  * its lua memory. charge returns 0 when the cap would be exceeded.
  *

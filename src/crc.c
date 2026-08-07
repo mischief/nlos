@@ -33,6 +33,7 @@
 
 #include <stddef.h>
 
+#include "buf.h"
 #include "lua.h"
 #include "lauxlib.h"
 
@@ -72,7 +73,7 @@ static int
 l_crc16(lua_State *L)
 {
 	size_t n = 0;
-	const char *s = luaL_checklstring(L, 1, &n);
+	const char *s = luabuf_check(L, 1, &n);
 	const unsigned char *p = (const unsigned char *)s;
 	unsigned int crc = (unsigned int)luaL_optinteger(L, 2, 0) & 0xffff;
 	size_t i;
@@ -92,7 +93,7 @@ static int
 l_crc32(lua_State *L)
 {
 	size_t n = 0;
-	const char *s = luaL_checklstring(L, 1, &n);
+	const char *s = luabuf_check(L, 1, &n);
 	const unsigned char *p = (const unsigned char *)s;
 	unsigned int crc = (unsigned int)luaL_optinteger(L, 2, 0xffffffff);
 	size_t i;

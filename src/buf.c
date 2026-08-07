@@ -498,3 +498,21 @@ luaopen_los_buf(lua_State *L)
 	luaL_newlib(L, buflib);
 	return 1;
 }
+
+/* the bytes of a string or a buffer, raising if it is neither.
+ *
+ * For the C functions that take a payload -- a checksum, a crc, a hash.
+ * A caller building a header in a buffer would otherwise have to cut a
+ * string out of it to be summed, which is the copy the buffer exists to
+ * avoid.
+ */
+const char *
+luabuf_check(lua_State *L, int idx, size_t *len)
+{
+	const char *s = luabuf_bytes(L, idx, len);
+
+	if (!s)
+		luaL_error(L, "bad argument #%d (string or buffer expected)",
+		    idx);
+	return s;
+}
