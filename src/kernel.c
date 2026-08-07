@@ -95,7 +95,7 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 #define MAXMSGRIGHTS	32
 #define MAXWATCH	8	/* monitors per proc */
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
-#define MAXTIMERS	32	/* outstanding one-shot timers, machine-wide */
+#define MAXTIMERS	128	/* outstanding one-shot timers, machine-wide */
 /* floor on phase two's dispatch bound -- see kernel_run.
  *
  * the bound is what ends a lap at all, because a mid-lap wakeup joins
@@ -1376,10 +1376,9 @@ uptime_ms(void)
  *
  * deliberately a flat unsorted array scanned linearly, not a timing
  * wheel. a wheel buys O(1) insert at the cost of real bookkeeping, and
- * earns that at thousands of timers; MAXTIMERS is 32, so that is the
- * whole array and both things we do each lap (expire the due ones, and
- * nothing else) are one pass over a tiny one. sorting would buy
- * nothing either, since insertion costs the same scan.
+ * earns that at thousands of timers; MAXTIMERS is 128, a 2KB array and
+ * one pass per lap. sorting would buy nothing either, since insertion
+ * costs the same scan.
  *
  * resolution is the scheduler tick, ~10-15ms (see TICK_FAST_100NS and
  * docs/uefi-notes.md), so a timer may fire up to one tick late and
