@@ -135,20 +135,36 @@ end
 -- Bounded, because a picture that never forgets is memory that only
 -- grows on a machine that has not got it. The oldest segment goes,
 -- which loses the start of a long session rather than the end of it.
-local STROKEMAX = 1500
+--
+-- Five numbers in one flat array rather than a table per segment: a
+-- table costs far more than the five numbers in it, and this is the one
+-- thing here that grows.
+local STROKEMAX = 1000		-- segments
 local strokes = {}
 
 local function remember(x0, y0, x1, y1, c)
-	if #strokes >= STROKEMAX then
-		table.remove(strokes, 1)
+	if #strokes >= STROKEMAX * 5 then
+		-- drop the oldest, which is five numbers off the front
+		table.move(strokes, 6, #strokes, 1)
+		for i = #strokes, #strokes - 4, -1 do
+			strokes[i] = nil
+		end
 	end
-	strokes[#strokes + 1] = { x0, y0, x1, y1, c }
+
+	local n = #strokes
+
+	strokes[n + 1] = x0
+	strokes[n + 2] = y0
+	strokes[n + 3] = x1
+	strokes[n + 4] = y1
+	strokes[n + 5] = c
 end
 
 local function replay()
 	clear()
-	for _, s in ipairs(strokes) do
-		line(s[1], s[2], s[3], s[4], s[5])
+	for i = 1, #strokes, 5 do
+		line(strokes[i], strokes[i + 1], strokes[i + 2],
+		    strokes[i + 3], strokes[i + 4])
 	end
 end
 

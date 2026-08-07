@@ -33,20 +33,41 @@ local color = tonumber(arg[1] or "", 16) or 0xffcc00
 local mode = fb.mode()
 local W, H = mode.w, mode.h
 
--- a filled circle as one horizontal span per row. no antialiasing:
--- blending needs an alpha channel, which lib/draw.lua deliberately does
--- not have (see its header).
-local function disc(img, cx, cy, rad, c)
+-- ---- drawn as spans, onto the screen ----
+--
+-- Every shape here is already one horizontal span per row, so the
+-- screen can be the target directly and no picture is built anywhere:
+-- nothing is composed off-screen, nothing is kept, and drawing the face
+-- again costs what drawing it the first time cost.
+--
+-- The alternative -- compose the whole face and load it once -- arrives
+-- in one piece rather than assembling in front of you, and is why this
+-- program used to do that. It costs about 900KB while composing and
+-- 230KB to keep, on a board where four apps at once is already most of
+-- the heap. A face that draws itself in a moment is worth more than a
+-- face that appears at once.
+--
+-- No antialiasing: blending needs an alpha channel, which lib/draw.lua
+-- deliberately does not have (see its header).
+local ox, oy		-- where the face sits on the screen
+
+local function span(x, y, w, c)
+	if w > 0 then
+		fb.fill(draw.rect(ox + x, oy + y, w, 1), c)
+	end
+end
+
+local function disc(cx, cy, rad, c)
 	for dy = -rad, rad do
 		local dx = math.floor(math.sqrt(rad * rad - dy * dy) + 0.5)
 
-		img:fill(draw.rect(cx - dx, cy + dy, dx * 2 + 1, 1), c)
+		span(cx - dx, cy + dy, dx * 2 + 1, c)
 	end
 end
 
 -- an annulus clipped to a row range, so the smile is a crescent rather
 -- than half a disc.
-local function arc(img, cx, cy, rad, thick, c, from, to)
+local function arc(cx, cy, rad, thick, c, from, to)
 	for dy = -rad, rad do
 		local y = cy + dy
 
@@ -60,42 +81,28 @@ local function arc(img, cx, cy, rad, thick, c, from, to)
 				inner = math.floor(
 				    math.sqrt(ir * ir - dy * dy) + 0.5)
 			end
-			img:fill(draw.rect(cx - outer, y, outer - inner, 1), c)
-			img:fill(draw.rect(cx + inner, y, outer - inner, 1), c)
+			span(cx - outer, y, outer - inner, c)
+			span(cx + inner, y, outer - inner, c)
 		end
 	end
 end
 
 local BG = 0x101018
 local size = math.min(320, W, H)
-local face = draw.image(size, size, BG)
 local c = size // 2
 local unit = size / 320		-- the drawing is designed at 320
 
-disc(face, c, c, size // 2 - 4, color)
-disc(face, c - math.floor(55 * unit), c - math.floor(45 * unit),
-    math.floor(22 * unit), BG)
-disc(face, c + math.floor(55 * unit), c - math.floor(45 * unit),
-    math.floor(22 * unit), BG)
-arc(face, c, c - math.floor(10 * unit), math.floor(105 * unit),
-    math.floor(18 * unit), BG, c + math.floor(20 * unit), size)
-
--- compose off-screen, ship once: the whole picture arrives as one
--- banded load rather than assembling itself in front of you.
---
--- The pixels are kept and the image dropped, so drawing the face again
--- is one load rather than another composition. Composing costs about
--- 900KB while it runs and these bytes are 230KB, so for a program that
--- may be asked to redraw at any moment the copy is the cheaper of the
--- two -- and it is the only thing here that is kept.
-local pixels = draw.bytes(face)
-local at = draw.rect((W - size) // 2, (H - size) // 2, size, size)
-
-face = nil
+ox, oy = (W - size) // 2, (H - size) // 2
 
 local function paint()
 	fb.fill(draw.rect(0, 0, W, H), BG)
-	fb.load(at, pixels)
+	disc(c, c, size // 2 - 4, color)
+	disc(c - math.floor(55 * unit), c - math.floor(45 * unit),
+	    math.floor(22 * unit), BG)
+	disc(c + math.floor(55 * unit), c - math.floor(45 * unit),
+	    math.floor(22 * unit), BG)
+	arc(c, c - math.floor(10 * unit), math.floor(105 * unit),
+	    math.floor(18 * unit), BG, c + math.floor(20 * unit), size)
 	fb.sync()
 end
 
