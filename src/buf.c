@@ -64,6 +64,22 @@ struct luabuf {
 /* buffers made since boot. atomic because any cpu can allocate one. */
 static atomic_ullong nallocs;
 
+/* tell the collector about bytes it cannot see.
+ *
+ * The userdata is a few words; the buffer behind it is thousands. Lua
+ * paces collection by what it allocated, so without this a proc can
+ * churn megabytes of buffers and never reach a step -- the handles are
+ * unreachable, the memory is not freed, and the machine runs out while
+ * the lua heap looks idle.
+ *
+ * A step per kilobyte, which is the same currency lua counts in.
+ */
+static void
+gcpressure(lua_State *L, size_t n)
+{
+	lua_gc(L, LUA_GCSTEP, (int)(n / 1024) + 1);
+}
+
 unsigned long long
 luabuf_allocs(void)
 {
@@ -164,6 +180,7 @@ buf_new(lua_State *L)
 	b->views = 0;
 	atomic_fetch_add_explicit(&nallocs, 1, memory_order_relaxed);
 	luaL_setmetatable(L, BUFMT);
+	gcpressure(L, n);
 	return 1;
 }
 
@@ -643,9 +660,15 @@ luabuf_push(lua_State *L, size_t n)
 		return 0;
 	}
 	atomic_fetch_add_explicit(&nallocs, 1, memory_order_relaxed);
+	gcpressure(L, n);
 	return p;
 }
 
+/* No collector step here, unlike buf_new and luabuf_push. This runs
+ * inside the kernel's deserialize, where a step could run a finalizer
+ * and reach api_close while the ipc region is held. The receiver takes
+ * the pressure at its next allocation instead.
+ */
 int
 luabuf_give(lua_State *L, void *p, size_t len)
 {
