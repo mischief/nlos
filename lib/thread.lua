@@ -1046,12 +1046,13 @@ local function recv(h)
 	end
 end
 
--- a reply port belonging to the CALLING THREAD, made once and reused.
+-- a reply port belonging to the calling thread, made once and reused.
+-- returns the receive handle to wait on, and a send right to publish.
 --
 -- request/reply over ports needs somewhere for the reply to land, and
 -- the natural owner is the caller, not the service. a thread makes one
 -- synchronous call at a time by construction -- it blocks for the
--- answer -- so ONE port per thread serves every service it will ever
+-- answer -- so one port per thread serves every service it will ever
 -- talk to, however many mounts or tasks that is.
 --
 -- this is what makes 9P's tags unnecessary rather than merely omitted.
@@ -1060,12 +1061,21 @@ end
 -- sharing a service stop serialising behind a lock and the replies
 -- still cannot be confused. see lib/mnt.lua, which was the lock.
 --
--- the budget is real: MAXPORTS is 128 for the whole system. so the
--- table is weak-keyed and the port carries a finalizer, and a thread
--- that exits gives its port back rather than holding one until the proc
--- dies. running out is raised, not worked around -- silently falling
--- back to a shared port would reintroduce exactly the crossed replies
--- this exists to prevent.
+-- the two handles are the point. {__right=} copies the recv flag, so
+-- publishing the port as created hands every service this thread talks
+-- to the ability to RECEIVE on it -- one port shared across all of
+-- them, so a server could take a reply meant for another, or take its
+-- own and never answer. a send right cannot do either. it is minted
+-- once here rather than per call, so the leak-free property the old
+-- shape had is kept: there is still nothing for a caller to close.
+--
+-- the budget is real, though not as tight as this once claimed: 32768
+-- ports on microvm and efi, 2048 on esp32. the table is weak-keyed and
+-- the record carries a finalizer either way, so a thread that exits
+-- gives its port back rather than holding one until the proc dies.
+-- running out is raised, not worked around -- silently falling back to
+-- a shared port would reintroduce exactly the crossed replies this
+-- exists to prevent.
 local replyports = setmetatable({}, { __mode = "k" })
 
 local function replyport()
@@ -1078,14 +1088,42 @@ local function replyport()
 		if not h then
 			error("out of ports", 0)
 		end
-		p = setmetatable({ h = h }, {
+
+		local s = sys.sendright(h)
+
+		if not s then
+			pcall(sys.close, h)
+			error("out of rights", 0)
+		end
+		p = setmetatable({ h = h, s = s }, {
 			__gc = function(t)
+				pcall(sys.close, t.s)
 				pcall(sys.close, t.h)
 			end,
 		})
 		replyports[co] = p
 	end
-	return p.h
+	return p.h, p.s
+end
+
+-- a send right to this proc's own port (sys.SELF), made once.
+--
+-- publishing sys.SELF directly is the worst form of the mistake
+-- replyport() above exists to avoid: {__right=} copies the recv flag,
+-- so it hands the far end the ability to receive on the port where this
+-- proc's monitor notices and every other reply arrive. a send right
+-- cannot, and one per proc is enough -- it never changes and nothing
+-- would close it.
+local selfsend
+
+local function selfright()
+	if not selfsend then
+		selfsend = sys.sendright(sys.SELF)
+		if not selfsend then
+			error("out of rights", 0)
+		end
+	end
+	return selfsend
 end
 
 -- readline: a request/reply against cons, the sole task with raw
@@ -1140,7 +1178,7 @@ local function sendwait(h, msg)
 end
 
 local function readline(consHandle, prompt)
-	local reply = replyport()
+	local reply, send = replyport()
 
 	-- the prompt rides in the readline request rather than a separate
 	-- write before it, so the console can reprint it when output from
@@ -1156,7 +1194,7 @@ local function readline(consHandle, prompt)
 	-- end -- and dos's repl already treats a nil line as "session
 	-- over", so the whole teardown falls out of returning nil here.
 	if not sendwait(consHandle, { op = "readline", prompt = prompt,
-	    reply = { __right = reply } }) then
+	    reply = { __right = send } }) then
 		return nil
 	end
 	return recv(reply)
@@ -1383,10 +1421,10 @@ end
 -- rpc: call() for a caller that has no reply port of its own.
 --
 -- call() is the transport and wants a reply handle; this is the wrapper
--- that supplies one -- the per-coroutine replyport, named directly
--- rather than as a minted send right, which is what lib/mnt.lua and
--- lib/srv.lua do and is the only shape that cannot leak: there is
--- nothing to close because nothing was minted.
+-- that supplies one -- the per-coroutine replyport. what goes in the
+-- message is its send right, which is minted once with the port and
+-- lives as long, so nothing is minted per call and there is nothing to
+-- close.
 --
 -- Worth stating why that is safe to reuse across calls: a reply
 -- arriving after a timeout lands in the same port the next call reads.
@@ -1394,9 +1432,9 @@ end
 -- that cannot should carry its own sequence number, as lib/mnt.lua's
 -- does.
 local function rpc(dest, msg, timeout)
-	local reply = replyport()
+	local reply, send = replyport()
 
-	msg.reply = { __right = reply }
+	msg.reply = { __right = send }
 
 	if timeout then
 		local ok, why = sys.send(dest, msg)
@@ -1416,6 +1454,7 @@ thread.rpc = rpc
 thread.await = await
 thread.call = call
 thread.replyport = replyport
+thread.selfright = selfright
 thread.readline = readline
 thread.sleep = sleep
 thread.recvtimeout = recvtimeout

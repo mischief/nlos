@@ -246,19 +246,27 @@ end
 -- own. same shape as lib/dns.lua's try_once and for the same reason.
 local function exchange(udp, udph, conn, pkt, xid, want, ms, dest)
 	local replyport = sys.newport()
+	-- send only; {__right=} copies the recv flag, and udp has no
+	-- business receiving on our reply port
+	local replyright = sys.sendright(replyport)
 	local a, b, c, d = 255, 255, 255, 255
+
+	local function done()
+		sys.close(replyright)
+		sys.close(replyport)
+	end
 
 	if dest then
 		a, b, c, d = dest[1], dest[2], dest[3], dest[4]
 	end
 
 	sys.send(udph, { op = "recv", connid = conn, maxlen = 1024,
-	    reply = { __right = replyport } })
+	    reply = { __right = replyright } })
 
 	if not udp.send(conn, a, b, c, d, M.SERVER_PORT, pkt) then
 		sys.send(udph, { op = "cancel", connid = conn })
 		thread.recv(replyport)
-		sys.close(replyport)
+		done()
 		return nil, "send failed"
 	end
 
@@ -270,10 +278,10 @@ local function exchange(udp, udph, conn, pkt, xid, want, ms, dest)
 		-- abort completion it triggers.
 		sys.send(udph, { op = "cancel", connid = conn })
 		thread.recv(replyport)
-		sys.close(replyport)
+		done()
 		return nil, "timeout"
 	end
-	sys.close(replyport)
+	done()
 	if not (r and r.data) then
 		return nil, "no data"
 	end

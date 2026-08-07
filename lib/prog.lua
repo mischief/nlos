@@ -151,8 +151,11 @@ end
 function PortStream:read(_)
 	if not self.replyport then
 		self.replyport = sys.newport()
+		-- send only: {__right=} copies the recv flag, and the far
+		-- end has no business receiving our own answers
+		self.replyright = sys.sendright(self.replyport)
 	end
-	sys.send(self.h, { op = "read", reply = { __right = self.replyport } })
+	sys.send(self.h, { op = "read", reply = { __right = self.replyright } })
 	local r = thread.recv(self.replyport)
 
 	-- nil means the far end is done; the ABI says "" is eof so that a
@@ -162,8 +165,9 @@ end
 
 function PortStream:close()
 	if self.replyport then
+		sys.close(self.replyright)
 		sys.close(self.replyport)
-		self.replyport = nil
+		self.replyport, self.replyright = nil, nil
 	end
 end
 

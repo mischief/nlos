@@ -47,11 +47,71 @@ spin without taking the machine. No native userspace — no ring 3, no
 ELF loader, no syscall ABI, and the MMU stays optional. If that
 changes, it is a different project.
 
+The budgets are **inherited, and may only be asked downward**:
+`sys.spawn`'s `opts.mem`, `opts.reductions` and `opts.ports` are clamped
+to the parent's, and absent means the parent's rather than the machine
+default. Otherwise containment is only as good as each proc's
+willingness to apply it — a capped proc could spawn an uncapped child
+and a tightly-preempted one could spawn a child that holds a cpu.
+
+`opts.ports` caps what `sys.newport` and `sys.timer` will hand out. It
+exists because ports are one machine-wide table and a proc need not spin
+on `newport` to drain it: `lib/srv.lua` mints a port per session on
+demand, so a client looping on `session` spends the *server's* budget. A
+per-server quota cannot answer that — a port carries no sender identity,
+so a server cannot tell whose request it is holding — but a per-proc cap
+can. Unlimited by default.
+
+**What is counted is what a proc holds** — its receive rights — not what
+it made, which is Unix's rule for `RLIMIT_NOFILE`. It needs no record of
+who created which port, and it is the honest measure: a port nobody
+holds a right to is freed, so holding is what keeps the table full, and
+a right handed to another proc becomes that proc's cost. Handle 0
+counts, exactly as fds 0-2 do.
+
+**Nothing points from a `kport` back to a `kproc`,** and new code must
+not add such a field. A proc slot is reused in place, so a stale pointer
+that way names a live stranger and nothing faults to say so. Both
+directions this needed are already solved: the count is kept where a
+right is gained and lost (`right_new`/`right_drop`, which hold the proc
+anyway), and `kproc.selfidx` names a port by slot *and generation*
+(`kport.gen`), read through `proc_selfport`, so a reused slot answers no
+rather than yes about a stranger. Unix has no such back pointer either —
+processes hold files, files never hold processes.
+
+Inherited rather than divided, as `opts.mem` is: a parent capped at 8
+may spawn two children of 8. What a cap bounds is any one proc, which is
+what makes a runaway cost its own proc first. Dividing would bound a
+whole tree and needs an accounting of who spawned whom that nothing here
+keeps.
+
 **No ambient authority.** A proc touches exactly what its rights table
 says: handle 0 (its own receive port) plus whatever was explicitly
 granted. New authority arrives as `{__right=h}`, either inside a message
 or in `sys.spawn`'s `arg`. Device access — keyboard, serial, network —
 is a right like any other.
+
+Control over a proc is a right too. `sys.kill`, `sys.reap` and
+`sys.set_trace` take a right to the target's self port, which is what
+`sys.spawn` returns to the parent — so a supervisor stops what it
+started, and a pid learned from `sys.procs` names a proc without
+reaching it. A pid is an identifier, not a capability, and nothing that
+acts on one should read as though it were.
+
+**The line is between reading a proc and acting on one.** `sys.stack`,
+`sys.trace`, `sys.pidstat` and `sys.wchan` stay ambient beside
+`sys.procs` and `sys.name`, which is what makes a debugger `cat
+/proc/4/stack` (`lib/procfs.lua`). `sys.set_trace` is on the other side
+because it *writes*: it frees and reallocates a ring the target's own
+hook is filling. Ask which side a new call is on before adding it.
+
+A death notice splits the same way. That a proc exited is ambient — a
+child watching the parent it must not outlive (`task/fbsh.lua`) holds no
+right to it — but `reason` and `exitmsg` are the dying proc's own text,
+so they go only to a watcher that held a right **when it called
+`sys.monitor`**. Decided then rather than at death, because the ordinary
+supervisor spawns, monitors, sends the child its work and closes the
+spawn right, and must still hear how the child ended.
 
 `arg` exists because a message is always too late for some things. It is
 delivered before the child's chunk runs and arrives as the chunk's
@@ -85,6 +145,21 @@ Note `{__right=h}` **copies the recv flag**. Handing out a port you
 created with `sys.newport()` therefore hands out the ability to *receive*
 on it, and for a port several clients share that lets one take another's
 requests. Use `sys.sendright` for anything you publish.
+
+**A reply port is the case that matters**, because every request/reply
+in the tree carries one and it is the same port for every server a
+thread talks to. `thread.replyport()` returns two handles for that
+reason — the port to wait on, and a send right to put in the message —
+and `thread.selfright()` is the same thing for `sys.SELF`, which must
+never be published raw: it is where a proc's monitor notices arrive.
+`test/boot/test_replyright.lua` proves a server cannot take back the
+reply it just sent.
+
+Both are minted once and cached, so the leak-free property of naming the
+port directly survives: there is still nothing for a caller to close.
+When a call site must make its own, close the send right on every path
+that closes the port — a right held past its use keeps `sys.hungup` from
+ever firing.
 
 **Handle numbers are not an ABI.** Handle 0 is the only well-known
 handle there can be, because it is how a proc receives at all. Every

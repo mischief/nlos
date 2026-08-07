@@ -1,10 +1,15 @@
 -- instruction budgets: a busy-looping proc cannot starve its peers
+--
+-- The budget is also inherited: a child may ask for a smaller one than
+-- its parent holds and not a larger one, so no proc can spawn its way
+-- out of the containment it was given. Same rule as opts.mem, which
+-- test_memlimit covers from the other side.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(5)
+tap.plan(8)
 
 -- unleash a hostile spinner
 local spid = sys.spawn([[ while true do end ]])
@@ -40,6 +45,30 @@ local _, w2 = sys.spawn([[
 sys.send(w2, { reply = { __right = rp } })
 m = thread.recv(rp)
 tap.is(m, "tiny budget ok", "spawn with custom reductions works")
+
+-- a child on a small budget cannot spawn its way back to a large one.
+-- it reports what its grandchild actually got, and what it holds itself.
+local _, w3 = sys.spawn([[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+	local m = thread.recv(sys.SELF)
+	local mine = sys.pidstat().reductions
+	-- ask for far more than we hold, and for nothing at all
+	local greedy = sys.spawn("", { reductions = 1000000 })
+	local silent = sys.spawn("")
+
+	sys.send(m.reply.__right, {
+		mine = mine,
+		greedy = sys.pidstat(greedy).reductions,
+		silent = sys.pidstat(silent).reductions,
+	})
+]], { reductions = 500 })
+sys.send(w3, { reply = { __right = rp } })
+m = thread.recv(rp)
+
+tap.is(m.mine, 500, "a child gets the budget it asked for")
+tap.is(m.greedy, 500, "its own child cannot ask for a larger one")
+tap.is(m.silent, 500, "and inherits it when it asks for nothing")
 
 -- in-state threads preempt too: two spinning threads interleave
 local a, b = 0, 0

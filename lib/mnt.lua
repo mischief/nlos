@@ -101,10 +101,10 @@ function M.new(right)
 	local session = once.new()
 
 	local function establish(msg)
-		local reply = thread.replyport()
+		local reply, send = thread.replyport()
 
 		msg.seq = nextseq()
-		msg.reply = { __right = reply }
+		msg.reply = { __right = send }
 
 		-- the pcall catches a bad or closed right, which raises;
 		-- everything thread.call REPORTS -- a dead or full port, a
@@ -150,10 +150,10 @@ function M.new(right)
 
 	local function rpc(msg)
 		local sess = getsession()
-		local reply = thread.replyport()
+		local reply, send = thread.replyport()
 
 		msg.seq = nextseq()
-		msg.reply = { __right = reply }
+		msg.reply = { __right = send }
 
 		-- the send and the wait as one operation, and at the top level
 		-- as one kernel entry (sys.call). inside a thread it is a send

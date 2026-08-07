@@ -316,9 +316,20 @@ struct kmsg {
 	unsigned char *data;	/* owned; freed by msg_free */
 };
 
+struct kproc;
+
 struct kport {
 	unsigned short idx;	/* its slot in portv; what the wire carries */
 	int used;
+	/* which port this slot has held, counted from 1 and never reused.
+	 *
+	 * portv slots are, so an index alone cannot say whether the port
+	 * behind it is the one you meant. anything that must name a port
+	 * across time keeps the pair -- see kproc.selfidx -- and nothing
+	 * has to be told when a port dies, which is what keeps kport free
+	 * of pointers back to procs.
+	 */
+	unsigned long long gen;
 	TAILQ_HEAD(, waiter) waiters;
 	/* rights + in-flight message refs + kernel refs, and the receive
 	 * rights among those.
@@ -412,6 +423,27 @@ struct kproc {
 	int id;			/* unique forever; slots are reused, ids not */
 	lua_State *L;		/* owning state */
 	lua_State *co;		/* thread the chunk runs on */
+	/* the port behind handle 0, and the capability to control this
+	 * proc: sys.kill and sys.reap ask whether the caller holds a right
+	 * to it. sys.spawn hands the parent one, so a supervisor may stop
+	 * what it started and a proc that merely guessed a pid may not.
+	 *
+	 * named by (slot, generation) rather than by pointer, and read
+	 * through proc_selfport. no reference is taken and none is needed:
+	 * the right being tested for is itself a reference, so the port
+	 * cannot be freed while any answer but "no" is possible. what the
+	 * generation settles is the case after that -- a corpse whose last
+	 * right went away, whose portv slot has since been handed to a
+	 * different port.
+	 *
+	 * the direction matters. a pointer the other way, from the port to
+	 * the proc, would have to be cleared when a proc slot is recycled
+	 * -- and a proc slot is recycled in place, so nothing would fault
+	 * to say it had not been. this way nothing has to be told anything.
+	 * 0 means none.
+	 */
+	unsigned short selfidx;
+	unsigned long long selfgen;
 	SLIST_HEAD(, waiter) waiters;	/* ports this proc is blocked on */
 	/* almost every block waits on exactly one port, so the first record
 	 * is inline and costs no allocation on what is the hot path for
@@ -485,6 +517,17 @@ struct kproc {
 	unsigned oncpu;
 
 	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
+	/* did each watcher hold a right to this proc when it asked?
+	 *
+	 * decided at sys.monitor rather than at death, because the two
+	 * differ for the ordinary supervisor: it spawns, monitors, sends
+	 * the child its work and closes the spawn right -- having nothing
+	 * more to say -- and is still the proc that should hear how the
+	 * child ended. asking at death would answer no for exactly that
+	 * shape (test/boot/test_prog.lua), and holding the right open
+	 * merely to be told would keep sys.hungup from ever firing.
+	 */
+	unsigned char wpriv[MAXWATCH];
 	int nwatch;
 	struct luaheap *heap;	/* this proc's lua heap; see kalloc */
 	/* which cpu dispatches this proc. Not p->cpu, which is taken and
@@ -507,6 +550,34 @@ struct kproc {
 	size_t buf_debt;	/* pooled bytes since the last collector step */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
+	/* receive rights this proc holds, against a cap inherited from its
+	 * parent the way mem_limit is.
+	 *
+	 * ports are a machine-wide table, so one proc looping on
+	 * sys.newport starves every other -- and it need not be its own
+	 * loop: lib/srv.lua mints one per session on demand, so a client
+	 * calling `session` in a loop spends the server's budget. that is
+	 * the shape a per-proc cap answers and a per-server quota cannot,
+	 * because a port carries no sender identity and a server cannot
+	 * tell whose request it is holding.
+	 *
+	 * counted as what the proc HOLDS rather than what it made, which
+	 * is unix's rule for RLIMIT_NOFILE and needs no record of who
+	 * created what. it is also the honest measure: a port nobody holds
+	 * a right to is freed, so what keeps the table full is holding,
+	 * and a right handed to another proc becomes that proc's cost.
+	 *
+	 * receive rights, because those are one per port in the ordinary
+	 * case where send rights are not -- a reply port is one receive
+	 * right and one send right to the same port. a proc that contrives
+	 * to hold two receive rights to one port is counted twice, which
+	 * errs toward the limit rather than past it.
+	 *
+	 * handle 0 counts, exactly as fds 0-2 count against RLIMIT_NOFILE.
+	 */
+	int nports;
+	int nports_peak;
+	int port_limit;		/* 0 = unlimited */
 	/* bytes lua has asked for since this proc's collector last ran.
 	 * The collector is stopped, so lua's own GCdebt no longer
 	 * decides when a step happens; this is what gc_step reads
@@ -843,6 +914,11 @@ ipclock_leave(void)
 
 static struct kport *portv[MAXPORTS];
 static int porthigh;		/* one past the highest slot ever used */
+/* stamped into every port so a slot can be told from the port in it;
+ * see kport.gen. 64-bit and incremented once per port, so it does not
+ * wrap in any run this machine could have.
+ */
+static unsigned long long portgen;
 static struct kport *kbdport;
 
 /* the second terminal's keys, where the machine has a keyboard that is
@@ -1403,6 +1479,7 @@ port_new(void)
 				return 0;
 			memset(port, 0, sizeof *port);
 			port->idx = (unsigned short)i;
+			port->gen = ++portgen;
 			port->used = 1;
 			TAILQ_INIT(&port->waiters);
 			portv[i] = port;
@@ -1411,6 +1488,37 @@ port_new(void)
 			return port;
 		}
 	return 0;
+}
+
+/* has this proc room for another port?
+ *
+ * asked before the table is searched, so a proc over its limit costs
+ * nothing to refuse and cannot take the last free slot from one still
+ * under. the count itself is kept by right_new and right_drop, which is
+ * where a receive right is gained and lost.
+ */
+static int
+port_budget_left(struct kproc *p)
+{
+	return !p->port_limit || p->nports < p->port_limit;
+}
+
+/* the port behind this proc's handle 0, or null if it has gone.
+ *
+ * see kproc.selfidx: the pair is checked rather than a pointer chased,
+ * so a portv slot reused since says no instead of yes about a stranger.
+ */
+static struct kport *
+proc_selfport(struct kproc *p)
+{
+	if (!p->selfgen)
+		return 0;
+
+	struct kport *port = portv[p->selfidx];
+
+	if (!port || port->gen != p->selfgen)
+		return 0;
+	return port;
 }
 
 static void port_unref(struct kport *port);
@@ -1558,8 +1666,14 @@ right_new(struct kproc *p, struct kport *port, int recv)
 			r->port = port;
 			r->recv = recv;
 			port->nrights++;
-			if (recv)
+			if (recv) {
 				port->nrecv++;
+				/* what this proc is charged for; see
+				 * kproc.nports
+				 */
+				if (++p->nports > p->nports_peak)
+					p->nports_peak = p->nports;
+			}
 			p->rhint = i + 1;
 			if (i + 1 > p->rhigh)
 				p->rhigh = i + 1;
@@ -1570,17 +1684,21 @@ right_new(struct kproc *p, struct kport *port, int recv)
 }
 
 static void
-right_drop(struct right *r)
+right_drop(struct kproc *p, struct right *r)
 {
 	/* caller holds ipclock.
-	 * CONTEXT: api_close, proc_detach, proc_new.
+	 * CONTEXT: api_close, proc_detach, proc_new, grant_named,
+	 * minted_undo.
 	 */
 	IPC_ASSERT_LOCKED();
 	struct kport *port = r->port;
 
 	r->used = 0;
-	if (r->recv)
+	if (r->recv) {
 		port->nrecv--;
+		if (p->nports > 0)
+			p->nports--;
+	}
 	port_unref(port);
 }
 
@@ -1612,7 +1730,7 @@ grant_named(struct kproc *p, const char *name, struct kport *port, int recv)
 		struct right *r = right_slot(p, h);
 
 		if (r)
-			right_drop(r);
+			right_drop(p, r);
 		return;
 	}
 	g->name = name;
@@ -1915,9 +2033,48 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 	}
 }
 
+/* the handles deserialize has minted into the receiver so far.
+ *
+ * a message is refused as a whole or not at all, and a walk can fail
+ * after it has already installed rights -- a table of four rights whose
+ * fifth field is corrupt, or a receiver whose table filled up partway.
+ * those handles were never pushed to lua, so the receiver cannot name
+ * them to close them and they are lost for the life of the proc. a
+ * sender controls both the count and the timing, so it is also how a
+ * client exhausts a server's rights table from outside.
+ *
+ * MAXMSGRIGHTS bounds it because serialize refuses to write more than
+ * that into one message.
+ */
+struct minted {
+	int h[MAXMSGRIGHTS];
+	int n;
+};
+
+/* give back what a failed walk installed. */
+static void
+minted_undo(struct kproc *p, struct minted *mt)
+{
+	if (mt->n == 0)
+		return;
+
+	ipclock_enter();
+	for (int i = 0; i < mt->n; i++) {
+		struct right *r = right_slot(p, mt->h[i]);
+
+		if (r && r->used)
+			right_drop(p, r);
+		if (mt->h[i] < p->rhint)
+			p->rhint = mt->h[i];
+	}
+	ipclock_leave();
+	mt->n = 0;
+}
+
 static int
 deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
-    struct msgbufs *bufs, struct kproc *receiver, int depth)
+    struct msgbufs *bufs, struct kproc *receiver, int depth,
+    struct minted *mt)
 {
 	if (depth > MAXDEPTH)
 		return -1;
@@ -1984,11 +2141,11 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 		lua_createtable(L, 0, n);
 		for (unsigned int i = 0; i < n; i++) {
 			int rc = deserialize(L, p, len, off, bufs, receiver,
-			    depth + 1);
+			    depth + 1, mt);
 
 			if (rc == 0)
 				rc = deserialize(L, p, len, off, bufs, receiver,
-				    depth + 1);
+				    depth + 1, mt);
 			/* keep the reason: a nested right that could not
 			 * be made is still a resource failure.
 			 */
@@ -2041,6 +2198,15 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 		/* a full rights table is a local limit, not bad bytes */
 		if (h < 0)
 			return -2;	/* out of rights, not bad bytes */
+		/* recorded before the table is built, because building it
+		 * allocates and a failure there must give this back too.
+		 * the bound cannot be exceeded -- serialize refuses to
+		 * write more than MAXMSGRIGHTS -- but a message is bytes,
+		 * so it is checked rather than trusted.
+		 */
+		if (mt->n >= MAXMSGRIGHTS)
+			return -1;
+		mt->h[mt->n++] = h;
 		lua_createtable(L, 0, 1);
 		lua_pushinteger(L, h);
 		lua_setfield(L, -2, "__right");
@@ -2942,10 +3108,19 @@ static int
 msg_to_lua(lua_State *L, struct kproc *p, struct kmsg *m)
 {
 	size_t off = 0;
+	struct minted mt = { .n = 0 };
 	/* the reason is kept as deserialize gave it, so popfail can tell a
 	 * proc that ran out of rights from a message that would not decode.
 	 */
-	int rc = deserialize(L, m->data, m->len, &off, &m->bufs, p, 0);
+	int rc = deserialize(L, m->data, m->len, &off, &m->bufs, p, 0, &mt);
+
+	/* a message arrives whole or not at all. a partial walk has
+	 * already minted rights the receiver was never told the numbers
+	 * of, so it could not close them and they would be lost for its
+	 * lifetime -- which a sender controls, and so could repeat.
+	 */
+	if (rc)
+		minted_undo(p, &mt);
 
 	/* receiver now holds its own refs (right_new); drop in-flight */
 	msg_dispose(m);
@@ -3093,17 +3268,65 @@ out:
  * waiting. this is where thread.recv's rule does not apply: recv cannot
  * treat a quiet port as an ending, because a right that can send is not
  * distinguishable from one that will (see api_hungup). but the port
- * here is a REPLY port, and while a request is in flight it has two
- * rights -- ours and the one that travelled with the message. so a drop
- * back to one with nothing queued says the message was consumed and
- * whoever held the other right is gone, and no answer can ever arrive.
- * lib/mnt.lua has always made that test by hand after each wake; doing
- * it here is what lets it stop.
+ * here is a reply port, and while a request is in flight someone else
+ * holds a right to it: the one that travelled with the message. so a
+ * drop back to what we hold ourselves, with nothing queued, says the
+ * message was consumed and whoever held that right is gone, and no
+ * answer can ever arrive. lib/mnt.lua has always made that test by hand
+ * after each wake; doing it here is what lets it stop.
  *
  * it is not a timeout, and deliberately: a slow server is not a broken
  * one and no deadline tells them apart, but the refcount does. a caller
  * that wants a deadline anyway still composes sys.timer with alt().
  */
+
+/* is this proc the only holder of a right to `port`?
+ *
+ * that is our eof, and it counts every right the proc holds rather than
+ * testing nrights against one. a caller may hold several to the same
+ * port -- a reply port is a receive right to wait on plus a send right
+ * to publish, which is what lib/thread.lua's replyport hands out -- and
+ * a right it holds itself is not one that can answer it.
+ *
+ * sys.hungup asks the same question, and must, or the two disagree
+ * about when a server has gone: this is checked before parking again in
+ * call_k, and that is checked by whoever parked in lua.
+ */
+/* may this proc act on that one? holding a right to the target's self
+ * port is the authority -- see api_kill, which explains why.
+ *
+ * the self port outlives the proc's own right to it (see
+ * kproc.selfidx), so this answers for a corpse too.
+ *
+ * it gates what ACTS on a proc, not what reads one. sys.stack,
+ * sys.trace and sys.pidstat stay ambient with sys.procs and sys.name,
+ * which is lib/procfs.lua's whole argument: a debugger is `cat
+ * /proc/4/stack`, and what those report is structure rather than any
+ * proc's data. sys.set_trace is on this side of the line because it
+ * writes -- it reallocates a ring the target's own hook is filling.
+ */
+static int
+may_control(struct kproc *p, struct kproc *target)
+{
+	struct kport *port = proc_selfport(target);
+
+	return port && proc_has_port(p, port);
+}
+
+static int
+sole_holder(struct kproc *p, struct kport *port)
+{
+	int mine = 0;
+
+	for (int i = 0; i < p->rhigh; i++) {
+		struct right *q = right_slot(p, i);
+
+		if (q && q->used && q->port == port)
+			mine++;
+	}
+	return port->nrights <= mine;
+}
+
 static int
 call_k(lua_State *L, int status, lua_KContext ctx)
 {
@@ -3139,7 +3362,7 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 		 * receivers), and after the queue test so a reply that did
 		 * arrive is delivered even when the server answered and died.
 		 */
-		if (rr->port->nrights <= 1) {
+		if (sole_holder(p, rr->port)) {
 			ipclock_leave();
 			lua_pushnil(L);
 			lua_pushliteral(L, "hungup");
@@ -3695,12 +3918,21 @@ api_newport(lua_State *L)
 	 * outside it: luaL_error longjmps, so nothing that raises may
 	 * run while this is held.
 	 */
+	int over;
+
 	ipclock_enter();
-	port = port_new();
+	over = !port_budget_left(p);
+	port = over ? 0 : port_new();
 	if (port)
 		h = right_new(p, port, 1);
 	ipclock_leave();
 
+	/* told apart, because they are different faults: the machine is
+	 * full, or this proc has spent what it was given.
+	 */
+	if (over)
+		return luaL_error(L, "port limit: %d of %d in use",
+		    p->nports, p->port_limit);
 	if (!port)
 		return luaL_error(L, "out of ports");
 	if (h < 0)
@@ -3710,9 +3942,9 @@ api_newport(lua_State *L)
 }
 
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
-    int is_file, int reductions, size_t mem_limit, int priv);
+    int is_file, int reductions, size_t mem_limit, int port_limit, int priv);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason,
-    int status, const char *exitmsg, int broke);
+    int status, const char *exitmsg, int broke, int priv);
 
 struct dumpbuf {
 	char *data;
@@ -3827,6 +4059,7 @@ api_spawn(lua_State *L)
 	}
 	int reductions = 0;
 	int trace = 0;
+	int port_limit = 0;
 	size_t mem_limit = 0;
 	char chunkname[32] = "=spawn";
 
@@ -3853,6 +4086,13 @@ api_spawn(lua_State *L)
 		if (!lua_isnil(L, -1))
 			mem_limit = (size_t)luaL_checkinteger(L, -1);
 		lua_pop(L, 1);
+		lua_getfield(L, 2, "ports");
+		if (!lua_isnil(L, -1))
+			port_limit = (int)luaL_checkinteger(L, -1);
+		lua_pop(L, 1);
+		/* both budgets are clamped to the parent's below, so a
+		 * child is never less contained than whoever spawned it.
+		 */
 		lua_getfield(L, 2, "name");
 		if (!lua_isnil(L, -1))
 			snprintf(chunkname, sizeof chunkname, "=%s",
@@ -3860,7 +4100,41 @@ api_spawn(lua_State *L)
 		lua_pop(L, 1);
 	}
 
-	/* opts.arg: one value handed to the child BEFORE its chunk runs,
+	/* the budgets are inherited, and may only be asked downward.
+	 *
+	 * "instruction budgets and memory caps make a proc a real
+	 * containment unit" was true only of procs whose parent chose to
+	 * make it true: both fields went to proc_new as given, so a proc
+	 * held to 2MB could spawn a child with no cap at all, and one cut
+	 * to a short budget could spawn a child that runs between hooks
+	 * long enough to hold a cpu. Neither is a bug a caller sees, which
+	 * is why it stood -- a proc asks for what it wants and gets it.
+	 *
+	 * so absent means the parent's, not the machine default, and a
+	 * larger request is clamped rather than refused. refusing would
+	 * make a supervisor's own containment its children's problem to
+	 * know about; clamping lets the same code run either way and get
+	 * whatever the parent can actually give.
+	 *
+	 * mem_limit and port_limit are 0 for unlimited, so they clamp only
+	 * when the parent has a cap; reductions runs the other way, since
+	 * a smaller budget is the more contained one.
+	 *
+	 * a port cap is inherited rather than divided: a parent held to 8
+	 * ports may spawn two children of 8 each, exactly as it may with
+	 * mem. What it bounds is any one proc, which is what makes a
+	 * runaway loop cost its own proc first -- dividing would bound a
+	 * whole tree, and needs an accounting of who spawned whom that
+	 * nothing here keeps.
+	 */
+	if (reductions <= 0 || reductions > p->reductions)
+		reductions = p->reductions;
+	if (p->mem_limit && (mem_limit == 0 || mem_limit > p->mem_limit))
+		mem_limit = p->mem_limit;
+	if (p->port_limit && (port_limit == 0 || port_limit > p->port_limit))
+		port_limit = p->port_limit;
+
+	/* opts.arg: one value handed to the child before its chunk runs,
 	 * arriving as the chunk's `...`.
 	 *
 	 * a message cannot do this job. the child's first line is typically
@@ -3908,7 +4182,7 @@ api_spawn(lua_State *L)
 	 */
 	ipclock_enter();
 	int pid = proc_new(code, n, chunkname, 0, reductions, mem_limit,
-	    PRIV_NONE);
+	    port_limit, PRIV_NONE);
 	struct kproc *child = pid >= 0 ? find_proc(pid) : 0;
 
 	ipclock_leave();
@@ -3942,6 +4216,7 @@ api_spawn(lua_State *L)
 	 */
 	if (have_arg) {
 		size_t off = 0;
+		struct minted mt = { .n = 0 };
 		int bad;
 
 		/* the parent loses any buffer in the arg here, before the
@@ -3953,14 +4228,16 @@ api_spawn(lua_State *L)
 
 		ipclock_enter();
 		bad = deserialize(child->co, argw.p, argw.len, &off,
-		    &argw.bufs, child, 0);
+		    &argw.bufs, child, 0, &mt);
 		ipclock_leave();
 		msgbufs_free(&argw.bufs);	/* whatever it did not take */
 		if (bad) {
 			/* a partial deserialize may have left values on co's
 			 * stack under the chunk's feet, and rights already
 			 * minted into the child. the proc is unusable; kill
-			 * it rather than start it half-built.
+			 * it rather than start it half-built -- which drops
+			 * those rights with everything else it held, so
+			 * there is nothing for minted_undo to do here.
 			 */
 			release_inflight_locked(argw.refs, argw.refrecv, argw.nrefs);
 			free(argw.p);
@@ -4007,7 +4284,7 @@ api_monitor(lua_State *L)
 		target = 0;
 	if (!target) {
 		ipclock_enter();
-		notify_exit(p, pid, "noproc", -1, 0, 0);
+		notify_exit(p, pid, "noproc", -1, 0, 0, 1);
 		ipclock_leave();
 		lua_pushboolean(L, 1);
 		return 1;
@@ -4021,6 +4298,7 @@ api_monitor(lua_State *L)
 		}
 	if (target->nwatch >= MAXWATCH)
 		return luaL_error(L, "too many watchers");
+	target->wpriv[target->nwatch] = may_control(p, target) ? 1 : 0;
 	target->watchers[target->nwatch++] = p->id;
 	lua_pushboolean(L, 1);
 	return 1;
@@ -4037,7 +4315,7 @@ api_close(lua_State *L)
 	ipclock_enter();
 	r = right_get(p, h);
 	if (r && h != 0)
-		right_drop(r);
+		right_drop(p, r);
 	ipclock_leave();
 
 	if (!r)
@@ -4859,6 +5137,13 @@ set_trace_k(lua_State *L, int status, lua_KContext ctx)
 		p = find_proc((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
+		/* the one call here that writes to another proc, so the
+		 * one that takes a right to it. reading a trace does not:
+		 * arming is what costs the target ~4.7x and what frees
+		 * and reallocates a ring its hook is filling.
+		 */
+		if (p != self(L) && !may_control(self(L), p))
+			return luaL_error(L, "no right to proc %d", p->id);
 	}
 	n = luaL_checkinteger(L, arg);
 	if (n < 0)
@@ -5219,18 +5504,10 @@ api_syscalls(lua_State *L)
 
 /* sys.reap(pid): release a corpse.
  *
- * ambient for the same reason sys.stack is, and the reasoning survives
- * the fact that this one destroys something: what it destroys is
- * already dead. a corpse holds no rights and will never run again, so
- * the only thing lost is a debugging record that MAXBROKE was going to
- * discard on the next crash anyway. the threat model here is buggy lua,
- * not a proc that wants to hide its own death -- and a proc that wanted
- * to could simply not break.
- *
- * this is also why it cannot be PRIV_BOOT: /proc is a dev backend, so
- * writing /proc/<pid>/ctl runs procfs code inside whichever proc has it
- * mounted, which for any shell is not proc 0. gating on boot would
- * leave the file there and always failing.
+ * takes the same right as sys.kill. what it destroys is already dead,
+ * but it is not nothing: a corpse carries the line trace and the stack
+ * that explain the death, and the supervisor about to read them is the
+ * one proc that must not have it pulled out from under it.
  */
 static int
 api_reap(lua_State *L)
@@ -5239,6 +5516,8 @@ api_reap(lua_State *L)
 
 	if (!p)
 		return luaL_error(L, "no such proc");
+	if (!may_control(self(L), p))
+		return luaL_error(L, "no right to proc %d", p->id);
 	if (p->status != BROKE)
 		return luaL_error(L, "proc %d is not broke", p->id);
 	proc_reap(p);
@@ -5262,10 +5541,11 @@ api_reap(lua_State *L)
  * its state is freed later by reap, not here; killing self is refused
  * because freeing the caller mid-syscall is not a thing to smuggle in.
  *
- * Ambient, like sys.reap and sys.monitor beside it: proc management here
- * is deliberately not gated, and a kill capability can narrow it later
- * without changing this shape. The threat model is a wedged proc, not a
- * hostile one -- a hostile proc could as easily spin and never die.
+ * The authority is a right to the target's self port, which sys.spawn
+ * returns to the parent. So a supervisor may stop what it started, and
+ * a proc that learned a pid from sys.procs may not stop a stranger. The
+ * pid still names the target because that is what a monitor message and
+ * a job table carry; the right is what is checked.
  */
 static int
 api_kill(lua_State *L)
@@ -5276,6 +5556,8 @@ api_kill(lua_State *L)
 
 	if (target == p)
 		return luaL_error(L, "cannot kill self");
+	if (target && !may_control(p, target))
+		return luaL_error(L, "no right to proc %d", pid);
 	if (!target || target->status == BROKE || target->status == DEAD) {
 		lua_pushboolean(L, 0);	/* nothing to kill: already gone */
 		return 1;
@@ -5388,6 +5670,20 @@ api_pidstat(lua_State *L)
 	lua_setfield(L, -2, "limit");
 	lua_pushinteger(L, p->weight);
 	lua_setfield(L, -2, "weight");
+	/* instructions between preempt hooks. Reported because it is a
+	 * containment bound like mem below it, inherited from the parent
+	 * the same way, and otherwise invisible -- there was no way to ask
+	 * a proc what budget it was actually given.
+	 */
+	lua_pushinteger(L, p->reductions);
+	lua_setfield(L, -2, "reductions");
+	/* ports held and the cap on them, the third inherited budget */
+	lua_pushinteger(L, p->nports);
+	lua_setfield(L, -2, "ports");
+	lua_pushinteger(L, p->nports_peak);
+	lua_setfield(L, -2, "portspeak");
+	lua_pushinteger(L, p->port_limit);
+	lua_setfield(L, -2, "portlimit");
 	/* raw tsc cycles this proc has actually spent running, which the
 	 * scheduler has accumulated since the beginning for its own decay
 	 * and which nothing could read until now.
@@ -5484,7 +5780,10 @@ api_timer(lua_State *L)
 		return 0;
 	}
 
-	struct kport *port = port_new();
+	/* capped like sys.newport: a timer is a port, and a loop asking
+	 * for timers spends the table just as fast.
+	 */
+	struct kport *port = port_budget_left(p) ? port_new() : 0;
 
 	if (!port) {
 		ipclock_leave();
@@ -5506,7 +5805,7 @@ api_timer(lua_State *L)
 	return 1;
 }
 
-/* sys.hungup(h): is this proc the ONLY holder of the port behind h?
+/* sys.hungup(h): is this proc the only holder of the port behind h?
  *
  * that is our eof, and the formulation matters. plan 9's devpipe counts
  * opens of each end (qref) and calls qhangup on the peer's queue when a
@@ -5533,7 +5832,8 @@ api_hungup(lua_State *L)
 
 	if (!r)
 		return luaL_error(L, "bad right");
-	lua_pushboolean(L, r->port->nrights <= 1);
+
+	lua_pushboolean(L, sole_holder(p, r->port));
 	return 1;
 }
 
@@ -6516,7 +6816,7 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 
 static int
 proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
-    int reductions, size_t mem_limit, int priv)
+    int reductions, size_t mem_limit, int port_limit, int priv)
 {
 	struct kproc *p = 0;
 
@@ -6672,6 +6972,8 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		proc_freestate(p);
 		return -1;
 	}
+	p->selfidx = port->idx;
+	p->selfgen = port->gen;
 
 	/* register the los.* modules in package.preload so chunks pull in
 	 * the layers they need with an explicit require -- no globals, no
@@ -6901,7 +7203,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		kputs("proc load error: ");
 		kputs(lua_tostring(p->co, -1));
 		kputs("\n");
-		right_drop(&p->rights[0]);
+		right_drop(p, &p->rights[0]);
 		proc_freestate(p);
 		return -1;
 	}
@@ -6912,6 +7214,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	lua_sethook(p->co, preempt_hook, proc_hookmask(p), p->reductions);
 	p->priv = priv;
 	p->mem_limit = mem_limit;
+	p->port_limit = port_limit;
 	p->weight = 1;
 	p->cputime = 0;
 	p->cpu = 0;
@@ -6945,8 +7248,34 @@ static void
  * attached -- which is every test, at poweroff.
  */
 notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
-    const char *exitmsg, int broke)
+    const char *exitmsg, int broke, int priv)
 {
+	/* `reason` and `exitmsg` are the dying proc's own text -- an error
+	 * message, whatever it passed to sys.setexit -- and they are the
+	 * only part of this notice that is its data rather than the fact
+	 * of its death. so they go to a watcher that held a right to it
+	 * when it asked to watch (kproc.wpriv) and to nobody else.
+	 *
+	 * that a proc exited stays ambient, which is what monitor is for:
+	 * a child watching the parent that spawned it, so it does not
+	 * outlive the terminal it prompts on (task/fbsh.lua), holds no
+	 * right to that parent and must not need one. gating the notice
+	 * itself would force handing out control of a proc merely to
+	 * permit watching it.
+	 *
+	 * an emptied reason still reads as an abnormal exit -- `normal`
+	 * below is false whenever there was one at all -- so a watcher
+	 * learns that its peer died badly without learning what it said.
+	 *
+	 * priv is 1 for a synthetic notice -- api_monitor's noproc --
+	 * where the reason is our answer about the request rather than
+	 * anything a proc said.
+	 */
+	if (!priv) {
+		reason = reason ? "" : 0;
+		exitmsg = 0;
+	}
+
 	struct wbuf w = { 0 };
 	unsigned int npairs = 3;
 	lua_Integer id = pid;
@@ -7046,7 +7375,7 @@ proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 		struct right *r = right_slot(p, i);
 
 		if (r && r->used)
-			right_drop(r);
+			right_drop(p, r);
 	}
 	free(p->xrights);
 	p->xrights = 0;
@@ -7069,7 +7398,7 @@ proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 		if (w)
 			notify_exit(w, p->id, why ? reason : 0,
 			    why ? -1 : p->exitcode,
-			    why ? 0 : p->exitmsg, broke);
+			    why ? 0 : p->exitmsg, broke, p->wpriv[i]);
 	}
 	p->nwatch = 0;
 }
@@ -7475,7 +7804,7 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 	/* caller holds ipclock: spawn_init calls this in a loop and
 	 * holds it across all of them.
 	 */
-	int pid = proc_new(path, 0, chunkname, 1, 0, 0, priv);
+	int pid = proc_new(path, 0, chunkname, 1, 0, 0, 0, priv);
 	char buf[160];
 
 	if (pid < 0) {
@@ -7712,7 +8041,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		}
 	}
 
-	int pid = proc_new(code, len, "=init", is_file, 0, 0, PRIV_BOOT);
+	int pid = proc_new(code, len, "=init", is_file, 0, 0, 0, PRIV_BOOT);
 
 	if (pid < 0) {
 		ipclock_leave();

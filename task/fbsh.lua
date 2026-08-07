@@ -73,7 +73,7 @@ thread.spawn(function()
 
 	local function line()
 		sys.send(cons, { op = "readline", prompt = "> ",
-		    reply = { __right = sys.SELF } })
+		    reply = { __right = thread.selfright() } })
 
 		-- the exit notice arrives on this same port, which is the
 		-- point of monitoring rather than polling.

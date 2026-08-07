@@ -90,6 +90,7 @@ function M.spawn(src, opts)
 		name = name,
 		reductions = opts.reductions,
 		mem = opts.mem,
+		ports = opts.ports,
 		arg = {
 			ns = opts.ns,
 			src = src,

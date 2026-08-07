@@ -91,22 +91,30 @@ local nextid = 1
 -- cancel-and-give-up if nothing arrived.
 local function try_once(query, id, ms)
 	local replyport = sys.newport()
+	-- send only; {__right=} copies the recv flag, and udp has no
+	-- business receiving on our reply port
+	local replyright = sys.sendright(replyport)
+
+	local function done()
+		sys.close(replyright)
+		sys.close(replyport)
+	end
 
 	sys.send(udph, { op = "recv", connid = conn, maxlen = 512,
-	    reply = { __right = replyport } })
+	    reply = { __right = replyright } })
 	local r = resolver()
 
 	if not udp.send(conn, r[1], r[2], r[3], r[4], RESOLVER_PORT, query) then
 		sys.send(udph, { op = "cancel", connid = conn })
 		thread.recv(replyport)	-- drain the now-aborted recv's reply
-		sys.close(replyport)
+		done()
 		return nil
 	end
 
 	local r, why = thread.recvtimeout(replyport, ms)
 
 	if why == nil then
-		sys.close(replyport)
+		done()
 		if r then
 			return dnsmsg.parse(r.data, id)
 		end
@@ -117,7 +125,7 @@ local function try_once(query, id, ms)
 	-- then drain the abort-completion reply it triggers.
 	sys.send(udph, { op = "cancel", connid = conn })
 	thread.recv(replyport)
-	sys.close(replyport)
+	done()
 	return nil
 end
 

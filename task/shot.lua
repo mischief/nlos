@@ -44,9 +44,14 @@ local cons, fb = job.cons.__right, job.fb.__right
 -- replyport for the same reason.
 local fbport = sys.newport()
 local consport = sys.newport()
+-- send only for the far end: {__right=} copies the recv flag, so the
+-- ports as created would let fb and cons receive our own answers
+local fbright = sys.sendright(fbport)
+local consright = sys.sendright(consport)
+local sendright = { [fbport] = fbright, [consport] = consright }
 
 local function rpc(h, port, msg)
-	msg.reply = { __right = port }
+	msg.reply = { __right = sendright[port] }
 	sys.send(h, msg)
 	return recv(port)
 end
