@@ -13,6 +13,8 @@ local Fs = require "fat.obj"
 
 -- The methods go on the shared filesystem object; the module itself
 -- holds nothing.
+local buf = require("los.buf")
+
 local M = {}
 
 --------------------------------------------------------------------------
@@ -34,7 +36,17 @@ end
 --------------------------------------------------------------------------
 -- the cache
 --
--- Sectors are held as strings. A dirty one is remembered in insertion
+-- Sectors are held as los.buf, so a change to part of one is bytes
+-- written where they belong. Held as strings they could not be: every
+-- write rebuilt the whole sector around the part that changed, which
+-- for a 32-byte directory entry in a 4096-byte sector was three
+-- allocations and 8KB copied.
+--
+-- The device still speaks strings, so a sector costs one copy on the
+-- way in and one on the way out. What that buys is every read and every
+-- write in between costing none.
+--
+-- A dirty one is remembered in insertion
 -- order, so a flush writes in roughly the order the work happened,
 -- which is the order a device handles best and the order a crash makes
 -- the least surprising.
@@ -77,17 +89,28 @@ function Fs:rdsec(lba)
   if not r then error("read failed: " .. tostring(err), 0) end
   if #r ~= self.secsz then error("short read at sector " .. lba, 0) end
   self.nread = self.nread + 1
-  self.cache[lba] = r
+  local sec = buf.new(self.secsz)
+  sec:copy(1, r)
+  self.cache[lba] = sec
+  r = sec
   self.nclean = self.nclean + 1
   evict(self)
   return r
 end
 
+-- s is a string or a buffer; either way the cache holds a buffer, so
+-- what is cached is always writable in place.
 function Fs:wrsec(lba, s)
   assert(#s == self.secsz, "a write is one whole sector")
   self:checklba(lba, 1)
   local was = self.cache[lba]
-  self.cache[lba] = s
+  local sec = was
+
+  if sec == nil then
+    sec = buf.new(self.secsz)
+    self.cache[lba] = sec
+  end
+  if sec ~= s then sec:copy(1, s) end
   if not self.dirty[lba] then
     if was ~= nil then self.nclean = self.nclean - 1 end
     self.ndirty = self.ndirty + 1
@@ -102,16 +125,20 @@ end
 
 -- A run of sectors as one string, and a run written back from one.
 -- Reading a cluster is the common case and it is contiguous.
+-- One buffer for the run, each sector copied into it once. As strings
+-- this was n slices and a concatenation of the whole cluster.
 function Fs:rdsecs(lba, n)
-  local out = {}
-  for i = 0, n - 1 do out[i + 1] = self:rdsec(lba + i) end
-  return table.concat(out)
+  local out = buf.new(n * self.secsz)
+  for i = 0, n - 1 do
+    out:copy(i * self.secsz + 1, self:rdsec(lba + i))
+  end
+  return out
 end
 
 function Fs:wrsecs(lba, s)
   assert(#s % self.secsz == 0, "writes are whole sectors")
   for i = 0, #s // self.secsz - 1 do
-    self:wrsec(lba + i, s:sub(i * self.secsz + 1, (i + 1) * self.secsz))
+    self:wrat(lba + i, 0, s, i * self.secsz + 1, (i + 1) * self.secsz)
   end
 end
 
@@ -122,9 +149,13 @@ function Fs:rdat(lba, off, n)
   return self:rdsec(lba):sub(off + 1, off + n)
 end
 
-function Fs:wrat(lba, off, s)
+-- The part of the sector that changed, and nothing else. from and to
+-- select part of s, as string.sub means them.
+function Fs:wrat(lba, off, s, from, to)
   local sec = self:rdsec(lba)
-  self:wrsec(lba, sec:sub(1, off) .. s .. sec:sub(off + #s + 1))
+
+  sec:copy(off + 1, s, from, to)
+  self:wrsec(lba, sec)
 end
 
 --------------------------------------------------------------------------
@@ -142,7 +173,9 @@ function Fs:flush()
   for lba in pairs(self.dirty) do order[#order + 1] = lba end
   table.sort(order, function(a, b) return self.dirty[a] < self.dirty[b] end)
   for _, lba in ipairs(order) do
-    self.dev:write(self:secoff(lba), self.cache[lba])
+    -- the device takes bytes, so the sector is a string once more on
+    -- the way out. That copy is the boundary, not the filesystem.
+    self.dev:write(self:secoff(lba), self.cache[lba]:str())
     self.nwrite = self.nwrite + 1
   end
   -- Written out, so they are clean now and may be evicted.

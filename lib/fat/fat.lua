@@ -70,23 +70,23 @@ function Fs:fatget(c)
   if self.type == 12 then
     -- The two bytes can be in different sectors, so they are fetched
     -- one at a time rather than as a pair.
-    local lo = byte(self:rdsec(lba), o + 1)
+    local lo = self:rdsec(lba):u8(o + 1)
     local hi
     if o + 1 < self.secsz then
-      hi = byte(self:rdsec(lba), o + 2)
+      hi = self:rdsec(lba):u8(o + 2)
     else
-      hi = byte(self:rdsec(lba + 1), 1)
+      hi = self:rdsec(lba + 1):u8(1)
     end
     local v = lo | (hi << 8)
     if (c & 1) == 1 then return v >> 4 end
     return v & 0x0FFF
   elseif self.type == 16 then
-    return sunpack("<I2", self:rdsec(lba), o + 1)
+    return self:rdsec(lba):u16le(o + 1)
   end
   -- The top four bits of a FAT32 entry are reserved and belong to
   -- whoever set them, so a read masks them off and a write puts them
   -- back untouched.
-  return sunpack("<I4", self:rdsec(lba), o + 1) & dat.Clmask[32]
+  return self:rdsec(lba):u32le(o + 1) & dat.Clmask[32]
 end
 
 function Fs:fatset(c, v)
@@ -100,10 +100,10 @@ function Fs:fatset(c, v)
     local o = off % self.secsz
 
     if self.type == 12 then
-      local lo = byte(self:rdsec(lba), o + 1)
+      local lo = self:rdsec(lba):u8(o + 1)
       local hilba, hio = lba, o + 1
       if o + 1 >= self.secsz then hilba, hio = lba + 1, 0 end
-      local hi = byte(self:rdsec(hilba), hio + 1)
+      local hi = self:rdsec(hilba):u8(hio + 1)
       local cur = lo | (hi << 8)
       local new
       if (c & 1) == 1 then
@@ -116,7 +116,7 @@ function Fs:fatset(c, v)
     elseif self.type == 16 then
       self:wrat(lba, o, spack("<I2", v & 0xFFFF))
     else
-      local cur = sunpack("<I4", self:rdsec(lba), o + 1)
+      local cur = self:rdsec(lba):u32le(o + 1)
       local new = (cur & 0xF0000000) | (v & dat.Clmask[32])
       self:wrat(lba, o, spack("<I4", new))
     end

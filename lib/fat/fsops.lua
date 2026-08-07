@@ -146,7 +146,7 @@ function Fs:read(ent, off, count)
     local s1 = (within + n - 1) // self.secsz
     local buf = self:rdsecs(self:clusterlba(c) + s0, s1 - s0 + 1)
     local from = within - s0 * self.secsz
-    out[#out + 1] = sub(buf, from + 1, from + n)
+    out[#out + 1] = buf:sub(from + 1, from + n)
     left = left - n
     within = 0
     c = self:fatget(c)

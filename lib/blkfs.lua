@@ -32,6 +32,7 @@ if type(blk) ~= "table" then
 	blk = require("los.platform.flash")
 end
 
+local buf = require("los.buf")
 local dev = require("dev")
 
 local M = {}
@@ -239,11 +240,23 @@ function M.new()
 		-- a write that starts mid-sector must preserve the bytes
 		-- before it, and one that ends mid-sector the bytes after.
 		-- a write covering whole sectors reads nothing.
-		if head > 0 then
-			data = blk.read(first, 1):sub(1, head) .. data
-		end
-		if tail > 0 then
-			data = data .. blk.read(last, 1):sub(secsz - tail + 1)
+		--
+		-- One buffer for the whole run, with the caller's bytes
+		-- copied into the middle of it. Growing a string at both
+		-- ends instead copied everything again per end, which for a
+		-- one-byte write at an offset was two copies of the run.
+		if head > 0 or tail > 0 then
+			local whole = buf.new((last - first + 1) * secsz)
+
+			if head > 0 then
+				whole:copy(1, blk.read(first, 1), 1, head)
+			end
+			whole:copy(head + 1, data)
+			if tail > 0 then
+				whole:copy(head + #data + 1,
+				    blk.read(last, 1), secsz - tail + 1)
+			end
+			data = whole
 		end
 
 		local sec = first
@@ -258,7 +271,11 @@ function M.new()
 
 			local nb = want * secsz
 
-			blk.write(sec, data:sub(pos, pos + nb - 1))
+			-- a view where the run is a buffer, a slice where
+			-- the caller handed whole sectors as a string
+			blk.write(sec, type(data) == "userdata" and
+			    data:view(pos, pos + nb - 1) or
+			    data:sub(pos, pos + nb - 1))
 			pos = pos + nb
 			sec = sec + want
 		end

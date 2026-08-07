@@ -448,6 +448,30 @@ buf_tostring(lua_State *L)
 	return 1;
 }
 
+/* two buffers are equal when their bytes are.
+ *
+ * Identity is what a userdata compares by unless it is told otherwise,
+ * and for a container of bytes that is the wrong reading: two sectors
+ * read from the two copies of a FAT hold the same bytes and are not the
+ * same object. Strings compare by value here and so does this.
+ *
+ * Lua calls __eq only when both sides are userdata, so a buffer is
+ * never equal to a string. b:str() == s says that.
+ */
+static int
+buf_eq(lua_State *L)
+{
+	struct luabuf *a = luaL_testudata(L, 1, BUFMT);
+	struct luabuf *b = luaL_testudata(L, 2, BUFMT);
+
+	if (!a || !b || !a->p || !b->p || a->len != b->len) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	lua_pushboolean(L, memcmp(a->p, b->p, a->len) == 0);
+	return 1;
+}
+
 static const luaL_Reg bufmeth[] = {
 	{ "len", buf_len },
 	{ "sub", buf_sub },
@@ -496,6 +520,8 @@ luaopen_los_buf(lua_State *L)
 	lua_setfield(L, -2, "__gc");
 	lua_pushcfunction(L, buf_tostring);
 	lua_setfield(L, -2, "__tostring");
+	lua_pushcfunction(L, buf_eq);
+	lua_setfield(L, -2, "__eq");
 	lua_pop(L, 1);
 
 	luaL_newlib(L, buflib);
