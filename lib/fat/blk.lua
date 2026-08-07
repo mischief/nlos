@@ -42,9 +42,10 @@ end
 -- for a 32-byte directory entry in a 4096-byte sector was three
 -- allocations and 8KB copied.
 --
--- The device still speaks strings, so a sector costs one copy on the
--- way in and one on the way out. What that buys is every read and every
--- write in between costing none.
+-- A device that hands over the bytes it read -- a mount whose server
+-- gives its buffer away -- costs nothing on the way in: what arrives is
+-- the cached sector. One that answers with a string is copied once. The
+-- way out is still a string.
 --
 -- A dirty one is remembered in insertion
 -- order, so a flush writes in roughly the order the work happened,
@@ -85,12 +86,22 @@ function Fs:rdsec(lba)
   local s = self.cache[lba]
   if s then return s end
   self:checklba(lba, 1)
-  local r, err = self.dev:read(self:secoff(lba), self.secsz)
+  local r, err
+  if self.dev.readbuf then
+    r, err = self.dev:readbuf(self:secoff(lba), self.secsz)
+  else
+    r, err = self.dev:read(self:secoff(lba), self.secsz)
+  end
   if not r then error("read failed: " .. tostring(err), 0) end
   if #r ~= self.secsz then error("short read at sector " .. lba, 0) end
   self.nread = self.nread + 1
-  local sec = buf.new(self.secsz)
-  sec:copy(1, r)
+  -- a buffer the device gave away is the cached sector: it is ours,
+  -- writable, and the right size. Anything else is copied into one.
+  local sec = r
+  if type(sec) ~= "userdata" or not sec:movable() then
+    sec = buf.new(self.secsz)
+    sec:copy(1, r)
+  end
   self.cache[lba] = sec
   r = sec
   self.nclean = self.nclean + 1

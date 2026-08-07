@@ -366,7 +366,13 @@ end
 -- is no more file, so "fewer bytes than I asked for" can mean end of
 -- file and nothing else. A backend that returned short for its own
 -- convenience would truncate every large read through a mount.
-function M.readloop(iounit, one, off, n)
+-- `raw` asks for whatever the one round trip produced -- a buffer,
+-- where the server had one to give away. Only when a single round trip
+-- answered the whole read, since joining two means copying both and a
+-- string is what that produces. Callers that want bytes to work on
+-- rather than a string to hold ask for it; everything else gets the
+-- string it always did.
+function M.readloop(iounit, one, off, n, raw)
 	local parts, got = {}, 0
 
 	while got < n do
@@ -390,6 +396,20 @@ function M.readloop(iounit, one, off, n)
 		end
 	end
 
+	if #parts == 1 then
+		if raw then
+			return parts[1]
+		end
+		-- a buffer where a string was asked for
+		if type(parts[1]) == "userdata" then
+			return parts[1]:str()
+		end
+	end
+	for i = 1, #parts do
+		if type(parts[i]) == "userdata" then
+			parts[i] = parts[i]:str()
+		end
+	end
 	return table.concat(parts)
 end
 

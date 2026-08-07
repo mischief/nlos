@@ -38,6 +38,12 @@ const char *luabuf_borrow(lua_State *L, int idx, size_t *len, void **handle);
 void	luabuf_detach(lua_State *L, void *handle);
 int	luabuf_give(lua_State *L, void *p, size_t len);
 
+/* push a buffer of n bytes and return its storage, for a C function
+ * that fills one -- a device read. Null, pushing nothing, when the proc
+ * cannot afford it. The bytes are not initialised.
+ */
+unsigned char *luabuf_push(lua_State *L, size_t n);
+
 /* buffers allocated since boot, for sys.stats() */
 unsigned long long luabuf_allocs(void);
 

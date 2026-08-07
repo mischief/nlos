@@ -154,7 +154,16 @@ function ops.read(S, m)
 	if type(n) == "number" and n > dev.IOUNIT then
 		n = dev.IOUNIT
 	end
-	return { data = S.B.read(S.get(m.fid), m.off, n) }
+	local d = S.B.read(S.get(m.fid), m.off, n)
+
+	-- a backend that answered with bytes of its own hands them over
+	-- rather than having them copied into the reply. A buffer it may
+	-- not give away -- a view onto a cache -- travels as bytes, which
+	-- is what a string would have done anyway.
+	if type(d) == "userdata" and d.movable and d:movable() then
+		return { data = { __buf = d } }
+	end
+	return { data = d }
 end
 
 function ops.write(S, m)

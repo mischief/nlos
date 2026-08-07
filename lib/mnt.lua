@@ -303,11 +303,23 @@ function M.new(right)
 	-- a caller may ask this mount for a megabyte and get one; nothing
 	-- above here knows how many round trips that took, and the backend
 	-- on the far side is never asked for more than IOUNIT.
-	function B.read(h, off, n)
+	local function readraw(h, off, n, raw)
 		return dev.readloop(IOUNIT, function(o, c)
 			return rpc({ op = "read", fid = h.fid, off = o,
 			    n = c }).data
-		end, off, n)
+		end, off, n, raw)
+	end
+
+	function B.read(h, off, n)
+		return readraw(h, off, n, false)
+	end
+
+	-- the same read, keeping a buffer the server gave away instead of
+	-- making a string of it. For a caller that is going to work on the
+	-- bytes -- a filesystem holding sectors -- where a string would be
+	-- copied once to make and once to use.
+	function B.readbuf(h, off, n)
+		return readraw(h, off, n, true)
 	end
 
 	function B.write(h, off, data)

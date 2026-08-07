@@ -14,6 +14,7 @@
 
 #include "snp.h"
 #include "blk.h"
+#include "buf.h"
 #include "platform.h"
 
 extern void console_write(const char *s, unsigned long n);
@@ -242,8 +243,7 @@ blk_read(lua_State *L)
 	lua_Integer lba = luaL_checkinteger(L, 1);
 	lua_Integer nsec = luaL_checkinteger(L, 2);
 	uint32_t secsz = efi_blk_secsz();
-	luaL_Buffer b;
-	char *buf;
+	unsigned char *p;
 	size_t len;
 
 	if (lba < 0)
@@ -251,11 +251,16 @@ blk_read(lua_State *L)
 	if (nsec <= 0 || nsec > EFI_BLK_MAXSEC)
 		return luaL_error(L, "blk.read: bad sector count");
 
+	/* a buffer: the reply gives the sectors away rather than copying
+	 * them to the client.
+	 */
 	len = (size_t)nsec * secsz;
-	buf = luaL_buffinitsize(L, &b, len);
-	if (efi_blk_read((uint64_t)lba, (uint32_t)nsec, buf) != 0)
+	p = luabuf_push(L, len);
+	if (!p)
+		return luaL_error(L, "blk.read: no room for %d bytes",
+		    (int)len);
+	if (efi_blk_read((uint64_t)lba, (uint32_t)nsec, (char *)p) != 0)
 		return luaL_error(L, "blk.read: device error");
-	luaL_pushresultsize(&b, len);
 	return 1;
 }
 
@@ -264,7 +269,7 @@ blk_write(lua_State *L)
 {
 	lua_Integer lba = luaL_checkinteger(L, 1);
 	size_t n;
-	const char *data = luaL_checklstring(L, 2, &n);
+	const char *data = luabuf_check(L, 2, &n);
 	uint32_t secsz = efi_blk_secsz();
 
 	if (lba < 0)

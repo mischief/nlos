@@ -27,6 +27,7 @@
 
 #include "efi.h"
 #include "esp32.h"
+#include "buf.h"
 #include "platform.h"
 
 /* The keyboard is the one device here that reports work, and it does so
@@ -342,8 +343,7 @@ blk_read(lua_State *L)
 	lua_Integer lba = luaL_checkinteger(L, 1);
 	lua_Integer nsec = luaL_checkinteger(L, 2);
 	uint32_t secsz = esp_blk_secsz();
-	luaL_Buffer b;
-	char *buf;
+	unsigned char *p;
 	size_t len;
 
 	if (lba < 0)
@@ -351,11 +351,16 @@ blk_read(lua_State *L)
 	if (nsec <= 0 || nsec > ESP_BLK_MAXSEC)
 		return luaL_error(L, "blk.read: bad sector count");
 
+	/* a buffer: the reply gives the sectors away rather than copying
+	 * them to the client.
+	 */
 	len = (size_t)nsec * secsz;
-	buf = luaL_buffinitsize(L, &b, len);
-	if (esp_blk_read((uint64_t)lba, (uint32_t)nsec, buf) != 0)
+	p = luabuf_push(L, len);
+	if (!p)
+		return luaL_error(L, "blk.read: no room for %d bytes",
+		    (int)len);
+	if (esp_blk_read((uint64_t)lba, (uint32_t)nsec, (char *)p) != 0)
 		return luaL_error(L, "blk.read: device error");
-	luaL_pushresultsize(&b, len);
 	return 1;
 }
 
@@ -364,7 +369,7 @@ blk_write(lua_State *L)
 {
 	lua_Integer lba = luaL_checkinteger(L, 1);
 	size_t n;
-	const char *data = luaL_checklstring(L, 2, &n);
+	const char *data = luabuf_check(L, 2, &n);
 	uint32_t secsz = esp_blk_secsz();
 
 	if (lba < 0)
@@ -553,8 +558,7 @@ flash_read(lua_State *L)
 	lua_Integer lba = luaL_checkinteger(L, 1);
 	lua_Integer nsec = luaL_checkinteger(L, 2);
 	uint32_t secsz = esp_flashblk_secsz();
-	luaL_Buffer b;
-	char *buf;
+	unsigned char *p;
 	size_t len;
 
 	if (lba < 0)
@@ -562,11 +566,16 @@ flash_read(lua_State *L)
 	if (nsec <= 0 || nsec > ESP_FLASHBLK_MAXSEC)
 		return luaL_error(L, "flash.read: bad sector count");
 
+	/* a buffer, so the sectors reach whoever asked for them without
+	 * being copied on the way: the reply gives them away.
+	 */
 	len = (size_t)nsec * secsz;
-	buf = luaL_buffinitsize(L, &b, len);
-	if (esp_flashblk_read((uint64_t)lba, (uint32_t)nsec, buf) != 0)
+	p = luabuf_push(L, len);
+	if (!p)
+		return luaL_error(L, "flash.read: no room for %d bytes",
+		    (int)len);
+	if (esp_flashblk_read((uint64_t)lba, (uint32_t)nsec, (char *)p) != 0)
 		return luaL_error(L, "flash.read: device error");
-	luaL_pushresultsize(&b, len);
 	return 1;
 }
 
@@ -575,7 +584,7 @@ flash_write(lua_State *L)
 {
 	lua_Integer lba = luaL_checkinteger(L, 1);
 	size_t n;
-	const char *data = luaL_checklstring(L, 2, &n);
+	const char *data = luabuf_check(L, 2, &n);
 	uint32_t secsz = esp_flashblk_secsz();
 
 	if (lba < 0)

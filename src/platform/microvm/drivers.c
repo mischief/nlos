@@ -6,10 +6,12 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "lua.h"
 #include "lauxlib.h"
 
+#include "buf.h"
 #include "platform.h"
 #include "virtio.h"
 #include "virtio_9p.h"
@@ -516,7 +518,16 @@ blk_read_k(lua_State *L, int status, lua_KContext ctx)
 	if (st != 0)
 		return luaL_error(L, "blk.read: device status %d", st);
 
-	lua_pushlstring(L, data, (size_t)len);
+	/* a buffer, so the sectors can be given to whoever asked for them
+	 * rather than copied there. A string would be copied again by the
+	 * serializer and once more by the client.
+	 */
+	unsigned char *p = luabuf_push(L, (size_t)len);
+
+	if (!p)
+		return luaL_error(L, "blk.read: no room for %d bytes",
+		    (int)len);
+	memcpy(p, data, (size_t)len);
 	return 1;
 }
 
@@ -534,7 +545,7 @@ blk_write_k(lua_State *L, int status, lua_KContext ctx)
 	if (ctx == 0) {
 		lua_Integer lba = luaL_checkinteger(L, 1);
 		size_t n;
-		const char *data = luaL_checklstring(L, 2, &n);
+		const char *data = luabuf_check(L, 2, &n);
 		int slot;
 
 		if (lba < 0)

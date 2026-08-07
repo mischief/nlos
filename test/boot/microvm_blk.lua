@@ -19,7 +19,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(16)
+tap.plan(20)
 
 local SECSZ = 512
 local SECTORS = 2048
@@ -227,5 +227,22 @@ if not tap.ok(back == expect,
 	tap.diag("got:  " .. string.format("%q", back))
 	tap.diag("want: " .. string.format("%q", expect))
 end
+
+-- ---- a sector arrives without being copied ----
+--
+-- The driver reads into a buffer and the reply gives it away, so a
+-- client asking for whole sectors is handed the driver's own bytes.
+-- What proves it is a buffer arriving where a string would have been.
+local D = mnt.new(caps.blk)
+local dh = D.open(D.walk(D.attach(), "data"), "r")
+
+tap.ok(D.readbuf ~= nil, "a mount can ask for the bytes as they came")
+
+local raw = D.readbuf(dh, 17 * SECSZ, SECSZ)
+
+tap.is(type(raw), "userdata", "an aligned read comes back as a buffer")
+tap.is(raw:str(), sector(17), "holding the sector it named")
+tap.is(D.read(dh, 17 * SECSZ, SECSZ), sector(17),
+    "and read still answers with a string")
 
 tap.done()

@@ -174,22 +174,38 @@ function M.new()
 		local first = off // secsz
 		local last = (off + n - 1) // secsz
 		local skip = off - first * secsz
-		local out = {}
+		local nsec = last - first + 1
+
+		-- one transfer: the driver's own buffer is the answer, and
+		-- nothing is copied at all. A read of whole sectors comes
+		-- back untouched, which is what a filesystem asks for.
+		if nsec <= MAXSEC then
+			local got = blk.read(first, nsec)
+
+			if skip == 0 and #got == n then
+				return got
+			end
+			return got:view(skip + 1, skip + n)
+		end
+
+		-- larger than one transfer: one buffer for the run, each
+		-- transfer copied into it once. The device ceiling is
+		-- invisible above this line.
+		local whole = buf.new(nsec * secsz)
+		local pos = 1
 		local sec = first
 
-		-- as many device transfers as the request needs. The device
-		-- ceiling is invisible above this line.
 		while sec <= last do
 			local want = last - sec + 1
 
 			if want > MAXSEC then
 				want = MAXSEC
 			end
-			out[#out + 1] = blk.read(sec, want)
+			pos = pos + whole:copy(pos, blk.read(sec, want))
 			sec = sec + want
 		end
 
-		return table.concat(out):sub(skip + 1, skip + n)
+		return whole:view(skip + 1, skip + n)
 	end
 
 	function B.read(h, off, n)

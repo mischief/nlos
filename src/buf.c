@@ -441,6 +441,21 @@ buf_ro(lua_State *L)
 	return 1;
 }
 
+/* whether {__buf = this} would be accepted: bytes it alone owns.
+ *
+ * For a server deciding whether to hand a reply over or copy it. The
+ * alternative is a failed send, which is a raise where a copy would
+ * have done.
+ */
+static int
+buf_movable(lua_State *L)
+{
+	struct luabuf *b = luaL_checkudata(L, 1, BUFMT);
+
+	lua_pushboolean(L, b->p && b->owned && !b->ro && !b->views);
+	return 1;
+}
+
 static int
 buf_clone(lua_State *L)
 {
@@ -521,6 +536,7 @@ static const luaL_Reg bufmeth[] = {
 	{ "setu64le", buf_setu64le },
 	{ "setu64be", buf_setu64be },
 	{ "ro", buf_ro },
+	{ "movable", buf_movable },
 	{ "clone", buf_clone },
 	{ NULL, NULL },
 };
@@ -610,6 +626,24 @@ luabuf_detach(lua_State *L, void *handle)
 
 	kbuf_uncharge(L, b->len);
 	b->p = 0;
+}
+
+unsigned char *
+luabuf_push(lua_State *L, size_t n)
+{
+	unsigned char *p;
+
+	if (n == 0)
+		return 0;
+	p = platform_chunk_alloc(n);
+	if (!p)
+		return 0;
+	if (!luabuf_give(L, p, n)) {	/* charges the proc */
+		platform_chunk_free(p, n);
+		return 0;
+	}
+	atomic_fetch_add_explicit(&nallocs, 1, memory_order_relaxed);
+	return p;
 }
 
 int
