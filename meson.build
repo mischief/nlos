@@ -539,6 +539,7 @@ lua_payload = files(
   'bin/rm.lua',
   'bin/fetch.lua',
   'bin/reboot.lua',
+  'bin/top.lua',
   'bin/stack.lua',
   'bin/trace.lua',
   'bin/ls.lua',
@@ -779,7 +780,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
-              'history']
+              'history', 'top']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
