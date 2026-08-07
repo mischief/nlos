@@ -127,10 +127,41 @@ local zmodem = require("zmodem")
 
 sys.send(cons, { op = "rawon" })
 
+-- ---- how long a transfer may take before it is abandoned ----
+--
+-- A receiver that goes away cannot be noticed any other way. ZMODEM
+-- streams: with the window open the sender emits data frames back to
+-- back and reads nothing until the file is behind it, so there is no
+-- ack to miss and a cancel from the host is not read until far too
+-- late. What is left is the clock.
+--
+-- Abandoning matters more here than the transfer does. The console is
+-- the only way in, and a sender still pushing pixels into it owns that
+-- line: every command typed at the repl lands in the middle of a
+-- screen, and the only way out is a reset. A screenshot is worth less
+-- than the machine.
+--
+-- A whole T-Deck screen measured about 7 seconds at 37KB/s, so this is
+-- room for a busy machine rather than for a slow one.
+local BUDGET_MS = 30000
+local started = sys.uptime_ms()
+
+local function overbudget()
+	return sys.uptime_ms() - started > BUDGET_MS
+end
+
+-- raised from inside zmodem's callbacks, which is the only way to leave
+-- its loop early. Caught below, so the console still gets its raw mode
+-- back and the parent still hears.
+local GAVEUP = "shot: gave up: the receiver stopped answering"
+
 local nin, nout = 0, 0
 local line = {
 	now = sys.uptime_ms,
 	write = function(d)
+		if overbudget() then
+			error(GAVEUP, 0)
+		end
 		nout = nout + #d
 		sys.send(cons, { op = "write", data = d })
 	end,
@@ -140,6 +171,10 @@ local line = {
 	-- gave up mid-transfer, so it read as a protocol fault rather
 	-- than as the cost of asking.
 	read = function(ms)
+		if overbudget() then
+			error(GAVEUP, 0)
+		end
+
 		local d = rpc(cons, consport, { op = "readraw", n = 512,
 		    timeout = ms and math.max(ms, 1) or 1000 })
 
@@ -154,7 +189,15 @@ local line = {
 -- outside the sender's coroutine. See lib/zmodem.lua's Mach:want.
 local m = zmodem.sender({ { name = job.name or "screen.pbm",
     size = size, read = readat } }, { yieldread = true })
-local res, err = zmodem.drive(m, line)
+-- pcall, because the budget above leaves by raising: a failure to send
+-- must still put the console back into cooked mode and still answer the
+-- parent, or the repl comes back with no line editing and nothing
+-- waiting for it says why.
+local ok, res, err = pcall(zmodem.drive, m, line)
+
+if not ok then
+	res, err = nil, tostring(res)
+end
 
 sys.send(cons, { op = "rawoff" })
 sys.send(cons, { op = "write", data = ("shot: %s %s %d bytes\n"):format(

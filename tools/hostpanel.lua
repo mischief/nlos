@@ -290,11 +290,15 @@ function Panel:shot(out, rows)
 		return nil, "cannot run lrz (install lrzsz)"
 	end
 
-	-- A screen is about 10KB and moves at ~114KB/s, so this is slack
-	-- for a guest that is busy rather than for a transfer that is
-	-- slow. If it expires the transfer has failed and waiting longer
-	-- will not mend it.
-	local deadline = os.time() + 20
+	-- Slack for a guest that is busy rather than for a transfer that
+	-- is slow: if it expires the transfer has failed and waiting
+	-- longer will not mend it.
+	--
+	-- Longer than the sender's own budget (see task/shot.lua), on
+	-- purpose. The guest is the one holding the console, so it must be
+	-- the one that gives up first; a host that quits earlier only
+	-- leaves a sender pushing pixels at nobody.
+	local deadline = os.time() + 35
 	local rc
 
 	while os.time() < deadline do
@@ -350,11 +354,33 @@ function Panel:shot(out, rows)
 	fh:close()
 	os.remove(tmp)
 
-	local kind, w, h = data:match("^(P[46])\n(%d+) (%d+)\n")
+	local kind, w, h, body = data:match("^(P[46])\n(%d+) (%d+)\n()")
 
 	if not kind then
 		return nil, "not a netpbm: " ..
 		    string.format("%q", data:sub(1, 16))
+	end
+
+	w, h = tonumber(w), tonumber(h)
+
+	-- A transfer that stopped early leaves a file with a good header
+	-- and a short body, and lrz keeps what it got. Read as an image
+	-- that is a screenshot of the top of the screen and black below --
+	-- which is a picture wrong in a way nothing downstream can catch,
+	-- since every pixel in it is correct. The header says how many
+	-- there should be, so ask.
+	local want
+
+	if kind == "P6" then
+		-- maxval line, then three bytes a pixel
+		local px = data:match("^P[46]\n%d+ %d+\n255\n()")
+
+		want = px and (px - 1 + w * h * 3)
+	else
+		want = body - 1 + ((w + 7) // 8) * h
+	end
+	if want and #data < want then
+		return nil, ("short: %d of %d bytes"):format(#data, want)
 	end
 
 	local o, oerr = io.open(out, "wb")
@@ -364,7 +390,7 @@ function Panel:shot(out, rows)
 	end
 	o:write(data)
 	o:close()
-	return { kind = kind, w = tonumber(w), h = tonumber(h), bytes = #data }
+	return { kind = kind, w = w, h = h, bytes = #data }
 end
 
 function Panel:close()
