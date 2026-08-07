@@ -13,6 +13,7 @@
 --		label. The proc runs under it too, numbered where more
 --		than one instance is up: term, term(2).
 --	cmd	the program, as a path in the namespace dio was given.
+--	desc	one line about it, shown in the launcher's list.
 --	label	one character for the button. The tray is 28 pixels wide
 --		and a glyph is 8, so a word does not fit.
 --	color	the button, 0xRRGGBB.
@@ -39,11 +40,14 @@ return {
 		-- machine comes up at a prompt rather than at a tray and
 		-- an empty rectangle.
 		{ name = "term", cmd = "/task/fbterm.lua", kind = "term",
-		  boot = true, label = ">", color = 0x0074d9 },
+		  boot = true, label = ">", color = 0x0074d9,
+		  desc = "a shell, and everything run from one" },
 
 		{ name = "scribble", cmd = "/bin/scribble.lua",
-		  label = "S", color = 0x2ecc40 },
+		  label = "S", color = 0x2ecc40,
+		  desc = "draw on the screen with a finger" },
 		{ name = "smiley", cmd = "/bin/smiley.lua",
-		  label = "O", color = 0xffdc00 },
+		  label = "O", color = 0xffdc00,
+		  desc = "a face, for testing the framebuffer" },
 	},
 }

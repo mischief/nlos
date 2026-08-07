@@ -398,6 +398,108 @@ local function clearapp()
 	screen.fill({ x = APPX, y = APPY, w = APPW, h = APPH }, 0x000000, true)
 end
 
+-- ---- the app selector ----
+--
+-- A mode of this proc rather than an app of its own, for two reasons.
+--
+-- It needs no saved pixels: switching already clears the rectangle and
+-- tells the app coming back to redraw itself from its own state, so the
+-- selector can borrow the glass and hand it back with the machinery
+-- that is already here.
+--
+-- And starting an app is authority. An app that could start apps would
+-- need a right to say so, and every program that could reach that right
+-- would inherit the power -- so it stays with the proc that owns the
+-- screen, which is the same reason dio proxies the framebuffer instead
+-- of lending it.
+local CW, CH = font.size()
+local ROWH = 2 * CH + 6
+local SELBG = 0x101418
+local SELNAME = 0xffffff
+local SELDESC = 0x8895a0
+local SELGONE = 0x505050	-- a program this machine has not got
+local SELROWS = APPH // ROWH
+
+local selecting = false
+local seloff = 0
+local wasfront = nil
+
+-- text into the app area, clipped to what fits across it
+local function seltext(x, y, s, color, bg)
+	local room = (APPW - (x - APPX)) // CW
+
+	if room < 1 or s == "" then
+		return
+	end
+
+	local pix, w, h = font.render(s:sub(1, room), color, bg or SELBG, true)
+
+	if w > 0 then
+		screen.load({ x = x, y = y, w = w, h = h }, { __buf = pix })
+	end
+end
+
+local function selrect(k)
+	local at = k - seloff
+
+	if at < 1 or at > SELROWS then
+		return nil
+	end
+	return { x = APPX, y = APPY + (at - 1) * ROWH, w = APPW, h = ROWH }
+end
+
+local function drawselector()
+	screen.fill({ x = APPX, y = APPY, w = APPW, h = APPH }, SELBG, true)
+
+	for k = 1, #catalog do
+		local r = selrect(k)
+
+		if r then
+			local e = catalog[k]
+			local here = N:stat(e.cmd) ~= nil
+			local name = e.name or "?"
+			local n = 0
+
+			for _, a in pairs(apps) do
+				if a.entry == k then
+					n = n + 1
+				end
+			end
+			-- how many are already up, because "another one" and
+			-- "the first one" are different decisions.
+			if n > 0 then
+				name = ("%s  (%d running)"):format(name, n)
+			end
+			if not here then
+				name = name .. "  (missing)"
+			end
+
+			-- the entry's own colour, as a mark down the side:
+			-- the same colour its buttons wear in the tray.
+			screen.fill({ x = r.x + 2, y = r.y + 3, w = 3,
+			    h = ROWH - 6 }, here and (e.color or 0x808080) or
+			    SELGONE)
+			seltext(r.x + 9, r.y + 2, name,
+			    here and SELNAME or SELGONE)
+			seltext(r.x + 9, r.y + 2 + CH, e.desc or e.cmd or "",
+			    SELDESC)
+		end
+	end
+end
+
+-- which entry a point in the app area is on, while the selector is up
+local function selectorat(x, y)
+	for k = 1, #catalog do
+		local r = selrect(k)
+
+		if r and x >= r.x and x < r.x + r.w and
+		    y >= r.y and y < r.y + r.h then
+			return k
+		end
+	end
+	return nil
+end
+
 -- ---- the app's screen ----
 --
 -- One rectangle, and every coordinate a client sends is relative to its
@@ -737,9 +839,12 @@ end
 -- state onto a known-empty rectangle -- which is what buys a machine
 -- this size a window system with no saved pixels anywhere.
 local function focus(id)
-	if front == id then
+	if front == id and not selecting then
 		return
 	end
+
+	-- whatever the selector was covering, it is not covering it now
+	selecting = false
 
 	local was = front
 
@@ -833,36 +938,63 @@ local function start(i)
 	return a.id
 end
 
--- what the launcher does. Another of the entry marked `boot`, which is
--- the terminal on every machine that has one: what a second window is
--- wanted for is nearly always a second prompt.
-local function launch()
-	local pick
+-- ---- the launcher ----
+--
+-- The button opens the selector, and opens it over nothing: the app in
+-- front is put down first, so its draws are dropped while the list is
+-- up and it is asked to paint itself again when it comes back. Which is
+-- switching, and costs this nothing.
+local function opensel()
+	wasfront = front
+	if front then
+		local was = front
 
-	for i, e in ipairs(catalog) do
-		if e.boot then
-			pick = i
-			break
+		front = nil
+		if apps[was] then
+			apps[was].wctl.show(false)
 		end
+		wantkeys = false
+		drawbutton(was)
 	end
-	pick = pick or 1
+	selecting = true
+	seloff = 0
+	drawselector()
+	drawplus()
+end
 
-	local id, serr = start(pick)
+-- back to what was in front, or to nothing where that app has gone or
+-- there was none.
+local function closesel()
+	selecting = false
+	if wasfront and apps[wasfront] then
+		local back = wasfront
 
-	if not id then
-		say(((catalog[pick] and catalog[pick].name) or "app") ..
-		    ": " .. tostring(serr))
-		-- and on the glass, because the serial line is not where
-		-- the person who touched the button is looking. The
-		-- launcher goes red for a moment: what was refused is
-		-- obvious, and the reason is on the console for whoever
-		-- wants it.
-		thread.spawn(function()
-			drawface(PLUS, 0xcc0000, "+", TRAYBG)
-			thread.sleep(700)
-			drawplus()
-		end)
+		front = nil		-- so focus does not think it is there
+		focus(back)
+	else
+		front = nil
+		clearapp()
 	end
+	wasfront = nil
+	drawplus()
+end
+
+local function pick(k)
+	local id, serr = start(k)
+
+	if id then
+		wasfront = nil
+		return		-- start focused it, which closed the list
+	end
+	say(((catalog[k] and catalog[k].name) or "app") .. ": " ..
+	    tostring(serr))
+	-- and say it where the finger is: the row stays, the launcher
+	-- goes red, and the reason is on the console.
+	thread.spawn(function()
+		drawface(PLUS, 0xcc0000, "+", TRAYBG)
+		thread.sleep(700)
+		drawplus()
+	end)
 end
 
 -- ---- the pointer ----
@@ -960,7 +1092,11 @@ thread.spawn(function()
 
 					lasttap, lastms = hit, now
 					if hit == "plus" then
-						launch()
+						if selecting then
+							closesel()
+						else
+							opensel()
+						end
 					elseif hit and apps[hit] and twice then
 						-- twice on a running app
 						-- stops it. An app is given
@@ -995,6 +1131,34 @@ thread.spawn(function()
 						-- is whose draws reach the
 						-- glass.
 						focus(hit)
+					end
+				end
+			elseif selecting then
+				-- the list has the glass, so it has the
+				-- pointer too: nothing is in front to give
+				-- it to.
+				if (b & (WHEELUP | WHEELDOWN)) ~= 0 then
+					local most = #catalog - SELROWS
+					local to = seloff +
+					    (((b & WHEELDOWN) ~= 0) and 1 or -1)
+
+					if most < 0 then
+						most = 0
+					end
+					if to < 0 then
+						to = 0
+					elseif to > most then
+						to = most
+					end
+					if to ~= seloff then
+						seloff = to
+						drawselector()
+					end
+				elseif pressed and not down then
+					local k = selectorat(x, y)
+
+					if k then
+						pick(k)
 					end
 				end
 			elseif front and apps[front] then
