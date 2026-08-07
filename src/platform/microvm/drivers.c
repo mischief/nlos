@@ -255,7 +255,20 @@ p9_rpc_k(lua_State *L, int status, lua_KContext ctx)
 	if (got < 0)
 		return lua_yieldk(L, 0, ctx, p9_rpc_k);
 
-	lua_pushlstring(L, rep, (size_t)got);
+	/* a buffer, so the reply's payload reaches the caller as a view
+	 * rather than a string cut out of it. Copied before the lua
+	 * object exists: `rep` is the device's slot, and making one can
+	 * collect, which can run a finalizer that starts another rpc.
+	 */
+	void *p = luabuf_alloc((size_t)got);
+
+	if (!p)
+		return luaL_error(L, "p9.rpc: no room for %d bytes", got);
+	memcpy(p, rep, (size_t)got);
+	if (!luabuf_give(L, p, (size_t)got)) {
+		luabuf_free(p, (size_t)got);
+		return luaL_error(L, "p9.rpc: no room for %d bytes", got);
+	}
 	return 1;
 }
 

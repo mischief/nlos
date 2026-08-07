@@ -122,11 +122,19 @@ rdqid(lua_State *L, struct rd *r)
 	setint(L, "path", p);
 }
 
-/* the rest of the message as m.data, which is what Tread and Rread's
- * count[4] introduces.
+/* the payload, which Tread and Rread's count[4] introduces.
+ *
+ * A message that arrived as a buffer hands its payload back as a view:
+ * the bytes are already there and the caller is about to write them to
+ * a file or a device, neither of which needs a string. A message that
+ * arrived as a string has to be cut, since there is nothing to view.
+ *
+ * `msg` is the stack index the message came in at, which is what the
+ * view is anchored to -- it keeps the whole message alive for as long
+ * as its payload is held.
  */
 static void
-rddata(lua_State *L, struct rd *r)
+rddata(lua_State *L, struct rd *r, int msg)
 {
 	uint64_t n = rdint(r, 4);
 
@@ -134,7 +142,10 @@ rddata(lua_State *L, struct rd *r)
 		r->bad = 1;
 		return;
 	}
-	lua_pushlstring(L, (const char *)r->p + r->off, (size_t)n);
+	if (luabuf_isbuf(L, msg))
+		luabuf_pushview(L, msg, r->off, (size_t)n);
+	else
+		lua_pushlstring(L, (const char *)r->p + r->off, (size_t)n);
 	lua_setfield(L, -2, "data");
 	r->off += (size_t)n;
 }
@@ -239,10 +250,10 @@ np_decode(lua_State *L)
 	case Twrite:
 		setint(L, "fid", rdint(&r, 4));
 		setint(L, "offset", rdint(&r, 8));
-		rddata(L, &r);
+		rddata(L, &r, 1);
 		break;
 	case Rread:
-		rddata(L, &r);
+		rddata(L, &r, 1);
 		break;
 	case Rwrite:
 		setint(L, "count", rdint(&r, 4));

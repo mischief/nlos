@@ -56,6 +56,16 @@ unsigned char *luabuf_push(lua_State *L, size_t n);
 void	*luabuf_alloc(size_t n);
 void	 luabuf_free(void *p, size_t n);
 
+/* is the value at idx a buffer? For a C function that hands back part
+ * of what it was given: a view where it was a buffer, a copy where it
+ * was a string. */
+int	luabuf_isbuf(lua_State *L, int idx);
+
+/* push a view of [off, off+len) of the buffer at idx, zero-based. The
+ * view keeps that buffer alive and cannot be given away, which is what
+ * makes handing out part of a message free. */
+void	luabuf_pushview(lua_State *L, int idx, size_t off, size_t len);
+
 /* buffers allocated since boot, for sys.stats() */
 unsigned long long luabuf_allocs(void);
 

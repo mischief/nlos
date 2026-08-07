@@ -20,6 +20,7 @@ local ninep = require("ninep")
 local dev = require("dev")
 local sys = require("los.sys")
 local thread = require("los.thread")
+local buf = require("los.buf")
 
 local M = {}
 
@@ -562,15 +563,24 @@ function M.new(transport, opts)
 			    function(t) return ninep.tread(t, fid, off, 4096) end,
 			    ninep.Rread, "readdir")
 
-			if #m.data == 0 then
+			local d = m.data
+
+			if #d == 0 then
 				break
 			end
 
+			-- the payload is a view where the transport handed
+			-- back a buffer, so each entry is named rather than
+			-- cut out. unpackstat reads either.
+			local isbuf = buf.is(d)
 			local pos = 1
 
-			while pos <= #m.data do
-				local n = string.unpack("<I2", m.data, pos)
-				local rec = m.data:sub(pos + 2, pos + 1 + n)
+			while pos <= #d do
+				local n = isbuf and d:u16le(pos) or
+				    string.unpack("<I2", d, pos)
+				local rec = isbuf and
+				    d:view(pos + 2, pos + 1 + n) or
+				    d:sub(pos + 2, pos + 1 + n)
 				local st = ninep.unpackstat(rec)
 
 				-- drop "." and ".." the same way lib/espfs.lua's
@@ -585,7 +595,7 @@ function M.new(transport, opts)
 				end
 				pos = pos + 2 + n
 			end
-			off = off + #m.data
+			off = off + #d
 		end
 		rpc(function(t) return ninep.tclunk(t, fid) end,
 		    ninep.Rclunk, "clunk")

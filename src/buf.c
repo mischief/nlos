@@ -680,6 +680,37 @@ luabuf_detach(lua_State *L, void *handle)
 	b->p = 0;
 }
 
+int
+luabuf_isbuf(lua_State *L, int idx)
+{
+	return luaL_testudata(L, idx, BUFMT) != 0;
+}
+
+void
+luabuf_pushview(lua_State *L, int idx, size_t off, size_t len)
+{
+	struct luabuf *b = luaL_checkudata(L, idx, BUFMT);
+	struct luabuf *v;
+
+	idx = lua_absindex(L, idx);
+	if (!b->p)
+		luaL_error(L, "buffer has been given away");
+	if (off > b->len || off + len > b->len)
+		luaL_error(L, "view outside the buffer");
+
+	v = lua_newuserdatauv(L, sizeof *v, 1);
+	v->p = b->p + off;
+	v->len = len;
+	v->ro = b->ro;
+	v->owned = 0;
+	v->views = 0;
+	b->views++;
+	luaL_setmetatable(L, BUFMT);
+
+	lua_pushvalue(L, idx);
+	lua_setiuservalue(L, -2, 1);
+}
+
 void *
 luabuf_alloc(size_t n)
 {
