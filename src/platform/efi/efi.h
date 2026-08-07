@@ -286,7 +286,12 @@ typedef struct {
 
 	void *GetNextMonotonicCount;
 	EFI_STATUS (EFIAPI *Stall)(UINTN Microseconds);
-	void *SetWatchdogTimer;
+	/* Timeout is seconds; 0 disarms. The boot manager arms it at five
+	 * minutes before starting an image, and the reset it fires has no
+	 * diagnostic.
+	 */
+	EFI_STATUS (EFIAPI *SetWatchdogTimer)(UINTN Timeout,
+	    UINT64 WatchdogCode, UINTN DataSize, CHAR16 *WatchdogData);
 
 	/* uefi 1.1 driver model (we only need a few) */
 	void *ConnectController;

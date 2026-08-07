@@ -48,6 +48,13 @@ console_getchar(void)
 	return uart_rx();
 }
 
+/* no firmware, no watchdog. */
+void
+platform_watchdog(unsigned secs)
+{
+	(void)secs;
+}
+
 _Noreturn void
 platform_abort(const char *why)
 {

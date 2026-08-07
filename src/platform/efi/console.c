@@ -60,6 +60,14 @@ console_getchar(void)
 	}
 }
 
+/* the firmware's watchdog, armed before we start. */
+void
+platform_watchdog(unsigned secs)
+{
+	if (BS && BS->SetWatchdogTimer)
+		BS->SetWatchdogTimer(secs, 0, 0, 0);
+}
+
 extern _Noreturn void machine_halt(void);
 
 _Noreturn void

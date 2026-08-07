@@ -325,6 +325,13 @@ console_getchar(void)
 	return -1;
 }
 
+/* IDF owns this board's watchdog: the task WDT, set in sdkconfig. */
+void
+platform_watchdog(unsigned secs)
+{
+	(void)secs;
+}
+
 _Noreturn void
 platform_abort(const char *why)
 {

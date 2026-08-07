@@ -162,6 +162,12 @@ unsigned long platform_dev_irqs(void);
 void *platform_dev_wait(void);
 _Noreturn void platform_abort(const char *why);
 
+/* re-arm the machine's watchdog for `secs`; 0 disarms it. kernel_run
+ * pets it each lap, so a reactor that stops running reboots the
+ * machine. A no-op where the firmware has no watchdog.
+ */
+void platform_watchdog(unsigned secs);
+
 /* <arch>/machine.c */
 unsigned long long platform_ticks(void);
 _Noreturn void machine_halt(void);

@@ -8756,6 +8756,12 @@ run_proc(struct kproc *p)
 #define TICK_SLOW_100NS  150000		/* 15ms, honoured accurately */
 #define TICK_IDLE_THRESHOLD 25		/* consecutive empty polls before backing off */
 
+/* the watchdog window, and how often the lap pushes it back. Four pets
+ * per window, so three consecutive misses are needed for a reset.
+ */
+#define WATCHDOG_SECS    60
+#define WATCHDOG_PET_MS  15000
+
 /* one lap of dispatch on one cpu: both phases over its own queues,
  * then the drain and the swap. Every cpu that schedules runs this and
  * nothing else -- what the boot processor does around it (the device
@@ -8998,6 +9004,7 @@ kernel_run(void)
 	UINTN index;
 	int idle_polls = 0;
 	int tick_slow = 0;
+	unsigned long long last_watchdog_ms = 0;
 
 	/* periodic timer: idle becomes a real firmware sleep (hlt)
 	 * instead of a hot stall-poll. the old "timer hangs the serial
@@ -9051,6 +9058,18 @@ kernel_run(void)
 		 */
 		if (tick)
 			BS->CheckEvent(tick);
+
+		/* push the watchdog back. Throttled: a lap is
+		 * milliseconds and this is a firmware call.
+		 */
+		{
+			unsigned long long now = uptime_ms();
+
+			if (now - last_watchdog_ms >= WATCHDOG_PET_MS) {
+				last_watchdog_ms = now;
+				platform_watchdog(WATCHDOG_SECS);
+			}
+		}
 
 		expire_timers();
 		pump_eth();

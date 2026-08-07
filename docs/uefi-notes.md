@@ -216,7 +216,9 @@ on the same lap it arrives, so the next lap simply pushes another.
   even though it carries no network stack. Without it those machines
   publish no GOP at all and `test_efiprobe` notices.
 - **Boot services is not a runtime.** We live inside the firmware TPL
-  (one big cooperative lock), the watchdog must stay disabled, and there
+  (one big cooperative lock), the firmware watchdog is ours to feed
+  (`platform_watchdog`, petted each lap by `kernel_run` -- unfed, the
+  boot manager's five-minute timer resets the machine silently), and there
   is no true preemption or interrupt delivery — we poll. Rich protocols
   (TCP4, MP_SERVICES) are not guaranteed to exist on minimal or real
   hardware. See AGENTS.md's bluepilled/redpilled question.
