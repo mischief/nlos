@@ -17,6 +17,7 @@
 -- passed in.
 local sys = require("los.sys")
 local thread = require("los.thread")
+local buf = require("los.buf")
 
 local M = {}
 
@@ -53,9 +54,15 @@ local M = {}
 local function needof(m)
 	local d = type(m) == "table" and m.data
 
-	-- a buffer travels as its bytes, so it needs the room its bytes
-	-- need. #d works for either.
-	if type(d) == "string" or type(d) == "userdata" then
+	-- {__buf = b} is a payload too. The bytes are not in the message
+	-- but are charged to the queue, so asking for room for the table
+	-- alone asks for nothing and spins.
+	if type(d) == "table" then
+		d = d.__buf
+	end
+
+	-- a buffer needs the room its bytes need. #d works for either.
+	if type(d) == "string" or buf.is(d) then
 		return #d + 256
 	end
 	return 0
@@ -330,21 +337,33 @@ function M.fb(handle, chunk)
 	-- rectangle that changed. plan 9 pays it too, down a 9P pipe.
 	local CHUNK = chunk or (sys.MAXMSG - 512)
 
-	-- part of a payload, without a copy where the payload is a
-	-- buffer. A string has to be cut; a buffer is viewed, which is why
-	-- an image drawn into a buffer reaches the screen without being
-	-- rebuilt on the way.
+	-- one band of a payload, as bytes this can give away. Copied out
+	-- once and handed over, rather than copied into the message and
+	-- out of it again as a string.
 	local function piece(data, from, to)
-		if type(data) == "userdata" then
-			return data:view(from, to)
+		local b = buf.new(to - from + 1)
+
+		b:copy(1, data, from, to)
+		return b
+	end
+
+	-- what a band travels as. Anything piece() made is ours alone, so
+	-- this hands it over; a caller's own bytes passed straight through
+	-- are not ours to give, and travel as bytes.
+	local function given(b)
+		if buf.is(b) and b:movable() then
+			return { __buf = b }
 		end
-		return data:sub(from, to)
+		return b
 	end
 
 	local function loadband(r, data, wait)
 		local stride = r.w * 4
 		local perband = stride > 0 and (CHUNK // stride) or 0
 
+		-- the whole payload in one message. What the caller handed
+		-- us is the caller's, so it travels as bytes rather than
+		-- being taken away.
 		if perband >= r.h then
 			return tell({ op = "load", r = r, data = data }, wait)
 		end
@@ -380,8 +399,8 @@ function M.fb(handle, chunk)
 					local ok, err = tell({ op = "load",
 					    r = { x = r.x + x, y = r.y + y,
 					        w = n, h = 1 },
-					    data = piece(row, x * 4 + 1,
-					        (x + n) * 4) }, last)
+					    data = given(piece(row, x * 4 + 1,
+					        (x + n) * 4)) }, last)
 
 					if not ok then
 						return nil, err
@@ -407,7 +426,7 @@ function M.fb(handle, chunk)
 			-- in order, so its reply reports the whole sequence.
 			local last = y + n >= r.h
 			local ok, err = tell({ op = "load", r = band,
-			    data = slice }, wait and last)
+			    data = given(slice) }, wait and last)
 
 			if not ok then
 				return nil, err

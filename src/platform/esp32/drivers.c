@@ -712,7 +712,7 @@ fb_load(lua_State *L)
 	lua_Integer w = luaL_checkinteger(L, 3);
 	lua_Integer h = luaL_checkinteger(L, 4);
 	size_t n;
-	const char *pix = luaL_checklstring(L, 5, &n);
+	const char *pix = luabuf_check(L, 5, &n);
 	size_t need = (size_t)w * (size_t)h * 4;
 
 	checkrect(L, x, y, w, h);

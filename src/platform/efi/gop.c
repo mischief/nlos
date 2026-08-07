@@ -24,6 +24,7 @@
 
 #include "lua.h"
 #include "lauxlib.h"
+#include "buf.h"
 
 static EFI_GUID gop_guid =
     { 0x9042a9de, 0x23dc, 0x4a38,
@@ -245,7 +246,7 @@ l_load(lua_State *L)
 	lua_Integer w = luaL_checkinteger(L, 3);
 	lua_Integer h = luaL_checkinteger(L, 4);
 	size_t n;
-	const char *pix = luaL_checklstring(L, 5, &n);
+	const char *pix = luabuf_check(L, 5, &n);
 	size_t need = (size_t)w * (size_t)h * 4;
 	void *buf = 0;
 	EFI_STATUS st;
