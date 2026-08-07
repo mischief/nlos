@@ -1945,9 +1945,48 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 	}
 }
 
+/* the handles deserialize has minted into the receiver so far.
+ *
+ * a message is refused as a whole or not at all, and a walk can fail
+ * after it has already installed rights -- a table of four rights whose
+ * fifth field is corrupt, or a receiver whose table filled up partway.
+ * those handles were never pushed to lua, so the receiver cannot name
+ * them to close them and they are lost for the life of the proc. a
+ * sender controls both the count and the timing, so it is also how a
+ * client exhausts a server's rights table from outside.
+ *
+ * MAXMSGRIGHTS bounds it because serialize refuses to write more than
+ * that into one message.
+ */
+struct minted {
+	int h[MAXMSGRIGHTS];
+	int n;
+};
+
+/* give back what a failed walk installed. */
+static void
+minted_undo(struct kproc *p, struct minted *mt)
+{
+	if (mt->n == 0)
+		return;
+
+	ipclock_enter();
+	for (int i = 0; i < mt->n; i++) {
+		struct right *r = right_slot(p, mt->h[i]);
+
+		if (r && r->used)
+			right_drop(r);
+		if (mt->h[i] < p->rhint)
+			p->rhint = mt->h[i];
+	}
+	ipclock_leave();
+	mt->n = 0;
+}
+
 static int
 deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
-    struct msgbufs *bufs, struct kproc *receiver, int depth)
+    struct msgbufs *bufs, struct kproc *receiver, int depth,
+    struct minted *mt)
 {
 	if (depth > MAXDEPTH)
 		return -1;
@@ -2014,11 +2053,11 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 		lua_createtable(L, 0, n);
 		for (unsigned int i = 0; i < n; i++) {
 			int rc = deserialize(L, p, len, off, bufs, receiver,
-			    depth + 1);
+			    depth + 1, mt);
 
 			if (rc == 0)
 				rc = deserialize(L, p, len, off, bufs, receiver,
-				    depth + 1);
+				    depth + 1, mt);
 			/* keep the reason: a nested right that could not
 			 * be made is still a resource failure.
 			 */
@@ -2071,6 +2110,15 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 		/* a full rights table is a local limit, not bad bytes */
 		if (h < 0)
 			return -2;	/* out of rights, not bad bytes */
+		/* recorded before the table is built, because building it
+		 * allocates and a failure there must give this back too.
+		 * the bound cannot be exceeded -- serialize refuses to
+		 * write more than MAXMSGRIGHTS -- but a message is bytes,
+		 * so it is checked rather than trusted.
+		 */
+		if (mt->n >= MAXMSGRIGHTS)
+			return -1;
+		mt->h[mt->n++] = h;
 		lua_createtable(L, 0, 1);
 		lua_pushinteger(L, h);
 		lua_setfield(L, -2, "__right");
@@ -2972,10 +3020,19 @@ static int
 msg_to_lua(lua_State *L, struct kproc *p, struct kmsg *m)
 {
 	size_t off = 0;
+	struct minted mt = { .n = 0 };
 	/* the reason is kept as deserialize gave it, so popfail can tell a
 	 * proc that ran out of rights from a message that would not decode.
 	 */
-	int rc = deserialize(L, m->data, m->len, &off, &m->bufs, p, 0);
+	int rc = deserialize(L, m->data, m->len, &off, &m->bufs, p, 0, &mt);
+
+	/* a message arrives whole or not at all. a partial walk has
+	 * already minted rights the receiver was never told the numbers
+	 * of, so it could not close them and they would be lost for its
+	 * lifetime -- which a sender controls, and so could repeat.
+	 */
+	if (rc)
+		minted_undo(p, &mt);
 
 	/* receiver now holds its own refs (right_new); drop in-flight */
 	msg_dispose(m);
@@ -4027,6 +4084,7 @@ api_spawn(lua_State *L)
 	 */
 	if (have_arg) {
 		size_t off = 0;
+		struct minted mt = { .n = 0 };
 		int bad;
 
 		/* the parent loses any buffer in the arg here, before the
@@ -4038,14 +4096,16 @@ api_spawn(lua_State *L)
 
 		ipclock_enter();
 		bad = deserialize(child->co, argw.p, argw.len, &off,
-		    &argw.bufs, child, 0);
+		    &argw.bufs, child, 0, &mt);
 		ipclock_leave();
 		msgbufs_free(&argw.bufs);	/* whatever it did not take */
 		if (bad) {
 			/* a partial deserialize may have left values on co's
 			 * stack under the chunk's feet, and rights already
 			 * minted into the child. the proc is unusable; kill
-			 * it rather than start it half-built.
+			 * it rather than start it half-built -- which drops
+			 * those rights with everything else it held, so
+			 * there is nothing for minted_undo to do here.
 			 */
 			release_inflight_locked(argw.refs, argw.refrecv, argw.nrefs);
 			free(argw.p);
