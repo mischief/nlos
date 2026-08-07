@@ -399,8 +399,12 @@ _G.dos = setmetatable({}, {
 		if not N then
 			return "dos: no namespace to run programs from"
 		end
+		-- udp is the ip task: it serves the datagram ops on the
+		-- same right, and nothing publishes a capability by that
+		-- name. bin/host.lua and bin/date.lua spend it.
 		require("dos").start({ ns = N, cons = caps.cons,
-		    fb = caps.fb, net = caps.tcp, power = caps.power },
+		    fb = caps.fb, net = caps.tcp, udp = caps.udp or caps.ip,
+		    power = caps.power },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")
 		return "back at the lua repl"

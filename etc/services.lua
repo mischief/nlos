@@ -33,7 +33,7 @@ return {
 	-- allowed to restart it; a session that arrives over the network
 	-- is not, which is why the grant is here and not in dos.
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "tcp", "power" } },
+	  optcaps = { "tcp", "ip", "power" } },
 
 	-- the panel and the keyboard as a plain terminal, for a board
 	-- with no pointer. Exactly one of this and dio above belongs in a
@@ -41,7 +41,7 @@ return {
 	-- two consoles drawing on one screen is two consoles drawing on
 	-- one screen.
 	-- { path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" },
-	--   optcaps = { "tcp", "power" } },
+	--   optcaps = { "tcp", "ip", "power" } },
 
 	-- the browser shell. off by default: it hands anonymous visitors a
 	-- shell, which is a decision to make deliberately rather than

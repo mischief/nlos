@@ -95,6 +95,7 @@ local kbd = job.kbd and job.kbd.__right
 local cons = job.cons and job.cons.__right
 local tcp = job.tcp and job.tcp.__right
 local power = job.power and job.power.__right
+local ip = job.ip and job.ip.__right
 
 local function say(s)
 	if cons then
@@ -544,6 +545,9 @@ local function startterm(a, entry, desc)
 		-- is a local terminal: it holds what the serial console
 		-- holds, and a session over the network does not.
 		power = power and { __right = power } or nil,
+		-- the ip task, which is also the udp server: bin/host.lua
+		-- and bin/date.lua ask a server one question each.
+		ip = ip and { __right = ip } or nil,
 	})
 	sys.close(h)
 	return pid

@@ -149,6 +149,7 @@ if src then
 		cons = { __right = consright },
 		fb = { __right = fb },
 		net = job.tcp and { __right = job.tcp.__right },
+		udp = job.ip and { __right = job.ip.__right },
 		power = job.power and { __right = job.power.__right },
 		ns = N and N:describe(),
 	})
