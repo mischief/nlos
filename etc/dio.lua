@@ -21,6 +21,15 @@ return {
 	width = 28,
 
 	apps = {
+		-- a terminal, and through it everything that is not a
+		-- pointer program: a shell in the window, and vi in the
+		-- shell. kind = "term" is the one entry dio starts
+		-- differently -- task/fbterm.lua takes a framebuffer and a
+		-- keyboard rather than the program ABI, and dio gives it
+		-- the window and the keys it was lent.
+		{ name = "term", cmd = "/task/fbterm.lua", kind = "term",
+		  label = ">", color = 0x0074d9 },
+
 		{ name = "scribble", cmd = "/bin/scribble.lua",
 		  label = "S", color = 0x2ecc40 },
 		{ name = "smiley", cmd = "/bin/smiley.lua",

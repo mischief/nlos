@@ -129,6 +129,11 @@ while i <= #arg do
 		end
 		print(("%s: %s %dx%d, %d bytes"):format(out, st.kind, st.w,
 		    st.h, st.bytes))
+	elseif a == "cancel" then
+		-- for a line left mid-transfer: stop the sender and read
+		-- what it has already sent, so the next command lands at a
+		-- prompt rather than inside a screenshot.
+		p:cancel()
 	elseif a == "sleep" then
 		hostpanel.nap(tonumber(next_arg("seconds")) or 1)
 	else

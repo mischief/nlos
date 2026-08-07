@@ -222,7 +222,58 @@ end
 -- and a guest that free-runs a dump into it blocks forever once the
 -- USB-Serial-JTAG buffer fills with nobody draining. ZMODEM is paced by
 -- the receiver and moves a 320x240 screen in about a second.
+-- read and discard whatever the guest is still saying, until it has
+-- been quiet for `quiet` seconds or `limit` has passed.
+--
+-- What this is for is a transfer that failed: the sender goes on
+-- streaming a screen into a console with nobody receiving, and every
+-- command typed afterwards lands in the middle of it. Draining is how
+-- the line becomes a line again.
+function Panel:drain(limit, quiet)
+	local deadline = os.time() + (limit or 6)
+	local n = 0
+
+	while os.time() < deadline do
+		if not self.hu.readable(self.fd, quiet or 0.4) then
+			break
+		end
+		-- A byte at a time, and this is the whole reason to say so:
+		-- read(n) on a buffered stream waits for n bytes, and a
+		-- serial line has no end to cut it short. Asking for a
+		-- block when only one byte has arrived blocks until the
+		-- other 4095 do, which on a quiet line is never -- so the
+		-- tool that was meant to unstick the port was what held it.
+		if not self.f:read(1) then
+			break
+		end
+		n = n + 1
+	end
+	return n
+end
+
+-- ZMODEM's cancel: the sender stops on a run of CAN. Sent when the
+-- receiver has gone, which is exactly when the guest would otherwise
+-- keep sending.
+--
+-- Bounded rather than "until it stops". A sender that has stopped
+-- reading its console does not hear this, and waiting for a guest that
+-- cannot answer holds the serial port -- the one way in -- for as long
+-- as the wait. Better to give the line back and say so.
+function Panel:cancel()
+	self.f:write(string.rep("\24", 10))
+	self.f:flush()
+	self:drain(6, 0.4)
+	self.f:write("\r\n")
+	self.f:flush()
+	nap(0.3)
+	return self
+end
+
 function Panel:shot(out, rows)
+	-- anything still arriving is from before this call and would be
+	-- read as the start of the transfer.
+	self:drain(3, 0.3)
+
 	-- lrz writes to the current directory under the name the sender
 	-- gave and cannot be told otherwise, so ask for a name of our
 	-- choosing and move it afterwards.
@@ -258,6 +309,9 @@ function Panel:shot(out, rows)
 
 	if timedout then
 		self.hu.kill(pid)
+		-- with the receiver gone the guest is still sending, and
+		-- what it sends lands in whatever is typed next.
+		self:cancel()
 	end
 
 	-- the guest reports its own result and says why it failed, which

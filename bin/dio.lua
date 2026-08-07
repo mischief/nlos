@@ -364,9 +364,86 @@ local function appns()
 	return desc
 end
 
+-- ---- a terminal in the window ----
+--
+-- task/fbterm.lua is the console stack -- glyphs through lib/fbcons.lua,
+-- tty logic in lib/console.lua, a shell above it -- and it takes a
+-- framebuffer and a keyboard port. Handed dio's framebuffer it draws in
+-- the app area and asks it how big the screen is, so the grid is the
+-- window's. Nothing in it knows about dio.
+--
+-- The keyboard is the one dio was lent. dio holds a terminal rather
+-- than a keyboard, so the keys are pulled from it a keystroke at a time
+-- and pushed onto a port of dio's own, which is what fbcons reads. Raw
+-- while the terminal runs, or the console under us would line-edit
+-- what the console above us is trying to read.
+local tty = prog.tty()
+local keys = sys.newport()
+local keysend = sys.sendright(keys)
+
+local function pumpkeys(alive)
+	if not tty then
+		return
+	end
+	tty.rawon()
+	thread.spawn(function()
+		while alive() do
+			local c = tty.getch(300)
+
+			if type(c) == "string" and c ~= "" then
+				sys.send(keysend, c)
+			end
+		end
+		tty.rawoff()
+	end)
+end
+
+local function startterm(a, desc)
+	local src, serr = N:readfile(a.cmd)
+
+	if not src then
+		return nil, tostring(serr)
+	end
+
+	local pid, h = proc.spawn(src, { name = a.name, ns = desc })
+
+	if not pid then
+		return nil, "spawn failed"
+	end
+
+	local out = require("stdout").out
+
+	sys.send(h, {
+		fb = { __right = fbport },
+		kbd = { __right = keys },
+		cons = out and { __right = out } or nil,
+	})
+	sys.close(h)
+	return pid
+end
+
+-- start sets `running` itself rather than leaving it to the caller: the
+-- key pump asks whether the app it belongs to is still the one running,
+-- and a pump started before that was recorded would answer no and stop
+-- on its first lap.
 local function start(i)
 	local a = conf.apps[i]
 	local desc = appns()
+
+	if a.kind == "term" then
+		local pid, err = startterm(a, desc)
+
+		if not pid then
+			return nil, err
+		end
+		running = { pid = pid, index = i }
+		sys.monitor(pid)
+		pumpkeys(function()
+			return running ~= nil and running.pid == pid
+		end)
+		return pid
+	end
+
 	local pid, h = proc.spawn('require("prog").main()',
 	    { name = a.name, ns = desc })
 
@@ -388,6 +465,7 @@ local function start(i)
 		stderr = out and { __right = out } or nil,
 	})
 	sys.close(h)
+	running = { pid = pid, index = i }
 	sys.monitor(pid)
 	return pid
 end
@@ -450,12 +528,17 @@ thread.spawn(function()
 						running.stopped = true
 						pcall(sys.kill, running.pid)
 					elseif i and not running then
-						local pid = start(i)
+						local pid, serr = start(i)
 
 						if pid then
-							running = { pid = pid,
-							    index = i }
 							drawbutton(i)
+						else
+							io.stderr:write(
+							    "dio: " ..
+							    conf.apps[i].name ..
+							    ": " ..
+							    tostring(serr) ..
+							    "\n")
 						end
 					end
 				end
