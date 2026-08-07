@@ -19,6 +19,28 @@ const char *luabuf_check(lua_State *L, int idx, size_t *len);
  * write: for a C function that produces its result into one. */
 unsigned char *luabuf_writable(lua_State *L, int idx, size_t *len);
 
+/* ---- transfer ----
+ *
+ * A buffer travels by changing owner. The steps are separate because a
+ * send can fail after the message is built: the sender keeps its bytes
+ * until the message is queued.
+ *
+ * borrow gives the bytes and a handle for detach. It is null unless the
+ * buffer is storage its holder alone owns: not a string, a view, a
+ * read-only buffer, one with views onto it, or one given away.
+ *
+ * detach empties that handle and uncharges the proc.
+ *
+ * give pushes a buffer owning p, charged to the proc running L. It
+ * returns 0, pushing nothing, when that would exceed the proc's cap.
+ */
+const char *luabuf_borrow(lua_State *L, int idx, size_t *len, void **handle);
+void	luabuf_detach(lua_State *L, void *handle);
+int	luabuf_give(lua_State *L, void *p, size_t len);
+
+/* buffers allocated since boot, for sys.stats() */
+unsigned long long luabuf_allocs(void);
+
 /* pooled bytes, charged to the proc running L against the same cap as
  * its lua memory. charge returns 0 when the cap would be exceeded.
  *

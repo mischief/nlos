@@ -265,9 +265,47 @@ struct ktrace {
 	int nco;
 };
 
+/* buffers travelling on one message. The bytes are not in the message:
+ * a transfer hands the storage over, so what the message carries is the
+ * pointer, and the wire holds an index into this.
+ *
+ * The kernel owns them from the moment a send is queued until they are
+ * given to a receiver, which is what makes a dropped message, a flushed
+ * queue and a dead proc all one path: free what is still here.
+ */
+#define MAXMSGBUFS 4
+
+struct msgbufs {
+	void *p[MAXMSGBUFS];
+	size_t len[MAXMSGBUFS];
+	int n;
+};
+
+static void
+msgbufs_free(struct msgbufs *b)
+{
+	for (int i = 0; i < b->n; i++)
+		if (b->p[i])
+			platform_chunk_free(b->p[i], b->len[i]);
+	b->n = 0;
+}
+
+/* what these bytes cost a queue, on top of the serialized message */
+static size_t
+msgbufs_bytes(const struct msgbufs *b)
+{
+	size_t t = 0;
+
+	for (int i = 0; i < b->n; i++)
+		t += b->len[i];
+	return t;
+}
+
 struct kmsg {
 	struct kmsg *next;
 	size_t len;
+	struct msgbufs bufs;	/* transferred; freed by msg_free */
+	size_t qcost;		/* what it took off MAXQUEUE */
 	/* ports referenced by in-flight rights in this message. they hold
 	 * a ref each so a port can't be freed (and its index reused) while
 	 * the only right to it sits in a queue.
@@ -401,6 +439,7 @@ struct kproc {
 	struct right *xrights;		/* MAXRIGHTS - NRIGHTS_INLINE, or null */
 	int rhint;			/* lowest slot that might be free */
 	int rhigh;			/* one past the highest slot ever used */
+	int bufdenied;			/* the last -2 was a buffer, not a right */
 	TAILQ_HEAD(, kextra) coros;	/* every lua_State of this proc */
 	int hookforced;			/* 0 none, 1 p->co armed, 2 all armed */
 	int torture;			/* yield between EVERY instruction */
@@ -949,9 +988,10 @@ static int proc_has_port(struct kproc *p, struct kport *port);
 
 static int port_push(struct kport *port, const unsigned char *data,
     size_t len, const unsigned short *refs, int nrefs);
+struct msgbufs;
 static int port_push_owned(struct kport *port, unsigned char *data,
     size_t len, const unsigned short *refs, const unsigned char *refrecv,
-    int nrefs);
+    int nrefs, const struct msgbufs *bufs);
 
 extern unsigned long long platform_ticks(void);
 
@@ -1374,11 +1414,14 @@ port_new(void)
 
 static void port_unref(struct kport *port);
 
-/* free one message, releasing the in-flight right refs it carries */
+/* free one message: the in-flight right refs it carries, and any
+ * transferred buffer nobody took.
+ */
 static void
 msg_free(struct kmsg *m)
 {
 	release_inflight(m->refs, m->refrecv, m->nrefs);
+	msgbufs_free(&m->bufs);
 	free(m->data);
 	free(m);
 }
@@ -1588,7 +1631,7 @@ right_get(struct kproc *p, lua_Integer h)
 
 /* ---- serializer ----
  * tags: N nil, T true, F false, I int64, D double, S u32+bytes,
- * B u32 npairs then k,v..., R u8 portindex u8 recv
+ * B u32 npairs then k,v..., R u8 portindex u8 recv, M u8 bufindex
  */
 
 struct wbuf {
@@ -1601,6 +1644,12 @@ struct wbuf {
 	unsigned short refs[MAXMSGRIGHTS];
 	unsigned char refrecv[MAXMSGRIGHTS];
 	int nrefs;
+	/* buffers this message takes over, and the handles they came
+	 * from. The handles are emptied only once the message is queued,
+	 * so a send that fails leaves the sender holding its bytes.
+	 */
+	struct msgbufs bufs;
+	void *bufown[MAXMSGBUFS];
 };
 
 static int
@@ -1744,18 +1793,14 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		return wput(w, s, n);
 	}
 	case LUA_TTABLE: {
-		/* {__right = handle} sends a right, and COPIES it: the port
-		 * is taken out of the sender's handle and the handle stays
-		 * live and still counts against MAXRIGHTS. A caller minting
-		 * one per request must therefore close it, which is what
-		 * lib/thread.lua's rpc is for -- forgetting has cost this
-		 * tree three separate bugs, each one surfacing far from the
-		 * leak as a driver that mysteriously stopped working.
+		/* {__right = handle} copies a right: the sender's handle
+		 * stays live and still counts against MAXRIGHTS, so a
+		 * caller minting one per request must close it. That is
+		 * what lib/thread.lua's rpc does.
 		 *
-		 * if __right is present but not an integer handle it's a
-		 * mistake (e.g. a float); refuse it rather than silently
-		 * shipping the table as data and dropping the intended
-		 * capability.
+		 * A __right that is not an integer handle is a mistake, and
+		 * is refused rather than shipped as data -- which would
+		 * quietly drop the capability it meant to send.
 		 */
 		lua_getfield(L, idx, "__right");
 		if (!lua_isnil(L, -1)) {
@@ -1792,6 +1837,42 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		}
 		lua_pop(L, 1);
 
+		/* {__buf = b} gives the bytes away. Unlike a right, which
+		 * is copied, the sender is left holding an empty handle
+		 * and every use of it raises -- so a mistake shows at the
+		 * line that made it, not as two procs writing over one
+		 * another.
+		 *
+		 * What may travel is decided by luabuf_borrow: storage its
+		 * holder alone owns. Anything else is refused here rather
+		 * than copied, because a send that silently copied would
+		 * hide the cost this exists to remove.
+		 */
+		lua_getfield(L, idx, "__buf");
+		if (!lua_isnil(L, -1)) {
+			size_t n;
+			void *handle;
+			const char *s = luabuf_borrow(L, -1, &n, &handle);
+
+			if (!s || w->bufs.n >= MAXMSGBUFS) {
+				lua_pop(L, 1);
+				return -1;
+			}
+			int i = w->bufs.n;
+
+			if (wbyte(w, 'M') || wbyte(w, (unsigned char)i)) {
+				lua_pop(L, 1);
+				return -1;
+			}
+			w->bufs.p[i] = (void *)s;
+			w->bufs.len[i] = n;
+			w->bufown[i] = handle;
+			w->bufs.n++;
+			lua_pop(L, 1);
+			return 0;
+		}
+		lua_pop(L, 1);
+
 		unsigned int n = 0;
 		size_t countpos = w->len;
 
@@ -1811,14 +1892,11 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		return 0;
 	}
 	case LUA_TUSERDATA: {
-		/* a los.buf travels as its bytes, which is what a payload
-		 * is: the receiver gets a string, exactly as if the sender
-		 * had cut one. The copy is still here -- handing the bytes
-		 * over rather than copying them is a change of owner and
-		 * needs the kernel to hold the storage, which is a
-		 * different piece of work. What this saves is the string
-		 * the sender would have had to make first, which for a
-		 * banded screen is one per band.
+		/* a bare los.buf travels as its bytes and arrives as a
+		 * string, so a sender never has to cut one first. The copy
+		 * is still here; {__buf = b} is how to hand the bytes over
+		 * instead, and it is the only form that empties the
+		 * sender's handle.
 		 */
 		size_t n;
 		const char *s = luabuf_bytes(L, idx, &n);
@@ -1838,7 +1916,7 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 
 static int
 deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
-    struct kproc *receiver, int depth)
+    struct msgbufs *bufs, struct kproc *receiver, int depth)
 {
 	if (depth > MAXDEPTH)
 		return -1;
@@ -1904,11 +1982,11 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 			return -1;
 		lua_createtable(L, 0, n);
 		for (unsigned int i = 0; i < n; i++) {
-			int rc = deserialize(L, p, len, off, receiver,
+			int rc = deserialize(L, p, len, off, bufs, receiver,
 			    depth + 1);
 
 			if (rc == 0)
-				rc = deserialize(L, p, len, off, receiver,
+				rc = deserialize(L, p, len, off, bufs, receiver,
 				    depth + 1);
 			/* keep the reason: a nested right that could not
 			 * be made is still a resource failure.
@@ -1917,6 +1995,29 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 				return rc;
 			lua_settable(L, -3);
 		}
+		return 0;
+	}
+	case 'M': {
+		/* a transferred buffer: the bytes are the kernel's, and
+		 * this is where they become the receiver's. Taking one
+		 * clears the slot, so whatever is left when the message is
+		 * disposed of is what nobody received.
+		 */
+		if (*off >= len)
+			return -1;
+		int i = p[(*off)++];
+
+		if (!bufs || i >= bufs->n || !bufs->p[i])
+			return -1;
+		if (!luabuf_give(L, bufs->p[i], bufs->len[i])) {
+			/* a local limit, like a full rights table, and
+			 * reported the same way. The flag is what lets
+			 * popfail name which limit it was.
+			 */
+			receiver->bufdenied = 1;
+			return -2;
+		}
+		bufs->p[i] = 0;
 		return 0;
 	}
 	case 'R': {
@@ -2179,7 +2280,8 @@ wake_senders(struct kport *port)
  */
 static int
 port_push_owned(struct kport *port, unsigned char *data, size_t len,
-    const unsigned short *refs, const unsigned char *refrecv, int nrefs)
+    const unsigned short *refs, const unsigned char *refrecv, int nrefs,
+    const struct msgbufs *bufs)
 {
 	/* caller holds the bucket covering `port`.
 	 * CONTEXT: port_push, notify_exit, port_send_from_lua.
@@ -2190,7 +2292,13 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 		return -3;
 	}
 
-	if (port->qbytes + len > MAXQUEUE) {
+	/* transferred bytes count against the queue too. They are not in
+	 * the message, so without this a sender could park megabytes on a
+	 * queue nobody drains and MAXQUEUE would read as empty.
+	 */
+	size_t cost = len + (bufs ? msgbufs_bytes(bufs) : 0);
+
+	if (port->qbytes + cost > MAXQUEUE) {
 		port->ndrop_full++;
 		return -2;		/* full, distinct from out of memory */
 	}
@@ -2201,8 +2309,13 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 		return -1;
 	m->next = 0;
 	m->len = len;
+	m->qcost = cost;
 	m->data = data;
 	m->nrefs = nrefs;
+	if (bufs)
+		m->bufs = *bufs;
+	else
+		m->bufs.n = 0;
 	for (int i = 0; i < nrefs; i++) {
 		m->refs[i] = refs[i];
 		m->refrecv[i] = refrecv ? refrecv[i] : 0;
@@ -2212,7 +2325,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 	else
 		port->head = m;
 	port->tail = m;
-	port->qbytes += len;
+	port->qbytes += cost;
 	if (port->qbytes > port->qpeak)
 		port->qpeak = port->qbytes;
 	port->nsent++;
@@ -2240,7 +2353,7 @@ port_push(struct kport *port, const unsigned char *data, size_t len,
 	}
 	memcpy(copy, data, len);
 
-	int rc = port_push_owned(port, copy, len, refs, 0, nrefs);
+	int rc = port_push_owned(port, copy, len, refs, 0, nrefs, 0);
 
 	if (rc) {
 		release_inflight(refs, 0, nrefs);
@@ -2513,15 +2626,25 @@ port_send_from_lua(lua_State *L, struct kproc *p, struct right *r, int idx,
 		goto discard;
 	}
 
+	/* what the queue will charge, which is what a waiter has to wait
+	 * for room for: the message, plus the bytes it hands over.
+	 */
 	if (len)
-		*len = w.len;
+		*len = w.len + msgbufs_bytes(&w.bufs);
 
 	ipclock_enter_port(r->port);
-	rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv, w.nrefs);
+	rc = port_push_owned(r->port, w.p, w.len, w.refs, w.refrecv, w.nrefs,
+	    &w.bufs);
 	ipclock_leave_port(r->port);
 
 	switch (rc) {
 	case 0:
+		/* queued, so the bytes are the message's now. Until this
+		 * point the sender still had them, which is what makes a
+		 * refused send leave the sender whole.
+		 */
+		for (int i = 0; i < w.bufs.n; i++)
+			luabuf_detach(L, w.bufown[i]);
 		return SEND_OK;
 	case -2:
 		rc = SEND_FULL;
@@ -2785,7 +2908,7 @@ port_pop(struct kport *port)
 		port->head = m->next;
 		if (!port->head)
 			port->tail = 0;
-		port->qbytes -= m->len;
+		port->qbytes -= m->qcost;
 		/* room freed: this is the ordinary backpressure wakeup */
 		wake_senders(port);
 	}
@@ -2821,7 +2944,7 @@ msg_to_lua(lua_State *L, struct kproc *p, struct kmsg *m)
 	/* the reason is kept as deserialize gave it, so popfail can tell a
 	 * proc that ran out of rights from a message that would not decode.
 	 */
-	int rc = deserialize(L, m->data, m->len, &off, p, 0);
+	int rc = deserialize(L, m->data, m->len, &off, &m->bufs, p, 0);
 
 	/* receiver now holds its own refs (right_new); drop in-flight */
 	msg_dispose(m);
@@ -2834,9 +2957,15 @@ msg_to_lua(lua_State *L, struct kproc *p, struct kmsg *m)
 static int
 popfail(lua_State *L, struct kproc *p, int rc)
 {
-	if (rc == -2)
+	if (rc == -2) {
+		if (p->bufdenied) {
+			p->bufdenied = 0;
+			return luaL_error(L, "no room for a transferred "
+			    "buffer");
+		}
 		return luaL_error(L, "out of rights: %d of %d in use",
 		    p->rhigh, MAXRIGHTS);
+	}
 	return luaL_error(L, "corrupt message");
 }
 
@@ -3814,9 +3943,18 @@ api_spawn(lua_State *L)
 		size_t off = 0;
 		int bad;
 
+		/* the parent loses any buffer in the arg here, before the
+		 * child can take one: from this line the bytes have one
+		 * owner, whether delivery works or not.
+		 */
+		for (int i = 0; i < argw.bufs.n; i++)
+			luabuf_detach(L, argw.bufown[i]);
+
 		ipclock_enter();
-		bad = deserialize(child->co, argw.p, argw.len, &off, child, 0);
+		bad = deserialize(child->co, argw.p, argw.len, &off,
+		    &argw.bufs, child, 0);
 		ipclock_leave();
+		msgbufs_free(&argw.bufs);	/* whatever it did not take */
 		if (bad) {
 			/* a partial deserialize may have left values on co's
 			 * stack under the chunk's feet, and rights already
@@ -4025,6 +4163,11 @@ api_stats(lua_State *L)
 	 * here on its own so it can be told apart. */
 	lua_pushinteger(L, (lua_Integer)kbuf_pooled());
 	lua_setfield(L, -2, "buf_used");
+	/* buffers made since boot, beside the bytes held now: a rate says
+	 * whether a path allocates per operation, which a level cannot.
+	 */
+	lua_pushinteger(L, (lua_Integer)luabuf_allocs());
+	lua_setfield(L, -2, "buf_allocs");
 
 	/* the lua heaps, summed: there is one per proc now, and what the
 	 * machine wants to know is still the total. live is what the
@@ -6838,7 +6981,7 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 	/* no rights in an exit notice, so a refusal means only that the
 	 * buffer comes back here to be freed.
 	 */
-	if (port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0))
+	if (port_push_owned(watcher->rights[0].port, w.p, w.len, 0, 0, 0, 0))
 		free(w.p);
 	return;
 fail:

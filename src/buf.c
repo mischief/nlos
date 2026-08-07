@@ -18,15 +18,11 @@
  *   A buffer is large and long-lived, which is the shape the small-class
  *   free lists in luaheap are not for.
  *
- *   A buffer is meant to travel. A lua heap belongs to one state -- one
- *   per proc when NCPU > 1 -- so bytes allocated there cannot be handed
- *   to another proc without copying them, which is the thing this
- *   exists to stop. Bytes from the chunk source are the kernel's, and
- *   handing them over is a change of owner.
- *
- * Travelling is not implemented here. What is implemented is the part
- * that cannot be retrofitted: the storage is already the kernel's, and
- * the handle already has an owner and can be emptied.
+ *   A buffer travels. A lua heap belongs to one state -- one per proc
+ *   when NCPU > 1 -- so bytes allocated there could not be handed to
+ *   another proc without copying them, which is the thing this exists
+ *   to stop. Bytes from the chunk source are the kernel's, and a send
+ *   changes their owner.
  *
  * ---- accounting ----
  *
@@ -42,6 +38,7 @@
  * A second convention in the same program is a bug generator.
  */
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -61,7 +58,17 @@ struct luabuf {
 	size_t		 len;
 	int		 ro;	/* a view, or a buffer someone made read-only */
 	int		 owned;	/* frees p; false for a view onto another */
+	int		 views;	/* live views onto these bytes */
 };
+
+/* buffers made since boot. atomic because any cpu can allocate one. */
+static atomic_ullong nallocs;
+
+unsigned long long
+luabuf_allocs(void)
+{
+	return atomic_load_explicit(&nallocs, memory_order_relaxed);
+}
 
 static struct luabuf *
 checkbuf(lua_State *L, int idx)
@@ -154,6 +161,8 @@ buf_new(lua_State *L)
 	b->len = n;
 	b->ro = 0;
 	b->owned = 1;
+	b->views = 0;
+	atomic_fetch_add_explicit(&nallocs, 1, memory_order_relaxed);
 	luaL_setmetatable(L, BUFMT);
 	return 1;
 }
@@ -166,6 +175,18 @@ buf_gc(lua_State *L)
 	if (b->p && b->owned) {
 		platform_chunk_free(b->p, b->len);
 		kbuf_uncharge(L, b->len);
+	} else if (!b->owned) {
+		/* a view: tell what it looks at that it is gone, so a
+		 * transfer can tell whether anyone still points at these
+		 * bytes. The uservalue keeps that alive until now.
+		 */
+		struct luabuf *parent;
+
+		lua_getiuservalue(L, 1, 1);
+		parent = luaL_testudata(L, -1, BUFMT);
+		if (parent && parent->views > 0)
+			parent->views--;
+		lua_pop(L, 1);
 	}
 	b->p = 0;
 	return 0;
@@ -383,6 +404,8 @@ buf_view(lua_State *L)
 	v->len = n;
 	v->ro = b->ro;
 	v->owned = 0;
+	v->views = 0;
+	b->views++;
 	luaL_setmetatable(L, BUFMT);
 
 	/* the parent, not the grandparent: a view of a view keeps the
@@ -409,6 +432,8 @@ buf_ro(lua_State *L)
 	v->len = b->len;
 	v->ro = 1;
 	v->owned = 0;
+	v->views = 0;
+	b->views++;
 	luaL_setmetatable(L, BUFMT);
 
 	lua_pushvalue(L, 1);
@@ -505,12 +530,18 @@ static const luaL_Reg buflib[] = {
 	{ NULL, NULL },
 };
 
-int luaopen_los_buf(lua_State *L);
-
-int
-luaopen_los_buf(lua_State *L)
+/* the metatable, made if this state has none yet.
+ *
+ * A proc that never required los.buf can still be handed a buffer, and
+ * without this it would arrive as a userdata with no methods.
+ */
+static void
+bufmeta(lua_State *L)
 {
-	luaL_newmetatable(L, BUFMT);
+	if (!luaL_newmetatable(L, BUFMT)) {
+		lua_pop(L, 1);
+		return;
+	}
 	lua_pushvalue(L, -1);
 	lua_setfield(L, -2, "__index");
 	luaL_setfuncs(L, bufmeth, 0);
@@ -523,7 +554,14 @@ luaopen_los_buf(lua_State *L)
 	lua_pushcfunction(L, buf_eq);
 	lua_setfield(L, -2, "__eq");
 	lua_pop(L, 1);
+}
 
+int luaopen_los_buf(lua_State *L);
+
+int
+luaopen_los_buf(lua_State *L)
+{
+	bufmeta(L);
 	luaL_newlib(L, buflib);
 	return 1;
 }
@@ -544,6 +582,52 @@ luabuf_check(lua_State *L, int idx, size_t *len)
 		luaL_error(L, "bad argument #%d (string or buffer expected)",
 		    idx);
 	return s;
+}
+
+/* ---- transfer ----
+ *
+ * See buf.h for the contract. What is here is the rule about what may
+ * travel: storage its holder alone owns. A view is refused because the
+ * bytes are someone else's, and a buffer with views is refused because
+ * the views would be left pointing at bytes that changed proc.
+ */
+const char *
+luabuf_borrow(lua_State *L, int idx, size_t *len, void **handle)
+{
+	struct luabuf *b = luaL_testudata(L, idx, BUFMT);
+
+	if (!b || !b->p || !b->owned || b->ro || b->views)
+		return 0;
+	*len = b->len;
+	*handle = b;
+	return (const char *)b->p;
+}
+
+void
+luabuf_detach(lua_State *L, void *handle)
+{
+	struct luabuf *b = handle;
+
+	kbuf_uncharge(L, b->len);
+	b->p = 0;
+}
+
+int
+luabuf_give(lua_State *L, void *p, size_t len)
+{
+	struct luabuf *b;
+
+	if (!kbuf_charge(L, len))
+		return 0;
+	bufmeta(L);
+	b = lua_newuserdatauv(L, sizeof *b, 1);
+	b->p = p;
+	b->len = len;
+	b->ro = 0;
+	b->owned = 1;
+	b->views = 0;
+	luaL_setmetatable(L, BUFMT);
+	return 1;
 }
 
 /* the bytes of a writable buffer, for a C function that produces into
