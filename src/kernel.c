@@ -180,7 +180,13 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
  * top -- hold on it unchanged. holding the state costs nothing but the
  * heap it sits in, so the number of corpses is capped.
  */
-enum { DEAD, READY, BLOCKED, BROKE };
+/* HATCHING is a proc that exists and has never run: proc_new made it,
+ * proc_launch has not. It is distinct from BLOCKED because BLOCKED
+ * means "waiting on a port" and carries a waiter to name; a hatching
+ * proc waits on its creator and is on no port. The wake paths test for
+ * BLOCKED, so nothing can make one runnable but its creator.
+ */
+enum { DEAD, READY, BLOCKED, BROKE, HATCHING };
 /* PRIV_BOOT is proc 0 and nothing else. it is not a device capability
  * like the rest -- it means "this proc is where the raw ESP reaches",
  * which is true only of the proc the kernel starts itself, and is what
@@ -3943,6 +3949,7 @@ api_newport(lua_State *L)
 
 static int proc_new(const char *code, size_t codelen, const char *chunkname,
     int is_file, int reductions, size_t mem_limit, int port_limit, int priv);
+static void proc_launch(struct kproc *p);
 static void notify_exit(struct kproc *watcher, int pid, const char *reason,
     int status, const char *exitmsg, int broke, int priv);
 
@@ -4219,6 +4226,13 @@ api_spawn(lua_State *L)
 		struct minted mt = { .n = 0 };
 		int bad;
 
+		/* writing another cpu's running coroutine would race its
+		 * stack, and a raise in here would longjmp down that cpu's
+		 * resume frame -- leaving this one's ipc bucket held.
+		 */
+		if (child->status != HATCHING)
+			platform_abort("spawn: child ran before its arg");
+
 		/* the parent loses any buffer in the arg here, before the
 		 * child can take one: from this line the bytes have one
 		 * owner, whether delivery works or not.
@@ -4252,6 +4266,12 @@ api_spawn(lua_State *L)
 		release_inflight_locked(argw.refs, argw.refrecv, argw.nrefs);
 		free(argw.p);
 	}
+
+	/* built: the arg is on co's stack and nargs says so. */
+	ipclock_enter();
+	proc_launch(child);
+	ipclock_leave();
+
 	/* hand parent a send right on the child's self port */
 	ipclock_enter();
 	int h = right_new(p, child->rights[0].port, 0);
@@ -4736,6 +4756,9 @@ push_wchan(lua_State *L, struct kproc *p)
 	switch (p->status) {
 	case DEAD:
 		lua_pushliteral(L, "dead");
+		return 1;
+	case HATCHING:
+		lua_pushliteral(L, "hatching");
 		return 1;
 	case BROKE:
 		lua_pushliteral(L, "broke");
@@ -7227,9 +7250,27 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	SLIST_INIT(&p->waiters);
 	p->onq = 0;
 	p->pri = 0;
-	make_ready(p);
+
+	/* born hatching: a proc runs only once its creator launches it.
+	 *
+	 * The caller still has to finish building it -- the spawn arg and
+	 * nargs, a driver's device right, the boot proc's grants. A
+	 * second cpu that dispatches it inside that window resumes a
+	 * half-built proc and races the creator for its stack.
+	 */
+	p->status = HATCHING;
 	nlive++;
 	return p->id;
+}
+
+/* let a built proc run. Separate from proc_new because every caller has
+ * setup to do first; one that forgets this leaves a proc blocked with
+ * nothing able to wake it.
+ */
+static void
+proc_launch(struct kproc *p)
+{
+	make_ready(p);		/* caller holds an ipc bucket */
 }
 
 /* build and deliver an exit notification: {exit=pid, normal=bool,
@@ -7814,11 +7855,15 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 		kernel_log(buf);
 		return -1;
 	}
-	if (devport) {
-		struct kproc *p = find_proc(pid);
+	/* the device right first, then run it: the task cannot do its job
+	 * without it.
+	 */
+	struct kproc *p = find_proc(pid);
 
-		if (p)
+	if (p) {
+		if (devport)
 			right_new(p, devport, devrecv);
+		proc_launch(p);
 	}
 
 	/* announce what attached, the way a bsd announces its devices.
@@ -8105,6 +8150,12 @@ spawn_init(const char *code, size_t len, int is_file)
 		grant_named(p, "ptr", devptrport, 1);
 	grant_named(p, "disk", diskport, 0);
 	grant_named(p, "sched", schedport, 0);
+
+	/* granted: the boot proc reads its rights table on its first
+	 * line, so it runs only now.
+	 */
+	if (p)
+		proc_launch(p);
 	ipclock_leave();
 	return pid;
 }

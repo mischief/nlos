@@ -961,6 +961,7 @@ microvm_smp_tests = [
   ['altpending', []],
   ['bigmsg', []],
   ['sample', []],
+  ['spawnrace', []],
 ]
 
 foreach n : ['2', '4']
