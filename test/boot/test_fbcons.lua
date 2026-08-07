@@ -17,7 +17,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(14)
+tap.plan(16)
 
 tap.ok(caps_of.fb ~= nil, "boot payload holds the screen")
 if not caps_of.fb then
@@ -112,3 +112,20 @@ con.write("\27[0m\27[2J\27[H" .. string.rep("\n", con.rows - 1))
 con.write("\27[31mX\27[0m\n")
 tap.ok(has(0, con.rows - 2, 0xcc0000),
     "the line that triggered the scroll is carried up, not lost")
+
+-- ---- a line that fills the width costs one row, not two ----
+--
+-- A character written into the last column leaves the wrap owed rather
+-- than taken. Without that, the newline after a full-width line lands on
+-- a row the write had already moved to, and every such line is followed
+-- by a blank one -- which is what a wrapped irc message looks like when
+-- it is wrong.
+con.write(HOME .. string.rep("A", con.cols) .. "\r\nB")
+tap.ok(has(0, 1, 0xc0c0c0), "a full-width line is followed by the next row")
+-- and two full-width lines in a row take two rows, not four: the owed
+-- wrap must be cancelled by the carriage return that follows it rather
+-- than saved up.
+-- red, so the row it lands on is told from the rows of C above it.
+con.write(HOME .. string.rep("C", con.cols) .. "\r\n" ..
+    string.rep("C", con.cols) .. "\r\n\27[31mE\27[0m")
+tap.ok(has(0, 2, 0xcc0000), "two full-width lines take two rows")

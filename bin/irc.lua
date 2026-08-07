@@ -114,10 +114,42 @@ local function winmake(target)
 	return #wins
 end
 
-local function put(w, s)
+-- ---- color ----
+--
+-- SGR, which the panel console draws (lib/fbcons.lua) and a host
+-- terminal over ssh understands. Held apart from the text rather than
+-- written into it: an escape sequence in the string would be counted as
+-- width by the wrap below, and a line would break in the wrong place.
+local SYSTEM = "90"		-- joins, parts, what this program says
+local SERVER = "36"		-- a numeric, or anything unrecognised
+local NOTICE = "33"
+
+-- a nick's color, from the nick. The same person is the same color for
+-- as long as they keep the name, on every window and across a restart,
+-- which is what makes a channel readable at a glance -- and it needs no
+-- table, because the name is the key.
+--
+-- Six of the bright half. Not the two greys: one is the default pen and
+-- the other is the color the system lines already use.
+local NICKCOLORS = { "91", "92", "93", "94", "95", "96" }
+
+local function nickcolor(name)
+	local h = 0
+
+	for i = 1, #name do
+		h = (h * 31 + name:byte(i)) % 65521
+	end
+	return NICKCOLORS[h % #NICKCOLORS + 1]
+end
+
+-- a line, with an optional color over the first `pre` characters of it:
+-- the nick in "<nick> what they said" is colored and what they said is
+-- not, so the color marks who is talking without tinting the words.
+-- With no `pre`, the color covers the whole line.
+local function put(w, s, color, pre)
 	local lines = wins[w].lines
 
-	lines[#lines + 1] = s
+	lines[#lines + 1] = { s = s, c = color, pre = pre or #s }
 	if #lines > SCROLLBACK then
 		table.remove(lines, 1)
 	end
@@ -127,8 +159,8 @@ end
 -- everything the server says that is not addressed to a window goes to
 -- the server window, rather than being dropped: an irc client that
 -- hides what it did not understand is one you cannot debug.
-local function say(s)
-	put(1, s)
+local function say(s, color)
+	put(1, s, color or SYSTEM)
 end
 
 -- ---- drawing ----
@@ -137,6 +169,45 @@ end
 -- bin/top.lua.
 local input = ""
 local buf = {}
+
+-- one stored line as the rows it takes on a screen `cols` wide, appended
+-- to `out`. A line is broken at a space where there is one in reach and
+-- in the middle of a word where there is not, so a long word cannot
+-- stall the wrap. Truncating instead loses the end of what somebody
+-- said, which on a 53-column panel is most of a sentence.
+local function wrap(s, cols, out)
+	local i, n = 1, #s
+
+	if n == 0 then
+		out[#out + 1] = ""
+		return
+	end
+	while i <= n do
+		if n - i + 1 <= cols then
+			out[#out + 1] = s:sub(i)
+			return
+		end
+
+		local cut = cols
+
+		-- a break inside a word only where the row holds no space:
+		-- the character after the row decides, because a row ending
+		-- exactly at a space needs no break at all.
+		if s:sub(i + cols, i + cols) ~= " " then
+			for p = cols, 2, -1 do
+				if s:sub(i + p - 1, i + p - 1) == " " then
+					cut = p - 1
+					break
+				end
+			end
+		end
+		out[#out + 1] = s:sub(i, i + cut - 1)
+		i = i + cut
+		while s:sub(i, i) == " " do	-- the space it broke at
+			i = i + 1
+		end
+	end
+end
 
 local function draw()
 	local rows = term.rows or 24
@@ -152,18 +223,59 @@ local function draw()
 
 	emit("\27[H")
 
-	-- the last `body` lines, oldest first, with the bottom of the ring
-	-- against the bottom of the window.
-	local first = #w.lines - body + 1
+	-- the newest lines, wrapped, oldest first. Walked backwards and
+	-- filled from the bottom, because how many rows a line takes is
+	-- not known until it is wrapped: a line whose wrapping overflows
+	-- the window keeps its end, which is where the sentence finished.
+	-- a row is the text plus what to color and how much of it. The
+	-- colored part is the head of a line, so only the row that starts
+	-- one carries it.
+	local shownrows = {}
+	local segs = {}
 
-	if first < 1 then
-		first = 1
+	for k = #w.lines, 1, -1 do
+		local line = w.lines[k]
+
+		for j = 1, #segs do
+			segs[j] = nil
+		end
+		wrap(line.s, cols, segs)
+		for j = #segs, 1, -1 do
+			if #shownrows >= body then
+				break
+			end
+			table.insert(shownrows, 1, {
+				s = segs[j],
+				c = (j == 1) and line.c or nil,
+				pre = line.pre,
+			})
+		end
+		if #shownrows >= body then
+			break
+		end
 	end
-	for k = first, first + body - 1 do
-		local line = w.lines[k] or ""
 
-		emit(line:sub(1, cols))
-		emit("\27[K\r\n")
+	-- the erase comes first, so a row that fills the width keeps its
+	-- last character: erasing after it would erase from the column the
+	-- cursor is still owed a wrap from.
+	for k = 1, body do
+		local r = shownrows[k]
+
+		emit("\27[K")
+		if r and r.c then
+			local pre = r.pre
+
+			if pre > #r.s then
+				pre = #r.s
+			end
+			emit("\27[" .. r.c .. "m")
+			emit(r.s:sub(1, pre))
+			emit("\27[0m")
+			emit(r.s:sub(pre + 1))
+		else
+			emit(r and r.s or "")
+		end
+		emit("\r\n")
 	end
 
 	-- the status line: which windows exist, which one this is, and the
@@ -178,7 +290,11 @@ local function draw()
 		tabs[#tabs + 1] = mark .. k .. ":" .. wins[k].name
 	end
 	emit("\27[7m")
-	emit(("[%s] %s"):format(nick, table.concat(tabs, " ")):sub(1, cols))
+	-- a column short of the width: the erase after it paints the rest
+	-- of the row reversed, and a status line filling the last column
+	-- would be cut by that erase instead.
+	emit(("[%s] %s"):format(nick, table.concat(tabs, " ")):sub(1,
+	    cols - 1))
 	emit("\27[K\27[0m\r\n")
 
 	-- the input line, tail-first: a line longer than the terminal
@@ -303,14 +419,20 @@ local function onmsg(m)
 		local verb, arg = irc.isctcp(text)
 
 		if verb == "ACTION" then
-			put(w or 1, ("* %s %s"):format(from, arg or ""))
+			-- the whole line is the action, so the whole line
+			-- takes the color: there is no "<nick>" to mark.
+			put(w or 1, ("* %s %s"):format(from, arg or ""),
+			    nickcolor(from))
 		elseif verb then
 			-- a ctcp we do not answer is still worth seeing.
-			put(w or 1, ("[ctcp %s from %s]"):format(verb, from))
+			put(w or 1, ("[ctcp %s from %s]"):format(verb, from),
+			    SYSTEM)
 		elseif cmd == "NOTICE" then
-			put(w or 1, ("-%s- %s"):format(from, text))
+			put(w or 1, ("-%s- %s"):format(from, text), NOTICE,
+			    #from + 2)
 		else
-			put(w or 1, ("<%s> %s"):format(from, text))
+			put(w or 1, ("<%s> %s"):format(from, text),
+			    nickcolor(from), #from + 2)
 		end
 		return
 	end
@@ -319,12 +441,12 @@ local function onmsg(m)
 		local ch = m.params[1]
 
 		if irc.same(m.nick, nick) then
-			put(winmake(ch), "* joined " .. ch)
+			put(winmake(ch), "* joined " .. ch, SYSTEM)
 		else
 			local w = winfind(ch)
 
 			if w then
-				put(w, ("* %s joined"):format(m.nick or "?"))
+				put(w, ("* %s joined"):format(m.nick or "?"), SYSTEM)
 			end
 		end
 		return
@@ -336,7 +458,7 @@ local function onmsg(m)
 		local w = ch and winfind(ch)
 
 		if w and not irc.same(who, nick) then
-			put(w, ("* %s left"):format(who))
+			put(w, ("* %s left"):format(who), SYSTEM)
 			return
 		end
 		if cmd == "QUIT" then
@@ -344,7 +466,7 @@ local function onmsg(m)
 			-- person is known.
 			for k = 2, #wins do
 				if irc.same(wins[k].target, who) then
-					put(k, ("* %s quit"):format(who))
+					put(k, ("* %s quit"):format(who), SYSTEM)
 				end
 			end
 			return
@@ -359,7 +481,7 @@ local function onmsg(m)
 	for k = 2, #m.params do
 		parts[#parts + 1] = m.params[k]
 	end
-	say(("%s %s"):format(cmd, table.concat(parts, " ")))
+	say(("%s %s"):format(cmd, table.concat(parts, " ")), SERVER)
 end
 
 -- ---- what is typed ----
@@ -433,7 +555,7 @@ local function docommand(line)
 
 		if w.target then
 			send(irc.action(w.target, rest))
-			put(cur, ("* %s %s"):format(nick, rest))
+			put(cur, ("* %s %s"):format(nick, rest), nickcolor(nick))
 		end
 	elseif word == "raw" then
 		if rest ~= "" then
@@ -462,7 +584,8 @@ local function online(line)
 		return
 	end
 	send(irc.privmsg(w.target, line))
-	put(cur, ("<%s> %s"):format(nick, line))
+	put(cur, ("<%s> %s"):format(nick, line),
+	    nickcolor(nick), #nick + 2)
 end
 
 -- one keystroke. Raw mode, so this is the whole line editor: the

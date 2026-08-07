@@ -342,7 +342,26 @@ function Cons:clearrow(y, from, to)
 	self:dirtyspan(y, from, to)
 end
 
+-- A character written into the last column leaves the cursor there with
+-- the wrap owed rather than taken, and the next character pays it. That
+-- is what every terminal does, and what keeps a line of exactly the
+-- screen's width from costing two rows: the newline after it would
+-- otherwise land on a row the write had already moved to, and the line
+-- would be followed by a blank one.
+--
+-- Anything that moves the cursor on purpose cancels the debt.
 function Cons:putc(c)
+	if self.wrapnext and c >= " " then
+		self.wrapnext = false
+		self.col = 0
+		self.row = self.row + 1
+		if self.row >= self.rows then
+			self:scroll()
+		end
+	elseif c < " " then
+		self.wrapnext = false
+	end
+
 	if c == "\n" then
 		self.row = self.row + 1
 		self.col = 0
@@ -376,13 +395,10 @@ function Cons:putc(c)
 
 	self:setcell(self.row, self.col, c)
 	self:dirtyspan(self.row, self.col, self.col + 1)
-	self.col = self.col + 1
-	if self.col >= self.cols then
-		self.col = 0
-		self.row = self.row + 1
-		if self.row >= self.rows then
-			self:scroll()
-		end
+	if self.col + 1 >= self.cols then
+		self.wrapnext = true	-- owed, not taken; see above
+	else
+		self.col = self.col + 1
 	end
 end
 
@@ -466,6 +482,11 @@ end
 function Cons:csi(final, parm)
 	local p = params(parm)
 	local n = p[1]
+
+	-- a sequence that places the cursor, or erases from it, settles
+	-- where it is: an owed wrap is cancelled rather than carried into
+	-- the new position.
+	self.wrapnext = false
 
 	if final == "A" then
 		self.row = clamp(self.row - atleast1(n), 0, self.rows - 1)
