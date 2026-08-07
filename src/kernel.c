@@ -25,6 +25,7 @@
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
+#include "buf.h"
 #include "luaheap.h"
 #include "debug.h"
 #include "platform.h"
@@ -461,7 +462,9 @@ struct kproc {
 	 * later resumes pass nothing.
 	 */
 	int nargs;
-	size_t mem_used;	/* live bytes in this proc's lua heap */
+	size_t mem_used;	/* live bytes in this proc's lua heap, plus its
+				 * pooled buffer bytes -- see kbuf_charge */
+	size_t buf_used;	/* the pooled half of mem_used, on its own */
 	size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
 	/* bytes lua has asked for since this proc's collector last ran.
@@ -3916,7 +3919,10 @@ api_meminfo(lua_State *L)
 	lua_pushinteger(L, (lua_Integer)p->mem_used);
 	lua_pushinteger(L, (lua_Integer)p->mem_peak);
 	lua_pushinteger(L, (lua_Integer)p->mem_limit);
-	return 3;
+	/* the pooled part of mem_used, so a proc holding buffers can be
+	 * told from one holding lua objects. */
+	lua_pushinteger(L, (lua_Integer)p->buf_used);
+	return 4;
 }
 
 static int
@@ -3993,6 +3999,11 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "heap_blocks");
 	lua_pushinteger(L, (lua_Integer)htotal);
 	lua_setfield(L, -2, "heap_total_allocs");
+	/* los.buf's storage, which comes from the chunk source rather than
+	 * a lua heap. Counted in heap_used like every other chunk, and
+	 * here on its own so it can be told apart. */
+	lua_pushinteger(L, (lua_Integer)kbuf_pooled());
+	lua_setfield(L, -2, "buf_used");
 
 	/* the lua heaps, summed: there is one per proc now, and what the
 	 * machine wants to know is still the total. live is what the
@@ -5507,6 +5518,7 @@ extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
 extern int luaopen_los_inet(lua_State *L);		/* inet.c: checksum */
 extern int luaopen_los_crc(lua_State *L);		/* crc.c: crc16/crc32 */
 extern int luaopen_los_font(lua_State *L);		/* font.c: glyphs */
+extern int luaopen_los_buf(lua_State *L);		/* buf.c: byte buffers */
 extern int luaopen_los_rom(lua_State *L);		/* vfs.c: the embed set */
 extern int luaopen_ssh_crypto_native(lua_State *L);	/* native.c */
 extern int luaopen_gefs_native(lua_State *L);	/* gefs_native.c */
@@ -5668,6 +5680,59 @@ static const struct luaheap_ops kalloc_ops = {
 	.chunk_alloc = kalloc_chunk,
 	.chunk_free = kalloc_free_chunk,
 };
+
+/* ---- pooled bytes (src/buf.c) ----
+ *
+ * los.buf takes its storage from the chunk source rather than from a
+ * proc's lua heap, so kalloc above never sees it. It is charged here
+ * instead, against the same cap: a proc that can allocate outside its
+ * budget has no budget.
+ *
+ * mem_used is the cap's counter, so pooled bytes go in it and a
+ * buffer's memory means what every other byte of a proc's memory means.
+ * buf_used is the same bytes counted again on their own, which is what
+ * makes them visible: memory that is not in the numbers is memory
+ * nobody finds.
+ *
+ * Every counter here belongs to one proc, and a proc runs on one cpu at
+ * a time, so nothing is shared and nothing needs a lock. The machine's
+ * total is summed from the procs when it is asked for rather than kept
+ * -- a running total would be exactly the shared word this design has
+ * none of.
+ */
+int
+kbuf_charge(lua_State *L, size_t n)
+{
+	struct kproc *p = self(L);
+
+	if (p->mem_limit && p->mem_used + n > p->mem_limit)
+		return 0;
+	p->mem_used += n;
+	if (p->mem_used > p->mem_peak)
+		p->mem_peak = p->mem_used;
+	p->buf_used += n;
+	return 1;
+}
+
+void
+kbuf_uncharge(lua_State *L, size_t n)
+{
+	struct kproc *p = self(L);
+
+	p->mem_used -= n;
+	p->buf_used -= n;
+}
+
+size_t
+kbuf_pooled(void)
+{
+	size_t total = 0;
+
+	for (int i = 0; i < prochigh; i++)
+		if (procv[i])
+			total += procv[i]->buf_used;
+	return total;
+}
 
 
 /* print(), for a proc that has not redirected it. See src/coreg.h: this
@@ -6298,6 +6363,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	p->nwatch = 0;
 	p->reductions = reductions > 0 ? reductions : default_reductions;
 	p->mem_used = 0;
+	p->buf_used = 0;
 	p->mem_peak = 0;
 	/* the limit goes live only after setup: base state + libraries
 	 * are counted but never refused, so a tiny limit can't panic
@@ -6509,6 +6575,13 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_los_font);
 	lua_setfield(p->L, -2, "los.font");
+	/* los.buf (src/buf.c): memory, not authority. A buffer is bytes a
+	 * proc allocates from its own budget, so it is ambient for the
+	 * same reason los.font is -- what it can reach is nothing it did
+	 * not make.
+	 */
+	lua_pushcfunction(p->L, luaopen_los_buf);
+	lua_setfield(p->L, -2, "los.buf");
 	/* los.fs is the whole of raw ESP access -- enumeration, metadata
 	 * and file data. it is registered for exactly two procs: the esp
 	 * server task, which serves the disk to everyone else over a port
