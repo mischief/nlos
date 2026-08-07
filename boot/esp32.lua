@@ -368,6 +368,7 @@ if ok then
 	end
 	if caps.power then
 		_G.halt = magic.halt(caps.power)
+		_G.reboot = magic.reboot(caps.power)
 	end
 end
 
@@ -399,7 +400,7 @@ _G.dos = setmetatable({}, {
 			return "dos: no namespace to run programs from"
 		end
 		require("dos").start({ ns = N, cons = caps.cons,
-		    fb = caps.fb, net = caps.tcp },
+		    fb = caps.fb, net = caps.tcp, power = caps.power },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")
 		return "back at the lua repl"
@@ -409,7 +410,7 @@ _G.dos = setmetatable({}, {
 print(_VERSION .. " on esp32")
 if ok then
 	print("mach-lite kernel + plan9 furniture. ps, stats, stack(pid)" ..
-	    ", dos()" .. (caps.power and ", halt()" or ""))
+	    ", dos()" .. (caps.power and ", halt(), reboot()" or ""))
 else
 	print("mach-lite kernel. ps unavailable: " .. tostring(magic))
 end

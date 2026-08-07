@@ -27,8 +27,13 @@ return {
 	-- tcp is optional rather than required: a panel is still a panel
 	-- on a board with no stack. Where there is one it reaches the
 	-- shell in the window, which is how fetch finds a network.
+	--
+	-- power is optional on the same terms, and is what bin/reboot.lua
+	-- spends. A panel you have to be holding the board to touch is
+	-- allowed to restart it; a session that arrives over the network
+	-- is not, which is why the grant is here and not in dos.
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "tcp" } },
+	  optcaps = { "tcp", "power" } },
 
 	-- the panel and the keyboard as a plain terminal, for a board
 	-- with no pointer. Exactly one of this and dio above belongs in a
@@ -36,7 +41,7 @@ return {
 	-- two consoles drawing on one screen is two consoles drawing on
 	-- one screen.
 	-- { path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" },
-	--   optcaps = { "tcp" } },
+	--   optcaps = { "tcp", "power" } },
 
 	-- the browser shell. off by default: it hands anonymous visitors a
 	-- shell, which is a decision to make deliberately rather than

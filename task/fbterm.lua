@@ -133,6 +133,11 @@ if src then
 	-- the network too, where the machine has one. The shell lends it
 	-- to every program it runs, which is how bin/fetch.lua reaches
 	-- the stack -- see prog.net.
+	--
+	-- And power, on the same terms, which is how bin/reboot.lua
+	-- restarts the machine. This terminal is a local one -- the panel
+	-- and the keyboard in your hands -- so it holds what the serial
+	-- console holds. A public session (sshd, webterm) does not.
 	sys.send(sh, {
 		-- who to watch. A shell must not outlive the terminal it
 		-- prompts on: this one is parked waiting for a line when
@@ -144,6 +149,7 @@ if src then
 		cons = { __right = consright },
 		fb = { __right = fb },
 		net = job.tcp and { __right = job.tcp.__right },
+		power = job.power and { __right = job.power.__right },
 		ns = N and N:describe(),
 	})
 	sys.close(sh)

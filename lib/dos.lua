@@ -137,6 +137,11 @@ function M.new(caps)
 		-- the tcp task, lent on the same terms as the screen: a
 		-- shell given none hands out none.
 		net = caps.net,
+		-- the power task, on the same terms again. This one is the
+		-- machine itself, so a public session (sshd, webterm) is
+		-- given none and its programs cannot reset the machine --
+		-- which is a grant a level up, not a check in bin/reboot.lua.
+		power = caps.power,
 		coro = caps.coro or false,
 		env = caps.env or { PATH = caps.path or "/bin", HOME = "/" },
 		cwd = "/",
@@ -421,6 +426,13 @@ function Sh:spawn1(path, argv, streams)
 	-- rather than one that fails oddly when they try.
 	if self.net then
 		msg.net = { __right = self.net }
+	end
+	-- and the power task, for bin/reboot.lua. Every program gets it
+	-- where the shell has it, like the screen and the network: the
+	-- authority is the grant, and a program that never asks
+	-- (prog.power) is unaffected.
+	if self.power then
+		msg.power = { __right = self.power }
 	end
 	-- the pull flag rides BESIDE stdin, not inside it. a table carrying
 	-- __right is serialized as the right and nothing else (see

@@ -418,6 +418,7 @@ local repl_worker_src = [[
 	-- see lib/ps.lua for why the effect needs parens and the bare
 	-- word only explains itself.
 	_G.halt = magic.halt(powerh)
+	_G.reboot = magic.reboot(powerh)
 
 	-- dos(): hand the console to the DOS-shaped launcher. it takes over
 	-- input until you type exit, so like halt it needs parens -- a bare
@@ -439,8 +440,13 @@ local repl_worker_src = [[
 			-- made.
 			-- no srv capability: `mount` reads /srv out of this
 			-- namespace, which the worker inherited.
+			-- power goes with it: this is the boot console,
+			-- whose repl already has halt(), so bin/reboot.lua
+			-- adds no authority a session here did not have.
+			-- A public session gets no such grant.
 			launcher.start({ ns = require("ns").current(),
-			    cons = consh, fb = fbh, net = tcph },
+			    cons = consh, fb = fbh, net = tcph,
+			    power = powerh },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")
 			return "back at the lua repl"
@@ -458,6 +464,7 @@ local repl_worker_src = [[
 			local words = {
 				{ "dos", "dos()", "the shell: run programs from /bin (help there lists them)" },
 				{ "halt", "halt()", "power the machine off" },
+				{ "reboot", "reboot()", "restart the machine" },
 				{ "ps", "ps", "the process table" },
 				{ "stats", "stats", "scheduler counters" },
 				{ "ports", "ports", "open ports" },

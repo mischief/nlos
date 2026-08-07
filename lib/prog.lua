@@ -667,6 +667,8 @@ function M.main()
 	ctx.tty = ctx.tty and ctx.tty.__right or nil
 	-- the network, if the launcher lent us one. see M.net below.
 	ctx.net = ctx.net and ctx.net.__right or nil
+	-- the power task, if the launcher lent us one. see M.power below.
+	ctx.power = ctx.power and ctx.power.__right or nil
 
 	local N, nerr = ns.restore(ctx.nsdesc)
 
@@ -801,6 +803,21 @@ function M.tty()
 		return nil
 	end
 	return require("caps").tty(ctx.tty)
+end
+
+-- the power task, wrapped, or nil where the launcher lent none. Same
+-- rule as M.screen and M.net, and the largest of the three: a holder
+-- resets or powers off the machine, and there is no smaller piece of it
+-- to ask for. So a program says what it needs it for by name
+-- (bin/reboot.lua) and a shell without the grant refuses to run it,
+-- rather than the program discovering the lack halfway through.
+function M.power()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.power then
+		return nil
+	end
+	return require("caps").power(ctx.power)
 end
 
 return M

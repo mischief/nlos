@@ -371,4 +371,25 @@ function M.halt(powerhandle)
 	})
 end
 
+-- reboot: halt's other half, and the same rules -- a factory for the
+-- capability, an effect only on call, nothing from __tostring.
+--
+-- The stall goes first so the word "rebooting" reaches the serial line:
+-- both are sends to one mailbox and arrive in order. Without it the
+-- machine resets with the line still in the uart and prints nothing,
+-- which reads as a crash.
+function M.reboot(powerhandle)
+	return setmetatable({}, {
+		__tostring = function()
+			return "reboot: type reboot() to restart the machine"
+		end,
+		__call = function(_, mode)
+			sys.send(powerhandle, { op = "stall", us = 100000 })
+			sys.send(powerhandle,
+			    { op = "reset", mode = mode or "cold" })
+			return "rebooting..."
+		end,
+	})
+end
+
 return M

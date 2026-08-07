@@ -57,7 +57,8 @@ local dos = require("dos")
 
 thread.spawn(function()
 	local sh = dos.new({ ns = N, cons = cons, fb = fb,
-	    net = job.net and job.net.__right })
+	    net = job.net and job.net.__right,
+	    power = job.power and job.power.__right })
 
 	-- run the loop here rather than sh:repl, so a command's exit
 	-- status is reported instead of discarded. A shell that drops it

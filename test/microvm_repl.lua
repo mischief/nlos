@@ -45,7 +45,7 @@ local function diag(s)
 	end
 end
 
-print("1..4")
+print("1..5")
 
 local function popen_line(cmd)
 	local f = io.popen(cmd)
@@ -168,6 +168,20 @@ end
 
 diag("guest answered:")
 diag(seen)
+
+-- and the machine's own power words are bound. Typed BARE on purpose:
+-- reboot() would restart the guest and end the test, while the word by
+-- itself only explains itself -- which is the property lib/ps.lua goes
+-- out of its way to keep, and therefore worth testing.
+seen = ""
+hostutil.send(fd, "reboot\n")
+
+if not ok(await("type reboot%(%)", 30), "reboot is bound at the prompt") then
+	diag("guest transcript follows")
+	diag(seen)
+	cleanup(pid)
+	os.exit(1)
+end
 
 cleanup(pid)
 os.exit(failed > 0 and 1 or 0)

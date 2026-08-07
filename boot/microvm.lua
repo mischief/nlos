@@ -42,11 +42,12 @@ _G.stack = function(pid)
 end
 if caps.power then
 	_G.halt = magic.halt(caps.power)
+	_G.reboot = magic.reboot(caps.power)
 end
 
 print(_VERSION .. " on microvm")
 print("mach-lite kernel + plan9 furniture. ps, stats, stack(pid)" ..
-    (caps.power and ", halt()" or ""))
+    (caps.power and ", halt(), reboot()" or ""))
 print("")
 
 -- the same two-step the efi repl does: try the line as an expression
