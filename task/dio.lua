@@ -32,10 +32,10 @@
 -- here unchanged, and so does anything else written for the whole
 -- screen.
 --
--- The alternative was to hand the focused app the framebuffer right and
--- take it back on a switch, and that cannot be done. Rights here are
--- copied, never revoked, so an app given the screen keeps it, and one
--- drawing over the foreground could only be stopped by killing it.
+-- Handing the focused app the framebuffer right instead, and taking it
+-- back on a switch, cannot be done. Rights here are copied, never
+-- revoked, so an app given the screen keeps it, and one drawing over
+-- the foreground could only be stopped by killing it.
 --
 -- The mouse goes the same way. dio opens /dev/mouse, which is
 -- exclusive, and serves an app its own /dev/mouse with the coordinates
@@ -49,10 +49,9 @@
 -- mouse read fails and it exits. Nothing is left drawing on a screen it
 -- no longer has.
 --
--- The other side of that: dio is the panel now, so a dio that dies
--- takes the panel with it until the machine is restarted. The serial
--- line is still a way in, which is the reason it is kept clear of
--- everything but diagnostics.
+-- The other side of that: dio is the panel, so a dio that dies takes
+-- the panel with it until the machine restarts. The serial line is the
+-- way back in, which is why it carries diagnostics and nothing else.
 --
 -- ---- the tray ----
 --
@@ -462,10 +461,8 @@ local function startterm(a, desc)
 	return pid
 end
 
--- start sets `running` itself rather than leaving it to the caller: the
--- key pump asks whether the app it belongs to is still the one running,
--- and a pump started before that was recorded would answer no and stop
--- on its first lap.
+-- start records `running` itself. What is in front decides where keys
+-- go, so it must be true before the app can ask for one.
 local function start(i)
 	local a = conf.apps[i]
 	local desc = appns()

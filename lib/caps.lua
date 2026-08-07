@@ -57,6 +57,9 @@ local function needof(m)
 	return 0
 end
 
+-- thread.parksend, not sys.sendblock: parking is legal only for the
+-- coroutine the kernel resumed, and callers here are as often inside a
+-- thread as not. parksend picks the right wait for either.
 local function sendwait(handle, m)
 	local need = needof(m)
 
@@ -69,7 +72,7 @@ local function sendwait(handle, m)
 		if why ~= "full" then
 			return nil, why
 		end
-		sys.sendblock(handle, need)
+		thread.parksend(handle, need)
 	end
 end
 
@@ -118,7 +121,8 @@ local function requester(target)
 				-- why is nil and result is the reply
 				return result, why
 			end
-			sys.sendblock(target, needof(extra))
+			-- parksend, for the reason sendwait above gives
+			thread.parksend(target, needof(extra))
 		end
 	end
 end

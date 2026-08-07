@@ -237,12 +237,10 @@ function Panel:drain(limit, quiet)
 		if not self.hu.readable(self.fd, quiet or 0.4) then
 			break
 		end
-		-- A byte at a time, and this is the whole reason to say so:
-		-- read(n) on a buffered stream waits for n bytes, and a
-		-- serial line has no end to cut it short. Asking for a
-		-- block when only one byte has arrived blocks until the
-		-- other 4095 do, which on a quiet line is never -- so the
-		-- tool that was meant to unstick the port was what held it.
+		-- A byte at a time. read(n) on a buffered stream waits for
+		-- n bytes, and a serial line has no end to cut it short:
+		-- ask for a block with one byte in hand and the read waits
+		-- for bytes that may never come.
 		if not self.f:read(1) then
 			break
 		end

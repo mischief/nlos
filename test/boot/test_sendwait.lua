@@ -16,7 +16,7 @@ local thread = require("los.thread")
 local tap = require("tap")
 local caps = require("caps")
 
-tap.plan(6)
+tap.plan(8)
 
 tap.ok(type(caps.sendwait) == "function", "caps exposes sendwait")
 
@@ -71,5 +71,37 @@ local dok, derr = caps.sendwait(dright, { data = "x" })
 
 tap.ok(not dok or derr == nil,
     "a send that fails for another reason returns instead of looping")
+
+-- ---- and from inside a thread, which is where the callers are ----
+--
+-- Parking is legal only for the coroutine the kernel resumed, so the
+-- wait differs inside a thread. It is reached only when the far end is
+-- full, so a full queue is what the test has to arrange.
+local tport = sys.newport()
+local tright = sys.sendright(tport)
+
+sys.send(tright, { data = BIG })		-- full before we start
+
+sys.spawn([[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+	local a = ...
+
+	thread.sleep(50)
+	while true do
+		thread.recv(a.__right)
+	end
+]], { arg = { __right = tport } })
+
+local tok, tres
+
+thread.spawn(function()
+	tok, tres = pcall(caps.sendwait, tright, { data = BIG })
+end)
+thread.run()
+
+tap.ok(tok, "sendwait from inside a thread does not raise: " ..
+    tostring(not tok and tres or ""))
+tap.ok(tres == true, "and it delivers, rather than reporting a drop")
 
 tap.done()
