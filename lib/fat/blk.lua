@@ -184,9 +184,8 @@ function Fs:flush()
   for lba in pairs(self.dirty) do order[#order + 1] = lba end
   table.sort(order, function(a, b) return self.dirty[a] < self.dirty[b] end)
   for _, lba in ipairs(order) do
-    -- the device takes bytes, so the sector is a string once more on
-    -- the way out. That copy is the boundary, not the filesystem.
-    self.dev:write(self:secoff(lba), self.cache[lba]:str())
+    -- the sector goes out as it is held: the device takes a buffer.
+    self.dev:write(self:secoff(lba), self.cache[lba])
     self.nwrite = self.nwrite + 1
   end
   -- Written out, so they are clean now and may be evicted.
