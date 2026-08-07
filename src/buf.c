@@ -64,6 +64,9 @@ struct luabuf {
 /* buffers made since boot. atomic because any cpu can allocate one. */
 static atomic_ullong nallocs;
 
+/* the most collection one allocation pays for, in kilobytes of debt */
+#define GCSTEPMAX 8
+
 /* tell the collector about bytes it cannot see.
  *
  * The userdata is a few words; the buffer behind it is thousands. Lua
@@ -72,7 +75,9 @@ static atomic_ullong nallocs;
  * unreachable, the memory is not freed, and the machine runs out while
  * the lua heap looks idle.
  *
- * A step per kilobyte, which is the same currency lua counts in.
+ * A step per kilobyte, which is the same currency lua counts in, up to
+ * GCSTEPMAX. A step does work in proportion to what it is asked for, so
+ * without the ceiling one large buffer pays for a whole marking pass.
  *
  * Called from buf.new alone. A step runs finalizers, so it may run any
  * lua the collector reaches -- including api_close. That is what an
@@ -83,7 +88,11 @@ static atomic_ullong nallocs;
 static void
 gcpressure(lua_State *L, size_t n)
 {
-	lua_gc(L, LUA_GCSTEP, (int)(n / 1024) + 1);
+	int kb = (int)(n / 1024) + 1;
+
+	if (kb > GCSTEPMAX)
+		kb = GCSTEPMAX;
+	lua_gc(L, LUA_GCSTEP, kb);
 }
 
 unsigned long long
@@ -300,8 +309,17 @@ buf_copy(lua_State *L)
 	if (i < 1 || (size_t)(i - 1) + n > b->len)
 		return luaL_error(L, "copy: %d bytes at %d is outside the "
 		    "buffer (%d)", (int)n, (int)i, (int)b->len);
-	/* memmove: the source may be this same buffer */
-	memmove(b->p + (i - 1), s + (from - 1), n);
+	/* memmove only where the ranges overlap, which is one buffer
+	 * copying over itself. It costs about twice memcpy here, and the
+	 * copy is the work.
+	 */
+	unsigned char *dst = b->p + (i - 1);
+	const char *src = s + (from - 1);
+
+	if ((const char *)dst + n > src && (const char *)dst < src + n)
+		memmove(dst, src, n);
+	else
+		memcpy(dst, src, n);
 	lua_pushinteger(L, (lua_Integer)n);
 	return 1;
 }
@@ -464,6 +482,18 @@ buf_ro(lua_State *L)
 	return 1;
 }
 
+/* is this a buffer? For a caller deciding between the two things a
+ * payload can be. Every other userdata answers false, which "type(v)
+ * == userdata" does not: a check that broad indexes whatever it was
+ * handed, and a file or a port is not a buffer.
+ */
+static int
+buf_is(lua_State *L)
+{
+	lua_pushboolean(L, luaL_testudata(L, 1, BUFMT) != 0);
+	return 1;
+}
+
 /* whether {__buf = this} would be accepted: bytes it alone owns.
  *
  * For a server deciding whether to hand a reply over or copy it. The
@@ -566,6 +596,7 @@ static const luaL_Reg bufmeth[] = {
 
 static const luaL_Reg buflib[] = {
 	{ "new", buf_new },
+	{ "is", buf_is },
 	{ NULL, NULL },
 };
 
