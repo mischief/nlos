@@ -544,6 +544,10 @@ lua_payload = files(
   'bin/host.lua',
   'bin/date.lua',
   'lib/ntp.lua',
+  # the irc protocol. On the image ahead of any client for it, so a
+  # session can drive it from the repl -- which is how the client is
+  # debugged before there is a client.
+  'lib/irc.lua',
   'bin/stack.lua',
   'bin/trace.lua',
   'bin/ls.lua',
@@ -1265,6 +1269,16 @@ test('tcp4-codec', lua_interp,
 # vectors, which is what pins the framing to zmodem.h rather than to our
 # own agreement with ourselves. test/boot/test_zmodem.lua runs the same
 # code between two procs over real ports.
+# lib/irc.lua is sans-io for the same reason as the two above: a
+# protocol whose awkward cases -- an empty trailing parameter, a tag
+# holding its own separator, a user typing a newline into a message --
+# are all lines of data rather than connections to arrange.
+test('irc-protocol', lua_interp,
+  args: [files('test/host_irc.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 test('zmodem-protocol', lua_interp,
   args: [files('test/host_zmodem.lua')],
   protocol: 'tap',
