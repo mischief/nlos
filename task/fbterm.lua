@@ -104,6 +104,13 @@ if src then
 	-- to every program it runs, which is how bin/fetch.lua reaches
 	-- the stack -- see prog.net.
 	sys.send(sh, {
+		-- who to watch. A shell must not outlive the terminal it
+		-- prompts on: this one is parked waiting for a line when
+		-- the terminal goes, and a reply that will never come is
+		-- not something it can notice by itself. Monitoring turns
+		-- the terminal's exit into a message on the port it is
+		-- already waiting on.
+		pid = sys.self(),
 		cons = { __right = consright },
 		fb = { __right = fb },
 		net = job.tcp and { __right = job.tcp.__right },

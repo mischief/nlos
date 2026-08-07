@@ -1,10 +1,24 @@
 -- dio: a window system with one window.
 --
---	> dio
---
+-- The panel and the keyboard, as the machine's own interface: started
+-- from /etc/services.lua the way task/fbterm.lua is, and in its place.
 -- A launcher tray down the left, and one app filling everything right
 -- of it. The tray starts an app, and an app that ends leaves the screen
 -- to the next one. What the tray holds is /etc/dio.lua.
+--
+-- The terminal is one of those apps, so a prompt is a thing you switch
+-- to rather than the thing everything else is launched from. It starts
+-- at boot, so a board still comes up at a shell.
+--
+-- Spawned with a message carrying its rights:
+--	{ fb = {__right=}, kbd = {__right=}, cons = {__right=},
+--	  tcp = {__right=} }
+--
+-- The serial console is for saying what went wrong, and nothing else.
+-- A window system that reported its own faults through the console on
+-- the glass would draw them over the window it was reporting about --
+-- lib/fbcons.lua writes where its grid says, and knows nothing of a
+-- tray.
 --
 -- No overlap, ever. That is what makes this small: overlapping windows
 -- force a layer stack and clipped drawing, and one visible app means a
@@ -32,8 +46,13 @@
 --
 -- Both of an app's capabilities are ports dio receives on, so when dio
 -- goes away its app is left holding rights nothing answers: its next
--- mouse read fails and it exits. That is why interrupting dio at the
--- prompt does not leave a program drawing on a screen it no longer has.
+-- mouse read fails and it exits. Nothing is left drawing on a screen it
+-- no longer has.
+--
+-- The other side of that: dio is the panel now, so a dio that dies
+-- takes the panel with it until the machine is restarted. The serial
+-- line is still a way in, which is the reason it is kept clear of
+-- everything but diagnostics.
 --
 -- ---- the tray ----
 --
@@ -52,25 +71,42 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local font = require("los.font")
-local prog = require("prog")
 local caps = require("caps")
 local mousefs = require("mousefs")
 local proc = require("proc")
 local srv = require("srv")
 
-local screen = prog.screen()
-local N = prog.ns()
+-- started either way: as a service, lib/svc.lua hands the capabilities
+-- to the chunk as its argument; started by hand from the repl, they
+-- arrive in a message.
+local job = ... or thread.recv(sys.SELF)
+local fb = job.fb and job.fb.__right
+local kbd = job.kbd and job.kbd.__right
+local cons = job.cons and job.cons.__right
+local tcp = job.tcp and job.tcp.__right
 
-if not screen then
-	io.stderr:write("dio: no framebuffer on this machine\n")
-	os.exit(1)
+local function say(s)
+	if cons then
+		sys.send(cons, { op = "write", data = "dio: " .. s .. "\n" })
+	end
+end
+
+-- the namespace this proc was given, which is where /etc/dio.lua, the
+-- programs and /dev/mouse are. Described from here rather than taken
+-- from the message: proc.spawn adopts it before this chunk runs, so
+-- what arrives in the message is the capability table alone.
+local N = require("ns").current()
+
+if not fb then
+	say("no framebuffer")
+	return
 end
 if not N then
-	io.stderr:write("dio: no namespace\n")
-	os.exit(1)
+	say("no namespace")
+	return
 end
 
-local fb = screen.handle
+local screen = caps.fb(fb)
 
 -- ---- the framebuffer, asked directly ----
 --
@@ -98,8 +134,8 @@ end
 local mode = ask({ op = "mode" })
 
 if not mode then
-	io.stderr:write("dio: cannot read the screen mode\n")
-	os.exit(1)
+	say("cannot read the screen mode")
+	return
 end
 
 -- ---- the tray ----
@@ -118,7 +154,7 @@ if csrc then
 		conf.width = tonumber(res.width) or conf.width
 		conf.apps = res.apps or {}
 	else
-		io.stderr:write("dio: /etc/dio.lua: " .. tostring(res) .. "\n")
+		say("/etc/dio.lua: " .. tostring(res))
 	end
 end
 
@@ -372,29 +408,28 @@ end
 -- the app area and asks it how big the screen is, so the grid is the
 -- window's. Nothing in it knows about dio.
 --
--- The keyboard is the one dio was lent. dio holds a terminal rather
--- than a keyboard, so the keys are pulled from it a keystroke at a time
--- and pushed onto a port of dio's own, which is what fbcons reads. Raw
--- while the terminal runs, or the console under us would line-edit
--- what the console above us is trying to read.
-local tty = prog.tty()
+-- Keystrokes are forwarded rather than handed over, for the reason the
+-- framebuffer is. Giving the app the keyboard right would work exactly
+-- once: a right is copied and never revoked, so an app that has had the
+-- keyboard keeps reading it after it stops being the one in front.
+--
+-- One pump for the life of this proc, parked on the port. A key that
+-- arrives with no terminal running is dropped, which is what "nothing
+-- is listening" means -- the pointer, not the keyboard, is how an app
+-- is started.
 local keys = sys.newport()
 local keysend = sys.sendright(keys)
+local wantkeys = false
 
-local function pumpkeys(alive)
-	if not tty then
-		return
-	end
-	tty.rawon()
+if kbd then
 	thread.spawn(function()
-		while alive() do
-			local c = tty.getch(300)
+		while true do
+			local c = thread.recv(kbd)
 
-			if type(c) == "string" and c ~= "" then
+			if wantkeys and type(c) == "string" and c ~= "" then
 				sys.send(keysend, c)
 			end
 		end
-		tty.rawoff()
 	end)
 end
 
@@ -405,18 +440,23 @@ local function startterm(a, desc)
 		return nil, tostring(serr)
 	end
 
+	if not kbd then
+		return nil, "no keyboard on this machine"
+	end
+
 	local pid, h = proc.spawn(src, { name = a.name, ns = desc })
 
 	if not pid then
 		return nil, "spawn failed"
 	end
 
-	local out = require("stdout").out
-
 	sys.send(h, {
 		fb = { __right = fbport },
 		kbd = { __right = keys },
-		cons = out and { __right = out } or nil,
+		-- the serial line, for what the terminal cannot report
+		-- about itself. Its own output goes to the glass.
+		cons = cons and { __right = cons } or nil,
+		tcp = tcp and { __right = tcp } or nil,
 	})
 	sys.close(h)
 	return pid
@@ -438,9 +478,7 @@ local function start(i)
 		end
 		running = { pid = pid, index = i }
 		sys.monitor(pid)
-		pumpkeys(function()
-			return running ~= nil and running.pid == pid
-		end)
+		wantkeys = true
 		return pid
 	end
 
@@ -451,8 +489,9 @@ local function start(i)
 		return nil, "spawn failed"
 	end
 
-	local out = require("stdout").out
-
+	-- a program's own output goes to the serial line rather than to
+	-- the console on the glass, which draws where its grid says and
+	-- would write over the window the program is drawing in.
 	sys.send(h, {
 		path = a.cmd,
 		name = a.name,
@@ -461,8 +500,8 @@ local function start(i)
 		cwd = "/",
 		nsdesc = desc,
 		fb = { __right = fbport },
-		stdout = out and { __right = out } or nil,
-		stderr = out and { __right = out } or nil,
+		stdout = cons and { __right = cons } or nil,
+		stderr = cons and { __right = cons } or nil,
 	})
 	sys.close(h)
 	running = { pid = pid, index = i }
@@ -479,8 +518,8 @@ end
 local mouse, merr = N:open("/dev/mouse", "r")
 
 if not mouse then
-	io.stderr:write("dio: no /dev/mouse: " .. tostring(merr) .. "\n")
-	os.exit(1)
+	say("no /dev/mouse: " .. tostring(merr))
+	return
 end
 
 drawtray()
@@ -495,7 +534,7 @@ thread.spawn(function()
 		local rec, rerr = mouse:read(49)
 
 		if not rec or rec == "" then
-			io.stderr:write("dio: mouse: " .. tostring(rerr) .. "\n")
+			say("mouse: " .. tostring(rerr))
 			break
 		end
 
@@ -533,12 +572,9 @@ thread.spawn(function()
 						if pid then
 							drawbutton(i)
 						else
-							io.stderr:write(
-							    "dio: " ..
-							    conf.apps[i].name ..
+							say(conf.apps[i].name ..
 							    ": " ..
-							    tostring(serr) ..
-							    "\n")
+							    tostring(serr))
 						end
 					end
 				end
@@ -565,6 +601,10 @@ thread.spawn(function()
 			local asked = running.stopped
 
 			running = nil
+			-- keys have nowhere to go with no terminal in
+			-- front, and forwarding them to a port nothing
+			-- receives on would fill it.
+			wantkeys = false
 			-- a proc killed on purpose is held as a corpse like
 			-- any other, and nothing is going to inspect this
 			-- one: the person who tapped the button knows why it
@@ -576,12 +616,30 @@ thread.spawn(function()
 			drawbutton(i)
 			clearapp()
 			if not m.normal and not asked then
-				io.stderr:write("dio: " ..
-				    tostring(conf.apps[i].name) .. ": " ..
-				    tostring(m.reason) .. "\n")
+				say(tostring(conf.apps[i].name) .. ": " ..
+				    tostring(m.reason))
 			end
 		end
 	end
 end)
+
+-- ---- what the machine comes up in ----
+--
+-- One entry may say boot = true, and it is started before anything is
+-- touched. Without it a board with a panel would boot to a tray and an
+-- empty rectangle, and the only way to a prompt would be to know which
+-- button it is -- so the terminal is marked, and dio replaces the shell
+-- it replaces rather than merely covering it.
+for i, a in ipairs(conf.apps) do
+	if a.boot and not running then
+		local pid, serr = start(i)
+
+		if pid then
+			drawbutton(i)
+		else
+			say(a.name .. ": " .. tostring(serr))
+		end
+	end
+end
 
 thread.run()

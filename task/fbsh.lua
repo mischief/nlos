@@ -62,10 +62,34 @@ thread.spawn(function()
 	-- run the loop here rather than sh:repl, so a command's exit
 	-- status is reported instead of discarded. A shell that drops it
 	-- is the same fault as a console that drops a diagnostic.
+	-- the terminal, watched. A shell must not outlive the terminal it
+	-- prompts on -- it holds a whole lua state and a namespace, and
+	-- nothing can ever reach it again -- and it cannot notice on its
+	-- own: it is parked waiting for a line, and a reply that will
+	-- never come looks exactly like a person who has not typed yet.
+	if job.pid then
+		sys.monitor(job.pid)
+	end
+
 	local function line()
 		sys.send(cons, { op = "readline", prompt = "> ",
 		    reply = { __right = sys.SELF } })
-		return thread.recv(sys.SELF)
+
+		-- the exit notice arrives on this same port, which is the
+		-- point of monitoring rather than polling.
+		while true do
+			local m = thread.recv(sys.SELF)
+
+			if type(m) == "table" then
+				if m.exit and m.exit == job.pid then
+					return nil
+				end
+				-- something else's notice; a shell waits
+				-- for a line, not for this
+			else
+				return m
+			end
+		end
 	end
 	local sok, serr = xpcall(function()
 		while true do

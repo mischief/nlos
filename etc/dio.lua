@@ -13,6 +13,10 @@
 --	label	one character for the button. The tray is 28 pixels wide
 --		and a glyph is 8, so a word does not fit.
 --	color	the button, 0xRRGGBB.
+--	kind	"term" for the console stack, which takes a framebuffer
+--		and a keyboard rather than the program ABI. Anything else
+--		is an ordinary program.
+--	boot	start this one when dio starts. One entry at most.
 --
 -- width is the tray, in pixels. Everything right of it is the app, and
 -- an app is told that rectangle is the screen.
@@ -27,8 +31,11 @@ return {
 		-- differently -- task/fbterm.lua takes a framebuffer and a
 		-- keyboard rather than the program ABI, and dio gives it
 		-- the window and the keys it was lent.
+		-- boot = true starts it before anything is touched, so the
+		-- machine comes up at a prompt rather than at a tray and
+		-- an empty rectangle.
 		{ name = "term", cmd = "/task/fbterm.lua", kind = "term",
-		  label = ">", color = 0x0074d9 },
+		  boot = true, label = ">", color = 0x0074d9 },
 
 		{ name = "scribble", cmd = "/bin/scribble.lua",
 		  label = "S", color = 0x2ecc40 },

@@ -13,16 +13,30 @@
 -- what to run from what it can see, without this growing a syntax.
 
 return {
-	-- the panel and the keyboard, as a terminal beside the serial
-	-- console. Skipped on a machine whose keys arrive through the
-	-- console instead: there is no kbd capability to name, and a
-	-- service that names one it cannot have is not started.
+	-- the panel, the keyboard and the pointer, as the machine's own
+	-- interface: a tray of apps, one of them a terminal, which starts
+	-- at boot so the board still comes up at a prompt.
+	--
+	-- ptr is named although dio never uses the right -- it reaches
+	-- the pointer as /dev/mouse, like any other program. What naming
+	-- it does is decide the machine: a service naming a capability
+	-- the machine has not got is skipped, and every button in this
+	-- one is a place to touch. A board with a panel and no pointer
+	-- wants task/fbterm.lua instead, which is the entry below.
+	--
 	-- tcp is optional rather than required: a panel is still a panel
-	-- on a board with no stack, where naming it in caps would skip
-	-- the terminal. Where there is one, the shell lends it to every
-	-- program it runs, which is how fetch reaches the network.
-	{ path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" },
+	-- on a board with no stack. Where there is one it reaches the
+	-- shell in the window, which is how fetch finds a network.
+	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
 	  optcaps = { "tcp" } },
+
+	-- the panel and the keyboard as a plain terminal, for a board
+	-- with no pointer. Exactly one of this and dio above belongs in a
+	-- machine's file: both name fb and kbd, so both would start, and
+	-- two consoles drawing on one screen is two consoles drawing on
+	-- one screen.
+	-- { path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" },
+	--   optcaps = { "tcp" } },
 
 	-- the browser shell. off by default: it hands anonymous visitors a
 	-- shell, which is a decision to make deliberately rather than
