@@ -464,6 +464,38 @@ if lua54_dep.found()
     meson.current_build_dir() / '?.so', separator: ';')
 endif
 
+# src/gefs_native.c built for the host, so the host test exercises the
+# same hash the guest does rather than a second implementation that
+# merely agrees with it. lib/gefs/hash.lua has no fallback.
+#
+# Named `gefs` rather than `gefs/native` because lua's last searcher
+# takes a.b to a.so and calls luaopen_a_b -- so gefs.so answers
+# require("gefs.native") through luaopen_gefs_native, with no build
+# subdirectory to arrange. require("gefs") itself still finds
+# lib/gefs/init.lua, because the lua-path searcher runs before this one.
+#
+# Up here, above every platform's own section: the gefs-host test runs
+# on all of them, and the efi image's gefs.img is built by running lua
+# against this module.
+#
+# LUA_CPATH is appended rather than set, so a caller's own is kept, and
+# unconditionally as well as inside the branch: the gefs host test also
+# loads los.buf, which is built beside this and by the same test for
+# lua5.4's headers.
+gefs_host_env = environment()
+gefs_host_env.append('LUA_CPATH',
+  meson.current_build_dir() / '?.so', separator: ';')
+if lua54_dep.found()
+  gefs_native_host = shared_module('gefs',
+    ['src/gefs_native.c'],
+    name_prefix: '',
+    dependencies: lua54_dep,
+    native: true,
+    build_by_default: true,
+  )
+  gefs_host_env.append('LUA_CPATH',
+    meson.current_build_dir() / '?.so', separator: ';')
+endif
 
 
 # tests that ask nothing of either platform's hardware, so the same file
@@ -633,9 +665,21 @@ lua_payload = files(
 # a prebuilt gefs volume with one file, for the disk's second partition.
 # Its size is the partition's size (mkimage reads it), so it is picked
 # here rather than fixed in two places.
+#
+# tools/mkgefs.lua reaches gefs.so through require("gefs.native"), which
+# resolves against the build directory it runs in -- a runtime
+# dependency ninja cannot see in the command line, so it is declared.
+# Without it the two targets are unordered and the build fails whenever
+# ninja reaches this one first.
+gefs_img_deps = []
+if lua54_dep.found()
+  gefs_img_deps += gefs_native_host
+endif
+
 gefs_img = custom_target('gefs.img',
   output: 'gefs.img',
   command: [lua_interp, files('tools/mkgefs.lua'), '@OUTPUT@'],
+  depends: gefs_img_deps,
 )
 
 # gpt disk: an esp, and a gefs partition after it holding gefs_img.
@@ -1283,32 +1327,6 @@ test('tcb-lossy', lua_interp,
 # granularity and mid-block through a coroutine that yields inside a
 # write and is abandoned. What this cannot say is that a served volume is
 # wired to the block driver, which is test/boot/microvm_gefs.lua's job.
-
-# src/gefs_native.c built for the host, so the host test exercises the
-# SAME hash the guest does rather than a second implementation that
-# merely agrees with it. lib/gefs/hash.lua has no fallback any more.
-#
-# Named `gefs` rather than `gefs/native` because lua's last searcher
-# takes a.b to a.so and calls luaopen_a_b -- so gefs.so answers
-# require("gefs.native") through luaopen_gefs_native, with no build
-# subdirectory to arrange. require("gefs") itself still finds
-# lib/gefs/init.lua, because the lua-path searcher runs before this one.
-#
-# LUA_CPATH is appended rather than set, so a caller's own is kept.
-gefs_host_env = environment()
-gefs_host_env.append('LUA_CPATH',
-  meson.current_build_dir() / '?.so', separator: ';')
-if lua54_dep.found()
-  gefs_native_host = shared_module('gefs',
-    ['src/gefs_native.c'],
-    name_prefix: '',
-    dependencies: lua54_dep,
-    native: true,
-    build_by_default: true,
-  )
-  gefs_host_env.append('LUA_CPATH',
-    meson.current_build_dir() / '?.so', separator: ';')
-endif
 
 test('gefs-host', lua_interp,
   args: [files('test/host_gefs.lua')],
