@@ -228,21 +228,37 @@ function Cons:dirtyspan(y, from, to)
 	end
 end
 
--- the cursor is a filled cell, undrawn by repainting the one cell it
--- covered. No blink: a timer for it would need a thread of its own, and
--- a solid block is legible without one.
+-- the cursor is the outline of a cell, undrawn by repainting the one
+-- cell it covered. An outline rather than a filled block so the
+-- character under it stays readable: the cursor sits on the cell the
+-- next character will take, which on the last cell of a line is the
+-- cell holding the character just typed. No blink: a timer for it would
+-- need a thread of its own, and an outline is legible without one.
+--
+-- Four fills rather than one. Each is a strip one pixel thick, so the
+-- four together move a fraction of what the filled cell did.
 function Cons:cursor(on)
 	if self.curon == on then
 		return
 	end
 	self.curon = on
 	if on then
-		post(self.fb, { op = "fill", r = { x = self.col * self.cw,
-		    y = self.row * self.ch, w = self.cw, h = self.ch },
-		    color = self.deffg })
-		-- the block covers the cell's glyph, so the glass no longer
-		-- shows its content; forget it, or paintspan would take the
-		-- block for the character and leave it when the cursor moves.
+		local x, y = self.col * self.cw, self.row * self.ch
+		local w, h = self.cw, self.ch
+		local c = self.deffg
+
+		post(self.fb, { op = "fill", color = c,
+		    r = { x = x, y = y, w = w, h = 1 } })
+		post(self.fb, { op = "fill", color = c,
+		    r = { x = x, y = y + h - 1, w = w, h = 1 } })
+		post(self.fb, { op = "fill", color = c,
+		    r = { x = x, y = y + 1, w = 1, h = h - 2 } })
+		post(self.fb, { op = "fill", color = c,
+		    r = { x = x + w - 1, y = y + 1, w = 1, h = h - 2 } })
+		-- the outline is drawn over the cell's edges, so the glass
+		-- no longer shows exactly its content; forget it, or
+		-- paintspan would take what is there for the character and
+		-- leave the outline behind when the cursor moves.
 		self.shownch[self.row + 1][self.col + 1] = nil
 	else
 		-- just the cell it was drawn over

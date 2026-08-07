@@ -87,11 +87,51 @@ end
 -- just the next byte. an optional timeout in ms is what tells a lone
 -- Escape from the first byte of an arrow-key sequence -- with none, block
 -- for a key.
+--
+-- Waits on the keyboard AND the mailbox, as readline does, and for the
+-- same reason: a full-screen program draws a frame and then asks for a
+-- key, so a console watching only the keyboard holds that frame until
+-- the next keystroke. What it shows is then always one frame behind,
+-- and the last frame never arrives at all -- a message from the network
+-- is invisible until you type. Anything that is not a write waits for
+-- serve, which is what `deferred` is for.
 function Console:getch(ms)
-	if ms then
-		return thread.recvtimeout(self.inq, ms)	-- nil on timeout
+	local timer = ms and sys.timer(ms) or nil
+
+	-- no timer to be had: keep the deadline, which is what an escape
+	-- sequence is told from a bare Escape by, and give up serving
+	-- writes for the few milliseconds it takes.
+	if ms and not timer then
+		return thread.recvtimeout(self.inq, ms)
 	end
-	return thread.recv(self.inq)
+
+	local cases = { { port = self.inq }, { port = sys.SELF } }
+
+	if timer then
+		cases[3] = { port = timer }
+	end
+
+	local function done(c)
+		if timer then
+			sys.close(timer)
+		end
+		return c
+	end
+
+	while true do
+		local which, m = thread.alt(cases)
+
+		if which == 1 then
+			return done(m)
+		elseif which == 3 then
+			return done(nil)	-- nil on timeout
+		elseif type(m) == "table" and not m.reply and
+		    (m.op == "write" or m.op == "log") then
+			self.io.write(m.data)
+		else
+			self.deferred[#self.deferred + 1] = m
+		end
+	end
 end
 
 -- read one edited line, prompt included. Waits on the keyboard AND the
