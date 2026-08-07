@@ -289,7 +289,7 @@ function M.new()
 
 			-- a view where the run is a buffer, a slice where
 			-- the caller handed whole sectors as a string
-			blk.write(sec, type(data) == "userdata" and
+			blk.write(sec, buf.is(data) and
 			    data:view(pos, pos + nb - 1) or
 			    data:sub(pos, pos + nb - 1))
 			pos = pos + nb

@@ -162,9 +162,7 @@ end
 -- act on. Like ether.decode, this is a filter: a receiver is fed
 -- whatever arrives.
 function ip4.decode(p)
-	local t = type(p)
-
-	if (t ~= "string" and t ~= "userdata") or #p < ip4.HDRLEN then
+	if (type(p) ~= "string" and not buf.is(p)) or #p < ip4.HDRLEN then
 		return nil
 	end
 

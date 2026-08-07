@@ -64,6 +64,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local buf = require("los.buf")
 local sema = require("sync.sema")
 local lock = require("sync.lock")
 
@@ -160,7 +161,7 @@ function ops.read(S, m)
 	-- rather than having them copied into the reply. A buffer it may
 	-- not give away -- a view onto a cache -- travels as bytes, which
 	-- is what a string would have done anyway.
-	if type(d) == "userdata" and d.movable and d:movable() then
+	if buf.is(d) and d:movable() then
 		return { data = { __buf = d } }
 	end
 	return { data = d }

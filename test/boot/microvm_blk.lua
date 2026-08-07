@@ -240,7 +240,7 @@ tap.ok(D.readbuf ~= nil, "a mount can ask for the bytes as they came")
 
 local raw = D.readbuf(dh, 17 * SECSZ, SECSZ)
 
-tap.is(type(raw), "userdata", "an aligned read comes back as a buffer")
+tap.is(require("los.buf").is(raw), true, "an aligned read comes back as a buffer")
 tap.is(raw:str(), sector(17), "holding the sector it named")
 tap.is(D.read(dh, 17 * SECSZ, SECSZ), sector(17),
     "and read still answers with a string")

@@ -26,7 +26,7 @@ tap.is(tostring(b), "buf(given away)", "and says so")
 
 local m = thread.recv(rp)
 
-tap.is(type(m.it), "userdata", "the receiver got a buffer, not a string")
+tap.ok(buf.is(m.it), "the receiver got a buffer, not a string")
 tap.is(m.it:sub(1, 5), "moved", "with the bytes in it")
 tap.is(#m.it, 64, "and the whole length")
 

@@ -111,6 +111,7 @@
 -- not something backends should each reinvent differently.
 
 local sys = require("los.sys")
+local buf = require("los.buf")
 
 local M = {}
 
@@ -401,12 +402,12 @@ function M.readloop(iounit, one, off, n, raw)
 			return parts[1]
 		end
 		-- a buffer where a string was asked for
-		if type(parts[1]) == "userdata" then
+		if buf.is(parts[1]) then
 			return parts[1]:str()
 		end
 	end
 	for i = 1, #parts do
-		if type(parts[i]) == "userdata" then
+		if buf.is(parts[i]) then
 			parts[i] = parts[i]:str()
 		end
 	end

@@ -98,7 +98,7 @@ function Fs:rdsec(lba)
   -- a buffer the device gave away is the cached sector: it is ours,
   -- writable, and the right size. Anything else is copied into one.
   local sec = r
-  if type(sec) ~= "userdata" or not sec:movable() then
+  if not buf.is(sec) or not sec:movable() then
     sec = buf.new(self.secsz)
     sec:copy(1, r)
   end
