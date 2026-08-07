@@ -32,7 +32,21 @@ local dev = require("dev")
 
 local M = {}
 
-local ZERO = string.format("m%11d %11d %11d %11d", 0, 0, 0, 0)
+-- 'm' and four fields of twelve: a space and eleven digits, which is
+-- plan 9's record and exactly 49 bytes. The width is the whole framing
+-- rule -- a reader asks for 49 and has one event -- so a record of any
+-- other size is a bug in this file rather than a detail.
+local RECLEN = 49
+
+M.RECLEN = RECLEN
+
+local function record(x, y, b, ms)
+	return string.format("m%12d%12d%12d%12d", x, y, b, ms)
+end
+
+local ZERO = record(0, 0, 0, 0)
+
+assert(#ZERO == RECLEN, "the mouse record is not 49 bytes")
 
 -- the fields of a record, as numbers. nil for anything that is not one.
 function M.parse(rec)
@@ -49,8 +63,7 @@ function M.parse(rec)
 end
 
 function M.format(x, y, b, ms)
-	return string.format("m%11d %11d %11d %11d", x, y, b,
-	    ms or sys.uptime_ms())
+	return record(x, y, b, ms or sys.uptime_ms())
 end
 
 function M.iswheel(rec)
@@ -203,11 +216,16 @@ function M.new()
 		local m = thread.recv(rp)
 
 		sys.close(rp)
-		if type(m) ~= "table" then
-			return ""
+		-- a wakeup that carries no record is a failure of this
+		-- server, and it has to be said. An empty read looks to a
+		-- client exactly like a record it cannot parse, and a
+		-- client that treats that as end of input exits without a
+		-- word -- which is the worst of the three ways this can go.
+		if type(m) ~= "table" or type(m.rec) ~= "string" then
+			dev.error(dev.Eio .. ": woken with no record")
 		end
 		h.seen = m.seq
-		return tostring(m.rec):sub(1, n)
+		return m.rec:sub(1, n)
 	end
 
 	function B.readdir(h)

@@ -43,18 +43,26 @@ local W, H = mode.w, mode.h
 -- plan 9's mouse record, fixed width: 'm' then x, y, buttons and a
 -- millisecond clock. Fixed width is why a read of 49 bytes is exactly
 -- one event and this needs no framing of its own.
+-- three answers, and they are deliberately different:
+--	x, y, b   an event
+--	false     something that is not a record; say so and read again
+--	nil, why  the file is gone, and so are we
+--
+-- A record that will not parse used to end the program, which is the
+-- same silence as a crash from the outside: the drawing stops and
+-- nothing says why. It is not even a good reason to stop -- one bad
+-- read out of a device says nothing about the next.
 local function event()
 	local rec, rerr = mouse:read(49)
 
 	if not rec then
-		io.stderr:write("scribble: read: " .. tostring(rerr) .. "\n")
-		return nil
+		return nil, "read: " .. tostring(rerr)
 	end
 
 	local x, y, b = rec:match("^m%s*(%-?%d+)%s+(%-?%d+)%s+(%-?%d+)")
 
 	if not x then
-		return nil
+		return false, ("%d bytes, %q"):format(#rec, rec:sub(1, 24))
 	end
 	return tonumber(x), tonumber(y), tonumber(b)
 end
@@ -117,6 +125,33 @@ local function line(x0, y0, x1, y1, c)
 	end
 end
 
+-- ---- what the drawing is, apart from the pixels ----
+--
+-- A window system here keeps no pixels for an app: another app draws
+-- over them, and coming back to the front is being told to paint again.
+-- So the drawing has to exist as something other than what is on the
+-- glass, and for this program that is the strokes it has been given.
+--
+-- Bounded, because a picture that never forgets is memory that only
+-- grows on a machine that has not got it. The oldest segment goes,
+-- which loses the start of a long session rather than the end of it.
+local STROKEMAX = 1500
+local strokes = {}
+
+local function remember(x0, y0, x1, y1, c)
+	if #strokes >= STROKEMAX then
+		table.remove(strokes, 1)
+	end
+	strokes[#strokes + 1] = { x0, y0, x1, y1, c }
+end
+
+local function replay()
+	clear()
+	for _, s in ipairs(strokes) do
+		line(s[1], s[2], s[3], s[4], s[5])
+	end
+end
+
 clear()
 
 -- the corner that clears, which is a button without a widget: there is
@@ -126,15 +161,59 @@ local CORNER = 28
 
 local lastx, lasty, drawing = nil, nil, false
 
--- One loop, in the main body rather than a thread: os.exit unwinds
--- through prog's runner, and a thread that raises it is a fault printed
--- to the console instead of a program leaving.
+-- Two files are read at once -- the pointer and the window -- so each
+-- gets a thread and the main body drives them. os.exit stays out of
+-- both: it unwinds through prog's runner, and a thread that raises it
+-- is a fault printed to the console instead of a program leaving.
+--
+-- A run of unreadable records is a broken pointer rather than a stray
+-- one, and drawing nothing while reading it forever is no better than
+-- leaving. So: report the first, count them, and give up with a reason.
+local BADMAX = 8
+local bad = 0
+
+local thread = require("los.thread")
+local N = prog.ns()
+local wctl = N and N:open("/dev/wctl", "r")
+
+if wctl then
+	thread.spawn(function()
+		while true do
+			local s = wctl:read(16)
+
+			if not s then
+				break
+			end
+			if s:match("redraw") then
+				replay()
+			end
+		end
+		wctl:close()
+	end)
+end
+
+thread.spawn(function()
 while true do
 	local x, y, b = event()
 
-	if not x then
+	if x == nil then
+		io.stderr:write("scribble: " .. tostring(y) .. "\n")
 		break
 	end
+	if x == false then
+		bad = bad + 1
+		if bad == 1 then
+			io.stderr:write("scribble: not a mouse record: " ..
+			    tostring(y) .. "\n")
+		end
+		if bad >= BADMAX then
+			io.stderr:write(("scribble: %d bad records; giving up\n")
+			    :format(bad))
+			break
+		end
+		goto continue
+	end
+	bad = 0
 
 	if b & WHEELUP ~= 0 then
 		pen = pen % #palette + 1
@@ -144,6 +223,10 @@ while true do
 		swatch()
 	elseif b & BUT1 ~= 0 then
 		if x < CORNER and y < CORNER then
+			-- the corner empties the picture, which is the
+			-- strokes and not only the pixels: what is redrawn
+			-- after a switch is this list.
+			strokes = {}
 			clear()
 			drawing = false
 		elseif drawing and lastx then
@@ -151,16 +234,23 @@ while true do
 			-- than one dab between reads, so without the line a
 			-- quick stroke comes out dotted.
 			line(lastx, lasty, x, y, palette[pen])
+			remember(lastx, lasty, x, y, palette[pen])
 			lastx, lasty = x, y
 		else
 			dab(x, y, palette[pen])
+			remember(x, y, x, y, palette[pen])
 			lastx, lasty, drawing = x, y, true
 		end
 	else
 		drawing = false
 		lastx, lasty = nil, nil
 	end
+
+	::continue::
 end
+end)
+
+thread.run()
 
 mouse:close()
 fb.fill(draw.rect(0, 0, W, H), 0x000000)

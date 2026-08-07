@@ -7061,9 +7061,13 @@ pump_devptr(void)
 	if (!platform_ptr_read(&x, &y, &b))
 		return;
 
-	n = snprintf(rec, sizeof rec, "m%11d %11d %11d %11d",
+	/* four fields of twelve -- a space and eleven digits -- after the
+	 * 'm', which is 49 bytes. The width is the framing rule, so a
+	 * record of another size is a record no reader can trust.
+	 */
+	n = snprintf(rec, sizeof rec, "m%12d%12d%12d%12d",
 	    x, y, b, (int)(platform_ticks() / 1000));
-	if (n <= 0 || (size_t)n >= sizeof rec)
+	if (n != 49)
 		return;
 
 	/* a serialized string, as the keyboard pump sends: 'S', the

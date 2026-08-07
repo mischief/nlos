@@ -112,7 +112,7 @@ do local g = sys.granted()
 PTR = g.ptr and sys.sendright(g.ptr)
 KBD = g.kbd and sys.sendright(g.kbd)
 function P(x, y, b)
-	sys.send(PTR, string.format("m%11d %11d %11d %11d", x, y, b,
+	sys.send(PTR, string.format("m%12d%12d%12d%12d", x, y, b,
 	    sys.uptime_ms()))
 end
 function K(s)
