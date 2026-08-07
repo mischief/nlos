@@ -83,19 +83,23 @@ function Panel:ask(line, quiet)
 	local out = {}
 	local deadline = os.time() + 10
 
+	-- A byte at a time, and only when poll says one is there. Reading
+	-- a line instead blocks until a newline that may never arrive: the
+	-- repl ends its prompt without one, so a board with nothing to say
+	-- would hold this port until the process was killed.
 	while os.time() < deadline do
 		if not self.hu.readable(self.fd, quiet or 0.6) then
 			break
 		end
 
-		local l = self.f:read("l")
+		local c = self.f:read(1)
 
-		if not l then
+		if not c then
 			break
 		end
-		out[#out + 1] = (l:gsub("[\r\n]", ""))
+		out[#out + 1] = c
 	end
-	return table.concat(out, "\n")
+	return (table.concat(out):gsub("\r", ""))
 end
 
 -- ---- input ----
