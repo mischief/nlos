@@ -1,0 +1,585 @@
+-- irc: an irc client.
+--
+--   > irc irc.libera.chat
+--   > irc -n nick -p 6667 10.0.2.2
+--   > irc -j '#lua-os' irc.libera.chat
+--
+-- One window per target, numbered, as plan 9's chat does it. Commands
+-- take chat's spelling:
+--
+--   /q target       open a window, joining a channel on the way
+--   /x [why]        close the window and part; in the server window,
+--                   leave the server and exit
+--   /n name         change nickname
+--   /w [number]     switch windows, or list them
+--   /me does a thing
+--   /raw LINE       send a line as typed
+--
+-- Every command is typed. The T-Deck keyboard has letters, digits,
+-- Enter and Backspace, and no dependable control key, so the control
+-- keys below are extra and nothing needs one.
+--
+-- Plain text goes to the window's target. The server window has none,
+-- so text there goes nowhere: use /raw.
+--
+-- No TLS on this machine, so the connection is plaintext.
+
+local unistd = require("posix.unistd")
+local sys = require("los.sys")
+local thread = require("los.thread")
+local prog = require("prog")
+local irc = require("irc")
+local resolv = require("resolv")
+
+local function die(s)
+	unistd.write(2, "irc: " .. s .. "\n")
+	os.exit(1)
+end
+
+-- ---- arguments ----
+
+local host, port, nick, join = nil, 6667, nil, {}
+local i = 1
+
+while arg[i] do
+	local a = arg[i]
+
+	if a == "-n" then
+		nick = arg[i + 1]
+		i = i + 2
+	elseif a == "-p" then
+		port = tonumber(arg[i + 1])
+		i = i + 2
+	elseif a == "-j" then
+		join[#join + 1] = arg[i + 1]
+		i = i + 2
+	elseif a:sub(1, 1) == "-" and #a > 1 then
+		die("usage: irc [-n nick] [-p port] [-j channel] host")
+	else
+		host = a
+		i = i + 1
+	end
+end
+
+if not host or not port then
+	die("usage: irc [-n nick] [-p port] [-j channel] host")
+end
+
+nick = nick or "luaos"
+
+local net = prog.net()
+
+if not net then
+	die("no network capability: this shell was lent none")
+end
+
+-- ---- the terminal ----
+
+local term = require("ed.terminfo").new()
+local tty = prog.tty()
+
+if not term:ok() or not tty then
+	die("not a terminal")
+end
+
+term:detect_size()
+
+-- ---- windows ----
+--
+-- One per target, plus the server window at index 1 for everything
+-- unaddressed. The scrollback is a bounded ring: unbounded, it is the
+-- whole machine on a board with 8MB.
+local SCROLLBACK = 200
+
+local wins = { { name = "server", target = nil, lines = {}, dirty = true } }
+local cur = 1
+
+local function winfind(target)
+	for n = 1, #wins do
+		if wins[n].target and irc.same(wins[n].target, target) then
+			return n
+		end
+	end
+	return nil
+end
+
+local function winmake(target)
+	local n = winfind(target)
+
+	if n then
+		return n
+	end
+	wins[#wins + 1] = { name = target, target = target, lines = {},
+	    dirty = true }
+	return #wins
+end
+
+local function put(w, s)
+	local lines = wins[w].lines
+
+	lines[#lines + 1] = s
+	if #lines > SCROLLBACK then
+		table.remove(lines, 1)
+	end
+	wins[w].dirty = true
+end
+
+-- everything the server says that is not addressed to a window goes to
+-- the server window, rather than being dropped: an irc client that
+-- hides what it did not understand is one you cannot debug.
+local function say(s)
+	put(1, s)
+end
+
+-- ---- drawing ----
+--
+-- Assembled whole and written once: a write is a message, as in
+-- bin/top.lua.
+local input = ""
+local buf = {}
+
+local function draw()
+	local rows = term.rows or 24
+	local cols = term.cols or 80
+	local body = rows - 2
+	local w = wins[cur]
+	local n = 0
+
+	local function emit(s)
+		n = n + 1
+		buf[n] = s
+	end
+
+	emit("\27[H")
+
+	-- the last `body` lines, oldest first, with the bottom of the ring
+	-- against the bottom of the window.
+	local first = #w.lines - body + 1
+
+	if first < 1 then
+		first = 1
+	end
+	for k = first, first + body - 1 do
+		local line = w.lines[k] or ""
+
+		emit(line:sub(1, cols))
+		emit("\27[K\r\n")
+	end
+
+	-- the status line: which windows exist, which one this is, and the
+	-- nick the server thinks you have. The last of those is not
+	-- cosmetic -- a 433 on connect means it is not the one you asked
+	-- for.
+	local tabs = {}
+
+	for k = 1, #wins do
+		local mark = (k == cur) and "*" or " "
+
+		tabs[#tabs + 1] = mark .. k .. ":" .. wins[k].name
+	end
+	emit("\27[7m")
+	emit(("[%s] %s"):format(nick, table.concat(tabs, " ")):sub(1, cols))
+	emit("\27[K\27[0m\r\n")
+
+	-- the input line, tail-first: a line longer than the terminal
+	-- should show what is being typed rather than its beginning.
+	local shown = input
+
+	if #shown > cols - 2 then
+		shown = shown:sub(#shown - (cols - 3))
+	end
+	emit("> " .. shown .. "\27[K")
+
+	term:write(table.concat(buf, "", 1, n))
+	for k = 1, n do
+		buf[k] = nil
+	end
+end
+
+-- ---- the connection ----
+
+local udp = prog.udp()
+local addr = host
+
+if not resolv.quad(addr) then
+	local server = resolv.server(prog.ns and prog.ns())
+	local got, why = resolv.resolve(udp, host, server)
+
+	if not got then
+		die(host .. ": " .. tostring(why))
+	end
+	addr = got
+end
+
+local a, b, c, d = resolv.quad(addr)
+local conn = net.dial(a, b, c, d, port)
+
+if not conn then
+	die("cannot connect to " .. addr .. ":" .. port)
+end
+
+local function send(line)
+	net.send(conn, line)
+end
+
+-- ---- the event loop ----
+--
+-- Three ports, one alt: the socket, the keyboard, the clock.
+-- sys.timer hands back a port, so the timeout is a case like the rest.
+--
+-- Both reads are posted by hand: the caps.lua wrappers wait for their
+-- own reply, which a program watching two things cannot do.
+local sockport = sys.newport()
+local keyport = sys.newport()
+local reader = irc.reader()
+
+local function postrecv()
+	sys.send(net.handle, { op = "recv", connid = conn, maxlen = 2048,
+	    reply = { __right = sockport } })
+end
+
+local function postkey()
+	sys.send(tty.handle, { op = "getch",
+	    reply = { __right = keyport } })
+end
+
+-- silence before we ask whether the server is still there, for a
+-- connection that has gone away without saying so.
+local IDLE_MS = 120000
+local pinged = false
+
+local running = true
+local registered = false
+
+local function quit(why)
+	send(irc.quit(why or "lua-os"))
+	running = false
+end
+
+-- ---- what arrives ----
+
+local function onmsg(m)
+	local cmd = m.cmd
+
+	if cmd == "PING" then
+		-- a server drops a client that does not answer.
+		send(irc.pong(m.params[1] or ""))
+		return
+	end
+
+	if cmd == "PONG" then
+		pinged = false
+		return
+	end
+
+	if cmd == irc.RPL_WELCOME then
+		registered = true
+		nick = m.params[1] or nick
+		say("* registered as " .. nick)
+		for _, ch in ipairs(join) do
+			send(irc.join(ch))
+		end
+		return
+	end
+
+	if cmd == irc.ERR_NICKNAMEINUSE then
+		-- take a nearby name rather than sit unregistered, which
+		-- is a connection that can do nothing.
+		local alt = nick .. tostring(sys.uptime_ms() % 100)
+
+		say("* " .. nick .. " is taken, trying " .. alt)
+		nick = alt
+		send(irc.nick(alt))
+		return
+	end
+
+	if cmd == "PRIVMSG" or cmd == "NOTICE" then
+		local target, text = m.params[1], m.params[2] or ""
+		local from = m.nick or m.prefix or "?"
+		-- a message to a channel belongs to that channel's window; a
+		-- message to us belongs to the sender's.
+		local w = irc.ischannel(target) and winfind(target) or
+		    winfind(from)
+		local verb, arg = irc.isctcp(text)
+
+		if verb == "ACTION" then
+			put(w or 1, ("* %s %s"):format(from, arg or ""))
+		elseif verb then
+			-- a ctcp we do not answer is still worth seeing.
+			put(w or 1, ("[ctcp %s from %s]"):format(verb, from))
+		elseif cmd == "NOTICE" then
+			put(w or 1, ("-%s- %s"):format(from, text))
+		else
+			put(w or 1, ("<%s> %s"):format(from, text))
+		end
+		return
+	end
+
+	if cmd == "JOIN" then
+		local ch = m.params[1]
+
+		if irc.same(m.nick, nick) then
+			put(winmake(ch), "* joined " .. ch)
+		else
+			local w = winfind(ch)
+
+			if w then
+				put(w, ("* %s joined"):format(m.nick or "?"))
+			end
+		end
+		return
+	end
+
+	if cmd == "PART" or cmd == "QUIT" then
+		local who = m.nick or "?"
+		local ch = m.params[1]
+		local w = ch and winfind(ch)
+
+		if w and not irc.same(who, nick) then
+			put(w, ("* %s left"):format(who))
+			return
+		end
+		if cmd == "QUIT" then
+			-- a quit names no channel, so it goes wherever the
+			-- person is known.
+			for k = 2, #wins do
+				if irc.same(wins[k].target, who) then
+					put(k, ("* %s quit"):format(who))
+				end
+			end
+			return
+		end
+	end
+
+	-- everything else, in the server window, the way plan 9's chat
+	-- prints its catch-all: the prefix and then the parameters, which
+	-- is enough to read a numeric without a table of them.
+	local parts = {}
+
+	for k = 2, #m.params do
+		parts[#parts + 1] = m.params[k]
+	end
+	say(("%s %s"):format(cmd, table.concat(parts, " ")))
+end
+
+-- ---- what is typed ----
+
+-- the window list, for /w with no argument. Printed rather than only
+-- shown in the status line, which truncates: on a 53-column panel the
+-- tabs run off the end as soon as there are three of them.
+local function listwins()
+	for k = 1, #wins do
+		say(("%s%d %s"):format(k == cur and "*" or " ", k,
+		    wins[k].name))
+	end
+end
+
+local function docommand(line)
+	local word, rest = line:match("^/(%S+)%s*(.*)$")
+
+	if not word then
+		return
+	end
+	word = word:lower()
+
+	-- /2 as a shorthand for /w 2: the thing done most often, in the
+	-- fewest keys, on a keyboard where every key costs.
+	if word:match("^%d+$") then
+		word, rest = "w", word
+	end
+
+	if word == "q" or word == "query" or word == "join" or word == "j" then
+		if rest == "" then
+			say("* /q target")
+		else
+			if irc.ischannel(rest) then
+				send(irc.join(rest))
+			end
+			cur = winmake(rest)
+		end
+	elseif word == "x" or word == "close" or word == "part" then
+		local w = wins[cur]
+
+		if not w.target then
+			-- the server window is the connection: closing it
+			-- is leaving, which is what chat does too.
+			quit(rest ~= "" and rest or nil)
+		else
+			if irc.ischannel(w.target) then
+				send(irc.part(w.target, rest ~= "" and rest
+				    or nil))
+			end
+			table.remove(wins, cur)
+			cur = 1
+		end
+	elseif word == "n" or word == "nick" then
+		if rest == "" then
+			say("* /n name")
+		else
+			send(irc.nick(rest))
+		end
+	elseif word == "w" or word == "win" then
+		local n = tonumber(rest)
+
+		if not n then
+			listwins()
+		elseif wins[n] then
+			cur = n
+		else
+			say("* no window " .. rest)
+		end
+	elseif word == "me" then
+		local w = wins[cur]
+
+		if w.target then
+			send(irc.action(w.target, rest))
+			put(cur, ("* %s %s"):format(nick, rest))
+		end
+	elseif word == "raw" then
+		if rest ~= "" then
+			send(rest .. "\r\n")
+		end
+	else
+		say("* no such command: /" .. word)
+	end
+end
+
+local function online(line)
+	if line == "" then
+		return
+	end
+	if line:sub(1, 1) == "/" then
+		docommand(line)
+		return
+	end
+
+	local w = wins[cur]
+
+	if not w.target then
+		-- the server window has nowhere to send to, and guessing a
+		-- channel would put a mistyped command in front of people.
+		say("* no target here; use /q, /w or /raw")
+		return
+	end
+	send(irc.privmsg(w.target, line))
+	put(cur, ("<%s> %s"):format(nick, line))
+end
+
+-- one keystroke. Raw mode, so this is the whole line editor: the
+-- console's own hands back a finished line, and this program cannot
+-- block waiting for one. Enter, Backspace and printable characters are
+-- all it needs; the control keys are extra.
+local function onkey(k)
+	if k == "\r" or k == "\n" then
+		local line = input
+
+		input = ""
+		online(line)
+	elseif k == "\8" or k == "\127" then
+		input = input:sub(1, #input - 1)
+	elseif k == "\21" then			-- ctrl-u, or backspace held
+		input = ""
+	elseif k == "\14" then			-- ctrl-n, or /w n+1
+		cur = cur % #wins + 1
+	elseif k == "\16" then			-- ctrl-p, or /w n-1
+		cur = (cur - 2) % #wins + 1
+	elseif k == "\3" then			-- ctrl-c, or /x
+		quit()
+	elseif k == "\27" then
+		-- an escape sequence: read it to its end and ignore it, so
+		-- the tail of an arrow key is not typed into the line.
+		-- lib/console.lua does the same for the same reason.
+		local c2 = tty.getch(50)
+
+		if c2 == "[" or c2 == "O" then
+			repeat
+				local c3 = tty.getch(50)
+			until c3 == "" or c3 == nil or c3:match("[@-~]")
+		end
+	elseif #k == 1 and k >= " " then
+		input = input .. k
+	end
+end
+
+-- ---- run ----
+
+term:raw()
+term:clear()
+
+send(irc.nick(nick))
+send(irc.user(nick, "lua-os"))
+say("* connecting to " .. addr .. ":" .. port .. " as " .. nick)
+
+postrecv()
+postkey()
+draw()
+
+local ok, err = xpcall(function()
+	while running do
+		local timer = sys.timer(IDLE_MS)
+		local cases = { { port = sockport }, { port = keyport } }
+
+		if timer then
+			cases[3] = { port = timer }
+		end
+
+		local which, m = thread.alt(cases)
+
+		if timer then
+			sys.close(timer)
+		end
+
+		if which == 1 then
+			if m == nil then
+				say("* disconnected")
+				running = false
+			else
+				reader:feed(m)
+				for line in reader:lines() do
+					local msg = irc.parse(line)
+
+					if msg then
+						onmsg(msg)
+					else
+						say("? " .. line)
+					end
+				end
+				postrecv()
+			end
+		elseif which == 2 then
+			if m == "" or m == nil then
+				-- the terminal went away
+				running = false
+			else
+				onkey(m)
+				postkey()
+			end
+		else
+			-- nothing from the server for a long time. Ask once;
+			-- a second silence means the connection is gone
+			-- whatever the socket believes.
+			if pinged then
+				say("* no answer; disconnected")
+				running = false
+			else
+				pinged = true
+				send(irc.ping("luaos"))
+			end
+		end
+
+		if running then
+			draw()
+		end
+	end
+end, function(e)
+	return debug.traceback(tostring(e), 2)
+end)
+
+net.close(conn)
+term:show_cursor()
+term:restore()
+term:clear()
+
+if not ok then
+	die(tostring(err))
+end

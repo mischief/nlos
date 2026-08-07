@@ -548,6 +548,8 @@ lua_payload = files(
   # session can drive it from the repl -- which is how the client is
   # debugged before there is a client.
   'lib/irc.lua',
+  'lib/resolv.lua',
+  'bin/irc.lua',
   'bin/stack.lua',
   'bin/trace.lua',
   'bin/ls.lua',
