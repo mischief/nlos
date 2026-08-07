@@ -28,6 +28,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
+local buf = require("los.buf")
 
 -- how far a tab advances. Eight, like every other terminal.
 local TABSTOP = 8
@@ -174,7 +175,8 @@ function Cons:paintspan(y, from, to)
 
 			post(self.fb, { op = "load",
 			    r = { x = c * self.cw, y = y * self.ch, w = w, h = h },
-			    data = { __buf = pix } }, w * h * 4)
+			    data = buf.is(pix) and { __buf = pix } or pix },
+			    w * h * 4)
 			c = e
 		end
 	end
