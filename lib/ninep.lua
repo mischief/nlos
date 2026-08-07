@@ -569,4 +569,31 @@ function M.serve(root, rx, tx)
 	end
 end
 
+
+-- the C codec when this is a lua-os proc, these when it is not.
+--
+-- Everything above stays reachable as M.pure, so the two can be checked
+-- against each other (test/boot/test_ninepc.lua) and so a host tool
+-- driving this file under an ordinary lua5.4 still works. Chosen once
+-- here rather than branched per call.
+M.pure = {
+	decode = M.decode,
+	packstat = M.packstat,
+	unpackstat = M.unpackstat,
+	rread = M.rread,
+	twrite = M.twrite,
+	tread = M.tread,
+	twalk = M.twalk,
+}
+
+local ok, c = pcall(require, "los.ninep")
+
+if ok and type(c) == "table" then
+	for name in pairs(M.pure) do
+		if type(c[name]) == "function" then
+			M[name] = c[name]
+		end
+	end
+end
+
 return M

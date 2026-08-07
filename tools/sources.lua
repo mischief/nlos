@@ -30,6 +30,7 @@ groups.kernel = {
 	"src/debug.c",
 	"src/dirs.c",
 	"src/inet.c",
+	"src/ninep.c",
 	"src/crc.c",
 	"src/buf.c",
 	"src/font.c",

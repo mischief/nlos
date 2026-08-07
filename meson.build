@@ -730,7 +730,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'ports',
               'font', 'fb', 'fbprog', 'fbcons',
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'trace', 'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'layout',
-              'strictglobals', 'bufout', 'bufmove', 'efigefs', 'nsfs', 'vi', 'zmodem', 'atexit']
+              'strictglobals', 'bufout', 'bufmove', 'ninepc', 'efigefs', 'nsfs', 'vi', 'zmodem', 'atexit']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
@@ -846,6 +846,13 @@ benchmark('fb', boottest,
 
 benchmark('ipc', boottest,
   args: [luaos_img, files('test/bench_ipc.lua')],
+  protocol: 'tap',
+  timeout: 180,
+  env: archenv + {'TIMEOUT': '150'},
+)
+
+benchmark('9p', boottest,
+  args: [luaos_img, files('test/bench_9p.lua')],
   protocol: 'tap',
   timeout: 180,
   env: archenv + {'TIMEOUT': '150'},

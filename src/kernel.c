@@ -5681,6 +5681,7 @@ _Static_assert(sizeof kapi / sizeof kapi[0] - 1 <= NSYSCALL,
 extern int luaopen_los_efi(lua_State *L);		/* los.c: firmware info */
 extern int luaopen_los_fs(lua_State *L);		/* dirs.c: readdir/stat */
 extern int luaopen_los_inet(lua_State *L);		/* inet.c: checksum */
+extern int luaopen_los_ninep(lua_State *L);	/* ninep.c: the 9P field codec */
 extern int luaopen_los_crc(lua_State *L);		/* crc.c: crc16/crc32 */
 extern int luaopen_los_font(lua_State *L);		/* font.c: glyphs */
 extern int luaopen_los_buf(lua_State *L);		/* buf.c: byte buffers */
@@ -6728,6 +6729,14 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_los_inet);
 	lua_setfield(p->L, -2, "los.inet");
+
+	/* los.ninep (src/ninep.c), ambient on the same argument: the 9P
+	 * field layout is fixed by the protocol and reaches nothing.
+	 * lib/ninep.lua keeps the whole codec in Lua as ninep.pure and
+	 * answers the same, more slowly.
+	 */
+	lua_pushcfunction(p->L, luaopen_los_ninep);
+	lua_setfield(p->L, -2, "los.ninep");
 
 	/* los.crc (src/crc.c), ambient on the same argument: two check
 	 * polynomials over a string the caller already has, reaching
