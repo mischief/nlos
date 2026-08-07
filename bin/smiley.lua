@@ -87,6 +87,22 @@ fb.load(draw.rect((W - size) // 2, (H - size) // 2, size, size),
     draw.bytes(face))
 fb.sync()
 
+-- Under a launcher with a keyboard this waits to be dismissed. Under a
+-- window system there is no keyboard to dismiss it with -- an app is
+-- given a screen and a pointer -- so it holds the screen until it is
+-- stopped from the tray.
+--
+-- The distinction has to be made here rather than by reading and
+-- seeing eof: fd 0 always exists, and a program handed no input reads
+-- eof at once, which is indistinguishable from a person pressing enter
+-- the instant it drew.
+if not prog.stdin() then
+	-- parked, not spinning: nothing will ever be sent here, and the
+	-- point is to be somewhere that costs nothing until killed.
+	require("los.thread").recv(require("los.sys").SELF)
+	return
+end
+
 io.write("smiley: press enter to return to dos\n")
 
 -- unistd.read on fd 0 rather than io.read, which the program

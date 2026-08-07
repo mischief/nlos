@@ -750,6 +750,24 @@ function M.screen()
 	return require("caps").fb(ctx.fb)
 end
 
+-- whether the launcher gave this program an input stream at all, which
+-- is not the same question as whether there is anything to read.
+--
+-- fd 0 always exists: a program handed no stdin gets a stream that
+-- reads eof, so `cat </dev/null` and `cat` under a launcher with no
+-- keyboard behave alike and nothing has to check. That is right for a
+-- filter and wrong for a program that waits to be dismissed -- under a
+-- window system there is no keyboard to dismiss it with, so an eof
+-- means "you will never be told to go", and a program that reads it as
+-- "go now" leaves the moment it has drawn.
+--
+-- So: nil where none was given. bin/smiley.lua is the one that cares.
+function M.stdin()
+	local ctx = M.ctx
+
+	return ctx and ctx.stdin or nil
+end
+
 -- the network, wrapped, or nil where the launcher lent none. Same rule
 -- as M.screen, and the same shape lib/http.lua's get() takes.
 --
