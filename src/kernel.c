@@ -8140,17 +8140,13 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_BLK, .devport = 0, .devrecv = 0,
 		  .what = "the block device", .enabled = have_blk,
 		  .capname = "blk" },
-		/* the writable flash partition, served the same way and by
-		 * the same task: one file, /data, that is the partition.
-		 * Two procs run task/blksrv.lua on a board with both, each
-		 * holding the capability for one device, so neither can
-		 * reach the other's sectors. Which one a proc got is not a
-		 * question it can ask -- it holds a right, and the right is
-		 * the answer.
+		/* the writable flash, as a filesystem. The proc doing the
+		 * filesystem owns the device, so a sector is a call and not
+		 * a message, and there is no block server between them.
 		 */
-		{ .path = "/task/blksrv.lua", .chunkname = "=flashsrv",
+		{ .path = "/task/fatsrv.lua", .chunkname = "=fatsrv",
 		  .priv = PRIV_FLASH, .devport = 0, .devrecv = 0,
-		  .what = "the flash partition", .enabled = have_flash,
+		  .what = "the flash filesystem", .enabled = have_flash,
 		  .capname = "flash" },
 		/* raw ethernet frames, and the bottom of the whole stack.
 		 * This task owns a wire and nothing more -- everything from

@@ -213,17 +213,13 @@ local function services()
 	if not caps.flash then
 		print("luafs: no flash capability, programs from the image only")
 	else
-		local src = rootns:readfile("/task/fatsrv.lua")
 		local fok, ferr = pcall(function()
-			local _, f = sys.spawn(src, { name = "fatsrv" })
-
-			-- one server, both partitions: /config is the
-			-- second flash volume, mounted inside fatsrv so
-			-- it costs a mount point rather than a proc.
-			sys.send(f, { blk = { __right = caps.flash },
-			    mounts = { "/config" } })
-			assert(rootns:mount("/", require("mnt").new(f), "mnt",
-			    { port = { __right = f } }, "before"))
+			-- the kernel spawned task/fatsrv.lua as the owner of
+			-- the flash, so this is already the filesystem: one
+			-- server, both partitions, /config inside it.
+			assert(rootns:mount("/",
+			    require("mnt").new(caps.flash), "mnt",
+			    { port = { __right = caps.flash } }, "before"))
 		end)
 
 		if fok then
