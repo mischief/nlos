@@ -473,8 +473,13 @@ function Sh:spawn1(path, argv, streams)
 		msg.stdinpull = true
 	end
 	sys.send(h, msg)
-	sys.close(h)
-	return pid
+
+	-- the handle stays open, and is the second return: it is the only
+	-- right to the child's own port, so it is also the only thing that
+	-- makes sys.kill legal. Closed by the caller once the child's exit
+	-- notice has arrived -- an interrupt that could not kill what it
+	-- interrupted is what closing it here bought.
+	return pid, h
 end
 
 -- parse one pipeline stage: argv, its redirections, and the program it
@@ -687,6 +692,9 @@ function Sh:run(line)
 	end
 
 	local pids = {}
+	-- pid -> the right to that child's own port, which is what makes
+	-- sys.kill legal. Held until its exit notice arrives.
+	local ctl = {}
 	local toclose = {}	-- our own rights to drop once handed out
 	local servers = {}	-- file servers, which still need stopping
 	local prev = nil	-- the pipe the next stage reads from
@@ -784,13 +792,14 @@ function Sh:run(line)
 			streams.stdout = self.cons
 		end
 
-		local pid, err = self:spawn1(path, argv, streams)
+		local pid, h = self:spawn1(path, argv, streams)
 
 		if not pid then
-			self:print("dos: " .. tostring(err) .. "\n")
+			self:print("dos: " .. tostring(h) .. "\n")
 			return 1
 		end
 		pids[#pids + 1] = pid
+		ctl[pid] = h
 		sys.monitor(pid)
 	end
 
@@ -851,6 +860,11 @@ function Sh:run(line)
 			if interrupted[m.exit] then
 				pcall(sys.reap, m.exit)
 			end
+			-- after the reap, which needs the same right
+			if ctl[m.exit] then
+				sys.close(ctl[m.exit])
+				ctl[m.exit] = nil
+			end
 			if m.exit == last then
 				if m.normal then
 					status = m.status or 0
@@ -874,6 +888,13 @@ function Sh:run(line)
 	-- do not, having never had a server.
 	for _, port in ipairs(servers) do
 		sys.send(port, { op = "stop" })
+	end
+
+	-- anything the loop above did not see an exit for, so a shell that
+	-- returns early does not keep a right to a dead child forever.
+	for pid, h in pairs(ctl) do
+		sys.close(h)
+		ctl[pid] = nil
 	end
 	return status, exitmsg
 end
