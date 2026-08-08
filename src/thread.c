@@ -55,14 +55,14 @@ struct sched {
 	int	altscratch;	/* co -> alt scratch, weak keys */
 	int	current;	/* the running coroutine, or nil */
 	int	inplace;	/* coroutine cut by the count hook */
-	int	fair;		/* the voluntary-yield sentinel */
 
 	/* los.sys entry points, kept by ref rather than looked up */
 	int	anyready, altpoll, altrecv, altblock, hungup, block, tryrecv;
 	int	sendblock, close, send, timer, newport, sendright, call;
 	int	replyports;	/* co -> {h,s}, weak keys */
 	int	selfsend;	/* the proc own send right, or nil */
-	int	selfport;	/* sys.SELF */
+
+	lua_Integer selfport;	/* sys.SELF, read once */
 
 	int	qhead, qtail;
 	int	nthreads;
@@ -680,14 +680,12 @@ resume_one(lua_State *L, struct sched *s, int ci)
 	if (haskey(L, s->parked, ci))
 		return;			/* run() wakes it; nothing to queue */
 
-	/* the first yielded value tells a voluntary yield from a cut by
-	 * the count hook, which passes none
+	/* The first yielded value tells a voluntary yield from a cut by
+	 * the count hook, which passes none. yield() passes the sched
+	 * userdata, which nothing outside this file holds.
 	 */
-	if (nres >= 1) {
-		pushref(co, s->fair);
-		isfair = lua_rawequal(co, -1, -1 - nres);
-		lua_pop(co, 1);
-	}
+	if (nres >= 1)
+		isfair = lua_touserdata(co, -nres) == (void *)s;
 	lua_pop(co, nres);
 
 	if (isfair) {
@@ -1007,13 +1005,13 @@ l_inthread(lua_State *L)
 
 /* thread.yield(): give up the cpu without parking.
  *
- * Yields the fair sentinel. The count hook's yield passes no values,
- * which is how the scheduler tells the two apart.
+ * Yields the sched userdata as its own sentinel. The count hook's
+ * yield passes no values, which is how the two are told apart.
  */
 static int
 l_yield(lua_State *L)
 {
-	pushref(L, getsched(L)->fair);
+	lua_pushvalue(L, lua_upvalueindex(1));
 	return lua_yield(L, 1);
 }
 
@@ -2021,7 +2019,7 @@ l_selfright(lua_State *L)
 	lua_pop(L, 1);
 
 	pushref(L, s->sendright);
-	pushref(L, s->selfport);
+	lua_pushinteger(L, s->selfport);
 	lua_call(L, 1, 1);
 	if (lua_isnil(L, -1))
 		return luaL_error(L, "out of rights");
@@ -2559,10 +2557,6 @@ luaopen_los_thread(lua_State *L)
 	s->current = newrefslot(L);
 	s->inplace = newrefslot(L);
 
-	/* private sentinel, so nothing else can be mistaken for it */
-	lua_newtable(L);
-	s->fair = luaL_ref(L, LUA_REGISTRYINDEX);
-
 	lua_getglobal(L, "require");
 	lua_pushstring(L, "los.sys");
 	lua_call(L, 1, 1);
@@ -2582,7 +2576,7 @@ luaopen_los_thread(lua_State *L)
 	s->sendright = sysref(L, sysidx, "sendright");
 	s->call = sysref(L, sysidx, "call");
 	lua_getfield(L, sysidx, "SELF");
-	s->selfport = luaL_ref(L, LUA_REGISTRYINDEX);
+	s->selfport = lua_tointeger(L, -1);
 	lua_settop(L, sysidx - 1);	/* done with sys */
 
 	luaL_newmetatable(L, CHANMT);
