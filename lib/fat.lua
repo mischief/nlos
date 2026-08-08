@@ -27,13 +27,19 @@
 -- no ordering of sector writes that makes a half-flushed FAT volume
 -- consistent, and check() is what says how far off it landed.
 
+local lazy = require "lazy"
 local vol = require "fat.vol"
 
 require "fat.blk"
 require "fat.fat"
 require "fat.dir"
 require "fat.fsops"
-require "fat.check"
+
+-- the checker and the ram device are the two parts a server does not
+-- touch: nothing checks a volume until asked, and a board's volume is
+-- on flash. Both load on first use.
+lazy.method(require "fat.obj", "check", "fat.check")
+lazy.method(require "fat.obj", "fsck", "fat.check")
 
 local M = {}
 
@@ -41,9 +47,9 @@ M.dat = require "fat.dat"
 M.pack = require "fat.pack"
 M.dir = require "fat.dir"
 M.fsops = require "fat.fsops"
-M.check = require "fat.check"
+M.check = lazy.mod "fat.check"
 M.vol = require "fat.vol"
-M.ram = require "fat.ram"
+M.ram = lazy.mod "fat.ram"
 
 M.ream = vol.ream
 M.open = vol.open

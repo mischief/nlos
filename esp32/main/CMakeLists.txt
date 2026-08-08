@@ -156,6 +156,7 @@ set(EMBED_FILES
     # which includes every program in /bin. gefs/io.lua is here for its
     # device wrapper over a seekable handle, which is what lib/fat
     # opens the volume on -- none of the rest of gefs comes with it.
+    lib/lazy.lua
     lib/fat.lua
     lib/fat/obj.lua
     lib/fat/dat.lua

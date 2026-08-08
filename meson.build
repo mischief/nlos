@@ -228,6 +228,7 @@ else
     'lib/srv.lua',
     'lib/mnt.lua',
     'lib/ns.lua',
+    'lib/lazy.lua',
     'lib/chan.lua',
     'lib/p9fs.lua',
     'lib/p9tcp.lua',
@@ -579,6 +580,7 @@ lua_payload = files(
   'task/cons.lua',
   'lib/console.lua',
   'lib/fbcons.lua',
+  'lib/lazy.lua',
   'lib/chan.lua',
   'lib/dev.lua',
   # the block device and the gefs filesystem over it. blksrv is spawned
@@ -823,7 +825,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
-              'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim']
+              'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
@@ -1349,6 +1351,14 @@ test('zmodem-protocol', lua_interp,
   args: [files('test/host_zmodem.lua')],
   protocol: 'tap',
   timeout: 60,
+)
+
+# a lazy require raises at first use, so a name that cannot resolve
+# waits in whatever branch first touches it. This fails the build here
+# instead.
+test('lazy-names', lua_interp,
+  args: [files('tools/checklazy.lua'), meson.project_source_root()],
+  timeout: 30,
 )
 
 # and against lrzsz, where there is one on the host. This is the only
