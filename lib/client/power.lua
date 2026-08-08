@@ -1,4 +1,4 @@
--- caps/power: reset and stall, as a client
+-- client/power: reset and stall, as a client
 
 local sys = require("los.sys")
 

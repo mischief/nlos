@@ -1,4 +1,4 @@
--- caps/rpc: the request half every capability wrapper shares.
+-- client/rpc: the request half every capability wrapper shares.
 --
 -- thread.call is the transport and thread.replyport supplies the port,
 -- so nothing is minted and nothing has to be closed. Only "full"
@@ -79,7 +79,7 @@ end
 M.sendwait = sendwait
 
 -- the canonical request/reply, and the most-travelled one in the tree:
--- caps.udp, caps.tcp, caps.dns, caps.fb and caps.wire all come through
+-- Every client under lib/client, and lib/draw.lua, comes through
 -- here.
 --
 -- thread.call is the transport -- one kernel entry at the top level,

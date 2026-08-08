@@ -373,7 +373,10 @@ local repl_worker_src = [[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
 	local efi = require("los.efi")
-	local caps = require("caps")
+	local powerc = require("client.power")
+	local dnsc = require("client.dns")
+	local tcpc = require("client.tcp")
+	local udpc = require("client.udp")
 
 	local m = thread.recv(sys.SELF)
 	local consh = m.cons.__right
@@ -418,11 +421,11 @@ local repl_worker_src = [[
 	_G.stats = magic.stats
 	_G.ports = magic.ports
 	_G.caps = caps
-	_G.power = caps.power(powerh)
-	local dns = dnsh and caps.dns(dnsh) or nil
+	_G.power = powerc.new(powerh)
+	local dns = dnsh and dnsc.new(dnsh) or nil
 
-	_G.tcp = tcph and caps.tcp(tcph) or nil
-	_G.udp = udph and caps.udp(udph) or nil
+	_G.tcp = tcph and tcpc.new(tcph) or nil
+	_G.udp = udph and udpc.new(udph) or nil
 	_G.dnscap = dns
 	_G.http = require("http")
 

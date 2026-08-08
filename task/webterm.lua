@@ -12,7 +12,7 @@
 --	a.args       whatever the config passed it
 
 local sys = require("los.sys")
-local captcp = require("caps.tcp")
+local tcpc = require("client.tcp")
 local dev = require("dev")
 local ns = require("ns")
 local webterm = require("webterm")
@@ -26,7 +26,7 @@ end
 
 local args = a.args or {}
 local port = args.port or 80
-local tcp = captcp.new(a.tcp.__right)
+local tcp = tcpc.new(a.tcp.__right)
 
 -- the published namespace. plain data, so it travels in nsdesc and each
 -- visitor gets a private copy whose writes die with the session.

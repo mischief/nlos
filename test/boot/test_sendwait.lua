@@ -15,7 +15,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 local draw = require("draw")
-local sendwait = require("caps.rpc").sendwait
+local sendwait = require("client.rpc").sendwait
 
 tap.plan(8)
 

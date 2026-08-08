@@ -17,13 +17,13 @@
 -- Needs NET=1 and a host that accepts a connection but sends nothing
 -- unsolicited; a 9p server does, which is why it dials one.
 local sys = require("los.sys")
-local captcp = require("caps.tcp")
+local tcpc = require("client.tcp")
 local thread = require("los.thread")
 local tap = require("tap")
 tap.plan(3)
 local g = sys.granted()
 if not tap.ok(g.tcp ~= nil, "tcp capability") then tap.done() return end
-local net = captcp.new(g.tcp)
+local net = tcpc.new(g.tcp)
 local dialed, woke, val = false, false, "unset"
 
 thread.spawn(function()

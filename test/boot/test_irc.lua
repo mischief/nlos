@@ -13,7 +13,7 @@ local sys = require("los.sys")
 local dos = require("dos")
 local ns = require("ns")
 local thread = require("los.thread")
-local captcp = require("caps.tcp")
+local tcpc = require("client.tcp")
 local irc = require("irc")
 local tap = require("tap")
 
@@ -32,12 +32,12 @@ N:mount("/", require("mnt").new(caps_of.esp), "mnt",
     { port = { __right = caps_of.esp } })
 
 local PORT = 17001
-local tcp = captcp.new(caps_of.tcp)
+local tcp = tcpc.new(caps_of.tcp)
 local listener = tcp.listen(PORT)
 
 tap.ok(listener ~= nil, "listening on " .. PORT)
 
--- a recv with a deadline. captcp's blocks forever, and a server
+-- a recv with a deadline. tcpc's blocks forever, and a server
 -- thread parked in one is a test that never returns from thread.run.
 local function recvfor(conn, ms)
 	local reply = sys.newport("test_irc.reply")

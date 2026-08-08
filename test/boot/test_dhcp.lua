@@ -13,7 +13,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
-local captcp = require("caps.tcp")
+local tcpc = require("client.tcp")
 local dhcp = require("dhcp")
 local tap = require("tap")
 
@@ -23,7 +23,7 @@ local g = sys.granted()
 
 tap.ok(g.tcp ~= nil and g.ip ~= nil, "the guest has tcp and ip")
 
-local tcp = captcp.new(g.tcp)
+local tcp = tcpc.new(g.tcp)
 
 -- ---- the codec, on a packet we built ourselves ----
 local pkt = dhcp.encode({ xid = 0x1234, mac = "52:54:00:12:34:56",

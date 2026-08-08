@@ -19,7 +19,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
-local capudp = require("caps.udp")
+local udpc = require("client.udp")
 local dnsmsg = require("dns")
 
 -- the resolver comes from the lease, asked for rather than mounted:
@@ -82,7 +82,7 @@ if not udph then
 end
 dhcpd = type(a) == "table" and a.dhcpd and a.dhcpd.__right or nil
 
-local udp = capudp.new(udph)
+local udp = udpc.new(udph)
 
 local conn
 for _ = 1, 60 do

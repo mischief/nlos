@@ -15,7 +15,7 @@
 -- networking is the common case rather than a failure.
 
 local sys = require("los.sys")
-local captcp = require("caps.tcp")
+local tcpc = require("client.tcp")
 local p9fs = require("p9fs")
 local p9tcp = require("p9tcp")
 local chan = require("chan")
@@ -37,7 +37,7 @@ if not tap.ok(granted.tcp ~= nil, "a tcp capability was granted") then
 	return
 end
 
-local net = captcp.new(granted.tcp)
+local net = tcpc.new(granted.tcp)
 local a, b, c, d = HOST:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
 
 if not a then

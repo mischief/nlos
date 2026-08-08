@@ -7,13 +7,13 @@
 -- the module itself has no policy about content.
 
 local sys = require("los.sys")
-local captcp = require("caps.tcp")
+local tcpc = require("client.tcp")
 local dev = require("dev")
 local ns = require("ns")
 local webterm = require("webterm")
 local caps_of = sys.granted()
 
-local tcp = captcp.new(caps_of.tcp)
+local tcp = tcpc.new(caps_of.tcp)
 
 -- the programs, read off the ESP here (this proc has the disk) and
 -- carried into each visitor's namespace as plain data. a visitor never

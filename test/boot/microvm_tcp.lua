@@ -16,7 +16,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local captcp = require("caps.tcp")
+local tcpc = require("client.tcp")
 local ip4 = require("ip4")
 
 tap.plan(15)
@@ -35,7 +35,7 @@ tap.ok(iph ~= nil, "and the ip task it is built on is running")
 
 -- the client sees lib/caps.lua's wrapper and nothing else. On the efi
 -- platform the identical call reaches the firmware's EFI_TCP4.
-local net = captcp.new(tcph)
+local net = tcpc.new(tcph)
 
 -- wait for the machine's own dhcp client rather than configuring
 -- anything: a client wanting the network waits for the address.

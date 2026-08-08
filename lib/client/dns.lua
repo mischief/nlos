@@ -1,6 +1,6 @@
--- caps/dns: the resolver, as a client
+-- client/dns: the resolver, as a client
 
-local rpc = require("caps.rpc")
+local rpc = require("client.rpc")
 
 local requester = rpc.requester
 

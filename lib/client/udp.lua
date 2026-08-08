@@ -1,7 +1,7 @@
--- caps/udp: the udp task, as a client
+-- client/udp: the udp task, as a client
 
 local sys = require("los.sys")
-local rpc = require("caps.rpc")
+local rpc = require("client.rpc")
 
 local requester = rpc.requester
 

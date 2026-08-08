@@ -13,7 +13,7 @@
 
 local sys = require("los.sys")
 local tap = require("tap")
-local capudp = require("caps.udp")
+local udpc = require("client.udp")
 local ip4 = require("ip4")
 
 tap.plan(9)
@@ -34,7 +34,7 @@ tap.ok(not ip4.is_loopback(ip4.parse("10.0.2.15")) and
     not ip4.is_loopback(ip4.ANY),
     "and an ordinary address is not")
 
-local udp = capudp.new(iph)
+local udp = udpc.new(iph)
 
 -- ---- a datagram to ourselves ----
 local a = udp.open(7001)

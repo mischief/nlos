@@ -7,7 +7,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local buf = require("los.buf")
-local rpc = require("caps.rpc")
+local rpc = require("client.rpc")
 
 local requester = rpc.requester
 local sendwait = rpc.sendwait
@@ -30,7 +30,7 @@ function M.new(handle, chunk)
 
 	-- one reply port per call, for the reason requester() gives above.
 	local function ask(m)
-		local replyport = sys.newport("caps.replyport")
+		local replyport = sys.newport("client.replyport")
 		-- send only: {__right=} copies the recv flag, so publishing
 		-- the port as created would let the server receive on it
 		local sr = sys.sendright(replyport)

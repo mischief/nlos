@@ -20,7 +20,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local capudp = require("caps.udp")
+local udpc = require("client.udp")
 local dns = require("dns")
 local ip4 = require("ip4")
 local ether = require("ether")
@@ -50,17 +50,17 @@ end
 
 -- ---- it answers as a udp service ----
 --
--- capudp is the wrapper every existing client uses, pointed at our
+-- udpc is the wrapper every existing client uses, pointed at our
 -- task instead of the firmware's. Nothing below this line is new code.
-local udp = capudp.new(iph)
+local udp = udpc.new(iph)
 local conn = udp.open(0)
 
-tap.ok(conn ~= nil, "capudp opened a port on it")
+tap.ok(conn ~= nil, "udpc opened a port on it")
 
 -- ---- send and receive through the wrapper ----
 --
 -- A dns query, because it answers promptly and proves both directions:
--- capudp.send reached the wire and capudp.recv got the answer back.
+-- udpc.send reached the wire and udpc.recv got the answer back.
 -- give the machine's own client a moment: a payload starts while dhcp
 -- is still in flight, so this waits for the address rather than racing
 -- the boot.
@@ -88,7 +88,7 @@ local r = udp.recv(conn, 4096)
 local addr = r and dns.parse(r.data, 0x2a)
 
 tap.ok(addr ~= nil,
-    "a query and its answer crossed capudp: example.com is " ..
+    "a query and its answer crossed udpc: example.com is " ..
     tostring(addr))
 
 -- ---- the stack is still serving afterwards ----

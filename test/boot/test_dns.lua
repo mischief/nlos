@@ -2,8 +2,8 @@
 -- resolver at 10.0.2.3. needs NET=1.
 local sys = require("los.sys")
 local thread = require("los.thread")
-local capdns = require("caps.dns")
-local capudp = require("caps.udp")
+local dnsc = require("client.dns")
+local udpc = require("client.udp")
 local tap = require("tap")
 local caps_of = sys.granted()
 
@@ -11,13 +11,13 @@ tap.plan(3)
 
 local dnspid, dnsh = sys.spawn(io.open("/task/dns.lua"):read("a"),
     { name = "dns" })
--- the ip task is what speaks the udp protocol now: capudp wraps it
+-- the ip task is what speaks the udp protocol now: udpc wraps it
 -- unchanged, and there is no separate udp capability to hand over. the
 -- key stays "udp" because that is the dns task's own startup protocol,
 -- naming what it wants rather than which task provides it.
 sys.send(dnsh, { udp = { __right = caps_of.ip } })
 
-local dns = capdns.new(dnsh)
+local dns = dnsc.new(dnsh)
 
 -- localhost is answered by slirp itself, with no upstream involved,
 -- so this half of the test works on a machine with no internet.

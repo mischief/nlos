@@ -1,7 +1,7 @@
--- caps/wire: the 9p wire, as a client
+-- client/wire: the 9p wire, as a client
 
 local sys = require("los.sys")
-local rpc = require("caps.rpc")
+local rpc = require("client.rpc")
 
 local requester = rpc.requester
 

@@ -16,7 +16,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local capudp = require("caps.udp")
+local udpc = require("client.udp")
 local dns = require("dns")
 local ip4 = require("ip4")
 local dhcp = require("dhcp")
@@ -32,7 +32,7 @@ if not tap.ok(iph ~= nil, "the ip task is running") then
 	return
 end
 
-local udp = capudp.new(iph)
+local udp = udpc.new(iph)
 
 -- wait for the machine's own dhcp client rather than running a second
 -- one. Only one thing may hold port 68, and task/dhcpd.lua is already

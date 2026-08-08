@@ -1,4 +1,4 @@
--- caps/tty: the terminal, as a client
+-- client/tty: the terminal, as a client
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -29,7 +29,7 @@ function M.new(handle)
 
 	local function reply()
 		if not replyport then
-			replyport = sys.newport("caps.replyport")
+			replyport = sys.newport("client.replyport")
 			replyright = sys.sendright(replyport)
 		end
 		return replyright

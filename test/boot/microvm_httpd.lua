@@ -13,7 +13,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
-local captcp = require("caps.tcp")
+local tcpc = require("client.tcp")
 local http = require("http")
 local ns = require("ns")
 local dev = require("dev")
@@ -42,7 +42,7 @@ while sys.uptime_ms() < deadline do
 	thread.sleep(200)
 end
 
-local tcp = captcp.new(granted.tcp)
+local tcp = tcpc.new(granted.tcp)
 
 -- the same in-memory tree srvhttp.lua serves, for the same reasons:
 -- static's root is /files and "secret" sits outside it, so a request for

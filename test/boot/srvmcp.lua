@@ -3,12 +3,12 @@
 -- result shape and the isError shape. no dns/network fetching here --
 -- this is about the json-rpc layer, not about http.get.
 local sys = require("los.sys")
-local captcp = require("caps.tcp")
-local capudp = require("caps.udp")
+local tcpc = require("client.tcp")
+local udpc = require("client.udp")
 local mcp = require("mcp")
 local caps_of = sys.granted()
 
-local tcp = captcp.new(caps_of.tcp)
+local tcp = tcpc.new(caps_of.tcp)
 
 -- this payload REPLACES init.lua, so it does not inherit init's dhcp
 -- client -- and without one, the listen below waits for the FIRMWARE's,
@@ -23,7 +23,7 @@ local dhcp = require("dhcp")
 if caps_of.udp then
 	local mac = tcp.hwaddr()
 	local lease = mac and
-	    dhcp.acquire(capudp.new(caps_of.udp), caps_of.udp, { mac = mac })
+	    dhcp.acquire(udpc.new(caps_of.udp), caps_of.udp, { mac = mac })
 
 	if lease then
 		dhcp.install(tcp, lease)
