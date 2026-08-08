@@ -33,13 +33,16 @@ local ed25519 = require "crypto.ed25519"
 local util = require "crypto.util"
 local wire = require "tls.wire"
 local hello = require "tls.hello"
+local keys = require "tls.keys"
 
 local M = {}
 
 local srep = string.rep
 
-M.SUITE = hello.CHACHA20_POLY1305_SHA256
-M.KEY_LEN = 32                          -- of the AEAD the suite names
+-- re-exported: the schedule and the suite live in tls/keys.lua, which
+-- the client half reaches without loading this one.
+M.SUITE = keys.SUITE
+M.KEY_LEN = keys.KEY_LEN
 
 -- RFC 8446 4.4.3: the signature covers 64 spaces, a context string, a
 -- zero byte and the transcript hash. The padding exists so that a
@@ -81,23 +84,10 @@ function S:add(msg)
   self.transcript[#self.transcript + 1] = msg
 end
 
--- The key schedule, RFC 8446 7.1. Each secret is derived from the one
--- above it, and "derived" between stages is what keeps a secret from
--- being usable as the input of the stage that produced it.
+-- The key schedule, RFC 8446 7.1, from tls/keys.lua.
 local ZEROS = srep("\0", 32)
-
-local function derive(secret, label, transcript_hash)
-  return hkdf.expand_label(sha256, secret, label, transcript_hash, 32)
-end
-
--- The verify_data of a Finished message: an HMAC under a key derived
--- from the traffic secret, over the transcript so far. Not a signature:
--- both ends already hold the traffic secret, so this proves the key
--- schedule agrees rather than proving identity.
-local function finished(secret, transcript_hash)
-  local key = hkdf.expand_label(sha256, secret, "finished", "", 32)
-  return hmac.auth(sha256, key, transcript_hash)
-end
+local derive = keys.derive
+local finished = keys.finished
 
 M.finished = finished
 

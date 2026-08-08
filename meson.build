@@ -629,6 +629,7 @@ lua_payload = files(
   # who the peer is. Sans-io, like lib/ssh: the caller owns the socket.
   'lib/tls/wire.lua',
   'lib/tls/hello.lua',
+  'lib/tls/keys.lua',
   'lib/tls/record.lua',
   'lib/tls/server.lua',
   'lib/tls/client.lua',

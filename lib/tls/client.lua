@@ -27,16 +27,17 @@ local x25519 = require "crypto.x25519"
 local util = require "crypto.util"
 local wire = require "tls.wire"
 local hello = require "tls.hello"
-local tlsserver = require "tls.server"
+local keys = require "tls.keys"
 
 local M = {}
 
 local srep = string.rep
 local ZEROS = srep("\0", 32)
 
-local function derive(secret, label, hash)
-  return hkdf.expand_label(sha256, secret, label, hash, 32)
-end
+-- the schedule, shared with the server half. Reaching it through
+-- tls/server.lua would load the whole server into a client that only
+-- ever connects.
+local derive = keys.derive
 
 local C = {}
 C.__index = C
@@ -129,7 +130,7 @@ function C:client_hello()
     wire.wint(0x0303, 2),
     self.rand(32),
     wire.wvec(self.session_id, 1),
-    wire.wvec(wire.wint(tlsserver.SUITE, 2), 2),
+    wire.wvec(wire.wint(keys.SUITE, 2), 2),
     wire.wvec("\0", 1),
     wire.wextensions(exts),
   })
@@ -159,7 +160,7 @@ function C:server_hello(msg)
   exts = wire.extensions(extbytes)
   if not exts then return nil, "bad extensions" end
 
-  if suite ~= tlsserver.SUITE then
+  if suite ~= keys.SUITE then
     return nil, ("server chose cipher suite 0x%04x"):format(suite)
   end
 
@@ -238,7 +239,7 @@ function C:server_flight(bytes)
         transcript_hash = self:hash(),
       }
     elseif m.type == hello.FINISHED then
-      local want = tlsserver.finished(self.s_hs, self:hash())
+      local want = keys.finished(self.s_hs, self:hash())
       if not util.ct_eq(m.body, want) then
         return nil, "server Finished does not verify"
       end
@@ -285,7 +286,7 @@ function C:server_flight(bytes)
   end
 
   local fin = wire.handshake(hello.FINISHED,
-                             tlsserver.finished(self.c_hs, self:hash()))
+                             keys.finished(self.c_hs, self:hash()))
   self:add(fin)
   out[#out + 1] = fin
   self.state = "done"
