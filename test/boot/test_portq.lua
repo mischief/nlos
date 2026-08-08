@@ -16,7 +16,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(3)
+tap.plan(4)
 
 local NTHREAD = 4
 local ROUNDS = 30
@@ -79,6 +79,52 @@ end)
 
 thread.run()
 
+-- ---- and again, with every thread on ONE port ----
+--
+-- The list case, which the run above never reaches: a port with one
+-- waiter is a scalar. Two threads on one port take turns being its last
+-- entry, so a check that asked only about the tail would find the other
+-- thread there and append, and the list would grow by one per thread on
+-- every wake that delivered nothing.
+local shared = sys.newport("test_portq.shared")
+local sharedright = sys.sendright(shared)
+
+stop = false
+
+for _ = 1, NTHREAD do
+	thread.spawn(function()
+		while not stop do
+			thread.recv(shared)
+		end
+	end)
+end
+
+thread.spawn(function()
+	thread.sleep(50)
+	local settled = thread._nwaiters
+
+	for _ = 1, ROUNDS do
+		sys.send(pokeright, "poke")
+		thread.recv(poke)
+	end
+
+	thread.sleep(50)
+	local after = thread._nwaiters
+
+	tap.ok(after <= settled + 1,
+	    ("%d threads on one port, %d rounds: %d -> %d entries")
+	    :format(NTHREAD, ROUNDS, settled, after))
+
+	stop = true
+	for _ = 1, NTHREAD do
+		sys.send(sharedright, "done")
+	end
+end)
+
+thread.run()
+
+sys.close(sharedright)
+sys.close(shared)
 for i = 1, NTHREAD do
 	sys.close(rights[i])
 	sys.close(ports[i])

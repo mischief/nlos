@@ -577,18 +577,29 @@ parkon_begin(lua_State *L, struct sched *s, lua_Integer port, int portsi,
 				lua_rawset(L, -5);
 			}
 		} else {
-			/* Appended only when this thread is not already the
-			 * last waiter. The queue is served from the front,
-			 * so an entry that is already on it is left where it
-			 * is rather than moved.
+			/* Appended only when this thread is not on the list
+			 * already, which is the whole list and not just its
+			 * tail: two threads in recv on one port take turns
+			 * being last, so each would find the other there and
+			 * append, and the list would grow by two on every
+			 * wake that delivered nothing.
+			 *
+			 * A scan, because the list is as long as the number
+			 * of threads waiting on that one port -- one for a
+			 * reply port, a handful for a shared one. The queue
+			 * is served from the front, so an entry already on
+			 * it stays where it is rather than moving to the
+			 * back.
 			 */
-			lua_Integer nq = (lua_Integer)lua_rawlen(L, -1);
-			int last;
+			lua_Integer nq = (lua_Integer)lua_rawlen(L, -1), k;
+			int on = 0;
 
-			lua_rawgeti(L, -1, nq);
-			last = lua_rawequal(L, -1, co);
-			lua_pop(L, 1);
-			if (!last) {
+			for (k = 1; k <= nq && !on; k++) {
+				lua_rawgeti(L, -1, k);
+				on = lua_rawequal(L, -1, co);
+				lua_pop(L, 1);
+			}
+			if (!on) {
 				lua_pushvalue(L, co);
 				lua_rawseti(L, -2, nq + 1);
 			}
