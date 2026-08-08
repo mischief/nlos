@@ -8,7 +8,7 @@
 -- test/boot/test_fb.lua already proves pixels land where asked. this one
 -- proves the capability travels init -> shell -> program.
 local sys = require("los.sys")
-local caps = require("caps")
+local capfb = require("caps.fb")
 local draw = require("draw")
 local dos = require("dos")
 local ns = require("ns")
@@ -108,7 +108,7 @@ tap.ok(outtext:find("press enter"),
 -- it painted the screen black on the way out, which is the restore step.
 -- sampling the middle is deliberate: that is where the face was, so a
 -- program that drew and skipped the restore fails here.
-local fb = caps.fb(caps_of.fb)
+local fb = capfb.new(caps_of.fb)
 local mode = fb.mode()
 local mid = draw.fromBytes(1, 1,
     fb.unload(draw.rect(mode.w // 2, mode.h // 2, 1, 1)))

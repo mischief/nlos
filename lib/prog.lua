@@ -756,7 +756,7 @@ function M.screen()
 	if not ctx or not ctx.fb then
 		return nil
 	end
-	return require("caps").fb(ctx.fb)
+	return require("caps.fb").new(ctx.fb)
 end
 
 -- whether the launcher gave this program an input stream at all, which
@@ -792,7 +792,7 @@ function M.net()
 	if not ctx or not ctx.net then
 		return nil
 	end
-	return require("caps").tcp(ctx.net)
+	return require("caps.tcp").new(ctx.net)
 end
 
 -- udp, wrapped, or nil where the launcher lent none. A separate task
@@ -804,7 +804,7 @@ function M.udp()
 	if not ctx or not ctx.udp then
 		return nil
 	end
-	return require("caps").udp(ctx.udp)
+	return require("caps.udp").new(ctx.udp)
 end
 
 -- the terminal, wrapped, or nil if the launcher lent none -- the same
@@ -817,7 +817,7 @@ function M.tty()
 	if not ctx or not ctx.tty then
 		return nil
 	end
-	return require("caps").tty(ctx.tty)
+	return require("caps.tty").new(ctx.tty)
 end
 
 -- the power task, wrapped, or nil where the launcher lent none. Same
@@ -832,7 +832,7 @@ function M.power()
 	if not ctx or not ctx.power then
 		return nil
 	end
-	return require("caps").power(ctx.power)
+	return require("caps.power").new(ctx.power)
 end
 
 return M

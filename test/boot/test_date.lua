@@ -11,7 +11,7 @@ local sys = require("los.sys")
 local dos = require("dos")
 local ns = require("ns")
 local thread = require("los.thread")
-local caps = require("caps")
+local capudp = require("caps.udp")
 local ntp = require("ntp")
 local tap = require("tap")
 
@@ -21,7 +21,7 @@ tap.plan(7)
 
 -- the ip task exists only where the machine has a NIC, so this test
 -- runs in the NET group. Bailing rather than crashing matters anyway:
--- caps.udp(nil) faults inside the capability wrapper, which reports a
+-- capudp.new(nil) faults inside the capability wrapper, which reports a
 -- bad argument to sys.call and says nothing about the missing task.
 if not tap.ok(caps_of.ip ~= nil, "the ip task is running") then
 	tap.done()
@@ -55,7 +55,7 @@ local function reply()
 	return table.concat(p)
 end
 
-local udp = caps.udp(caps_of.ip)
+local udp = capudp.new(caps_of.ip)
 local conn = udp.open(ntp.PORT)
 
 tap.ok(conn ~= nil, "bound udp/123 to answer as the server")

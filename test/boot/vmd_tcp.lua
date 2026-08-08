@@ -22,7 +22,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
-local caps = require("caps")
+local captcp = require("caps.tcp")
 local ip4 = require("ip4")
 local sha256 = require("crypto.sha256")
 
@@ -68,7 +68,7 @@ end
 say(string.format("address %s mask %s gw %s", ip4.str(cfg.ip),
     ip4.str(cfg.mask or ip4.ANY), ip4.str(cfg.gw or ip4.ANY)))
 
-local net = caps.tcp(granted.tcp)
+local net = captcp.new(granted.tcp)
 local gw = cfg.gw
 
 if not gw or gw == ip4.ANY then

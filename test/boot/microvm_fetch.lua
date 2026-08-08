@@ -17,7 +17,7 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
-local caps = require("caps")
+local captcp = require("caps.tcp")
 local ip4 = require("ip4")
 
 -- rewritten by tools/lanfetch.sh
@@ -56,7 +56,7 @@ print(string.format("fetch: %s/%s gw %s", ip4.str(cfg.ip),
     ip4.str(cfg.mask or ip4.ANY), ip4.str(cfg.gw or ip4.ANY)))
 
 local a, b, c, d = HOST:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
-local tcp = caps.tcp(granted.tcp)
+local tcp = captcp.new(granted.tcp)
 local conn = tcp.dial(tonumber(a), tonumber(b), tonumber(c), tonumber(d), PORT)
 
 if not conn then

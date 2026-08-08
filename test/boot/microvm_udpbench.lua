@@ -29,7 +29,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local caps = require("caps")
+local capudp = require("caps.udp")
 local ip4 = require("ip4")
 local udp4 = require("udp4")
 
@@ -46,7 +46,7 @@ if not tap.ok(iph ~= nil, "the ip task is running") then
 	return
 end
 
-local udp = caps.udp(iph)
+local udp = capudp.new(iph)
 local A, B = 7101, 7102
 local a, b = udp.open(A), udp.open(B)
 

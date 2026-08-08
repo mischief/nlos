@@ -23,7 +23,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local caps = require("caps")
+local captcp = require("caps.tcp")
 
 tap.plan(17)
 
@@ -35,13 +35,13 @@ if not tap.ok(granted.tcp ~= nil, "the tcp task is running") then
 end
 tap.ok(granted.ip ~= nil, "and the ip task under it")
 
-local net = caps.tcp(granted.tcp)
+local net = captcp.new(granted.tcp)
 local PORT = 7654
 
 -- Both ends run as threads under thread.run(), and that is a
 -- requirement rather than a style.
 --
--- At the top level, caps.tcp's calls go through sys.call, which blocks
+-- At the top level, captcp's calls go through sys.call, which blocks
 -- the whole PROC -- so a spawned thread never runs and an accept parked
 -- behind a dial never happens. The first version of this test did
 -- exactly that and hung: the client connected, wrote, and waited

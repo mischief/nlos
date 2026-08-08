@@ -202,7 +202,15 @@ set(EMBED_FILES
     lib/tcb.lua
     lib/inet.lua
     lib/dhcp.lua
-    lib/caps.lua
+    lib/caps/rpc.lua
+    lib/caps/tcp.lua
+    lib/caps/udp.lua
+    lib/caps/fb.lua
+    lib/caps/dns.lua
+    lib/caps/tty.lua
+    lib/caps/power.lua
+    lib/caps/wire.lua
+    lib/caps/rpc.lua
     lib/dns.lua
     task/eth.lua
     task/ip.lua

@@ -8,17 +8,18 @@
 -- that did arrive are all correct. That is how six of a smiley's seven
 -- bands went missing and came back as a tidy yellow arc.
 --
--- caps.sendwait is the shared answer, used by caps.fb's put and by the
+-- sendwait is the shared answer, used by capfb's put and by the
 -- requester() every other capability wrapper is built on.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local caps = require("caps")
+local capfb = require("caps.fb")
+local sendwait = require("caps.rpc").sendwait
 
 tap.plan(8)
 
-tap.ok(type(caps.sendwait) == "function", "caps exposes sendwait")
+tap.ok(type(sendwait) == "function", "caps exposes sendwait")
 
 -- big enough that two cannot be queued at once: MAXQUEUE and MAXMSG are
 -- both 64KiB, so one of these fills the queue on its own.
@@ -51,7 +52,7 @@ sys.spawn([[
 -- and sendright deliberately strips that.
 
 -- this must not return until the message is actually queued
-local sent, serr = caps.sendwait(right, { data = BIG })
+local sent, serr = sendwait(right, { data = BIG })
 
 tap.ok(sent, "sendwait delivers once the reader drains: " .. tostring(serr))
 
@@ -67,7 +68,7 @@ local dright = sys.sendright(dead)
 
 sys.close(dead)
 
-local dok, derr = caps.sendwait(dright, { data = "x" })
+local dok, derr = sendwait(dright, { data = "x" })
 
 tap.ok(not dok or derr == nil,
     "a send that fails for another reason returns instead of looping")
@@ -96,7 +97,7 @@ sys.spawn([[
 local tok, tres
 
 thread.spawn(function()
-	tok, tres = pcall(caps.sendwait, tright, { data = BIG })
+	tok, tres = pcall(sendwait, tright, { data = BIG })
 end)
 thread.run()
 

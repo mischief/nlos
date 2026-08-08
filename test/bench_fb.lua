@@ -18,7 +18,7 @@
 -- bench_ipc: 1ms granularity cannot see a 20% change on a 20ms
 -- measurement, which is the size of change worth acting on.
 local sys = require("los.sys")
-local caps = require("caps")
+local capfb = require("caps.fb")
 local draw = require("draw")
 
 print("1..1")
@@ -32,7 +32,7 @@ if not caps_of.fb then
 end
 
 local CPMS = sys.stats().cycles_per_ms
-local fb = caps.fb(caps_of.fb)
+local fb = capfb.new(caps_of.fb)
 local mode = fb.mode()
 
 -- best of three: the firmware is not a quiet neighbour and one slow lap

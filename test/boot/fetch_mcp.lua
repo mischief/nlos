@@ -6,7 +6,9 @@
 -- is running to hand it one.
 
 local sys = require("los.sys")
-local caps = require("caps")
+local capdns = require("caps.dns")
+local captcp = require("caps.tcp")
+local capudp = require("caps.udp")
 local http = require("http")
 local mcp = require("mcp")
 local caps_of = sys.granted()
@@ -30,7 +32,7 @@ if not has_udp then
 	return
 end
 
-local tcp = caps.tcp(caps_of.tcp)
+local tcp = captcp.new(caps_of.tcp)
 
 -- this payload REPLACES init.lua, so it does not inherit init's dhcp
 -- client -- and without one, the listen below waits for the FIRMWARE's,
@@ -45,13 +47,13 @@ local dhcp = require("dhcp")
 if caps_of.udp then
 	local mac = tcp.hwaddr()
 	local lease = mac and
-	    dhcp.acquire(caps.udp(caps_of.udp), caps_of.udp, { mac = mac })
+	    dhcp.acquire(capudp.new(caps_of.udp), caps_of.udp, { mac = mac })
 
 	if lease then
 		dhcp.install(tcp, lease)
 	end
 end
-local dns = caps.dns(dnssrv)	-- dnssrv is already a handle, see sys.spawn
+local dns = capdns.new(dnssrv)	-- dnssrv is already a handle, see sys.spawn
 
 mcp.serve(tcp, MCP_PORT, {
 	{

@@ -6,7 +6,7 @@
 -- if all you check is that the call returned -- which is the failure
 -- mode graphics code actually has.
 local sys = require("los.sys")
-local caps = require("caps")
+local capfb = require("caps.fb")
 local draw = require("draw")
 local tap = require("tap")
 
@@ -20,7 +20,7 @@ if not caps_of.fb then
 	return
 end
 
-local fb = caps.fb(caps_of.fb)
+local fb = capfb.new(caps_of.fb)
 local mode = fb.mode()
 
 tap.ok(mode ~= nil and mode.w > 0 and mode.h > 0,
@@ -67,7 +67,7 @@ tap.is(draw.at(back, 12, 12), draw.blue, "loaded image: bottom right is blue")
 -- the regression test for the bug that drew a smiley as a yellow arc.
 -- 320 wide is 1280 bytes a row, so ~50 rows per band and this goes out
 -- as several -- and MAXQUEUE is the same 64KiB as MAXMSG, so at most
--- one of them is in flight. before caps.fb applied backpressure, every
+-- one of them is in flight. before capfb applied backpressure, every
 -- band after the first was dropped by a full queue and sys.send's
 -- return said so to nobody.
 --

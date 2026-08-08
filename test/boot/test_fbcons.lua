@@ -9,7 +9,7 @@
 -- the pen is persistent, as on any terminal, so each case starts with
 -- ESC[0m (default pen) ESC[2J (clear) ESC[H (home).
 local sys = require("los.sys")
-local caps = require("caps")
+local capfb = require("caps.fb")
 local draw = require("draw")
 local fbcons = require("fbcons")
 local font = require("los.font")
@@ -26,7 +26,7 @@ end
 
 -- the fb task speaks one protocol; fbcons drives it, and this wraps the
 -- same right for readback. Two holders of one send right is fine.
-local fb = caps.fb(caps_of.fb)
+local fb = capfb.new(caps_of.fb)
 local cw, ch = font.size()
 local con = fbcons.new({
 	fb = caps_of.fb, font = font,

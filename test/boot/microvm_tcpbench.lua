@@ -35,7 +35,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local caps = require("caps")
+local captcp = require("caps.tcp")
 local tcp4 = require("tcp4")
 local tcb = require("tcb")
 
@@ -147,7 +147,7 @@ local moved, crossed = 0, 0
 local now = 0
 
 -- Written in 16KB pieces into the DEFAULT buffers, exactly as the stack
--- test below writes through caps.tcp, because buffer size is not neutral
+-- test below writes through captcp, because buffer size is not neutral
 -- here and the two figures are only comparable if it matches.
 --
 -- The first version of this used 512KB buffers for the protocol and the
@@ -200,9 +200,9 @@ tap.diag(string.format("protocol: %.2f us per data segment (%d segments, " ..
 -- ---- the stack ----
 --
 -- The same bytes, through the real tasks over 127.0.0.1. Both ends are
--- threads because caps.tcp blocks the proc at the top level, and both
+-- threads because captcp blocks the proc at the top level, and both
 -- ends of a loopback connection have to take turns.
-local net = caps.tcp(granted.tcp)
+local net = captcp.new(granted.tcp)
 local PORT = 9100
 local BULK = 256 * 1024
 local l = net.listen(PORT)

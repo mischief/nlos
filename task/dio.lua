@@ -93,7 +93,8 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local font = require("los.font")
-local caps = require("caps")
+local capfb = require("caps.fb")
+local sendwait = require("caps.rpc").sendwait
 local mousefs = require("mousefs")
 local wctlfs = require("wctlfs")
 local proc = require("proc")
@@ -131,11 +132,11 @@ if not N then
 	return
 end
 
-local screen = caps.fb(fb)
+local screen = capfb.new(fb)
 
 -- ---- the framebuffer, asked directly ----
 --
--- caps.fb is the wrapper every client uses, this one included; what it
+-- capfb is the wrapper every client uses, this one included; what it
 -- has no op for is the cursor, which is the machine's rather than an
 -- app's. So the raw request/reply is here as well.
 
@@ -528,13 +529,13 @@ end
 -- forward a translated message. A client that asked for an answer gets
 -- one from the framebuffer; a client that did not is not made to wait
 -- for a round trip it declined -- which is most of what an app sends,
--- since caps.fb's fill and load are fire-and-forget by default.
+-- since capfb's fill and load are fire-and-forget by default.
 local function forward(m, wait)
 	if wait then
 		return ask(m)
 	end
 
-	local ok, err = caps.sendwait(fb, m)
+	local ok, err = sendwait(fb, m)
 
 	if not ok then
 		return nil, err

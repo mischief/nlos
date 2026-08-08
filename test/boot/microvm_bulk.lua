@@ -21,7 +21,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local caps = require("caps")
+local captcp = require("caps.tcp")
 local ip4 = require("ip4")
 local sha256 = require("crypto.sha256")
 
@@ -56,7 +56,7 @@ if not tap.ok(cfg and cfg.ip and cfg.ip ~= ip4.ANY,
 	return
 end
 
-local net = caps.tcp(granted.tcp)
+local net = captcp.new(granted.tcp)
 
 -- the same pattern test/hostserver.lua generates, so the guest can say
 -- what it should have received without being sent it. Its length is a

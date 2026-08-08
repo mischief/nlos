@@ -63,7 +63,8 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
-local caps = require("caps")
+local captcp = require("caps.tcp")
+local capudp = require("caps.udp")
 local dev = require("dev")
 local srv = require("srv")
 local dhcp = require("dhcp")
@@ -77,14 +78,14 @@ end
 -- microvm: one right, granted by kernel.c beside the ip task it names.
 -- efi: two, arriving in the spawn arg.
 local iph = sys.granted().ip or (a.ip and a.ip.__right)
-local tcp = a.tcp and caps.tcp(a.tcp.__right) or nil
+local tcp = a.tcp and captcp.new(a.tcp.__right) or nil
 local udph = iph or (a.udp and a.udp.__right)
 
 if not udph then
 	return		-- nothing to speak the protocol over
 end
 
-local udp = caps.udp(udph)
+local udp = capudp.new(udph)
 
 -- the hardware address, from whichever knows it. On efi that is the
 -- firmware's Ip4Config2 behind the tcp task; here the stack itself is

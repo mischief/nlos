@@ -12,7 +12,7 @@
 -- then ship the damaged rectangle -- and at this size it is also just
 -- faster than a fill per span.
 local sys = require("los.sys")
-local caps = require("caps")
+local capfb = require("caps.fb")
 local draw = require("draw")
 
 local caps_of = sys.granted()
@@ -24,7 +24,7 @@ if not caps_of.fb then
 	end
 end
 
-local fb = caps.fb(caps_of.fb)
+local fb = capfb.new(caps_of.fb)
 local mode = fb.mode()
 local W, H = mode.w, mode.h
 
