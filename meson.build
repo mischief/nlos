@@ -625,6 +625,17 @@ lua_payload = files(
   'lib/ssh/packet.lua',
   'lib/ssh/kex.lua',
   'lib/ssh/server.lua',
+  # tls 1.3 over the stack below, and the certificate parsing that says
+  # who the peer is. Sans-io, like lib/ssh: the caller owns the socket.
+  'lib/tls/wire.lua',
+  'lib/tls/hello.lua',
+  'lib/tls/record.lua',
+  'lib/tls/server.lua',
+  'lib/tls/client.lua',
+  'lib/tls/conn.lua',
+  'lib/tls/tofu.lua',
+  'lib/x509/der.lua',
+  'lib/x509/cert.lua',
   'lib/dhcp.lua',
   'task/dhcpd.lua',
   # the ipv4 stack. On the efi image because that platform now drives

@@ -110,11 +110,19 @@ confidentiality, and a signature forged in 2040 verifies nothing today.
 every packet's message number to the console -- which is on because this
 is a branch for working on it.
 
-The crypto is `lib/crypto` (Lua) and `src/crypto.c` (ChaCha20 and
-Poly1305), the protocol is `lib/ssh`, and both came from
-`~/code/lua/ssh`, where the RFC vectors run against them under busted.
-Entropy is `EFI_RNG_PROTOCOL` via `los.platform.rng`; no RNG means no
-sshd, rather than a weaker one.
+The crypto is `lib/crypto` (Lua) over `src/native.c` (the C primitives,
+copied verbatim), the protocols are `lib/ssh` and `lib/tls` with
+`lib/x509` for certificates, and all of it came from the standalone
+`lua/ssh` tree, where the RFC vectors run against them under busted.
+Every file here is a copy: sync it by hand, rewriting `ssh.crypto.X` to
+`crypto.X`. Entropy is `EFI_RNG_PROTOCOL` via `los.platform.rng`; no RNG
+means no sshd, rather than a weaker one.
+
+TLS 1.3 is client and server, sans-io the same way `lib/ssh` is: one
+suite (ChaCha20-Poly1305), X25519 only, no resumption and no 0-RTT.
+`lib/tls/conn.lua` is the connection a caller drives; `lib/tls/tofu.lua`
+is the certificate check, and without it a connection is
+unauthenticated.
 
 ## Test it
 
