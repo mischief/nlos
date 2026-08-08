@@ -1228,8 +1228,15 @@ test('luaheap', luaheap_test, protocol: 'tap', timeout: 120)
 # and no firmware are involved. It reaches lua's internal headers
 # (lstate.h, lgc.h) because building an arena object by hand is exactly
 # what a relocator would do, and there is no public API for it.
+#
+# luai_makeseed is pinned the way src/coreg.h would pin it: lstate.c
+# guards it with #if !defined, so every state hashes a string to the
+# same bucket and one state's intern table can be spliced with another's
+# strings. In the kernel this becomes one seed per boot rather than a
+# constant, so hash flooding stays as hard as lua intends.
 arena_test = executable('arena_test',
   ['test/arena_test.c'] + lua_src,
+  c_args: ['-Dluai_makeseed(L)=0x9e3779b9u'],
   include_directories: include_directories('lua'),
   dependencies: meson.get_compiler('c', native: true).find_library('m',
     required: false),

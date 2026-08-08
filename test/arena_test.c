@@ -83,8 +83,9 @@ arenamark(void)
 
 /* Build an arena short string. Returns the TString.
  *
- * The seed is arbitrary: table lookup uses the hash stored in the
- * object, so any state can key on it. Only interning needs a fixed seed.
+ * Hashed with the seed every state was built with, so internshrstr
+ * looks in the bucket this string is spliced onto. luai_makeseed is
+ * pinned for this binary; see meson.build.
  */
 static TString *
 arena_str(const char *s)
@@ -101,6 +102,29 @@ arena_str(const char *s)
 	ts->u.hnext = NULL;
 	memcpy(ts->contents, s, l + 1);
 	return ts;
+}
+
+/* Put an arena string in a state's intern table, so the state's own
+ * luaS_newlstr finds it and hands back this pointer.
+ *
+ * That is what makes eqshrstr work across the boundary: a constant in a
+ * shared Proto and the same literal written in the proc's own code
+ * become one object, so they key one table entry. Without it they are
+ * two, and every global read through a shared Proto misses.
+ *
+ * Must run before the state interns the same text itself. A duplicate
+ * on the chain is not corruption, but the older entry wins and the
+ * splice buys nothing.
+ */
+static void
+arena_intern(lua_State *L, TString *ts)
+{
+	stringtable *tb = &G(L)->strt;
+	TString **list = &tb->hash[lmod(ts->hash, tb->size)];
+
+	ts->u.hnext = *list;
+	*list = ts;
+	tb->nuse++;
 }
 
 /* Compile a chunk and copy its Proto into the arena. Returns the copy.
@@ -204,7 +228,7 @@ main(void)
 	lua_State *A, *B;
 	int r;
 
-	printf("1..13\n");
+	printf("1..15\n");
 
 	src = arena_str("=(arena)");
 	shared = arena_str("arena-shared-key");
@@ -217,6 +241,10 @@ main(void)
 	/* No libraries: nothing here needs one. */
 	A = luaL_newstate();
 	B = luaL_newstate();
+
+	/* before either state interns the text itself */
+	arena_intern(A, shared);
+	arena_intern(B, shared);
 
 	/* the arena Proto is on neither state's allgc, and never was */
 	{
@@ -256,15 +284,28 @@ main(void)
 	lua_rawset(B, -3);
 	lua_setglobal(B, "t");
 
-	/* eqshrstr is pointer identity, so a natively interned copy of the
-	 * same content is a different key and the lookup misses. Shared
-	 * interning is therefore required for correctness.
+	/* eqshrstr is pointer identity, and the splice is what makes it
+	 * hold across states: asking either state for the same text by
+	 * content returns the arena object itself.
+	 */
+	lua_pushstring(A, "arena-shared-key");
+	ok(lua_topointer(A, -1) == (const void *)shared,
+	    "a state interns the arena string rather than a copy of it");
+	lua_pop(A, 1);
+
+	lua_pushstring(B, "arena-shared-key");
+	ok(lua_topointer(B, -1) == (const void *)shared,
+	    "and so does the other state");
+	lua_pop(B, 1);
+
+	/* the point of all of it: a lookup written as a plain literal
+	 * finds what a shared Proto's constant stored.
 	 */
 	lua_getglobal(A, "t");
-	lua_pushstring(A, "arena-shared-key");	/* A's own copy */
+	lua_pushstring(A, "arena-shared-key");	/* A's own literal */
 	lua_rawget(A, -2);
-	ok(lua_isnil(A, -1),
-	    "a natively interned copy is a different key");
+	ok(lua_type(A, -1) == LUA_TSTRING,
+	    "a literal finds the entry an arena constant keyed");
 	lua_pop(A, 2);
 
 	lua_getglobal(A, "t");
