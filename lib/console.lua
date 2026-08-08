@@ -90,6 +90,28 @@ function M.new(backend, opts)
 	}, Console)
 end
 
+-- who to tell when the interrupt character is typed, or nobody when the
+-- reply is absent. A shell claims this while a program it started runs
+-- and drops it afterwards, so the character means "stop that" exactly
+-- while there is a that.
+--
+-- One listener, not a list: two claimants would each get half the
+-- interrupts, and which half would depend on the order they registered.
+--
+-- Served wherever it arrives, including mid-line, which is the whole
+-- reason it is a method. A shell claims the interrupt just after it
+-- starts the program, and the program's own read is what the console is
+-- likely to be busy with at that moment -- so deferring the claim to
+-- the end of the read leaves it unclaimed for exactly as long as the
+-- program runs, and the character it should stop with lands in the
+-- program's input instead.
+function Console:setintr(m)
+	if self.intr then
+		sys.close(self.intr)
+	end
+	self.intr = m.reply and m.reply.__right
+end
+
 -- one raw keystroke for a full-screen program: no echo, no line editing,
 -- just the next byte. an optional timeout in ms is what tells a lone
 -- Escape from the first byte of an arrow-key sequence -- with none, block
@@ -135,6 +157,8 @@ function Console:getch(ms)
 		elseif type(m) == "table" and not m.reply and
 		    (m.op == "write" or m.op == "log") then
 			self.io.write(m.data)
+		elseif type(m) == "table" and m.op == "intr" then
+			self:setintr(m)
 		else
 			self.deferred[#self.deferred + 1] = m
 		end
@@ -266,6 +290,8 @@ function Console:readline(prompt)
 			elseif type(m) == "table" and
 			    (m.op == "write" or m.op == "log") then
 				redraw(m.data)
+			elseif type(m) == "table" and m.op == "intr" then
+				self:setintr(m)
 			else
 				self.deferred[#self.deferred + 1] = m
 			end
@@ -396,19 +422,7 @@ function Console:serve()
 			end
 			io.write(table.concat(parts))
 		elseif m.op == "intr" then
-			-- who to tell when the interrupt character is
-			-- typed, or nobody when the reply is absent. A
-			-- shell claims this while a program it started is
-			-- running and drops it afterwards, so the character
-			-- means "stop that" exactly while there is a that.
-			--
-			-- One listener, not a list: two claimants would each
-			-- get half the interrupts, and which half would
-			-- depend on the order they registered.
-			if self.intr then
-				sys.close(self.intr)
-			end
-			self.intr = reply
+			self:setintr(m)
 			reply = nil		-- kept, so not closed below
 		elseif m.op == "size" then
 			-- how wide the far end is, for a program that lays

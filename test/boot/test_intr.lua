@@ -21,7 +21,7 @@ local thread = require("los.thread")
 local console = require("console")
 local tap = require("tap")
 
-tap.plan(5)
+tap.plan(6)
 
 local kbd = sys.newport("test_intr.kbd")
 local kbdh = sys.sendright(kbd)
@@ -76,6 +76,23 @@ thread.spawn(function()
 	    "an unclaimed interrupt goes to nobody")
 	tap.is(getch(500), "\3",
 	    "and is ordinary input instead")
+
+	-- ---- claimed while the console is already serving a read ----
+	--
+	-- The order a shell actually produces: it starts the program, the
+	-- program asks for input, and the claim lands while the console is
+	-- inside that read. Deferring the claim until the read finishes
+	-- leaves the interrupt unclaimed for exactly as long as the program
+	-- runs, which for a pager is forever -- and the character meant to
+	-- stop it is delivered to it as input instead.
+	sys.send(consh, { op = "read", reply = { __right = replyh } })
+	thread.sleep(20)			-- the console is in readline now
+	sys.send(consh, { op = "intr", reply = { __right = claimh } })
+	thread.sleep(20)
+
+	sys.send(kbdh, "\3")
+	tap.ok(type(thread.recvtimeout(claim, 1000)) == "table",
+	    "a claim made mid-read takes effect at once")
 
 	tap.done()
 	os.exit(0)
