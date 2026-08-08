@@ -62,6 +62,10 @@
 -- a whole path in one call. see M.walkpath below for why it is optional
 -- rather than required.
 --
+-- OPTIONAL: hangup(), called by srv once no client can send again. A
+-- backend whose read parks needs it -- what it waits for comes from the
+-- client that has gone, so the reader would park forever.
+--
 -- NOT required, and deliberately: remove() and wstat(). a shell wants
 -- `rm`, so remove() is the next thing this interface should grow -- but
 -- espfs cannot implement it yet (EFI_FILE_PROTOCOL has Delete and
@@ -129,6 +133,9 @@ M.Enotimpl   = "not implemented"
 -- not from error.h: this is the string plan 9's own 9P servers send for
 -- a fid they do not know, and lib/srv.lua raises it for the same reason.
 M.Ebadfid    = "unknown fid"
+-- what a parked read raises when hangup releases it. The reply goes
+-- nowhere: the client it was owed to is why this is being raised.
+M.Ehungup    = "hungup"
 
 -- raise without a position prefix: these cross a protocol boundary, and
 -- "espfs.lua:88: file does not exist" is not an Rerror.

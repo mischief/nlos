@@ -2482,6 +2482,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 	IPC_ASSERT_PORT(port);
 	if (port->dead) {
 		port->ndrop_dead++;
+		cpu_self()->ndrop_dead++;
 		return -3;
 	}
 
@@ -2493,6 +2494,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 
 	if (port->qbytes + cost > MAXQUEUE) {
 		port->ndrop_full++;
+		cpu_self()->ndrop_full++;
 		return -2;		/* full, distinct from out of memory */
 	}
 
@@ -4522,11 +4524,14 @@ api_stats(lua_State *L)
 	lua_pushinteger(L, nbroke);
 	lua_setfield(L, -2, "broke");
 	unsigned long long tidle = 0, tlaps = 0, tdisp = 0;
+	unsigned long long tfull = 0, tdead = 0;
 
 	for (unsigned i = 0; cpu_at(i); i++) {
 		tidle += cpu_at(i)->nidle;
 		tlaps += cpu_at(i)->nlaps;
 		tdisp += cpu_at(i)->ndispatch;
+		tfull += cpu_at(i)->ndrop_full;
+		tdead += cpu_at(i)->ndrop_dead;
 	}
 	lua_pushinteger(L, (lua_Integer)tidle);
 	lua_setfield(L, -2, "idles");
@@ -4536,6 +4541,10 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "laps");
 	lua_pushinteger(L, (lua_Integer)tdisp);
 	lua_setfield(L, -2, "dispatches");
+	lua_pushinteger(L, (lua_Integer)tfull);
+	lua_setfield(L, -2, "dropfull");
+	lua_pushinteger(L, (lua_Integer)tdead);
+	lua_setfield(L, -2, "dropdead");
 
 
 	/* the firmware's view: what the machine has, and what is left. this

@@ -75,6 +75,12 @@ struct cpu {
 	int idle;
 
 	unsigned long long nlaps, ndispatch, nidle;
+
+	/* sends this cpu refused, since a port's own counts die with it
+	 * and short-lived ports are where backpressure shows. Per cpu
+	 * because port_push holds one ipc bucket, not all of them.
+	 */
+	unsigned long long ndrop_full, ndrop_dead;
 };
 
 /* this cpu. */

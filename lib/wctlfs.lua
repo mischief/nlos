@@ -116,11 +116,25 @@ function M.new(visible)
 		local m = thread.recv(rp)
 
 		sys.close(rp)
+		if type(m) == "table" and m.gone then
+			dev.error(dev.Ehungup)
+		end
 		if type(m) ~= "table" or type(m.state) ~= "string" then
 			dev.error(dev.Eio .. ": woken with no state")
 		end
 		h.seen = m.seq
 		return (m.state .. "\n"):sub(1, n)
+	end
+
+	-- released rather than left parked: the state a waiter wants
+	-- comes from the client that has just gone.
+	function B.hangup()
+		local w = waiters
+
+		waiters = {}
+		for _, x in ipairs(w) do
+			sys.send(x.reply, { gone = true })
+		end
 	end
 
 	function B.readdir(h)

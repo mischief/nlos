@@ -216,6 +216,9 @@ function M.new()
 		local m = thread.recv(rp)
 
 		sys.close(rp)
+		if type(m) == "table" and m.gone then
+			dev.error(dev.Ehungup)
+		end
 		-- a wakeup that carries no record is a failure of this
 		-- server, and it has to be said. An empty read looks to a
 		-- client exactly like a record it cannot parse, and a
@@ -226,6 +229,17 @@ function M.new()
 		end
 		h.seen = m.seq
 		return m.rec:sub(1, n)
+	end
+
+	-- released rather than left parked: the record a waiter wants
+	-- comes from the client that has just gone.
+	function B.hangup()
+		local w = waiters
+
+		waiters = {}
+		for _, x in ipairs(w) do
+			sys.send(x.reply, { gone = true })
+		end
 	end
 
 	function B.readdir(h)

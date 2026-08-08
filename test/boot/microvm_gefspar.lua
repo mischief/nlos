@@ -251,10 +251,13 @@ local function main()
 	-- What proves the waiting works is the two checks above: every file
 	-- has its full contents. Before the retry existed they failed here
 	-- with seven files short.
-	local drop, qpeak = 0, 0
+	-- the count from sys.stats and not from sys.ports: a session port
+	-- is closed when its client goes, and it takes its own counters
+	-- with it. By here every client has exited, so the ports that were
+	-- refused are exactly the ones no longer there to be asked.
+	local drop, qpeak = sys.stats().dropfull, 0
 
 	for _, pt in ipairs(sys.ports()) do
-		drop = drop + (pt.dropfull or 0)
 		if (pt.qpeak or 0) > qpeak then
 			qpeak = pt.qpeak
 		end

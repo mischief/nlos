@@ -242,6 +242,10 @@ function ops.session(S)
 		M.serve(ro and dev.readonly(S.B) or S.B, recv,
 		    { establish = false, workers = S.workers,
 		      lock = S.lock })
+		-- serve returns when the client has gone. Closed by this
+		-- thread, the one that was parked on it, rather than by
+		-- whoever called session.
+		sys.close(recv)
 	end)
 
 	-- the second return is closed once the reply has been sent. the
@@ -533,6 +537,9 @@ function M.serve(backend, port, opts)
 				local m, why = thread.await(port)
 
 				if why then
+					if backend.hangup then
+						pcall(backend.hangup)
+					end
 					clunkall(S)
 					return
 				end
@@ -574,6 +581,12 @@ function M.serve(backend, port, opts)
 				slots:release()
 			end)
 		elseif sys.hungup(port) then
+			-- a parked read waits on the client that has just
+			-- gone, so it must be released before the permits
+			-- are counted -- it holds one.
+			if backend.hangup then
+				pcall(backend.hangup)
+			end
 			-- clients are gone, but requests already taken off
 			-- the port still have replies owed to them. Taking
 			-- every permit is how you wait for every worker.
