@@ -6372,6 +6372,26 @@ kbuf_pooled(void)
 }
 
 
+/* the string hash seed every state is built with. See src/coreg.h.
+ *
+ * Computed on the first call and kept, which needs no lock: the boot
+ * proc's state is made before smp_start_aps runs, so the boot cpu has
+ * already been here by the time a second one exists.
+ */
+unsigned int
+kernel_strseed(void)
+{
+	static unsigned int seed;
+
+	if (seed == 0) {
+		unsigned long long t = platform_ticks();
+
+		/* never 0: that is the "not drawn yet" value above */
+		seed = (unsigned int)(t ^ (t >> 32)) | 1u;
+	}
+	return seed;
+}
+
 /* print(), for a proc that has not redirected it. See src/coreg.h: this
  * is what lua_writestring becomes, so an unredirected diagnostic
  * reaches the console rather than a stdio that may discard it.

@@ -77,4 +77,15 @@ void	kernel_cofree(struct lua_State *from, struct lua_State *dead);
 #define luai_userstatethread(L, L1)	kernel_costart(L, L1)
 #define luai_userstatefree(L, L1)	kernel_cofree(L, L1)
 
+/* the string hash seed: one per boot, where lua makes one per state.
+ *
+ * Two states that hash the same text differently put it in different
+ * buckets, so neither can find what the other interned -- which is what
+ * a shared string has to survive. One seed for the machine makes the
+ * buckets agree and keeps the randomness lua wants it for.
+ */
+unsigned int	kernel_strseed(void);
+
+#define luai_makeseed(L)	kernel_strseed()
+
 #endif
