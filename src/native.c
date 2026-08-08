@@ -1123,19 +1123,40 @@ fZ(gf o, const gf a, const gf b)
  */
 static const uint8_t FCARRY[12] = { 0, 4, 1, 5, 2, 6, 3, 7, 4, 8, 9, 0 };
 
+/*
+ * 19 * x, as shifts and adds.
+ *
+ * x is 64 bits here, and a 32-bit target has no 64-bit multiply: the
+ * compiler answers `19 * x` with a call to libgcc's __muldi3. Three
+ * shifts and two adds are inline everywhere, and 19 is 16 + 2 + 1.
+ */
+#define MUL19(x) (((x) << 4) + ((x) << 1) + (x))
+
 static void
 fcarry(int64_t h[10])
 {
 	int64_t c;
-	int i, k, w;
+	int i, k;
 
 	for (i = 0; i < 12; i++) {
 		k = FCARRY[i];
-		w = FW(k);
-		c = (h[k] + ((int64_t)1 << (w - 1))) >> w;
-		h[k] -= c << w;
+
+		/* The width is 26 for an even limb and 25 for an odd one,
+		 * and the two are written out rather than indexed. A shift
+		 * by a variable amount is another libgcc call on a 32-bit
+		 * target -- __ashrdi3 and __ashldi3 -- and there are two of
+		 * them per step here, twelve steps per field multiply.
+		 */
+		if (k & 1) {
+			c = (h[k] + ((int64_t)1 << 24)) >> 25;
+			h[k] -= c << 25;
+		} else {
+			c = (h[k] + ((int64_t)1 << 25)) >> 26;
+			h[k] -= c << 26;
+		}
+
 		if (k == 9)
-			h[0] += 19 * c;
+			h[0] += MUL19(c);
 		else
 			h[k + 1] += c;
 	}
@@ -1154,29 +1175,36 @@ fstore(gf o, int64_t h[10])
 static void
 fM(gf o, const gf a, const gf b)
 {
-	int64_t t[19], p;
+	int64_t t[19];
 	int i, j;
+
+	int32_t b2[10];
 
 	for (i = 0; i < 19; i++)
 		t[i] = 0;
+
+	/* Two odd limbs each carry half a bit more weight than their
+	 * index suggests, and the product lands on an even index that
+	 * carries neither, so it is doubled. The doubling is hoisted out
+	 * of the inner loop: b2 is the odd limbs of b, doubled, and which
+	 * of the two arrays the inner loop reads depends only on i.
+	 */
+	for (j = 0; j < 10; j++)
+		b2[j] = (j & 1) ? 2 * b[j] : b[j];
+
 	/* no skip on a zero limb, however tempting: these limbs are
 	 * secret and the branch would be a timing signal.
 	 */
 	for (i = 0; i < 10; i++) {
-		for (j = 0; j < 10; j++) {
-			p = (int64_t)a[i] * b[j];
-			/* Two odd limbs each carry half a bit more weight
-			 * than their index suggests, and the product lands
-			 * on an even index that carries neither.
-			 */
-			if ((i & 1) && (j & 1))
-				p *= 2;
-			t[i + j] += p;
-		}
+		const int32_t *row = (i & 1) ? b2 : b;
+		int32_t ai = a[i];
+
+		for (j = 0; j < 10; j++)
+			t[i + j] += (int64_t)ai * row[j];
 	}
 	/* limb i + 10 sits 255 bits above limb i */
 	for (i = 0; i < 9; i++)
-		t[i] += 19 * t[i + 10];
+		t[i] += MUL19(t[i + 10]);
 	fstore(o, t);
 }
 
@@ -1205,7 +1233,7 @@ fS(gf o, const gf a)
 		}
 	}
 	for (i = 0; i < 9; i++)
-		t[i] += 19 * t[i + 10];
+		t[i] += MUL19(t[i + 10]);
 	fstore(o, t);
 }
 
@@ -1234,25 +1262,29 @@ static void
 pack25519(uint8_t *o, const gf n)
 {
 	int64_t h[10], q;
-	int i, off, w;
+	int i, off;
 
 	for (i = 0; i < 10; i++)
 		h[i] = n[i];
 	fcarry(h);
 	fcarry(h);
 
-	q = (19 * h[9] + (1 << 24)) >> 25;
+	q = (MUL19(h[9]) + (1 << 24)) >> 25;
 	for (i = 0; i < 10; i++)
-		q = (h[i] + q) >> FW(i);
-	h[0] += 19 * q;
+		q = (i & 1) ? ((h[i] + q) >> 25) : ((h[i] + q) >> 26);
+	h[0] += MUL19(q);
 
 	/* unsigned carry, so every limb is now its own bit field and the
 	 * borrow out of limb 9 is the 2^255 that q already removed
 	 */
 	for (i = 0; i < 9; i++) {
-		w = FW(i);
-		h[i + 1] += h[i] >> w;
-		h[i] -= (h[i] >> w) << w;
+		if (i & 1) {
+			h[i + 1] += h[i] >> 25;
+			h[i] -= (h[i] >> 25) << 25;
+		} else {
+			h[i + 1] += h[i] >> 26;
+			h[i] -= (h[i] >> 26) << 26;
+		}
 	}
 	h[9] &= ((int64_t)1 << 25) - 1;
 
@@ -1726,4 +1758,870 @@ ed_verify(const uint8_t *pk, const uint8_t *msg, size_t mlen,
 	for (i = 0; i < 32; i++)
 		diff |= sig[i] ^ t[i];
 	return diff == 0;
+}
+
+/*
+ * ---- Montgomery multiplication ------------------------------------
+ *
+ * What needs it: ECDSA P-256 and RSA signature verification, both of
+ * which are a few thousand modular multiplies and almost nothing else.
+ * The Lua implementation in ssh/crypto/bignum.lua is the reference and
+ * computes exactly the same function.
+ *
+ * Every value here is a uint32_t and every carry is explicit. The
+ * product of two limbs is built out of four 16-bit products rather
+ * than with a uint64_t, because a 32-bit target without a widening
+ * multiply calls libgcc for that and this code is slowest exactly
+ * there. It costs about 2.6 times on x86-64, which is a price a
+ * verification that already takes milliseconds can pay.
+ *
+ * CIOS, Koc's coarsely integrated operand scanning: interleave the
+ * multiply with the reduction so the running total never grows past
+ * one limb beyond the modulus. The result is a * b * R^-1 mod m, with
+ * R = 2^(32k) for k limbs, which is what the caller's `enter` and
+ * `leave` account for.
+ *
+ * Operands are big-endian bytes of the modulus's own length, a
+ * multiple of four. Nothing here is constant time: every caller
+ * verifies a public value.
+ */
+
+#define BIGNUM_MAX_LIMBS 128            /* 4096-bit moduli */
+
+static void
+bn_unpack(uint32_t *out, const uint8_t *s, size_t k)
+{
+	size_t i;
+
+	/* Limb 0 is the least significant, so the bytes are read from
+	 * the end.
+	 */
+	for (i = 0; i < k; i++) {
+		const uint8_t *p = s + (k - 1 - i) * 4;
+
+		out[i] = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 |
+		    (uint32_t)p[2] << 8 | (uint32_t)p[3];
+	}
+}
+
+static void
+bn_pack(uint8_t *out, const uint32_t *a, size_t k)
+{
+	size_t i;
+
+	for (i = 0; i < k; i++) {
+		uint8_t *p = out + (k - 1 - i) * 4;
+		uint32_t v = a[i];
+
+		p[0] = (uint8_t)(v >> 24);
+		p[1] = (uint8_t)(v >> 16);
+		p[2] = (uint8_t)(v >> 8);
+		p[3] = (uint8_t)v;
+	}
+}
+
+/* The 64-bit product of two limbs, as a high and a low half.
+ *
+ * Each half-sized product fits in 32 bits, and the sum below cannot
+ * overflow: the largest possible value is (2^32 - 1)^2, which is what
+ * the two halves hold exactly.
+ */
+static void
+bn_mul32(uint32_t a, uint32_t b, uint32_t *hi, uint32_t *lo)
+{
+	uint32_t a0 = a & 0xffff, a1 = a >> 16;
+	uint32_t b0 = b & 0xffff, b1 = b >> 16;
+	uint32_t p00 = a0 * b0, p01 = a0 * b1;
+	uint32_t p10 = a1 * b0, p11 = a1 * b1;
+	uint32_t mid = p01 + p10;
+	uint32_t h = p11 + (mid >> 16);
+	uint32_t l;
+
+	/* The middle sum can carry out of 32 bits, and that carry belongs
+	 * to bit 32 of the product, which is bit 16 of the high half.
+	 */
+	if (mid < p01)
+		h += 1u << 16;
+
+	l = p00 + (mid << 16);
+	if (l < p00)
+		h += 1;
+
+	*hi = h;
+	*lo = l;
+}
+
+/* acc += v, carrying into *hi. */
+static void
+bn_addc(uint32_t *acc, uint32_t *hi, uint32_t v)
+{
+	uint32_t s = *acc + v;
+
+	if (s < v)
+		*hi += 1;
+	*acc = s;
+}
+
+/* out = a - b, returning the borrow. */
+static uint32_t
+bn_sub(uint32_t *out, const uint32_t *a, const uint32_t *b, size_t k)
+{
+	uint32_t borrow = 0;
+	size_t i;
+
+	for (i = 0; i < k; i++) {
+		uint32_t ai = a[i], bi = b[i];
+		uint32_t d = ai - bi;
+		uint32_t next = d > ai;         /* the subtraction wrapped */
+
+		if (borrow != 0) {
+			if (d == 0)
+				next = 1;
+			d -= 1;
+		}
+		out[i] = d;
+		borrow = next;
+	}
+	return borrow;
+}
+
+/* out = a + b, returning the carry. */
+static uint32_t
+bn_add(uint32_t *out, const uint32_t *a, const uint32_t *b, size_t k)
+{
+	uint32_t carry = 0;
+	size_t i;
+
+	for (i = 0; i < k; i++) {
+		uint32_t s = a[i] + b[i];
+		uint32_t next = s < a[i];
+
+		s += carry;
+		if (carry != 0 && s == 0)
+			next = 1;
+		out[i] = s;
+		carry = next;
+	}
+	return carry;
+}
+
+/* out = (a + b) mod m, for a and b already under m. */
+static int
+bn_add_mod(uint8_t *out, const uint8_t *a, const uint8_t *b,
+    const uint8_t *m, size_t len)
+{
+	uint32_t A[BIGNUM_MAX_LIMBS], B[BIGNUM_MAX_LIMBS];
+	uint32_t M[BIGNUM_MAX_LIMBS], t[BIGNUM_MAX_LIMBS];
+	uint32_t r[BIGNUM_MAX_LIMBS], carry, borrow;
+	size_t k = len / 4;
+
+	if (len == 0 || len % 4 != 0 || k > BIGNUM_MAX_LIMBS)
+		return 0;
+
+	bn_unpack(A, a, k);
+	bn_unpack(B, b, k);
+	bn_unpack(M, m, k);
+
+	/* The sum is under 2m, so one conditional subtraction reduces
+	 * it. A carry out of the top limb counts as being over, and both
+	 * results are computed before either is chosen: the subtraction
+	 * has to run whatever the carry says.
+	 */
+	carry = bn_add(t, A, B, k);
+	borrow = bn_sub(r, t, M, k);
+	if (carry != 0 || borrow == 0)
+		bn_pack(out, r, k);
+	else
+		bn_pack(out, t, k);
+	return 1;
+}
+
+/* out = (a - b) mod m, for a and b already under m. */
+static int
+bn_sub_mod(uint8_t *out, const uint8_t *a, const uint8_t *b,
+    const uint8_t *m, size_t len)
+{
+	uint32_t A[BIGNUM_MAX_LIMBS], B[BIGNUM_MAX_LIMBS];
+	uint32_t M[BIGNUM_MAX_LIMBS], t[BIGNUM_MAX_LIMBS];
+	uint32_t r[BIGNUM_MAX_LIMBS];
+	size_t k = len / 4;
+
+	if (len == 0 || len % 4 != 0 || k > BIGNUM_MAX_LIMBS)
+		return 0;
+
+	bn_unpack(A, a, k);
+	bn_unpack(B, b, k);
+	bn_unpack(M, m, k);
+
+	if (bn_sub(t, A, B, k) != 0) {
+		bn_add(r, t, M, k);
+		bn_pack(out, r, k);
+	} else {
+		bn_pack(out, t, k);
+	}
+	return 1;
+}
+
+/* The limb-level Montgomery product, which p256 below shares.
+ *
+ * t is k + 2 limbs of scratch, supplied by the caller so that neither
+ * this nor its callers need a stack frame per call.
+ */
+static void
+bn_mont_mul_limbs(uint32_t *out, const uint32_t *A, const uint32_t *B,
+    const uint32_t *M, uint32_t n0, size_t k, uint32_t *t)
+{
+	size_t i, j;
+
+	for (i = 0; i < k + 2; i++)
+		t[i] = 0;
+
+	for (i = 0; i < k; i++) {
+		uint32_t bi = B[i], u, c = 0, hi, lo;
+
+		/* t += a * b[i]. The carry out of each column is the high
+		 * half plus whatever the two additions carried, and that
+		 * sum cannot overflow: the largest total is
+		 * (2^32 - 1)^2 + 2 * (2^32 - 1), which is 2^64 - 1.
+		 */
+		for (j = 0; j < k; j++) {
+			bn_mul32(A[j], bi, &hi, &lo);
+			bn_addc(&lo, &hi, t[j]);
+			bn_addc(&lo, &hi, c);
+			t[j] = lo;
+			c = hi;
+		}
+		lo = t[k];
+		hi = 0;
+		bn_addc(&lo, &hi, c);
+		t[k] = lo;
+		t[k + 1] += hi;
+
+		/* t += m * u, chosen so the low limb becomes zero, then
+		 * shift one limb down. That shift is the division by the
+		 * radix that Montgomery reduction replaces a real division
+		 * with.
+		 */
+		u = t[0] * n0;
+		bn_mul32(u, M[0], &hi, &lo);
+		bn_addc(&lo, &hi, t[0]);
+		c = hi;
+		for (j = 1; j < k; j++) {
+			bn_mul32(u, M[j], &hi, &lo);
+			bn_addc(&lo, &hi, t[j]);
+			bn_addc(&lo, &hi, c);
+			t[j - 1] = lo;
+			c = hi;
+		}
+		lo = t[k];
+		hi = 0;
+		bn_addc(&lo, &hi, c);
+		t[k - 1] = lo;
+		t[k] = t[k + 1] + hi;
+		t[k + 1] = 0;
+	}
+
+	/* One conditional subtraction: the total is under 2m. A carry out
+	 * of the top limb counts as being over, which the subtraction's
+	 * own borrow cannot see.
+	 */
+	if (bn_sub(out, t, M, k) != 0 && t[k] == 0) {
+		for (j = 0; j < k; j++)
+			out[j] = t[j];
+	}
+}
+
+/* n0 is -m^-1 mod 2^32. Returns 0 for a length this cannot handle. */
+static int
+bn_mont_mul(uint8_t *out, const uint8_t *a, const uint8_t *b,
+    const uint8_t *m, uint32_t n0, size_t len)
+{
+	uint32_t A[BIGNUM_MAX_LIMBS], B[BIGNUM_MAX_LIMBS];
+	uint32_t M[BIGNUM_MAX_LIMBS], t[BIGNUM_MAX_LIMBS + 2];
+	uint32_t r[BIGNUM_MAX_LIMBS];
+	size_t k = len / 4;
+
+	if (len == 0 || len % 4 != 0 || k > BIGNUM_MAX_LIMBS)
+		return 0;
+
+	bn_unpack(A, a, k);
+	bn_unpack(B, b, k);
+	bn_unpack(M, m, k);
+	bn_mont_mul_limbs(r, A, B, M, n0, k, t);
+	bn_pack(out, r, k);
+	return 1;
+}
+
+/*
+ * ---- ECDSA P-256 verification -------------------------------------
+ *
+ * The Lua in ssh/crypto/p256.lua is the reference and computes the same
+ * function; this exists because the interpreter around the arithmetic
+ * costs as much again as the arithmetic. A verification is about six
+ * thousand Montgomery products, and with the multiply alone in C the
+ * other half of the time was Lua building a 32-byte string per field
+ * operation.
+ *
+ * Everything is public -- a signature, a public key, a message hash --
+ * so nothing here is constant time. There is no signing: that needs a
+ * secret scalar and a nonce, and both want the opposite discipline.
+ *
+ * Points are Jacobian, (X, Y, Z) standing for (X/Z^2, Y/Z^3), so the
+ * inversion happens once at the end rather than once per addition.
+ * Field elements are in Montgomery form throughout.
+ */
+
+#define P256_K 8                        /* 32 bytes, 8 limbs of 32 bits */
+
+static const uint8_t p256_p_be[32] = {
+	0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x01,
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
+};
+
+static const uint8_t p256_n_be[32] = {
+	0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x00,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xbc,0xe6,0xfa,0xad,0xa7,0x17,0x9e,0x84,
+	0xf3,0xb9,0xca,0xc2,0xfc,0x63,0x25,0x51
+};
+
+static const uint8_t p256_b_be[32] = {
+	0x5a,0xc6,0x35,0xd8,0xaa,0x3a,0x93,0xe7,
+	0xb3,0xeb,0xbd,0x55,0x76,0x98,0x86,0xbc,
+	0x65,0x1d,0x06,0xb0,0xcc,0x53,0xb0,0xf6,
+	0x3b,0xce,0x3c,0x3e,0x27,0xd2,0x60,0x4b
+};
+
+static const uint8_t p256_gx_be[32] = {
+	0x6b,0x17,0xd1,0xf2,0xe1,0x2c,0x42,0x47,
+	0xf8,0xbc,0xe6,0xe5,0x63,0xa4,0x40,0xf2,
+	0x77,0x03,0x7d,0x81,0x2d,0xeb,0x33,0xa0,
+	0xf4,0xa1,0x39,0x45,0xd8,0x98,0xc2,0x96
+};
+
+static const uint8_t p256_gy_be[32] = {
+	0x4f,0xe3,0x42,0xe2,0xfe,0x1a,0x7f,0x9b,
+	0x8e,0xe7,0xeb,0x4a,0x7c,0x0f,0x9e,0x16,
+	0x2b,0xce,0x33,0x57,0x6b,0x31,0x5e,0xce,
+	0xcb,0xb6,0x40,0x68,0x37,0xbf,0x51,0xf5
+};
+
+/* One modulus and what Montgomery arithmetic over it needs. */
+struct bn_mod {
+	uint32_t m[P256_K];
+	uint32_t n0;                    /* -m^-1 mod 2^32 */
+	uint32_t r2[P256_K];            /* R^2 mod m, so `enter` is a mul */
+	uint32_t one[P256_K];           /* 1 in Montgomery form */
+};
+
+/* The inverse of an odd limb modulo 2^32, by Newton iteration: each
+ * step doubles the number of correct bits.
+ */
+static uint32_t
+bn_inv_limb(uint32_t a)
+{
+	uint32_t x = 1;
+	int i;
+
+	for (i = 0; i < 6; i++)
+		x *= 2u - a * x;
+	return x;
+}
+
+/* out = (a + b) mod m and out = (a - b) mod m, for reduced operands. */
+static void
+bn_mod_add(uint32_t *out, const uint32_t *a, const uint32_t *b,
+    const uint32_t *m, size_t k)
+{
+	uint32_t t[P256_K], r[P256_K];
+	uint32_t carry = bn_add(t, a, b, k);
+	uint32_t borrow = bn_sub(r, t, m, k);
+	size_t i;
+
+	if (carry != 0 || borrow == 0) {
+		for (i = 0; i < k; i++)
+			out[i] = r[i];
+	} else {
+		for (i = 0; i < k; i++)
+			out[i] = t[i];
+	}
+}
+
+static void
+bn_mod_sub(uint32_t *out, const uint32_t *a, const uint32_t *b,
+    const uint32_t *m, size_t k)
+{
+	uint32_t t[P256_K], r[P256_K];
+	size_t i;
+
+	if (bn_sub(t, a, b, k) != 0) {
+		bn_add(r, t, m, k);
+		for (i = 0; i < k; i++)
+			out[i] = r[i];
+	} else {
+		for (i = 0; i < k; i++)
+			out[i] = t[i];
+	}
+}
+
+static void
+bn_mod_init(struct bn_mod *mod, const uint8_t *bytes)
+{
+	uint32_t r2[P256_K];
+	size_t i;
+
+	bn_unpack(mod->m, bytes, P256_K);
+	mod->n0 = (uint32_t)(0u - bn_inv_limb(mod->m[0]));
+
+	/* R^2 mod m by doubling 1 twice as many times as R has bits.
+	 * A division would need a divide routine this file does without.
+	 */
+	for (i = 0; i < P256_K; i++)
+		r2[i] = 0;
+	r2[0] = 1;
+	for (i = 0; i < 2 * 32 * P256_K; i++)
+		bn_mod_add(r2, r2, r2, mod->m, P256_K);
+	for (i = 0; i < P256_K; i++)
+		mod->r2[i] = r2[i];
+
+	for (i = 0; i < P256_K; i++)
+		mod->one[i] = 0;
+	mod->one[0] = 1;
+	{
+		uint32_t t[P256_K + 2];
+
+		bn_mont_mul_limbs(mod->one, mod->one, mod->r2, mod->m,
+		    mod->n0, P256_K, t);
+	}
+}
+
+static void
+bn_mod_mul(const struct bn_mod *mod, uint32_t *out, const uint32_t *a,
+    const uint32_t *b)
+{
+	uint32_t t[P256_K + 2];
+
+	bn_mont_mul_limbs(out, a, b, mod->m, mod->n0, P256_K, t);
+}
+
+static void
+bn_mod_enter(const struct bn_mod *mod, uint32_t *out, const uint32_t *a)
+{
+	bn_mod_mul(mod, out, a, mod->r2);
+}
+
+static void
+bn_mod_leave(const struct bn_mod *mod, uint32_t *out, const uint32_t *a)
+{
+	uint32_t one[P256_K];
+	size_t i;
+
+	for (i = 0; i < P256_K; i++)
+		one[i] = 0;
+	one[0] = 1;
+	bn_mod_mul(mod, out, a, one);
+}
+
+/* out = a^e mod m, with e big-endian bytes, in Montgomery form both
+ * ways. Square and multiply, most significant bit first, skipping the
+ * leading zeros: the exponent here is a public constant.
+ */
+static void
+bn_mod_exp(const struct bn_mod *mod, uint32_t *out, const uint32_t *a,
+    const uint8_t *e, size_t elen)
+{
+	uint32_t acc[P256_K];
+	size_t i, j;
+	int bit, started = 0;
+
+	for (i = 0; i < P256_K; i++)
+		acc[i] = mod->one[i];
+
+	for (i = 0; i < elen; i++) {
+		for (bit = 7; bit >= 0; bit--) {
+			int b = (e[i] >> bit) & 1;
+
+			if (started)
+				bn_mod_mul(mod, acc, acc, acc);
+			if (!b)
+				continue;
+			if (started) {
+				bn_mod_mul(mod, acc, acc, a);
+			} else {
+				for (j = 0; j < P256_K; j++)
+					acc[j] = a[j];
+				started = 1;
+			}
+		}
+	}
+
+	for (i = 0; i < P256_K; i++)
+		out[i] = acc[i];
+}
+
+/* A point in Jacobian coordinates, in Montgomery form. */
+struct p256_pt {
+	uint32_t x[P256_K];
+	uint32_t y[P256_K];
+	uint32_t z[P256_K];
+};
+
+/* Everything the curve needs, built once. */
+static struct {
+	int ready;
+	struct bn_mod p;                /* the field */
+	struct bn_mod n;                /* the order */
+	uint32_t b[P256_K];             /* the curve's b, Montgomery form */
+	struct p256_pt g;               /* the generator */
+} p256;
+
+static int
+p256_is_zero(const uint32_t *a)
+{
+	size_t i;
+	uint32_t d = 0;
+
+	for (i = 0; i < P256_K; i++)
+		d |= a[i];
+	return d == 0;
+}
+
+static int
+p256_eq(const uint32_t *a, const uint32_t *b)
+{
+	size_t i;
+	uint32_t d = 0;
+
+	for (i = 0; i < P256_K; i++)
+		d |= a[i] ^ b[i];
+	return d == 0;
+}
+
+static void
+p256_copy(uint32_t *out, const uint32_t *a)
+{
+	size_t i;
+
+	for (i = 0; i < P256_K; i++)
+		out[i] = a[i];
+}
+
+static void
+p256_init(void)
+{
+	uint32_t t[P256_K];
+
+	if (p256.ready)
+		return;
+
+	bn_mod_init(&p256.p, p256_p_be);
+	bn_mod_init(&p256.n, p256_n_be);
+
+	bn_unpack(t, p256_b_be, P256_K);
+	bn_mod_enter(&p256.p, p256.b, t);
+
+	bn_unpack(t, p256_gx_be, P256_K);
+	bn_mod_enter(&p256.p, p256.g.x, t);
+	bn_unpack(t, p256_gy_be, P256_K);
+	bn_mod_enter(&p256.p, p256.g.y, t);
+	p256_copy(p256.g.z, p256.p.one);
+
+	p256.ready = 1;
+}
+
+#define FMUL(o, a, b) bn_mod_mul(&p256.p, (o), (a), (b))
+#define FADD(o, a, b) bn_mod_add((o), (a), (b), p256.p.m, P256_K)
+#define FSUB(o, a, b) bn_mod_sub((o), (a), (b), p256.p.m, P256_K)
+
+/* Doubling, with a = -3 (the "dbl-2001-b" formulas). */
+static void
+p256_double(struct p256_pt *o, const struct p256_pt *a)
+{
+	uint32_t delta[P256_K], gamma[P256_K], beta[P256_K], alpha[P256_K];
+	uint32_t t1[P256_K], t2[P256_K];
+
+	if (p256_is_zero(a->z)) {
+		*o = *a;
+		return;
+	}
+
+	FMUL(delta, a->z, a->z);
+	FMUL(gamma, a->y, a->y);
+	FMUL(beta, a->x, gamma);
+
+	FSUB(t1, a->x, delta);           /* x - delta */
+	FADD(t2, t1, t1);
+	FADD(t1, t2, t1);                /* 3 * (x - delta) */
+	FADD(t2, a->x, delta);
+	FMUL(alpha, t1, t2);
+
+	FADD(t1, beta, beta);
+	FADD(t1, t1, t1);                /* 4 * beta */
+	FADD(t2, t1, t1);                /* 8 * beta */
+	FMUL(o->x, alpha, alpha);
+	FSUB(o->x, o->x, t2);
+
+	FADD(t2, a->y, a->z);
+	FMUL(t2, t2, t2);
+	FSUB(t2, t2, gamma);
+	FSUB(o->z, t2, delta);
+
+	FSUB(t1, t1, o->x);              /* 4 * beta - x3 */
+	FMUL(t1, alpha, t1);
+	FMUL(t2, gamma, gamma);
+	FADD(t2, t2, t2);
+	FADD(t2, t2, t2);
+	FADD(t2, t2, t2);                /* 8 * gamma^2 */
+	FSUB(o->y, t1, t2);
+}
+
+/* Addition of two Jacobian points ("add-2007-bl"). */
+static void
+p256_add(struct p256_pt *o, const struct p256_pt *a, const struct p256_pt *b)
+{
+	uint32_t z1z1[P256_K], z2z2[P256_K], u1[P256_K], u2[P256_K];
+	uint32_t s1[P256_K], s2[P256_K], h[P256_K], i[P256_K], j[P256_K];
+	uint32_t r[P256_K], v[P256_K], t1[P256_K];
+
+	if (p256_is_zero(a->z)) {
+		*o = *b;
+		return;
+	}
+	if (p256_is_zero(b->z)) {
+		*o = *a;
+		return;
+	}
+
+	FMUL(z1z1, a->z, a->z);
+	FMUL(z2z2, b->z, b->z);
+	FMUL(u1, a->x, z2z2);
+	FMUL(u2, b->x, z1z1);
+	FMUL(s1, a->y, b->z);
+	FMUL(s1, s1, z2z2);
+	FMUL(s2, b->y, a->z);
+	FMUL(s2, s2, z1z1);
+
+	if (p256_eq(u1, u2)) {
+		/* The same point, or two that cancel. */
+		if (!p256_eq(s1, s2)) {
+			size_t k;
+
+			for (k = 0; k < P256_K; k++) {
+				o->x[k] = 0;
+				o->z[k] = 0;
+			}
+			p256_copy(o->y, p256.p.one);
+			return;
+		}
+		p256_double(o, a);
+		return;
+	}
+
+	FSUB(h, u2, u1);
+	FADD(i, h, h);
+	FMUL(i, i, i);
+	FMUL(j, h, i);
+	FSUB(r, s2, s1);
+	FADD(r, r, r);
+	FMUL(v, u1, i);
+
+	FMUL(t1, r, r);
+	FSUB(t1, t1, j);
+	FSUB(o->x, t1, v);
+	FSUB(o->x, o->x, v);
+
+	FSUB(t1, v, o->x);
+	FMUL(t1, r, t1);
+	FMUL(v, s1, j);
+	FADD(v, v, v);
+	FSUB(o->y, t1, v);
+
+	FADD(t1, a->z, b->z);
+	FMUL(t1, t1, t1);
+	FSUB(t1, t1, z1z1);
+	FSUB(t1, t1, z2z2);
+	FMUL(o->z, t1, h);
+}
+
+/* y^2 = x^3 - 3x + b, in Montgomery form. */
+static int
+p256_on_curve(const uint32_t *x, const uint32_t *y)
+{
+	uint32_t lhs[P256_K], rhs[P256_K], t[P256_K];
+
+	FMUL(rhs, x, x);
+	FMUL(rhs, rhs, x);
+	FADD(t, x, x);
+	FADD(t, t, x);
+	FSUB(rhs, rhs, t);
+	FADD(rhs, rhs, p256.b);
+	FMUL(lhs, y, y);
+	return p256_eq(lhs, rhs);
+}
+
+/* An uncompressed SEC 1 point, 0x04 then X then Y. */
+static int
+p256_point(struct p256_pt *o, const uint8_t *s, size_t len)
+{
+	uint32_t x[P256_K], y[P256_K];
+
+	if (len != 65 || s[0] != 0x04)
+		return 0;
+
+	bn_unpack(x, s + 1, P256_K);
+	bn_unpack(y, s + 33, P256_K);
+
+	/* Both coordinates must be reduced already. */
+	{
+		uint32_t scratch[P256_K];
+
+		if (bn_sub(scratch, x, p256.p.m, P256_K) == 0)
+			return 0;
+		if (bn_sub(scratch, y, p256.p.m, P256_K) == 0)
+			return 0;
+	}
+
+	bn_mod_enter(&p256.p, o->x, x);
+	bn_mod_enter(&p256.p, o->y, y);
+	p256_copy(o->z, p256.p.one);
+
+	if (p256_is_zero(o->x) && p256_is_zero(o->y))
+		return 0;
+	return p256_on_curve(o->x, o->y);
+}
+
+/*
+ * u1 * G + u2 * Q, by Shamir's trick: one pass over the bits of both
+ * scalars with the four combinations precomputed.
+ */
+static void
+p256_double_scalar_mul(struct p256_pt *o, const uint8_t *u1,
+    const uint8_t *u2, const struct p256_pt *q)
+{
+	struct p256_pt tab[4], acc;
+	size_t i, k;
+	int bit, started = 0;
+
+	for (k = 0; k < P256_K; k++) {
+		tab[0].x[k] = 0;
+		tab[0].y[k] = 0;
+		tab[0].z[k] = 0;
+	}
+	p256_copy(tab[0].y, p256.p.one);
+	tab[1] = p256.g;
+	tab[2] = *q;
+	p256_add(&tab[3], &p256.g, q);
+	acc = tab[0];
+
+	for (i = 0; i < 32; i++) {
+		for (bit = 7; bit >= 0; bit--) {
+			int idx = ((u1[i] >> bit) & 1) |
+			    (((u2[i] >> bit) & 1) << 1);
+
+			if (started)
+				p256_double(&acc, &acc);
+			if (idx == 0)
+				continue;
+			if (started) {
+				p256_add(&acc, &acc, &tab[idx]);
+			} else {
+				acc = tab[idx];
+				started = 1;
+			}
+		}
+	}
+	*o = acc;
+}
+
+/*
+ * verify(pubkey, hash, r, s) -> 1 when the signature is this key's over
+ * this hash. SEC 1 4.1.4, with the hash the full width of the order.
+ */
+static int
+p256_verify(const uint8_t *pub, size_t publen, const uint8_t *hash,
+    size_t hashlen, const uint8_t *rb, const uint8_t *sb)
+{
+	struct p256_pt q, point;
+	uint32_t r[P256_K], s[P256_K], e[P256_K];
+	uint32_t w[P256_K], u1[P256_K], u2[P256_K], zinv[P256_K], x[P256_K];
+	uint8_t u1b[32], u2b[32], xb[32], exp[32];
+	size_t i;
+
+	p256_init();
+
+	if (hashlen != 32)
+		return 0;
+	if (!p256_point(&q, pub, publen))
+		return 0;
+
+	bn_unpack(r, rb, P256_K);
+	bn_unpack(s, sb, P256_K);
+	if (p256_is_zero(r) || p256_is_zero(s))
+		return 0;
+	{
+		uint32_t scratch[P256_K];
+
+		if (bn_sub(scratch, r, p256.n.m, P256_K) == 0)
+			return 0;
+		if (bn_sub(scratch, s, p256.n.m, P256_K) == 0)
+			return 0;
+	}
+
+	/* The hash is reduced modulo the order; it is the same width, so
+	 * one conditional subtraction is enough. No borrow out means the
+	 * subtraction was the one wanted.
+	 */
+	bn_unpack(e, hash, P256_K);
+	{
+		uint32_t scratch[P256_K];
+
+		if (bn_sub(scratch, e, p256.n.m, P256_K) == 0)
+			p256_copy(e, scratch);
+	}
+
+	/* w = s^-1 mod n, by Fermat: the order is prime. */
+	for (i = 0; i < 32; i++)
+		exp[i] = p256_n_be[i];
+	exp[31] -= 2;                   /* n ends in 0x51, so no borrow */
+	bn_mod_enter(&p256.n, w, s);
+	bn_mod_exp(&p256.n, w, w, exp, 32);
+
+	bn_mod_enter(&p256.n, u1, e);
+	bn_mod_mul(&p256.n, u1, u1, w);
+	bn_mod_leave(&p256.n, u1, u1);
+
+	bn_mod_enter(&p256.n, u2, r);
+	bn_mod_mul(&p256.n, u2, u2, w);
+	bn_mod_leave(&p256.n, u2, u2);
+
+	bn_pack(u1b, u1, P256_K);
+	bn_pack(u2b, u2, P256_K);
+
+	p256_double_scalar_mul(&point, u1b, u2b, &q);
+	if (p256_is_zero(point.z))
+		return 0;
+
+	/* Back to affine: one inversion, at the end. */
+	for (i = 0; i < 32; i++)
+		exp[i] = p256_p_be[i];
+	exp[31] -= 2;                   /* p ends in 0xff */
+	bn_mod_exp(&p256.p, zinv, point.z, exp, 32);
+	FMUL(x, zinv, zinv);
+	FMUL(x, point.x, x);
+	bn_mod_leave(&p256.p, x, x);
+	bn_pack(xb, x, P256_K);
+
+	/* The comparison is modulo the order, and p is larger than n, so
+	 * one subtraction reduces it.
+	 */
+	bn_unpack(x, xb, P256_K);
+	{
+		uint32_t scratch[P256_K];
+
+		if (bn_sub(scratch, x, p256.n.m, P256_K) == 0)
+			p256_copy(x, scratch);
+	}
+	return p256_eq(x, r);
 }
