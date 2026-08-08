@@ -96,20 +96,17 @@ local Cons = {}
 
 Cons.__index = Cons
 
--- The grid is rows*cols cells, and every per-cell fact about it lives in
--- a los.buf rather than a Lua table: five tables of one number per cell
--- cost sixteen bytes a cell and sit in the Lua heap, which on the esp32
--- is the memory a terminal is competing for. As buffers they are one
--- byte a cell for the character and four for a color, out of the heap
--- and in PSRAM.
+-- The grid is rows*cols cells, and every per-cell fact about it is a
+-- los.buf: one byte for the character, four for a color. A Lua table
+-- costs sixteen bytes a cell and spends the heap a terminal competes
+-- for.
 --
--- The rows are a ring. `top` is the slot logical row 0 occupies, and a
--- scroll advances it, so moving the screen up costs one addition instead
--- of a copy of the whole grid. Nothing outside this file sees a slot:
--- every method takes the logical row y and asks slot() for it.
+-- The rows are a ring. `top` is the slot logical row 0 occupies, so a
+-- scroll is one addition rather than a copy of the grid. Nothing outside
+-- this file sees a slot: every method takes the logical row y.
 --
--- `grid` stays a Lua table of one string per row, because paintspan
--- slices it for font.render, and it is indexed by slot + 1.
+-- `grid` stays a table of one string per row, indexed by slot + 1,
+-- because paintspan slices it for font.render.
 
 -- the slot holding logical row y.
 function Cons:slot(y)
@@ -129,11 +126,10 @@ end
 
 -- forget what the glass shows for k rows starting at logical row y.
 --
--- The character is the sentinel: a cell of the shown grid reads 0 when
--- nothing is drawn there, and 0 is not a character putc will place, so a
--- cleared cell never matches the grid and is always redrawn. The colors
--- are left as they are because nothing reads them without the character
--- matching first.
+-- The character is the sentinel: a shown cell reads 0 where nothing is
+-- drawn, and putc places no such character, so the cell never matches
+-- the grid and is always redrawn. The colors are left alone, being read
+-- only where the character matches.
 function Cons:forget(y, k)
 	for i = y, y + k - 1 do
 		local o = self:slot(i) * self.cols

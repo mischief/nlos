@@ -146,11 +146,30 @@ function M.new(caps)
 		-- given none and its programs cannot reset the machine --
 		-- which is a grant a level up, not a check in bin/reboot.lua.
 		power = caps.power,
+		-- where the exit notices of the programs this shell starts
+		-- arrive, and where the console sends the interrupt. A shell
+		-- in a proc of its own reads the mailbox, which is the
+		-- default; one sharing a proc with a console is given a port,
+		-- because the console owns the mailbox and forwards to it.
+		notices = caps.notices or sys.SELF,
 		coro = caps.coro or false,
 		env = caps.env or { PATH = caps.path or "/bin", HOME = "/" },
 		cwd = "/",
 		status = 0,
 	}, Sh)
+end
+
+-- a send right to where this shell reads its notices, made once, so the
+-- interrupt lands beside the exit notices and one recv waits for either.
+function Sh:noticeright()
+	if self.notices == sys.SELF then
+		return thread.selfright()
+	end
+	if not self.noticesend then
+		self.noticesend = assert(sys.sendright(self.notices),
+		    "out of rights")
+	end
+	return self.noticesend
 end
 
 function Sh:print(s)
@@ -805,11 +824,11 @@ function Sh:run(line)
 	-- stopped -- and that is the program you want to interrupt.
 	if self.cons then
 		sys.send(self.cons, { op = "intr",
-		    reply = { __right = thread.selfright() } })
+		    reply = { __right = self:noticeright() } })
 	end
 
 	while left > 0 do
-		local m = thread.recv(sys.SELF)
+		local m = thread.recv(self.notices)
 
 		-- kill every stage, not the last: a pipeline is one thing
 		-- to the person who typed it, and leaving the writers alive
@@ -821,8 +840,8 @@ function Sh:run(line)
 			end
 		end
 
-		-- only OUR stages count. sys.SELF is a general mailbox and may
-		-- hold an unrelated monitor notification; counting one of those
+		-- only OUR stages count. The notice port is a general mailbox
+		-- and may hold an unrelated monitor notification; counting one
 		-- made this return early, which meant the {op="close"} below was
 		-- never sent, and back when a pipe had a server that meant the
 		-- server looped forever and hung thread.run().

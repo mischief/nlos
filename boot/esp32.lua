@@ -390,8 +390,8 @@ end
 -- other platforms. Same name and same shape, so a session on this board
 -- is the one you already know.
 --
--- It matters more here than there. task/fbsh.lua is the only other dos
--- shell and task/fbterm.lua starts it, which wants a framebuffer and a
+-- It matters more here than there. lib/fbsh.lua is the only other dos
+-- shell and task/fbterm.lua runs it, which wants a framebuffer and a
 -- keyboard -- so on a board with neither the lua repl is the whole of
 -- the machine's interface, and without this there is no way to run a
 -- program by name at all.

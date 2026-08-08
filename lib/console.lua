@@ -60,10 +60,17 @@ local Console = {}
 
 Console.__index = Console
 
-function M.new(backend)
+-- opts.other is called with any message the dispatch does not recognise.
+--
+-- The console serves on the proc's own port, where the kernel also
+-- delivers sys.monitor's {exit=pid} notices. A shell sharing the proc
+-- waits for those, so what is not tty traffic is handed on rather than
+-- dropped.
+function M.new(backend, opts)
 	return setmetatable({
 		io = backend,
 		kbd = backend.keyport,
+		other = opts and opts.other,
 		-- keystrokes that are not the interrupt character, put
 		-- here by the pump. readline and getch take from this
 		-- rather than from the keyboard, so every byte has been
@@ -500,6 +507,10 @@ function Console:serve()
 			local line = self:readline()
 
 			sys.send(reply, line and (line .. "\n") or nil)
+		elseif self.other then
+			-- not tty traffic: an exit notice, or anything else
+			-- addressed to this proc rather than to its console.
+			self.other(m)
 		end
 
 		if reply then

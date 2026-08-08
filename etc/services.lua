@@ -57,14 +57,13 @@ return {
 	{ path = "/task/dns.lua", caps = { "ip" } },
 
 	-- an ssh server, putting a visitor at the same lua console the
-	-- serial port gives. same bargain as webterm -- an anonymous
-	-- visitor gets a shell -- and additionally it accepts ANY public
-	-- key so far, so it is on here only because this is a branch for
-	-- working on it.
-	-- trace = true logs every packet's message number to the console.
-	-- It found two of this branch's bugs and is worth turning back on
-	-- to find the next one, but it is debug output and does not belong
-	-- in a default boot.
-	{ path = "/task/sshd.lua", caps = { "tcp" },
-	  args = { port = 2222 } },
+	-- serial port gives. Off by default, on the same terms as webterm
+	-- -- an anonymous visitor gets a shell -- and more so, since it
+	-- accepts any public key. It also costs about 284KB of a board
+	-- whose ceiling is memory, idle or not.
+	--
+	-- args.trace = true logs every packet's message number to the
+	-- console, which is what to turn on when working on the protocol.
+	-- { path = "/task/sshd.lua", caps = { "tcp" },
+	--   args = { port = 2222 } },
 }

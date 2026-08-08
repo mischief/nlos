@@ -136,7 +136,7 @@ because it *writes*: it frees and reallocates a ring the target's own
 hook is filling. Ask which side a new call is on before adding it.
 
 A death notice splits the same way. That a proc exited is ambient — a
-child watching the parent it must not outlive (`task/fbsh.lua`) holds no
+child watching the parent it must not outlive (`lib/webterm.lua`) holds no
 right to it — but `reason` and `exitmsg` are the dying proc's own text,
 so they go only to a watcher that held a right **when it called
 `sys.monitor`**. Decided then rather than at death, because the ordinary

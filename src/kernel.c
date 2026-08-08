@@ -7401,7 +7401,7 @@ notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
 	 *
 	 * that a proc exited stays ambient, which is what monitor is for:
 	 * a child watching the parent that spawned it, so it does not
-	 * outlive the terminal it prompts on (task/fbsh.lua), holds no
+	 * outlive the terminal it prompts on (lib/webterm.lua), holds no
 	 * right to that parent and must not need one. gating the notice
 	 * itself would force handing out control of a proc merely to
 	 * permit watching it.

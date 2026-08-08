@@ -50,7 +50,20 @@ local backend = fbcons.new({
 	keyport = kbd,
 	font = require("los.font"),
 })
-local con = console.new(backend)
+
+-- where the shell reads its exit notices. The console owns the proc's
+-- mailbox, and the kernel delivers sys.monitor's notices there whoever
+-- asked for them, so the console forwards them on.
+--
+-- One send right, minted once: the console calls this for every message
+-- it does not recognise, and a right per message is a right leaked.
+local notices = sys.newport("fbterm.notices")
+local noticeto = assert(sys.sendright(notices), "out of rights")
+local con = console.new(backend, {
+	other = function(m)
+		sys.send(noticeto, m)
+	end,
+})
 
 -- the grid, on the serial line. A program that lays out columns asks
 -- the console for this, and the panel is the only console that can
@@ -97,65 +110,26 @@ do
 	end
 end
 
--- The shell runs in a proc of its own.
+-- The shell runs here, as a thread. Sharing the proc means it needs no
+-- namespace description, no monitor on the terminal and no rights of its
+-- own: it has this proc's namespace and cannot outlive the terminal.
 --
--- lib/console.lua serves on this proc's mailbox, and a shell waits on
--- its own mailbox for the exit notice of every program it starts. Both
--- in one proc means two consumers of one port: the console takes the
--- notice, does not recognise it, and drops it, and the shell waits for
--- a program that has already gone. task/cons.lua and its shells are
--- separate procs on the other platforms for the same reason.
-local f = io and io.open and io.open("/task/fbsh.lua")
-local src = f and f:read("a")
-
-if f then
-	f:close()
-end
-if not src then
-	src = require("los.rom").read("/task/fbsh.lua")
-end
-
-if src then
-	local _, sh = sys.spawn(src, { name = "fbsh" })
-
-	-- the namespace travels as a description, not as a mount: the
-	-- child rebuilds it from the kinds it has registered, and the
-	-- rights inside it are copied on the way as any other right is.
-	-- Without it the shell sees the embedded image alone, which holds
-	-- no programs.
-	--
-	-- Described from this proc's own namespace rather than taken from
-	-- the spawn message. lib/svc.lua hands the description to
-	-- proc.spawn, which adopts it before this chunk runs; what arrives
-	-- in the message is the capability table alone.
-	local N = require("ns").current()
-
-	-- the network too, where the machine has one. The shell lends it
-	-- to every program it runs, which is how bin/fetch.lua reaches
-	-- the stack -- see prog.net.
-	--
-	-- And power, on the same terms, which is how bin/reboot.lua
-	-- restarts the machine. This terminal is a local one -- the panel
-	-- and the keyboard in your hands -- so it holds what the serial
-	-- console holds. A public session (sshd, webterm) does not.
-	sys.send(sh, {
-		-- who to watch. A shell must not outlive the terminal it
-		-- prompts on: this one is parked waiting for a line when
-		-- the terminal goes, and a reply that will never come is
-		-- not something it can notice by itself. Monitoring turns
-		-- the terminal's exit into a message on the port it is
-		-- already waiting on.
-		pid = sys.self(),
-		cons = { __right = consright },
-		fb = { __right = fb },
-		net = job.tcp and { __right = job.tcp.__right },
-		udp = job.ip and { __right = job.ip.__right },
-		power = job.power and { __right = job.power.__right },
-		ns = N and N:describe(),
+-- The network is lent to every program the shell runs, which is how
+-- bin/fetch.lua reaches the stack -- see prog.net. And power, on the
+-- same terms, which is how bin/reboot.lua restarts the machine. This
+-- terminal is a local one -- the panel and the keyboard in your hands --
+-- so it holds what the serial console holds. A public session (sshd,
+-- webterm) does not.
+thread.spawn(function()
+	require("fbsh").run({
+		cons = consright,
+		notices = notices,
+		ns = require("ns").current(),
+		fb = fb,
+		net = job.tcp and job.tcp.__right,
+		udp = job.ip and job.ip.__right,
+		power = job.power and job.power.__right,
 	})
-	sys.close(sh)
-else
-	say("fbterm: no /task/fbsh.lua\n")
-end
+end)
 
 thread.run()
