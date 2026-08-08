@@ -13,7 +13,7 @@
 local tap = require("tap")
 local sys = require("los.sys")
 
-tap.plan(9)
+tap.plan(13)
 
 local ok_rng, rng = pcall(require, "los.platform.rng")
 tap.ok(ok_rng, "los.platform.rng present")
@@ -151,5 +151,54 @@ if p256.native then
 else
 	tap.ok(false, "the native crypto module is missing")
 end
+
+-- ---- tofu: the signature check, and the algorithms it loads ----
+--
+-- tls/tofu.lua requires an implementation when a handshake names it,
+-- rather than all of them at load. So the dispatch is what decides
+-- whether a signature is checked at all, and a branch that loaded the
+-- wrong module would refuse a good signature or, worse, take the
+-- absence of a checker for a pass.
+local tofu = require("tls.tofu")
+local ed25519 = require("crypto.ed25519")
+
+local seed = string.rep("\7", 32)
+local pk = ed25519.publickey(seed)
+local th = string.rep("\3", 32)
+local CONTEXT = string.rep("\32", 64) ..
+    "TLS 1.3, server CertificateVerify\0"
+local leaf = { key = { algorithm = { name = "Ed25519" }, bits = pk } }
+
+tap.ok(tofu.check_signature(leaf, {
+	algorithm = tofu.ED25519,
+	transcript_hash = th,
+	signature = ed25519.sign(seed, CONTEXT .. th),
+}) == true, "tofu checks an Ed25519 CertificateVerify")
+
+-- the same signature over a different transcript is the attack this
+-- exists to refuse, so a false pass shows up here.
+tap.ok(tofu.check_signature(leaf, {
+	algorithm = tofu.ED25519,
+	transcript_hash = th,
+	signature = ed25519.sign(seed, CONTEXT .. string.rep("\4", 32)),
+}) == nil, "and refuses one made over another transcript")
+
+tap.ok(tofu.check_signature(leaf, {
+	algorithm = 0xfefe, transcript_hash = th, signature = "",
+}) == nil, "an algorithm it cannot check is refused, not pinned")
+
+-- every RSA-PSS code names a hash module that exists: the table holds
+-- names now, and a typo would only show up on a handshake with a
+-- server using that one.
+local allhash = true
+
+for _, name in pairs(tofu.RSA_PSS) do
+	local ok, mod = pcall(require, name)
+
+	if not ok or type(mod.hash) ~= "function" then
+		allhash = false
+	end
+end
+tap.ok(allhash, "every RSA-PSS code names a loadable hash")
 
 tap.done()

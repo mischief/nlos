@@ -29,12 +29,12 @@
 -- here: the first connection is trusted, exactly as `ssh` trusts the
 -- first host key.
 
+-- sha256 hashes the pin and is wanted on every path; cert and der parse
+-- the chain. The signature implementations are not here: a handshake
+-- names one algorithm, and loading all of them costs p256, rsa and the
+-- bignum arithmetic under both to verify a signature that uses neither.
+-- require memoises, so the second connection pays a table lookup.
 local sha256 = require "crypto.sha256"
-local sha384 = require "crypto.sha384"
-local sha512 = require "crypto.sha512"
-local ed25519 = require "crypto.ed25519"
-local p256 = require "crypto.p256"
-local rsa = require "crypto.rsa"
 local cert = require "x509.cert"
 local der = require "x509.der"
 
@@ -53,9 +53,13 @@ M.ECDSA_P256_SHA256 = 0x0403
 -- RFC 8446 4.2.3: TLS 1.3 signs with PSS and never with PKCS #1 v1.5,
 -- whatever the certificate's own signature uses. rsae and pss_pss
 -- differ in the key's OID, not in the operation.
+-- the hash each names, by module, so only the one a handshake picks is
+-- loaded.
 M.RSA_PSS = {
-  [0x0804] = sha256, [0x0805] = sha384, [0x0806] = sha512,  -- rsae
-  [0x0809] = sha256, [0x080a] = sha384, [0x080b] = sha512,  -- pss
+  [0x0804] = "crypto.sha256", [0x0805] = "crypto.sha384",
+  [0x0806] = "crypto.sha512",                               -- rsae
+  [0x0809] = "crypto.sha256", [0x080a] = "crypto.sha384",
+  [0x080b] = "crypto.sha512",                               -- pss
 }
 
 -- The two INTEGERs of an ECDSA signature, each padded to 32 bytes.
@@ -89,6 +93,8 @@ function M.check_signature(leaf, cert_verify)
     if key.algorithm.name ~= "Ed25519" then
       return nil, "the certificate does not hold an Ed25519 key"
     end
+    local ed25519 = require "crypto.ed25519"
+
     if not ed25519.verify(key.bits, message, cert_verify.signature) then
       return nil, "the Ed25519 signature does not verify"
     end
@@ -99,18 +105,23 @@ function M.check_signature(leaf, cert_verify)
     if key.algorithm.name ~= "id-ecPublicKey" or key.curve ~= "prime256v1" then
       return nil, "the certificate does not hold a P-256 key"
     end
+    local p256 = require "crypto.p256"
     local r, s = ecdsa_rs(cert_verify.signature)
+
     if not r then return nil, s end
     local ok, why = p256.verify(key.bits, sha256.hash(message), r, s)
     if not ok then return nil, why end
     return true
   end
 
-  local hash = M.RSA_PSS[cert_verify.algorithm]
-  if hash then
+  local hashmod = M.RSA_PSS[cert_verify.algorithm]
+  if hashmod then
     if key.algorithm.name ~= "rsaEncryption" then
       return nil, "the certificate does not hold an RSA key"
     end
+
+    local rsa = require "crypto.rsa"
+    local hash = require(hashmod)
 
     -- The key is an RSAPublicKey, SEQUENCE { modulus, publicExponent }.
     local seq = der.expect(key.bits, 1, 0x30)
