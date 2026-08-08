@@ -413,7 +413,7 @@ _G.dos = setmetatable({}, {
 		-- same right, and nothing publishes a capability by that
 		-- name. bin/host.lua and bin/date.lua spend it.
 		require("dos").start({ ns = N, cons = caps.cons,
-		    fb = caps.fb, net = caps.tcp, udp = caps.udp or caps.ip,
+		    fb = caps.fb, net = caps.tcp, udp = caps.ip,
 		    power = caps.power },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")

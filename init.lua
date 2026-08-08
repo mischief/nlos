@@ -105,7 +105,6 @@ print("")
 -- it needs those mounts to be there to export them. tcp only exists when
 -- a NIC was found at boot (see have_net in kernel.c).
 local has_tcp = caps_of.tcp ~= nil
-local has_udp = caps_of.udp ~= nil
 
 -- ---- get an address, before anything wants one ----
 --
@@ -124,30 +123,6 @@ local has_udp = caps_of.udp ~= nil
 -- retries, so the address simply appears underneath them. and if it
 -- never does, the firmware's own DHCP was left running and they retry
 -- exactly as they always did.
-local dhcpd = nil
-
-if has_tcp and has_udp then
-	-- the rights ride in the spawn ARG, not a first message: dhcpd's own
-	-- port is srv.serve's, and a message arriving there would have to be
-	-- consumed before serving began and never after. rights travel
-	-- through arg exactly as through a message (api_spawn's comment).
-	local pid, h = proc.spawn(assert(rootns:readfile("/task/dhcpd.lua")),
-	    { name = "dhcp", ns = nsdesc, arg = {
-	        tcp = { __right = caps_of.tcp },
-	        udp = { __right = caps_of.udp },
-	    } })
-
-	if pid then
-		dhcpd = h
-		-- the lease as a filesystem, at /net. mounted BEFORE nsdesc
-		-- is taken below, so every child inherits it -- which is how
-		-- lib/dns.lua finds its resolver without holding a right to
-		-- dhcpd or being told an address at spawn time.
-		rootns:mount("/net", require("mnt").new(h), "mnt",
-		    { port = { __right = h } })
-	end
-end
-
 -- srvd: names for rights, so a shell can say what it wants to mount.
 -- Without it `mount` has nothing to take an argument -- a right is not
 -- a string, so there is no way to name a server at a prompt. See
@@ -175,8 +150,8 @@ if srvdh then
 	local srvc = require("srvc")
 
 	srvc.post(srvdh, "esp", sys.sendright(caps_of.esp))
-	if dhcpd then
-		srvc.post(srvdh, "net", sys.sendright(dhcpd))
+	if caps_of.dhcpd then
+		srvc.post(srvdh, "net", sys.sendright(caps_of.dhcpd))
 	end
 end
 
@@ -213,10 +188,6 @@ end
 -- one per file. This is how a program finds the resolver without
 -- holding a right to dhcpd or being told an address at spawn -- see
 -- task/dns.lua and bin/host.lua, which both just read /net/dns.
---
--- The right is the kernel's dhcpd driver task, not the one the block
--- above would spawn: that block asks for a "udp" capability, which no
--- task publishes, so it never runs.
 if caps_of.dhcpd then
 	rootns:mount("/net", require("mnt").new(caps_of.dhcpd), "mnt",
 	    { port = { __right = caps_of.dhcpd } })
@@ -262,8 +233,8 @@ end
 -- (no raw efi access of its own), same shape as the 9P export.
 local _, dnssrv = proc.spawn(assert(rootns:readfile("/task/dns.lua")),
     { name = "dns", ns = nsdesc })
-local has_dns = has_udp and
-    pcall(sys.send, dnssrv, { udp = { __right = caps_of.udp } })
+local has_dns = caps_of.ip and
+    pcall(sys.send, dnssrv, { ip = { __right = caps_of.ip } })
 
 if has_dns then
 	print("dns resolver ready")
@@ -563,11 +534,8 @@ while true do
 	if has_tcp then
 		grant.tcp = { __right = caps_of.tcp }
 	end
-	if has_udp then
-		grant.udp = { __right = caps_of.udp }
-	end
-	-- the stack itself, which is what actually serves udp; see the
-	-- worker's udph above.
+	-- the stack, which is what serves udp: there is no separate udp
+	-- capability on any platform.
 	if caps_of.ip then
 		grant.ip = { __right = caps_of.ip }
 	end

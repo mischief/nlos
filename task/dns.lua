@@ -75,10 +75,10 @@ local OPEN_RETRY_MS = 250
 -- the firmware's.
 local a = ...
 local udph = type(a) == "table" and
-    ((a.ip and a.ip.__right) or (a.udp and a.udp.__right)) or nil
+    (a.ip and a.ip.__right) or nil
 
 if not udph then
-	udph = thread.recv(sys.SELF).udp.__right
+	udph = thread.recv(sys.SELF).ip.__right
 end
 dhcpd = type(a) == "table" and a.dhcpd and a.dhcpd.__right or nil
 

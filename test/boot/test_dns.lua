@@ -11,11 +11,9 @@ tap.plan(3)
 
 local dnspid, dnsh = sys.spawn(io.open("/task/dns.lua"):read("a"),
     { name = "dns" })
--- the ip task is what speaks the udp protocol now: udpc wraps it
--- unchanged, and there is no separate udp capability to hand over. the
--- key stays "udp" because that is the dns task's own startup protocol,
--- naming what it wants rather than which task provides it.
-sys.send(dnsh, { udp = { __right = caps_of.ip } })
+-- the ip task speaks the udp protocol: there is no separate udp
+-- capability on any platform, and one name for it is the point.
+sys.send(dnsh, { ip = { __right = caps_of.ip } })
 
 local dns = dnsc.new(dnsh)
 
