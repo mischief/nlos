@@ -212,14 +212,11 @@ platform_have_eth(void)
 	return esp_wifi_bringup() == 0;
 }
 
-/* the microSD slot. Probing it powers the peripheral rail and brings up
- * the shared SPI bus, so this is also what a display or radio driver
- * would wait behind -- see blk.c before adding a second one.
- */
+/* no blockdev (yet) */
 int
 platform_have_blk(void)
 {
-	return esp_blk_present();
+	return 0;
 }
 
 /* Every board, unlike the card: the partition is in the image the
