@@ -545,8 +545,15 @@ parkon_begin(lua_State *L, struct sched *s, lua_Integer port, int portsi,
 	lua_rawseti(L, rec, PR_SEND);
 
 	if (isrecv) {
-		/* a scalar in the common case: replyport gives every thread
-		 * its own port, so one waiter is normal
+		/* A scalar in the common case: replyport gives every thread
+		 * its own port, so one waiter is normal.
+		 *
+		 * Registering is idempotent. recv() is a loop and a wake
+		 * that delivers nothing brings the same thread straight
+		 * back here; only a delivered message takes an entry off,
+		 * so appending blind grows the list for the life of the
+		 * proc, holding a coroutine alive for every park it ever
+		 * made.
 		 */
 		int qbase = lua_gettop(L);
 
@@ -559,18 +566,32 @@ parkon_begin(lua_State *L, struct sched *s, lua_Integer port, int portsi,
 			lua_pushvalue(L, co);
 			lua_rawset(L, -3);
 		} else if (lua_type(L, -1) == LUA_TTHREAD) {
-			lua_createtable(L, 2, 0);
-			lua_pushvalue(L, -2);
-			lua_rawseti(L, -2, 1);
-			lua_pushvalue(L, co);
-			lua_rawseti(L, -2, 2);
-			lua_pushinteger(L, port);
-			lua_pushvalue(L, -2);
-			lua_rawset(L, -5);
-			lua_pop(L, 1);
+			if (!lua_rawequal(L, -1, co)) {
+				lua_createtable(L, 2, 0);
+				lua_pushvalue(L, -2);
+				lua_rawseti(L, -2, 1);
+				lua_pushvalue(L, co);
+				lua_rawseti(L, -2, 2);
+				lua_pushinteger(L, port);
+				lua_pushvalue(L, -2);
+				lua_rawset(L, -5);
+			}
 		} else {
-			lua_pushvalue(L, co);
-			lua_rawseti(L, -2, (lua_Integer)lua_rawlen(L, -2) + 1);
+			/* Appended only when this thread is not already the
+			 * last waiter. The queue is served from the front,
+			 * so an entry that is already on it is left where it
+			 * is rather than moved.
+			 */
+			lua_Integer nq = (lua_Integer)lua_rawlen(L, -1);
+			int last;
+
+			lua_rawgeti(L, -1, nq);
+			last = lua_rawequal(L, -1, co);
+			lua_pop(L, 1);
+			if (!last) {
+				lua_pushvalue(L, co);
+				lua_rawseti(L, -2, nq + 1);
+			}
 		}
 		/* unwound to a mark: the branches above leave different
 		 * depths, and counting pops here took `rec` off the stack
@@ -1013,8 +1034,32 @@ l_index(lua_State *L)
 {
 	const char *k = lua_tostring(L, 2);
 
-	if (k != NULL && strcmp(k, "_n") == 0) {
+	if (k == NULL) {
+		lua_pushnil(L);
+		return 1;
+	}
+	if (strcmp(k, "_n") == 0) {
 		lua_pushinteger(L, getsched(L)->nthreads);
+		return 1;
+	}
+	/* every coroutine registered as a recv waiter, over all ports. A
+	 * count that climbs with no new threads is portq leaking.
+	 */
+	if (strcmp(k, "_nwaiters") == 0) {
+		struct sched *s = getsched(L);
+		lua_Integer n = 0;
+		int q;
+
+		pushref(L, s->portq);
+		q = lua_gettop(L);
+		lua_pushnil(L);
+		while (lua_next(L, q) != 0) {
+			n += lua_type(L, -1) == LUA_TTHREAD ? 1
+			    : (lua_Integer)lua_rawlen(L, -1);
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
+		lua_pushinteger(L, n);
 		return 1;
 	}
 	lua_pushnil(L);
