@@ -98,11 +98,17 @@ local spec = {
 --------------------------------------------------------------------------
 
 -- The C compression function, when it is there; see the note in
--- ssh/crypto/sha256.lua. SHA-512 gets it too because Ed25519 hashes with
+-- crypto/sha256.lua. SHA-512 gets it too because Ed25519 hashes with
 -- it twice per signature, and because a 64-bit hash is where a 64-bit
 -- host is furthest ahead of an interpreter.
 local M = hashstate.define(spec)
 M.pure = M
+
+-- The spec tables themselves, for crypto/sha384.lua: SHA-384 is
+-- this compression function with another initial state and a truncated
+-- digest, and nothing else differs.
+M.spec_pure = spec
+M.spec = spec
 
 local ok, native = pcall(require, "crypto.native")
 if ok and type(native) == "table" and native.sha512_blocks then
@@ -121,6 +127,8 @@ if ok and type(native) == "table" and native.sha512_blocks then
   M = hashstate.define(fast)
   M.pure = hashstate.define(spec)
   M.native = M
+  M.spec, M.spec_pure = fast, spec
+  M.pure.spec, M.pure.spec_pure = spec, spec
 end
 
 return M

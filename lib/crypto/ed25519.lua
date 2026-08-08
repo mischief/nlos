@@ -254,7 +254,7 @@ M.pure = M
 -- implementation on a build without the module. Verification is two
 -- scalar multiplications, and every connection pays for one signature.
 --
--- M is never reassigned, for the reason ssh/crypto/x25519.lua gives:
+-- M is never reassigned, for the reason crypto/x25519.lua gives:
 -- keypair and sign reach publickey through the upvalue, so pointing M
 -- at the fast table would leave nothing that is actually the pure
 -- implementation for the spec to compare against.
