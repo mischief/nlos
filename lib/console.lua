@@ -159,6 +159,8 @@ function Console:getch(ms)
 			self.io.write(m.data)
 		elseif type(m) == "table" and m.op == "intr" then
 			self:setintr(m)
+		elseif type(m) == "table" and m.op == "abort" then
+			return done(nil)
 		else
 			self.deferred[#self.deferred + 1] = m
 		end
@@ -292,6 +294,9 @@ function Console:readline(prompt)
 				redraw(m.data)
 			elseif type(m) == "table" and m.op == "intr" then
 				self:setintr(m)
+			elseif type(m) == "table" and m.op == "abort" then
+				io.write("\n")
+				return nil
 			else
 				self.deferred[#self.deferred + 1] = m
 			end
@@ -366,6 +371,12 @@ function Console:pump()
 			-- input: a program being interrupted should not
 			-- also read the character that interrupted it.
 			sys.send(self.intr, { op = "interrupt" })
+			-- the console is usually inside a read on behalf
+			-- of the program being killed, and a dead program
+			-- never types the line that would end it. End the
+			-- read here, so the notice of its death is served
+			-- rather than deferred until the next keystroke.
+			sys.send(thread.selfright(), { op = "abort" })
 		elseif c ~= nil then
 			sys.send(self.inq, c)
 		end
@@ -424,6 +435,9 @@ function Console:serve()
 		elseif m.op == "intr" then
 			self:setintr(m)
 			reply = nil		-- kept, so not closed below
+		elseif m.op == "abort" then
+			-- nothing was reading: the interrupt arrived between
+			-- one read and the next, so there is nothing to end.
 		elseif m.op == "size" then
 			-- how wide the far end is, for a program that lays
 			-- out columns. A backend that knows says so
