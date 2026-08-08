@@ -450,7 +450,16 @@ endif
 # Named los.so for the same reason gefs.so is: the C-path searcher takes
 # a.b to a.so and calls luaopen_a_b, so require("los.buf") finds
 # luaopen_los_buf with no build subdirectory to arrange.
+#
+# host_deps travels with host_env and must be passed as `depends:` by
+# every test using it. `meson test` builds only what the selected tests
+# declare, not `all`, so build_by_default is no help when a test names a
+# subset: the module is simply absent and the test fails as a missing
+# lua module. It looked like it worked because the default LUA_CPATH
+# ends in ./?.so and the test's cwd is the build directory, so a stale
+# copy from an earlier full build was found by accident.
 host_env = environment()
+host_deps = []
 if lua54_dep.found()
   buf_native_host = shared_module('los',
     ['src/buf.c', 'test/hostbuf.c'],
@@ -462,6 +471,7 @@ if lua54_dep.found()
   )
   host_env.append('LUA_CPATH',
     meson.current_build_dir() / '?.so', separator: ';')
+  host_deps += buf_native_host
 endif
 
 # src/gefs_native.c built for the host, so the host test exercises the
@@ -482,7 +492,12 @@ endif
 # unconditionally as well as inside the branch: the gefs host test also
 # loads los.buf, which is built beside this and by the same test for
 # lua5.4's headers.
+#
+# gefs_host_deps carries both modules, since anything reaching lib/gefs
+# also reaches los.buf. See the note at host_deps for why `depends:` is
+# required rather than merely tidy.
 gefs_host_env = environment()
+gefs_host_deps = []
 gefs_host_env.append('LUA_CPATH',
   meson.current_build_dir() / '?.so', separator: ';')
 if lua54_dep.found()
@@ -495,6 +510,7 @@ if lua54_dep.found()
   )
   gefs_host_env.append('LUA_CPATH',
     meson.current_build_dir() / '?.so', separator: ';')
+  gefs_host_deps += [gefs_native_host, buf_native_host]
 endif
 
 
@@ -809,7 +825,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
-              'history', 'top', 'xd']
+              'history', 'top', 'xd', 'zzz']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
@@ -1001,12 +1017,19 @@ microvm_tests = [
   ['sample', []],
 ]
 
+# The gefs entries build their disk image at test time, in the host's
+# own lua, so the harness reaches lib/gefs and needs gefs.native. Named
+# for every entry rather than only those: the cost is nothing for a test
+# that does not load it, and a --gefs flag added to an entry later would
+# otherwise fail as a missing lua module far from this list.
 foreach t : microvm_tests
   test('microvm-' + t[0], microvm_boottest,
     args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] + t[1],
     protocol: 'tap',
     timeout: 90,
     is_parallel: true,
+    env: gefs_host_env,
+    depends: gefs_host_deps,
   )
 endforeach
 
@@ -1047,6 +1070,8 @@ foreach n : ['2', '4']
       protocol: 'tap',
       timeout: 90,
       is_parallel: true,
+      env: gefs_host_env,
+      depends: gefs_host_deps,
     )
   endforeach
 endforeach
@@ -1057,6 +1082,8 @@ foreach t : shared_tests
     protocol: 'tap',
     timeout: 90,
     is_parallel: true,
+    env: gefs_host_env,
+    depends: gefs_host_deps,
   )
 endforeach
 
@@ -1096,6 +1123,8 @@ foreach t : microvm_pci0_tests
     protocol: 'tap',
     timeout: 90,
     is_parallel: true,
+    env: gefs_host_env,
+    depends: gefs_host_deps,
   )
 endforeach
 
@@ -1106,6 +1135,8 @@ foreach t : microvm_pci_tests
     protocol: 'tap',
     timeout: 90,
     is_parallel: true,
+    env: gefs_host_env,
+    depends: gefs_host_deps,
   )
 endforeach
 
@@ -1189,6 +1220,21 @@ luaheap_test = executable('luaheap_test',
 )
 test('luaheap', luaheap_test, protocol: 'tap', timeout: 120)
 
+# Whether two lua_States can share one immutable object without the
+# collector touching it. Native for the same reason luaheap_test is:
+# the question is about lua's collector and nothing else, so no kernel
+# and no firmware are involved. It reaches lua's internal headers
+# (lstate.h, lgc.h) because building an arena object by hand is exactly
+# what a relocator would do, and there is no public API for it.
+arena_test = executable('arena_test',
+  ['test/arena_test.c'] + lua_src,
+  include_directories: include_directories('lua'),
+  dependencies: meson.get_compiler('c', native: true).find_library('m',
+    required: false),
+  native: true,
+)
+test('arena', arena_test, protocol: 'tap', timeout: 120)
+
 # src/lock.h is the other file that can only be tested where there is
 # more than one cpu, which the target never has enough of and the host
 # always does. Built native, with NCPU forced past 1 so the real ticket
@@ -1271,6 +1317,7 @@ test('tcp4-codec', lua_interp,
   protocol: 'tap',
   timeout: 20,
   env: host_env,
+  depends: host_deps,
 )
 
 # lib/tcb.lua is one connection's state machine, and sans-io for the
@@ -1336,6 +1383,7 @@ test('tcb-statemachine', lua_interp,
   protocol: 'tap',
   timeout: 20,
   env: host_env,
+  depends: host_deps,
 )
 
 # the same state machine over a link that loses, reorders, duplicates
@@ -1355,6 +1403,7 @@ test('tcb-lossy', lua_interp,
   protocol: 'tap',
   timeout: 20,
   env: host_env,
+  depends: host_deps,
 )
 
 # lib/gefs is a port of 9front's Bε-tree filesystem, and it is sans-io in
@@ -1373,6 +1422,7 @@ test('gefs-host', lua_interp,
   protocol: 'tap',
   timeout: 120,
   env: gefs_host_env,
+  depends: gefs_host_deps,
 )
 
 # lib/fat is the filesystem the esp32 flash partition and the microSD
@@ -1393,6 +1443,7 @@ test('fat-write', lua_interp,
   protocol: 'tap',
   timeout: 120,
   env: host_env,
+  depends: host_deps,
 )
 
 test('fat-host', lua_interp,
@@ -1400,6 +1451,7 @@ test('fat-host', lua_interp,
   protocol: 'tap',
   timeout: 60,
   env: host_env,
+  depends: host_deps,
 )
 
 # lib/p9serve.lua is the 9P server over a dev backend -- the bridge
@@ -1411,4 +1463,6 @@ test('p9serve-host', lua_interp,
   args: [files('test/host_p9serve.lua')],
   protocol: 'tap',
   timeout: 30,
+  env: gefs_host_env,
+  depends: gefs_host_deps,
 )
