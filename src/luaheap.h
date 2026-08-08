@@ -53,6 +53,13 @@ struct luaheap_stats {
 	size_t	rounding;
 	size_t	headers;
 	size_t	unused;
+
+	/* part of unused, and the part that can be had back at once: large
+	 * blocks lua freed and this heap kept against the next request of
+	 * the same size. The rest of unused is free space inside chunks
+	 * still in use, which only a compacting heap could recover.
+	 */
+	size_t	cached;
 };
 
 struct luaheap;
@@ -78,6 +85,12 @@ void	*luaheap_realloc(struct luaheap *h, void *ptr, size_t osize,
  * the free lists and there is nothing to find most of the time.
  */
 size_t	luaheap_reclaim(struct luaheap *h);
+
+/* the same, plus the large cache, and report the bytes. This is what
+ * the heap can give back to the machine when asked rather than when it
+ * runs out: reclaim alone leaves the cache held.
+ */
+size_t	luaheap_release(struct luaheap *h);
 
 void	luaheap_stats(const struct luaheap *h, struct luaheap_stats *out);
 

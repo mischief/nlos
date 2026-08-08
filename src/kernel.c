@@ -4471,6 +4471,30 @@ api_meminfo(lua_State *L)
 	return 4;
 }
 
+/* sys.reclaim() -> bytes. Hand back what the lua heap is holding but not
+ * using: whole chunks nothing sits in, and the large-block cache.
+ *
+ * Ungated, like sys.stats: it frees memory and reveals nothing. The heap
+ * does this for itself when a proc exits or when the chunk source says
+ * no, which covers a machine that keeps running programs. A machine that
+ * ran one and went quiet holds the peak until something asks.
+ */
+static int
+api_reclaim(lua_State *L)
+{
+	size_t freed = 0;
+
+	if (shared_heap) {
+		freed = luaheap_release(shared_heap);
+	} else {
+		for (int i = 0; i < prochigh; i++)
+			if (procv[i] && procv[i]->heap)
+				freed += luaheap_release(procv[i]->heap);
+	}
+	lua_pushinteger(L, (lua_Integer)freed);
+	return 1;
+}
+
 static int
 api_stats(lua_State *L)
 {
@@ -4604,6 +4628,7 @@ api_stats(lua_State *L)
 			hs.rounding += one.rounding;
 			hs.headers += one.headers;
 			hs.unused += one.unused;
+			hs.cached += one.cached;
 			hs.chunks += one.chunks;
 			hs.larges += one.larges;
 		}
@@ -4626,6 +4651,11 @@ api_stats(lua_State *L)
 	lua_setfield(L, -2, "lua_headers");
 	lua_pushinteger(L, (lua_Integer)hs.unused);
 	lua_setfield(L, -2, "lua_unused");
+	/* how much of unused sys.reclaim would return, so "held" can be
+	 * told from "fragmented" without guessing.
+	 */
+	lua_pushinteger(L, (lua_Integer)hs.cached);
+	lua_setfield(L, -2, "lua_cached");
 	/* the tsc calibration, so a benchmark can time with sys.ticks()
 	 * -- sub-nanosecond -- and still report real units. uptime_ms has
 	 * 1ms granularity, which is useless over a 20ms measurement.
@@ -6077,6 +6107,7 @@ static const luaL_Reg kapi[] = {
 	{ "monitor", api_monitor },
 	{ "close", api_close },
 	{ "stats", api_stats },
+	{ "reclaim", api_reclaim },
 	{ "meminfo", api_meminfo },
 	{ "self", api_self },
 	{ "procs", api_procs },

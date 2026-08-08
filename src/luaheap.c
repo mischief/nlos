@@ -530,6 +530,18 @@ release_largefree(struct luaheap *h)
 	return freed;
 }
 
+/* The two sources of held memory, together. They are independent: a
+ * large block comes straight from the chunk source and sits in no
+ * chunk, so releasing one never empties one.
+ */
+size_t
+luaheap_release(struct luaheap *h)
+{
+	if (!h)
+		return 0;
+	return release_largefree(h) + release_freechunks(h);
+}
+
 static void
 large_free(struct luaheap *h, void *ptr, size_t asked)
 {
@@ -685,4 +697,13 @@ luaheap_stats(const struct luaheap *h, struct luaheap_stats *out)
 	out->rounding = h->rounded > small_asked ? h->rounded - small_asked : 0;
 	out->unused = out->waste > out->rounding + out->headers ?
 	    out->waste - out->rounding - out->headers : 0;
+
+	/* walked rather than counted as it goes: the lists are bounded by
+	 * LARGE_CACHED per class, and the size is on each block's own
+	 * header, so this is exact and costs nothing worth avoiding.
+	 */
+	for (size_t ci = 0; ci < NLARGECLASS; ci++)
+		for (void *p = h->largefree[ci]; p; p = *(void **)p)
+			out->cached += ((const struct large *)((const char *)p -
+			    sizeof(struct large)))->size;
 }
