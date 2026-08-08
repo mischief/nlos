@@ -389,6 +389,122 @@ l_ed25519_verify(lua_State *L)
 	return 1;
 }
 
+/* bignum_mulm(a, b, m, n0 [, out]) -> a * b * R^-1 mod m
+ *
+ * All three operands are big-endian bytes of the same length, which is
+ * a multiple of four; n0 is -m^-1 mod 2^32. The caller holds the
+ * Montgomery context, so this stays one function with no state.
+ */
+static int
+l_bignum_mulm(lua_State *L)
+{
+	size_t alen, blen, mlen;
+	const char *a = luabuf_check(L, 1, &alen);
+	const char *b = luabuf_check(L, 2, &blen);
+	const char *m = luabuf_check(L, 3, &mlen);
+	uint32_t n0 = (uint32_t)luaL_checkinteger(L, 4);
+	luaL_Buffer buf;
+	char *out;
+
+	if (alen != blen || alen != mlen)
+		luaL_error(L, "bignum operands must be the same length");
+	if (alen == 0 || alen % 4 != 0 || alen / 4 > BIGNUM_MAX_LIMBS)
+		luaL_error(L, "bignum length %d is not supported", (int)alen);
+
+	out = outbuf(L, 5, alen);
+	if (out) {
+		if (!bn_mont_mul((uint8_t *)out, (const uint8_t *)a,
+		    (const uint8_t *)b, (const uint8_t *)m, n0, alen))
+			luaL_error(L, "bignum length %d is not supported",
+			    (int)alen);
+		lua_pushvalue(L, 5);
+		return 1;
+	}
+
+	out = luaL_buffinitsize(L, &buf, alen);
+	if (!bn_mont_mul((uint8_t *)out, (const uint8_t *)a,
+	    (const uint8_t *)b, (const uint8_t *)m, n0, alen))
+		luaL_error(L, "bignum length %d is not supported", (int)alen);
+	luaL_pushresultsize(&buf, alen);
+	return 1;
+}
+
+/* bignum_addm(a, b, m [, out]) and bignum_subm(a, b, m [, out]), for
+ * operands already reduced. The point formulas in crypto/p256.lua run
+ * more of these than multiplies, so they are worth the same crossing.
+ */
+static int
+bn_binop(lua_State *L, int (*op)(uint8_t *, const uint8_t *,
+    const uint8_t *, const uint8_t *, size_t))
+{
+	size_t alen, blen, mlen;
+	const char *a = luabuf_check(L, 1, &alen);
+	const char *b = luabuf_check(L, 2, &blen);
+	const char *m = luabuf_check(L, 3, &mlen);
+	luaL_Buffer buf;
+	char *out;
+
+	if (alen != blen || alen != mlen)
+		luaL_error(L, "bignum operands must be the same length");
+
+	out = outbuf(L, 4, alen);
+	if (out) {
+		if (!op((uint8_t *)out, (const uint8_t *)a,
+		    (const uint8_t *)b, (const uint8_t *)m, alen))
+			luaL_error(L, "bignum length %d is not supported",
+			    (int)alen);
+		lua_pushvalue(L, 4);
+		return 1;
+	}
+
+	out = luaL_buffinitsize(L, &buf, alen);
+	if (!op((uint8_t *)out, (const uint8_t *)a, (const uint8_t *)b,
+	    (const uint8_t *)m, alen))
+		luaL_error(L, "bignum length %d is not supported", (int)alen);
+	luaL_pushresultsize(&buf, alen);
+	return 1;
+}
+
+static int
+l_bignum_addm(lua_State *L)
+{
+	return bn_binop(L, bn_add_mod);
+}
+
+static int
+l_bignum_subm(lua_State *L)
+{
+	return bn_binop(L, bn_sub_mod);
+}
+
+/* p256_verify(pubkey, hash, r, s) -> boolean
+ *
+ * The whole verification, not a field operation: the interpreter around
+ * the arithmetic costs as much as the arithmetic does, so the loop that
+ * drives it comes across too.
+ *
+ * Never raises: a public key and a signature off the network are
+ * whatever the peer sent, and every malformed one is false.
+ */
+static int
+l_p256_verify(lua_State *L)
+{
+	size_t publen, hashlen, rlen, slen;
+	const char *pub = luabuf_check(L, 1, &publen);
+	const char *hash = luabuf_check(L, 2, &hashlen);
+	const char *r = luabuf_check(L, 3, &rlen);
+	const char *s = luabuf_check(L, 4, &slen);
+
+	if (rlen != 32 || slen != 32) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	lua_pushboolean(L, p256_verify((const uint8_t *)pub, publen,
+	    (const uint8_t *)hash, hashlen, (const uint8_t *)r,
+	    (const uint8_t *)s));
+	return 1;
+}
+
 static const luaL_Reg funcs[] = {
 	{ "x25519", l_x25519 },
 	{ "ed25519_publickey", l_ed25519_publickey },
@@ -404,6 +520,10 @@ static const luaL_Reg funcs[] = {
 	{ "sha512_blocks", l_sha512_blocks },
 	{ "aes_ecb_block", l_aes_ecb_block },
 	{ "aes_ctr_xor", l_aes_ctr_xor },
+	{ "bignum_mulm", l_bignum_mulm },
+	{ "bignum_addm", l_bignum_addm },
+	{ "bignum_subm", l_bignum_subm },
+	{ "p256_verify", l_p256_verify },
 	{ NULL, NULL }
 };
 
