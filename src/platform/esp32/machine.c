@@ -71,7 +71,8 @@ platform_arch(void)
  * one thing that is not true on this board.
  */
 void
-platform_meminfo(unsigned long long *total, unsigned long long *avail)
+platform_meminfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest)
 {
 	multi_heap_info_t info;
 
@@ -80,6 +81,8 @@ platform_meminfo(unsigned long long *total, unsigned long long *avail)
 		*total = info.total_free_bytes + info.total_allocated_bytes;
 	if (avail)
 		*avail = info.total_free_bytes;
+	if (largest)
+		*largest = info.largest_free_block;
 }
 
 /* the pool the lua heap's chunks come from: PSRAM where the board has
@@ -92,7 +95,8 @@ platform_meminfo(unsigned long long *total, unsigned long long *avail)
  * a per-proc cost that was never there.
  */
 void
-platform_chunkinfo(unsigned long long *total, unsigned long long *avail)
+platform_chunkinfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest)
 {
 	multi_heap_info_t info;
 	uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -106,6 +110,8 @@ platform_chunkinfo(unsigned long long *total, unsigned long long *avail)
 		*total = info.total_free_bytes + info.total_allocated_bytes;
 	if (avail)
 		*avail = info.total_free_bytes;
+	if (largest)
+		*largest = info.largest_free_block;
 }
 
 /* the C heap, for sys.stats.

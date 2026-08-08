@@ -176,7 +176,7 @@ microvm_main(unsigned long start_info)
 	{
 		unsigned long long total = 0, avail = 0;
 
-		platform_meminfo(&total, &avail);
+		platform_meminfo(&total, &avail, 0);
 		snprintf(cbuf, sizeof cbuf,
 		    "mem: %lluK total, %lluK available",
 		    total / 1024, avail / 1024);

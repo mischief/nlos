@@ -12,7 +12,7 @@
 extern _Noreturn void platform_abort(const char *why);
 void	*pmm_alloc(size_t n);
 void	pmm_free(void *p, size_t n);
-void	pmm_meminfo(size_t *total, size_t *avail);
+void	pmm_meminfo(size_t *total, size_t *avail, size_t *largest);
 
 struct hdr {
 	size_t size;
@@ -97,18 +97,22 @@ free(void *p)
 /* the efi platform sums the firmware's memory map for this; here the
  * arena is our own, so pmm.c already knows both numbers.
  */
-void platform_meminfo(unsigned long long *total, unsigned long long *avail);
+void platform_meminfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest);
 
 void
-platform_meminfo(unsigned long long *total, unsigned long long *avail)
+platform_meminfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest)
 {
-	size_t t = 0, a = 0;
+	size_t t = 0, a = 0, m = 0;
 
-	pmm_meminfo(&t, &a);
+	pmm_meminfo(&t, &a, &m);
 	if (total)
 		*total = t;
 	if (avail)
 		*avail = a;
+	if (largest)
+		*largest = m;
 }
 
 void *
@@ -158,12 +162,14 @@ void platform_chunk_free(void *p, size_t n);
 /* the lua heap's chunks come from malloc here, which is the same pool
  * platform_meminfo reports: one kind of memory, one set of figures.
  */
-void platform_chunkinfo(unsigned long long *total, unsigned long long *avail);
+void platform_chunkinfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest);
 
 void
-platform_chunkinfo(unsigned long long *total, unsigned long long *avail)
+platform_chunkinfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest)
 {
-	platform_meminfo(total, avail);
+	platform_meminfo(total, avail, largest);
 }
 
 void *

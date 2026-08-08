@@ -168,16 +168,21 @@ stats_mt.__tostring = function()
 	local chunk = ""
 
 	if (s.chunktotal or 0) > 0 and s.chunktotal ~= s.memtotal then
-		chunk = string.format(" chunks=%dK/%dK free",
-		    (s.chunkavail or 0) // 1024, s.chunktotal // 1024)
+		chunk = string.format(" chunks=%dK/%dK free max=%dK",
+		    (s.chunkavail or 0) // 1024, s.chunktotal // 1024,
+		    (s.chunklargest or 0) // 1024)
 	end
 
+	-- max is the largest single free run. Free bytes scattered below
+	-- what a chunk costs buy nothing, and say nothing about it.
 	return string.format(
-	    "procs=%d%s ports=%d heap=%dK lua=%dK/%dK (%.2fx) mem=%dK/%dK free%s",
+	    "procs=%d%s ports=%d heap=%dK lua=%dK/%dK (%.2fx) " ..
+	    "mem=%dK/%dK free max=%dK%s",
 	    s.procs, broke, s.ports, (s.heap_used or 0) // 1024,
 	    live // 1024, mapped // 1024,
 	    live > 0 and mapped / live or 0,
-	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024, chunk)
+	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024,
+	    (s.memlargest or 0) // 1024, chunk)
 end
 M.stats = setmetatable({}, stats_mt)
 

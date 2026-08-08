@@ -173,12 +173,12 @@ unsigned long long platform_ticks(void);
 _Noreturn void machine_halt(void);
 const char *platform_arch(void);
 
-/* what the firmware says about RAM: bytes present, and bytes still
- * available. malloc reaches AllocatePool directly rather than carving an
- * arena, so `avail` is the remaining budget for everything -- lua heaps
- * included -- and not a curiosity.
+/* RAM present, RAM available, and the largest single run of it.
+ * `largest` says whether `avail` can be spent: 100KB free in 2KB pieces
+ * refuses a 64KB chunk. Any of the three may be null.
  */
-void platform_meminfo(unsigned long long *total, unsigned long long *avail);
+void platform_meminfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest);
 
 /* the pool the lua heap's chunks come from, which is not always the one
  * above. On a board with PSRAM the chunks are there and everything else
@@ -186,7 +186,8 @@ void platform_meminfo(unsigned long long *total, unsigned long long *avail);
  * that runs out first is invisible to platform_meminfo. A platform
  * whose chunks come from the same pool answers with the same figures.
  */
-void platform_chunkinfo(unsigned long long *total, unsigned long long *avail);
+void platform_chunkinfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest);
 
 /* the C heap's own accounting: bytes live, the most ever live, blocks
  * live, and allocations since boot. A platform that cannot answer one

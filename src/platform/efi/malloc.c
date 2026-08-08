@@ -130,20 +130,24 @@ realloc(void *p, size_t n)
  * carving an arena: free conventional memory is the real remaining budget,
  * and a proc is a lua_State drawn from it.
  */
-void platform_meminfo(unsigned long long *total, unsigned long long *avail);
+void platform_meminfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest);
 
 void
-platform_meminfo(unsigned long long *total, unsigned long long *avail)
+platform_meminfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest)
 {
 	UINTN size = 0, mapkey = 0, dsize = 0;
 	UINT32 dver = 0;
 	EFI_MEMORY_DESCRIPTOR *map = 0;
-	unsigned long long t = 0, a = 0;
+	unsigned long long t = 0, a = 0, m = 0;
 
 	if (total)
 		*total = 0;
 	if (avail)
 		*avail = 0;
+	if (largest)
+		*largest = 0;
 
 	/* the first call reports the size needed. allocating a buffer to
 	 * hold the map changes the map, so ask for slack rather than the
@@ -171,6 +175,9 @@ platform_meminfo(unsigned long long *total, unsigned long long *avail)
 		case EfiConventionalMemory:
 			a += bytes;
 			t += bytes;
+			/* one descriptor is one contiguous run */
+			if (bytes > m)
+				m = bytes;
 			break;
 		case EfiLoaderCode:
 		case EfiLoaderData:
@@ -190,6 +197,8 @@ platform_meminfo(unsigned long long *total, unsigned long long *avail)
 		*total = t;
 	if (avail)
 		*avail = a;
+	if (largest)
+		*largest = m;
 }
 
 /* one kind of memory here, so the lua heap's chunks are ordinary
@@ -202,12 +211,14 @@ void platform_chunk_free(void *p, size_t n);
 /* the lua heap's chunks come from malloc here, which is the same pool
  * platform_meminfo reports: one kind of memory, one set of figures.
  */
-void platform_chunkinfo(unsigned long long *total, unsigned long long *avail);
+void platform_chunkinfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest);
 
 void
-platform_chunkinfo(unsigned long long *total, unsigned long long *avail)
+platform_chunkinfo(unsigned long long *total, unsigned long long *avail,
+    unsigned long long *largest)
 {
-	platform_meminfo(total, avail);
+	platform_meminfo(total, avail, largest);
 }
 
 void *

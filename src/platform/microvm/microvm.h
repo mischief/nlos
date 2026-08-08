@@ -8,7 +8,7 @@
 void	pmm_add(uintptr_t base, size_t len);
 void	*pmm_alloc(size_t n);
 void	pmm_free(void *p, size_t n);
-void	pmm_meminfo(size_t *total, size_t *avail);
+void	pmm_meminfo(size_t *total, size_t *avail, size_t *largest);
 
 /* uart.c */
 void	uart_isr(void);

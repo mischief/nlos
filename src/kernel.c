@@ -4518,26 +4518,33 @@ api_stats(lua_State *L)
 	 * is the ceiling the other figures sit under, since a proc is a
 	 * lua_State drawn from the same pool.
 	 */
-	unsigned long long mtotal = 0, mavail = 0;
+	unsigned long long mtotal = 0, mavail = 0, mlargest = 0;
 
-	platform_meminfo(&mtotal, &mavail);
+	platform_meminfo(&mtotal, &mavail, &mlargest);
 	lua_pushinteger(L, (lua_Integer)mtotal);
 	lua_setfield(L, -2, "memtotal");
 	lua_pushinteger(L, (lua_Integer)mavail);
 	lua_setfield(L, -2, "memavail");
+	/* the largest run of memavail. A heap fragmented below what a
+	 * chunk costs refuses one while memavail still looks healthy.
+	 */
+	lua_pushinteger(L, (lua_Integer)mlargest);
+	lua_setfield(L, -2, "memlargest");
 
 	/* and the pool the lua heaps are carved from, which on a board
 	 * with PSRAM is a different one. What bounds how many procs can
 	 * exist is this, not the figures above: a machine can be out of
 	 * room for another heap with plenty of sram left.
 	 */
-	unsigned long long ctotal = 0, cavail = 0;
+	unsigned long long ctotal = 0, cavail = 0, clargest = 0;
 
-	platform_chunkinfo(&ctotal, &cavail);
+	platform_chunkinfo(&ctotal, &cavail, &clargest);
 	lua_pushinteger(L, (lua_Integer)ctotal);
 	lua_setfield(L, -2, "chunktotal");
 	lua_pushinteger(L, (lua_Integer)cavail);
 	lua_setfield(L, -2, "chunkavail");
+	lua_pushinteger(L, (lua_Integer)clargest);
+	lua_setfield(L, -2, "chunklargest");
 
 	/* the c heap, i.e. everything not on a per-proc lua heap: port
 	 * messages, net tokens and payload copies, loadfile buffers.

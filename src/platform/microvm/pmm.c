@@ -137,18 +137,23 @@ pmm_add(uintptr_t base, size_t len)
  * see the header on why it is not the largest allocatable block.
  */
 void
-pmm_meminfo(size_t *total, size_t *avail)
+pmm_meminfo(size_t *total, size_t *avail, size_t *largest)
 {
-	size_t a = 0;
+	size_t a = 0, m = 0;
 
 	lock(&pmmlock);
-	for (struct pmm_block *b = freelist; b; b = b->next)
+	for (struct pmm_block *b = freelist; b; b = b->next) {
 		a += b->size;
+		if (b->size > m)
+			m = b->size;
+	}
 	if (total)
 		*total = arena_bytes;
 	unlock(&pmmlock);
 	if (avail)
 		*avail = a;
+	if (largest)
+		*largest = m;
 }
 
 void *
