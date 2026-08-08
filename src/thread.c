@@ -623,27 +623,45 @@ isdead(lua_State *co)
 	}
 }
 
+/* Build and print the report. Runs under pcall; the arguments are the
+ * coroutine and its error.
+ */
+static int
+fault_report(lua_State *L)
+{
+	lua_State *co = lua_tothread(L, 1);
+	const char *msg = lua_tostring(L, 2);
+
+	/* the traceback comes from the coroutine: the resuming stack is
+	 * this scheduler and says nothing about the fault. A coroutine
+	 * keeps its stack until collected.
+	 */
+	luaL_traceback(L, co, msg != NULL ? msg : "?", 0);
+	lua_getglobal(L, "print");
+	lua_pushliteral(L, "thread error: ");
+	lua_pushvalue(L, -3);
+	lua_concat(L, 2);
+	lua_call(L, 1, 0);
+	return 0;
+}
+
 /* Report a thread that raised.
  *
- * The traceback comes from the coroutine: the resuming stack is this
- * scheduler and says nothing about the fault. A coroutine keeps its
- * stack until collected, so it is still walkable after resume returns.
+ * Protected: no print, or a traceback that cannot allocate, would
+ * otherwise raise out of run() and kill the proc -- the one thing a
+ * fault inside a thread must never do.
  */
 static void
 fault(lua_State *L, lua_State *co)
 {
-	const char *msg;
-
-	lua_xmove(co, L, 1);
-	msg = lua_tostring(L, -1);
-	luaL_traceback(L, co, msg != NULL ? msg : "?", 0);
-	lua_remove(L, -2);
-	lua_getglobal(L, "print");
-	lua_insert(L, -2);
-	lua_pushliteral(L, "thread error: ");
-	lua_insert(L, -2);
-	lua_concat(L, 2);
-	lua_call(L, 1, 0);
+	if (!lua_checkstack(L, 4))
+		return;
+	lua_pushcfunction(L, fault_report);
+	lua_pushthread(co);
+	lua_xmove(co, L, 1);		/* the coroutine, as a value */
+	lua_xmove(co, L, 1);		/* its error */
+	if (lua_pcall(L, 2, 0, 0) != LUA_OK)
+		lua_pop(L, 1);
 }
 
 /* Resume the coroutine at `ci` once, and decide what its yield meant.
@@ -670,11 +688,21 @@ resume_one(lua_State *L, struct sched *s, int ci)
 	lua_pushboolean(L, 0);
 	lua_rawseti(L, LUA_REGISTRYINDEX, s->current);
 
-	if (isdead(co)) {
+	/* Finished or raised, which after a resume is anything but a
+	 * yield. isdead cannot answer this one: a body that ended in
+	 * `return x` leaves the value on the stack and reads the same as
+	 * one that never started, so the count would never come down and
+	 * run() would loop forever with nothing runnable.
+	 */
+	if (st != LUA_YIELD) {
 		s->nthreads--;
 		clearkey(L, s->parked, ci);
-		if (st != LUA_OK && st != LUA_YIELD)
+		if (st != LUA_OK)
 			fault(L, co);
+		/* and now it really does read as dead, so a duplicate ring
+		 * entry is dropped rather than counted a second time
+		 */
+		lua_settop(co, 0);
 		return;
 	}
 	if (haskey(L, s->parked, ci))

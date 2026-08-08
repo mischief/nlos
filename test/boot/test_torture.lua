@@ -41,7 +41,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
 
-tap.plan(11)
+tap.plan(12)
 
 tap.ok(sys.set_torture ~= nil, "sys.set_torture is present")
 
@@ -199,6 +199,24 @@ end
 
 tap.is(nfin, NPAR * NKID, "every thread spawned from a thread ran")
 tap.is(thread._n, 0, "and the scheduler's count came back to zero")
+
+-- ---- a thread body that returns something ----
+--
+-- Nothing reads the value, but lua_resume leaves it on the coroutine's
+-- stack, and a finished coroutine holding one is indistinguishable
+-- from an unstarted one by status and stack depth alike. Counting
+-- deaths on that test misses these, so the count never reaches zero
+-- and run() spins forever with nothing runnable. Reaching the line
+-- below at all is the assertion; the tap is the record of it.
+for i = 1, 4 do
+	thread.spawn(function()
+		thread.yield()
+		return i, "and a second value"
+	end)
+end
+thread.run()
+
+tap.is(thread._n, 0, "a thread that returns a value is still counted dead")
 
 -- ---- an allocator a caller wrote ----
 --
