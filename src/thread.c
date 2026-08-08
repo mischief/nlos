@@ -548,6 +548,8 @@ parkon_begin(lua_State *L, struct sched *s, lua_Integer port, int portsi,
 		/* a scalar in the common case: replyport gives every thread
 		 * its own port, so one waiter is normal
 		 */
+		int qbase = lua_gettop(L);
+
 		pushref(L, s->portq);
 		lua_pushinteger(L, port);
 		lua_rawget(L, -2);
@@ -570,7 +572,11 @@ parkon_begin(lua_State *L, struct sched *s, lua_Integer port, int portsi,
 			lua_pushvalue(L, co);
 			lua_rawseti(L, -2, (lua_Integer)lua_rawlen(L, -2) + 1);
 		}
-		lua_pop(L, 2);
+		/* unwound to a mark: the branches above leave different
+		 * depths, and counting pops here took `rec` off the stack
+		 * on the first registration for a port
+		 */
+		lua_settop(L, qbase);
 	} else if (port >= 0 || portsi != 0) {
 		lua_pushboolean(L, 1);
 		setkey(L, s->nonrecv, co);
