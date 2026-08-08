@@ -12,8 +12,8 @@
 -- then ship the damaged rectangle -- and at this size it is also just
 -- faster than a fill per span.
 local sys = require("los.sys")
-local capfb = require("caps.fb")
 local draw = require("draw")
+local memdraw = require("memdraw")
 
 local caps_of = sys.granted()
 
@@ -24,18 +24,18 @@ if not caps_of.fb then
 	end
 end
 
-local fb = capfb.new(caps_of.fb)
+local fb = draw.new(caps_of.fb)
 local mode = fb.mode()
 local W, H = mode.w, mode.h
 
 -- a filled circle as one horizontal span per row. no antialiasing:
--- blending needs an alpha channel, and adding one to draw.lua is a
+-- blending needs an alpha channel, and adding one to memdraw.lua is a
 -- real design rather than a tweak (see its header).
 local function disc(img, cx, cy, rad, color)
 	for dy = -rad, rad do
 		local dx = math.floor(math.sqrt(rad * rad - dy * dy) + 0.5)
 
-		img:fill(draw.rect(cx - dx, cy + dy, dx * 2 + 1, 1), color)
+		img:fill(memdraw.rect(cx - dx, cy + dy, dx * 2 + 1, 1), color)
 	end
 end
 
@@ -55,16 +55,16 @@ local function arc(img, cx, cy, rad, thick, color, from, to)
 				inner = math.floor(
 				    math.sqrt(ir * ir - dy * dy) + 0.5)
 			end
-			img:fill(draw.rect(cx - outer, y, outer - inner, 1),
+			img:fill(memdraw.rect(cx - outer, y, outer - inner, 1),
 			    color)
-			img:fill(draw.rect(cx + inner, y, outer - inner, 1),
+			img:fill(memdraw.rect(cx + inner, y, outer - inner, 1),
 			    color)
 		end
 	end
 end
 
 local size = 320
-local face = draw.image(size, size, 0x101018)
+local face = memdraw.image(size, size, 0x101018)
 local c = size // 2
 local yellow = 0xffcc00
 local dark = 0x101018
@@ -76,9 +76,9 @@ arc(face, c, c - 10, 105, 18, dark, c + 20, size)	-- the smile
 
 print(("drawing a smiley on a %dx%d framebuffer"):format(W, H))
 
-fb.fill(draw.rect(0, 0, W, H), 0x101018)
-fb.load(draw.rect((W - size) // 2, (H - size) // 2, size, size),
-    draw.bytes(face))
+fb.fill(memdraw.rect(0, 0, W, H), 0x101018)
+fb.load(memdraw.rect((W - size) // 2, (H - size) // 2, size, size),
+    memdraw.bytes(face))
 fb.sync()
 
 print("SCREENSHOT READY")

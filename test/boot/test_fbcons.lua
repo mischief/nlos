@@ -9,8 +9,8 @@
 -- the pen is persistent, as on any terminal, so each case starts with
 -- ESC[0m (default pen) ESC[2J (clear) ESC[H (home).
 local sys = require("los.sys")
-local capfb = require("caps.fb")
 local draw = require("draw")
+local memdraw = require("memdraw")
 local fbcons = require("fbcons")
 local font = require("los.font")
 local tap = require("tap")
@@ -26,7 +26,7 @@ end
 
 -- the fb task speaks one protocol; fbcons drives it, and this wraps the
 -- same right for readback. Two holders of one send right is fine.
-local fb = capfb.new(caps_of.fb)
+local fb = draw.new(caps_of.fb)
 local cw, ch = font.size()
 local con = fbcons.new({
 	fb = caps_of.fb, font = font,
@@ -40,13 +40,13 @@ local HOME = "\27[0m\27[2J\27[H"
 
 -- the set of distinct colors in one character cell, read from the panel.
 local function cell(cx, cy)
-	local pix = fb.unload(draw.rect(cx * cw, cy * ch, cw, ch))
-	local img = draw.fromBytes(cw, ch, pix)
+	local pix = fb.unload(memdraw.rect(cx * cw, cy * ch, cw, ch))
+	local img = memdraw.fromBytes(cw, ch, pix)
 	local seen = {}
 
 	for y = 0, ch - 1 do
 		for x = 0, cw - 1 do
-			seen[draw.at(img, x, y)] = true
+			seen[memdraw.at(img, x, y)] = true
 		end
 	end
 	return seen

@@ -19,7 +19,7 @@
 -- is for, and why the palette is a list.
 
 local prog = require("prog")
-local draw = require("draw")
+local memdraw = require("memdraw")
 
 
 local fb = prog.screen()
@@ -84,13 +84,13 @@ local pen = 1
 local SW = 14
 
 local function swatch()
-	fb.fill(draw.rect(W - SW - 2, 2, SW, SW), palette[pen])
-	fb.fill(draw.rect(W - SW - 3, 1, 1, SW + 2), 0x808080)
-	fb.fill(draw.rect(W - SW - 2, 1, SW, 1), 0x808080)
+	fb.fill(memdraw.rect(W - SW - 2, 2, SW, SW), palette[pen])
+	fb.fill(memdraw.rect(W - SW - 3, 1, 1, SW + 2), 0x808080)
+	fb.fill(memdraw.rect(W - SW - 2, 1, SW, 1), 0x808080)
 end
 
 local function clear()
-	fb.fill(draw.rect(0, 0, W, H), 0x000000)
+	fb.fill(memdraw.rect(0, 0, W, H), 0x000000)
 	swatch()
 end
 
@@ -105,7 +105,7 @@ local function dab(x, y, c)
 	local y1 = math.min(H - 1, y + R)
 
 	if x1 >= x0 and y1 >= y0 then
-		fb.fill(draw.rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1), c)
+		fb.fill(memdraw.rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1), c)
 	end
 end
 
@@ -269,4 +269,4 @@ end)
 thread.run()
 
 mouse:close()
-fb.fill(draw.rect(0, 0, W, H), 0x000000)
+fb.fill(memdraw.rect(0, 0, W, H), 0x000000)

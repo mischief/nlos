@@ -19,7 +19,7 @@
 -- machine with no display is an ordinary machine, and this says so and
 -- exits 1.
 local prog = require("prog")
-local draw = require("draw")
+local memdraw = require("memdraw")
 local unistd = require("posix.unistd")
 
 local fb = prog.screen()
@@ -47,13 +47,13 @@ local W, H = mode.w, mode.h
 -- the heap. A face that draws itself in a moment is worth more than a
 -- face that appears at once.
 --
--- No antialiasing: blending needs an alpha channel, which lib/draw.lua
+-- No antialiasing: blending needs an alpha channel, which lib/memdraw.lua
 -- deliberately does not have (see its header).
 local ox, oy		-- where the face sits on the screen
 
 local function span(x, y, w, c)
 	if w > 0 then
-		fb.fill(draw.rect(ox + x, oy + y, w, 1), c)
+		fb.fill(memdraw.rect(ox + x, oy + y, w, 1), c)
 	end
 end
 
@@ -95,7 +95,7 @@ local unit = size / 320		-- the drawing is designed at 320
 ox, oy = (W - size) // 2, (H - size) // 2
 
 local function paint()
-	fb.fill(draw.rect(0, 0, W, H), BG)
+	fb.fill(memdraw.rect(0, 0, W, H), BG)
 	disc(c, c, size // 2 - 4, color)
 	disc(c - math.floor(55 * unit), c - math.floor(45 * unit),
 	    math.floor(22 * unit), BG)
@@ -158,4 +158,4 @@ unistd.read(0, 256)
 -- give the screen back the way we found it. black rather than the
 -- background above, because that is what a text console with nothing on
 -- it looks like.
-fb.fill(draw.rect(0, 0, W, H), 0x000000, true)
+fb.fill(memdraw.rect(0, 0, W, H), 0x000000, true)

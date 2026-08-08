@@ -6,8 +6,8 @@
 -- if all you check is that the call returned -- which is the failure
 -- mode graphics code actually has.
 local sys = require("los.sys")
-local capfb = require("caps.fb")
 local draw = require("draw")
+local memdraw = require("memdraw")
 local tap = require("tap")
 
 local caps_of = sys.granted()
@@ -20,7 +20,7 @@ if not caps_of.fb then
 	return
 end
 
-local fb = capfb.new(caps_of.fb)
+local fb = draw.new(caps_of.fb)
 local mode = fb.mode()
 
 tap.ok(mode ~= nil and mode.w > 0 and mode.h > 0,
@@ -33,59 +33,59 @@ tap.ok(#modes >= 1, "at least one mode is enumerable")
 
 -- ---- fill, then read it back ----
 
-local r = draw.rect(0, 0, 64, 32)
+local r = memdraw.rect(0, 0, 64, 32)
 
-fb.fill(r, draw.red, true)
+fb.fill(r, memdraw.red, true)
 
 local pix = fb.unload(r)
 
 tap.is(#pix, 64 * 32 * 4, "unload returns w*h*4 bytes")
 
-local img = draw.fromBytes(64, 32, pix)
+local img = memdraw.fromBytes(64, 32, pix)
 
-tap.is(draw.at(img, 0, 0), draw.red, "the filled corner really is red")
-tap.is(draw.at(img, 63, 31), draw.red, "and so is the far corner")
+tap.is(memdraw.at(img, 0, 0), memdraw.red, "the filled corner really is red")
+tap.is(memdraw.at(img, 63, 31), memdraw.red, "and so is the far corner")
 
 -- ---- load an image built in lua ----
 --
 -- two quadrants of one 16x16 image, so a wrong stride or a swapped
 -- x/y shows up as the wrong colour rather than as nothing.
 
-local src = draw.image(16, 16, draw.blue)
+local src = memdraw.image(16, 16, memdraw.blue)
 
-src:fill(draw.rect(8, 0, 8, 8), draw.green)
-fb.load(draw.rect(100, 100, 16, 16), draw.bytes(src), true)
+src:fill(memdraw.rect(8, 0, 8, 8), memdraw.green)
+fb.load(memdraw.rect(100, 100, 16, 16), memdraw.bytes(src), true)
 
-local back = draw.fromBytes(16, 16, fb.unload(draw.rect(100, 100, 16, 16)))
+local back = memdraw.fromBytes(16, 16, fb.unload(memdraw.rect(100, 100, 16, 16)))
 
-tap.is(draw.at(back, 0, 0), draw.blue, "loaded image: left is blue")
-tap.is(draw.at(back, 12, 4), draw.green, "loaded image: top right is green")
-tap.is(draw.at(back, 12, 12), draw.blue, "loaded image: bottom right is blue")
+tap.is(memdraw.at(back, 0, 0), memdraw.blue, "loaded image: left is blue")
+tap.is(memdraw.at(back, 12, 4), memdraw.green, "loaded image: top right is green")
+tap.is(memdraw.at(back, 12, 12), memdraw.blue, "loaded image: bottom right is blue")
 
 -- ---- a load bigger than one message ----
 --
 -- the regression test for the bug that drew a smiley as a yellow arc.
 -- 320 wide is 1280 bytes a row, so ~50 rows per band and this goes out
 -- as several -- and MAXQUEUE is the same 64KiB as MAXMSG, so at most
--- one of them is in flight. before capfb applied backpressure, every
+-- one of them is in flight. before draw applied backpressure, every
 -- band after the first was dropped by a full queue and sys.send's
 -- return said so to nobody.
 --
 -- checking the LAST row is the whole point: the first band always
 -- worked, so anything that only samples the top of the rectangle passes
 -- while the picture is visibly wrong.
-local tall = draw.image(320, 320, draw.blue)
+local tall = memdraw.image(320, 320, memdraw.blue)
 
-tall:fill(draw.rect(0, 319, 320, 1), draw.green)
-tall:fill(draw.rect(0, 160, 320, 1), draw.red)
+tall:fill(memdraw.rect(0, 319, 320, 1), memdraw.green)
+tall:fill(memdraw.rect(0, 160, 320, 1), memdraw.red)
 
-fb.load(draw.rect(0, 0, 320, 320), draw.bytes(tall), true)
+fb.load(memdraw.rect(0, 0, 320, 320), memdraw.bytes(tall), true)
 
-local got = draw.fromBytes(320, 320, fb.unload(draw.rect(0, 0, 320, 320)))
+local got = memdraw.fromBytes(320, 320, fb.unload(memdraw.rect(0, 0, 320, 320)))
 
-tap.is(draw.at(got, 160, 0), draw.blue, "banded load: first row survives")
-tap.is(draw.at(got, 160, 160), draw.red, "banded load: a middle row survives")
-tap.is(draw.at(got, 160, 319), draw.green, "banded load: the LAST row survives")
+tap.is(memdraw.at(got, 160, 0), memdraw.blue, "banded load: first row survives")
+tap.is(memdraw.at(got, 160, 160), memdraw.red, "banded load: a middle row survives")
+tap.is(memdraw.at(got, 160, 319), memdraw.green, "banded load: the LAST row survives")
 
 -- ---- a row wider than a message ----
 --
@@ -99,18 +99,18 @@ tap.is(draw.at(got, 160, 319), draw.green, "banded load: the LAST row survives")
 -- chunk/bpl comes out zero. we cannot reach it with a real mode, and
 -- the code is there so that a machine with a 16k-wide framebuffer --
 -- or a smaller MAXMSG -- does not meet an error instead.)
-local wide = draw.image(mode.w, 24, draw.blue)
+local wide = memdraw.image(mode.w, 24, memdraw.blue)
 
-wide:fill(draw.rect(mode.w - 1, 23, 1, 1), draw.green)
-wide:fill(draw.rect(0, 23, 1, 1), draw.red)
+wide:fill(memdraw.rect(mode.w - 1, 23, 1, 1), memdraw.green)
+wide:fill(memdraw.rect(0, 23, 1, 1), memdraw.red)
 
-fb.load(draw.rect(0, 200, mode.w, 24), draw.bytes(wide), true)
+fb.load(memdraw.rect(0, 200, mode.w, 24), memdraw.bytes(wide), true)
 
-local wback = draw.fromBytes(mode.w, 24,
-    fb.unload(draw.rect(0, 200, mode.w, 24)))
+local wback = memdraw.fromBytes(mode.w, 24,
+    fb.unload(memdraw.rect(0, 200, mode.w, 24)))
 
-tap.is(draw.at(wback, 0, 23), draw.red, "full-width load: last row, left edge")
-tap.is(draw.at(wback, mode.w - 1, 23), draw.green,
+tap.is(memdraw.at(wback, 0, 23), memdraw.red, "full-width load: last row, left edge")
+tap.is(memdraw.at(wback, mode.w - 1, 23), memdraw.green,
     "full-width load: last row, right edge")
 
 -- ---- refusals ----
@@ -119,12 +119,12 @@ tap.is(draw.at(wback, mode.w - 1, 23), draw.green,
 -- decide what to do with it, and a short buffer must be caught before
 -- the firmware reads past its end.
 
-local ok, err = fb.load(draw.rect(0, 0, 4, 4), "short", true)
+local ok, err = fb.load(memdraw.rect(0, 0, 4, 4), "short", true)
 
 tap.ok(not ok and tostring(err):find("bytes"),
     "a short pixel buffer is refused: " .. tostring(err))
 
-ok, err = fb.fill(draw.rect(mode.w, mode.h, 8, 8), draw.white, true)
+ok, err = fb.fill(memdraw.rect(mode.w, mode.h, 8, 8), memdraw.white, true)
 tap.ok(not ok and tostring(err):find("off a"),
     "a rectangle off the screen is refused: " .. tostring(err))
 

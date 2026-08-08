@@ -205,7 +205,7 @@ set(EMBED_FILES
     lib/caps/rpc.lua
     lib/caps/tcp.lua
     lib/caps/udp.lua
-    lib/caps/fb.lua
+    lib/draw.lua
     lib/caps/dns.lua
     lib/caps/tty.lua
     lib/caps/power.lua

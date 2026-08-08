@@ -756,7 +756,7 @@ function M.screen()
 	if not ctx or not ctx.fb then
 		return nil
 	end
-	return require("caps.fb").new(ctx.fb)
+	return require("draw").new(ctx.fb)
 end
 
 -- whether the launcher gave this program an input stream at all, which

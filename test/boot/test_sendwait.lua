@@ -8,13 +8,13 @@
 -- that did arrive are all correct. That is how six of a smiley's seven
 -- bands went missing and came back as a tidy yellow arc.
 --
--- sendwait is the shared answer, used by capfb's put and by the
+-- sendwait is the shared answer, used by draw's put and by the
 -- requester() every other capability wrapper is built on.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")
-local capfb = require("caps.fb")
+local draw = require("draw")
 local sendwait = require("caps.rpc").sendwait
 
 tap.plan(8)

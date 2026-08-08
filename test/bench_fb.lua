@@ -18,8 +18,8 @@
 -- bench_ipc: 1ms granularity cannot see a 20% change on a 20ms
 -- measurement, which is the size of change worth acting on.
 local sys = require("los.sys")
-local capfb = require("caps.fb")
 local draw = require("draw")
+local memdraw = require("memdraw")
 
 print("1..1")
 
@@ -32,7 +32,7 @@ if not caps_of.fb then
 end
 
 local CPMS = sys.stats().cycles_per_ms
-local fb = capfb.new(caps_of.fb)
+local fb = draw.new(caps_of.fb)
 local mode = fb.mode()
 
 -- best of three: the firmware is not a quiet neighbour and one slow lap
@@ -65,50 +65,50 @@ local img
 print(("# --- one %dx%d image (%d KiB of pixels) ---"):format(W, H,
     W * H * 4 // 1024))
 
-print(("# make (draw.image, one fill per row): %d ms"):format(ms(function()
-	img = draw.image(W, H, 0x202030)
+print(("# make (memdraw.image, one fill per row): %d ms"):format(ms(function()
+	img = memdraw.image(W, H, 0x202030)
 	for y = 0, H - 1 do
-		img:fill(draw.rect(0, y, W, 1), (y * 0x10101) & 0xffffff)
+		img:fill(memdraw.rect(0, y, W, 1), (y * 0x10101) & 0xffffff)
 	end
 end)))
 
 local bytes
 
-print(("# flatten (draw.bytes):                %d ms"):format(ms(function()
-	bytes = draw.bytes(img)
+print(("# flatten (memdraw.bytes):                %d ms"):format(ms(function()
+	bytes = memdraw.bytes(img)
 end)))
 
 print(("# send + blt (banded load, waited):    %d ms"):format(ms(function()
-	fb.load(draw.rect(0, 0, W, H), bytes, true)
+	fb.load(memdraw.rect(0, 0, W, H), bytes, true)
 end)))
 
 -- fill is the same rectangle with no pixels crossing the boundary at
 -- all, so the gap between it and the line above is what the copy costs.
 print(("# fill, same rectangle, no pixels:     %d ms"):format(ms(function()
-	fb.fill(draw.rect(0, 0, W, H), 0x202030, true)
+	fb.fill(memdraw.rect(0, 0, W, H), 0x202030, true)
 end)))
 
 print(("# unload, same rectangle:              %d ms"):format(ms(function()
-	fb.unload(draw.rect(0, 0, W, H))
+	fb.unload(memdraw.rect(0, 0, W, H))
 end)))
 
 print("#")
 print("# --- whole screen ---")
 
 print(("# fill (one firmware call):            %d ms"):format(ms(function()
-	fb.fill(draw.rect(0, 0, mode.w, mode.h), 0x000020, true)
+	fb.fill(memdraw.rect(0, 0, mode.w, mode.h), 0x000020, true)
 end)))
 
-local screen = draw.image(mode.w, 64, 0x304050)
-local sbytes = draw.bytes(screen)
+local screen = memdraw.image(mode.w, 64, 0x304050)
+local sbytes = memdraw.bytes(screen)
 
 print(("# load one %dx64 band:                %d ms"):format(mode.w,
     ms(function()
-	fb.load(draw.rect(0, 0, mode.w, 64), sbytes, true)
+	fb.load(memdraw.rect(0, 0, mode.w, 64), sbytes, true)
 end)))
 
 print(("# scroll that band (video to video):   %d ms"):format(ms(function()
-	fb.scroll(draw.rect(0, 0, mode.w, 64), draw.pt(0, 100), true)
+	fb.scroll(memdraw.rect(0, 0, mode.w, 64), memdraw.pt(0, 100), true)
 end)))
 
 print("#")

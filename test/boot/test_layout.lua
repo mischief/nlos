@@ -29,9 +29,9 @@ local tap = require("tap")
 -- the namespace: this asserts what SHOULD be there, so a file silently
 -- dropped from meson's payload fails here instead of at 3am.
 local libs = {
-	"caps.rpc", "caps.tcp", "caps.udp", "caps.fb", "caps.dns",
+	"caps.rpc", "caps.tcp", "caps.udp", "caps.dns",
 	"caps.tty", "caps.power", "caps.wire",
-	"chan", "dev", "dhcp", "dos", "draw", "espfs", "http",
+	"chan", "dev", "dhcp", "dos", "draw", "memdraw", "espfs", "http",
 	"json", "log", "mnt", "ninep", "ns", "nsio", "p9fs", "p9tcp",
 	"proc", "procfs", "prog", "ps", "srv", "srvc", "srvfs", "stdout",
 	"svc", "tap", "webterm",
