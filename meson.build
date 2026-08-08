@@ -229,6 +229,7 @@ else
     'lib/mnt.lua',
     'lib/ns.lua',
     'lib/lazy.lua',
+    'lib/devtree.lua',
     'lib/chan.lua',
     'lib/p9fs.lua',
     'lib/p9tcp.lua',
@@ -581,6 +582,7 @@ lua_payload = files(
   'lib/console.lua',
   'lib/fbcons.lua',
   'lib/lazy.lua',
+  'lib/devtree.lua',
   'lib/chan.lua',
   'lib/dev.lua',
   # the block device and the gefs filesystem over it. blksrv is spawned

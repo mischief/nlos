@@ -157,6 +157,7 @@ set(EMBED_FILES
     # device wrapper over a seekable handle, which is what lib/fat
     # opens the volume on -- none of the rest of gefs comes with it.
     lib/lazy.lua
+    lib/devtree.lua
     lib/fat.lua
     lib/fat/obj.lua
     lib/fat/dat.lua
