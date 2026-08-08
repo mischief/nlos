@@ -7,6 +7,14 @@
 
 #include <stddef.h>
 
+/* the largest message a port carries, and the most payload one port
+ * queues before a send is refused. Here rather than in kernel.c because
+ * they are ABI: sys.MAXMSG and sys.MAXQUEUE publish them to lua, and C
+ * that sizes a buffer against a message reads them too.
+ */
+#define MAXMSG		(64 * 1024)
+#define MAXQUEUE	(64 * 1024)
+
 /* the TSC epoch and rate. must run before anything measures a duration
  * or logs a line; efi_main calls it first. costs 100ms of BS->Stall.
  */

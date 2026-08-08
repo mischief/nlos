@@ -75,7 +75,6 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
  * value -- see calibrate_reductions().
  */
 #define REDUCTIONS	25000
-#define MAXMSG		(64 * 1024)
 #define MAXDEPTH	16
 /* rights per message.
  *
@@ -130,8 +129,9 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
  * blocking, which needs a new blocked-on-write proc state and a wakeup
  * when the queue drains. a writer outrunning its reader gets an error,
  * which is at least a real signal rather than silent growth.
+ *
+ * The limit itself is in kernel.h, with MAXMSG.
  */
-#define MAXQUEUE	(64 * 1024)
 /* fair-share averaging window. plan 9 uses schedgain=30 SECONDS, which
  * suits long-lived unix-ish processes; ours are short and interactive.
  *
