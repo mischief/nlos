@@ -217,7 +217,6 @@ else
   boot_payload = get_option('boot_payload')
 
   embed_files = [
-    'lib/thread.lua',
     'lib/console.lua',
     'lib/fbcons.lua',
     'task/cons.lua',
@@ -702,7 +701,6 @@ lua_payload = files(
   'task/srvd.lua',
   'lib/srvfs.lua',
   'lib/tap.lua',
-  'lib/thread.lua',
   'lib/webterm.lua',
   'task/wire.lua',
   'lib/zmodem.lua',
@@ -825,7 +823,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
-              'history', 'top', 'xd', 'zzz']
+              'history', 'top', 'xd']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

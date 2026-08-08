@@ -32,7 +32,7 @@ local libs = {
 	"caps", "chan", "dev", "dhcp", "dos", "draw", "espfs", "http",
 	"json", "log", "mnt", "ninep", "ns", "nsio", "p9fs", "p9tcp",
 	"proc", "procfs", "prog", "ps", "srv", "srvc", "srvfs", "stdout",
-	"svc", "tap", "thread", "webterm",
+	"svc", "tap", "webterm",
 	"crypto.util", "crypto.hashstate", "crypto.sha256", "crypto.sha512",
 	"crypto.drbg", "crypto.field25519", "crypto.x25519", "crypto.ed25519",
 	"crypto.keccak", "crypto.mlkem768",

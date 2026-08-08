@@ -79,47 +79,27 @@ local r = sys.trace(pid)
 sys.set_trace(pid, 0)
 tap.ok(#r > 0, "the server was traced (" .. #r .. " lines)")
 
--- readyall is the tell: it iterates thread._parked waking everything,
--- so its loop body runs once per parked thread per delivery. find the
--- line rather than hardcoding it, since this file should not have to be
--- edited every time lib/thread.lua moves.
-local readyall_line, in_readyall
-local f = io.open("/lib/thread.lua")
-local n = 0
-
-if f then
-	for l in f:lines() do
-		n = n + 1
-		if l:find("^local function readyall") then
-			in_readyall = true
-		elseif in_readyall and l:find("thread%._ready%(co%)") then
-			readyall_line = n
-			in_readyall = false
-		end
-	end
-	f:close()
-end
-
-tap.ok(readyall_line ~= nil, "found readyall's wake line in lib/thread.lua")
-
-local herd, sched = 0, 0
+-- the scheduler is C and runs no lua lines, so the resumes are counted
+-- where they land: every woken thread runs the two lines of its own
+-- loop before it parks again. a herd resumes NTHREAD threads per
+-- message and the directed wakeup resumes about one.
+local herd = 0
 
 for _, e in ipairs(r) do
-	if e.source:find("thread%.lua") then
-		sched = sched + 1
-		if e.line == readyall_line then herd = herd + 1 end
+	if e.source:find("herd") then
+		herd = herd + 1
 	end
 end
 
-tap.diag(("%d lines, %d in the scheduler, %d readyall wakes"):format(
-    #r, sched, herd))
+tap.ok(herd > 0, ("the woken threads were traced (%d lines)"):format(herd))
 
--- stated as a ratio on purpose. the herd wakes NTHREAD threads per
--- message; the directed wakeup wakes about one. the two are far enough
--- apart that this threshold does not have to be delicate.
-tap.ok(herd < NMSG * NTHREAD / 2,
-    ("no thundering herd: %d readyall wakes, the herd would be ~%d")
-    :format(herd, NMSG * NTHREAD))
+tap.diag(("%d lines, %d in the thread bodies"):format(#r, herd))
+
+-- stated as a ratio on purpose. the two are far enough apart that this
+-- threshold does not have to be delicate.
+tap.ok(herd < NMSG * NTHREAD,
+    ("no thundering herd: %d resumed lines, the herd would be ~%d")
+    :format(herd, NMSG * NTHREAD * 2))
 
 for i = 1, NTHREAD do sys.close(ports[i]) end
 sys.close(done)

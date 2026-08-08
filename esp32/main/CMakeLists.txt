@@ -107,8 +107,8 @@ set(LUAOS_PAYLOAD "${LUAOS_ROOT}/boot/esp32.lua"
 #
 # Three things pin a file here.
 #
-# The bootstrap itself: lib/thread.lua (the C preload reads it by path),
-# console + power, and the chain that mounts the flash -- dev, srv,
+# The bootstrap itself: console + power, and the chain that mounts the
+# flash -- dev, srv,
 # blkfs, blksrv, lib/fat, fatfs, fatsrv. None of these can come off the
 # volume they are what opens.
 #
@@ -127,7 +127,6 @@ set(LUAOS_PAYLOAD "${LUAOS_ROOT}/boot/esp32.lua"
 # tap and sync are here for the boot tests: a test payload replaces
 # init and runs under qemu with no partition flashed at all.
 set(EMBED_FILES
-    lib/thread.lua
     lib/stdout.lua
     lib/log.lua
     lib/console.lua

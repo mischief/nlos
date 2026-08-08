@@ -5,7 +5,7 @@
  */
 
 #include <stddef.h>
-#include <stdio.h>
+#include <string.h>
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -31,6 +31,7 @@ enum {
 	K_ALTRECV = 1,
 	K_ALTBLOCK,
 	K_PARK,
+	K_YIELD,
 };
 
 /* Scheduler state for one proc.
@@ -666,7 +667,7 @@ resume_one(lua_State *L, struct sched *s, int ci)
 	lua_pushvalue(L, ci);
 	lua_rawseti(L, LUA_REGISTRYINDEX, s->current);
 	st = lua_resume(co, L, 0, &nres);
-	lua_pushnil(L);
+	lua_pushboolean(L, 0);
 	lua_rawseti(L, LUA_REGISTRYINDEX, s->current);
 
 	if (isdead(co)) {
@@ -875,7 +876,7 @@ run_loop(lua_State *L)
 		drain_wake(L, s);
 
 		pushref(L, s->inplace);
-		inplace = !lua_isnil(L, -1);
+		inplace = lua_toboolean(L, -1);
 		lua_pop(L, 1);
 
 		/* a thread resuming in place counts as runnable: it gets
@@ -888,24 +889,34 @@ run_loop(lua_State *L)
 
 		/* the thread the hook cut goes first, and keeps going */
 		pushref(L, s->inplace);
-		if (lua_isnil(L, -1)) {
+		if (!lua_toboolean(L, -1)) {
 			lua_pop(L, 1);
 			if (!pop(L, s)) {
 				lua_pop(L, 1);
 				goto blocked;
 			}
 		}
-		lua_pushnil(L);
+		lua_pushboolean(L, 0);
 		lua_rawseti(L, LUA_REGISTRYINDEX, s->inplace);
 		resume_one(L, s, -1);
 		lua_pop(L, 1);
+
+		/* The count hook cut that thread, and this loop is C: no
+		 * lua instruction of ours will trip the armed hook, so the
+		 * proc has to give the kernel its turn by hand. Once per
+		 * cut, then the thread carries on where it stopped.
+		 */
+		pushref(L, s->inplace);
+		inplace = lua_toboolean(L, -1);
+		lua_pop(L, 1);
+		if (inplace)
+			lua_yieldk(L, 0, K_YIELD, run_k);
 		continue;
 
 blocked:
 		if (gatherports(L, s) == 0)
 			return luaL_error(L,
-			    "deadlock: all threads parked on channels (n=%d parked=%d)",
-			    s->nthreads, tablehasany(L, s->parked));
+			    "deadlock: all threads parked on channels");
 		if (!tablehasany(L, s->nonrecv)) {
 			/* every waiter is a plain recv(): take the message
 			 * here and hand it over, with no wake to go looking
@@ -962,6 +973,22 @@ l_ready(lua_State *L)
 	return 0;
 }
 
+/* __index for the module table: thread._n is the live thread count,
+ * which is scheduler state and not a field.
+ */
+static int
+l_index(lua_State *L)
+{
+	const char *k = lua_tostring(L, 2);
+
+	if (k != NULL && strcmp(k, "_n") == 0) {
+		lua_pushinteger(L, getsched(L)->nthreads);
+		return 1;
+	}
+	lua_pushnil(L);
+	return 1;
+}
+
 /* thread.inthread() -> true while a thread is running. */
 static int
 l_inthread(lua_State *L)
@@ -969,7 +996,7 @@ l_inthread(lua_State *L)
 	struct sched *s = getsched(L);
 
 	pushref(L, s->current);
-	if (lua_isnil(L, -1)) {
+	if (!lua_toboolean(L, -1)) {
 		lua_pushboolean(L, 0);
 		return 1;
 	}
@@ -1592,7 +1619,7 @@ alt_body(lua_State *L)
 			return nres;
 
 		pushref(L, s->current);
-		inth = !lua_isnil(L, -1);
+		inth = lua_toboolean(L, -1);
 		if (inth) {
 			lua_pushthread(L);
 			inth = lua_rawequal(L, -1, -2);
@@ -1678,7 +1705,7 @@ running_is_current(lua_State *L, struct sched *s)
 	int yes;
 
 	pushref(L, s->current);
-	if (lua_isnil(L, -1)) {
+	if (!lua_toboolean(L, -1)) {
 		lua_pop(L, 1);
 		return 0;
 	}
@@ -1989,7 +2016,7 @@ l_selfright(lua_State *L)
 	struct sched *s = getsched(L);
 
 	pushref(L, s->selfsend);
-	if (!lua_isnil(L, -1))
+	if (lua_toboolean(L, -1))
 		return 1;
 	lua_pop(L, 1);
 
@@ -2455,19 +2482,17 @@ newreftable(lua_State *L)
 	return luaL_ref(L, LUA_REGISTRYINDEX);
 }
 
-/* A ref that starts empty. luaL_ref on nil hands back LUA_REFNIL and no
- * slot at all, so the slot is claimed with a value and emptied after.
+/* A ref for a slot that is sometimes empty.
+ *
+ * Empty is false, not nil: luaL_ref refuses nil outright, and a slot
+ * nilled afterwards shortens the registry's border, so the next
+ * luaL_ref hands the same number out twice.
  */
 static int
 newrefslot(lua_State *L)
 {
-	int ref;
-
 	lua_pushboolean(L, 0);
-	ref = luaL_ref(L, LUA_REGISTRYINDEX);
-	lua_pushnil(L);
-	lua_rawseti(L, LUA_REGISTRYINDEX, ref);
-	return ref;
+	return luaL_ref(L, LUA_REGISTRYINDEX);
 }
 
 /* Keep a ref to sys[name]. */
@@ -2558,7 +2583,7 @@ luaopen_los_thread(lua_State *L)
 	s->call = sysref(L, sysidx, "call");
 	lua_getfield(L, sysidx, "SELF");
 	s->selfport = luaL_ref(L, LUA_REGISTRYINDEX);
-	lua_pop(L, 1);
+	lua_settop(L, sysidx - 1);	/* done with sys */
 
 	luaL_newmetatable(L, CHANMT);
 	mt = lua_gettop(L);
@@ -2573,5 +2598,12 @@ luaopen_los_thread(lua_State *L)
 	luaL_setfuncs(L, threadlib, 1);
 	lua_pushvalue(L, mt);
 	lua_setfield(L, -2, "Channel");
+
+	/* thread._n, the live thread count, is state rather than a field */
+	lua_createtable(L, 0, 1);
+	lua_pushvalue(L, ud);
+	lua_pushcclosure(L, l_index, 1);
+	lua_setfield(L, -2, "__index");
+	lua_setmetatable(L, -2);
 	return 1;
 }

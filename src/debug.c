@@ -140,7 +140,11 @@ walk_table(lua_State *T, struct walk *w, int depth)
 	}
 }
 
-/* Collect coroutines reachable from the target's globals. */
+/* Collect coroutines reachable from the target's globals and registry.
+ *
+ * The registry is a root of its own: src/thread.c holds the run ring
+ * and the park table as registry refs, which no path from _G reaches.
+ */
 static void
 collect(lua_State *T, struct walk *w)
 {
@@ -152,7 +156,10 @@ collect(lua_State *T, struct walk *w)
 	lua_rawgeti(T, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS);
 	if (lua_type(T, -1) == LUA_TTABLE)
 		walk_table(T, w, 0);
+	lua_settop(T, top);
 
+	lua_pushvalue(T, LUA_REGISTRYINDEX);
+	walk_table(T, w, 0);
 	lua_settop(T, top);
 }
 

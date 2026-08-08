@@ -63,7 +63,7 @@ local stack = N:readfile("/proc/" .. pid .. "/stack")
 
 tap.ok(stack:find("in inner") ~= nil,
     "stack shows the lua frame it is wedged in")
-tap.ok(stack:find("thread.lua") ~= nil, "and the frames below it")
+tap.ok(stack:find("(main)", 1, true) ~= nil, "and the frames below it")
 
 local mem = N:readfile("/proc/" .. pid .. "/mem")
 

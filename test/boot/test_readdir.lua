@@ -29,11 +29,11 @@ tap.ok(byname["init.lua"] and byname["init.lua"].size > 0,
 local lib = fs.readdir("/lib")
 local found = 0
 for _, e in ipairs(lib or {}) do
-	if e.name == "thread.lua" or e.name == "ninep.lua" then
+	if e.name == "srv.lua" or e.name == "ninep.lua" then
 		found = found + 1
 	end
 end
-tap.ok(found == 2, "readdir /lib finds thread.lua and ninep.lua")
+tap.ok(found == 2, "readdir /lib finds srv.lua and ninep.lua")
 
 -- ---- stat agrees with readdir ----
 local st = fs.stat("/init.lua")
