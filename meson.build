@@ -805,7 +805,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'font', 'fb', 'fbprog', 'fbcons',
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill',
               'replyright', 'rightsundo', 'procpriv', 'portlimit', 'trace',
-              'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem',
+              'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd']
