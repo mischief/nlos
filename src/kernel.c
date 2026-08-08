@@ -4471,14 +4471,6 @@ api_meminfo(lua_State *L)
 	return 4;
 }
 
-/* sys.reclaim() -> bytes. Hand back what the lua heap is holding but not
- * using: whole chunks nothing sits in, and the large-block cache.
- *
- * Ungated, like sys.stats: it frees memory and reveals nothing. The heap
- * does this for itself when a proc exits or when the chunk source says
- * no, which covers a machine that keeps running programs. A machine that
- * ran one and went quiet holds the peak until something asks.
- */
 static size_t
 heap_release_all(void)
 {
@@ -4492,6 +4484,10 @@ heap_release_all(void)
 	return freed;
 }
 
+/* sys.reclaim() -> bytes. Hand back what the lua heap holds and is not
+ * using: whole chunks nothing sits in, and the large-block cache.
+ * Ungated, like sys.stats: it frees memory and reveals nothing.
+ */
 static int
 api_reclaim(lua_State *L)
 {
@@ -8901,10 +8897,8 @@ run_proc(struct kproc *p)
 #define TICK_IDLE_THRESHOLD 25		/* consecutive empty polls before backing off */
 
 /* consecutive laps with nothing dispatched before the heap is swept.
- * Well past the gap between two messages of one exchange, so a machine
- * doing work is never swept mid-exchange; short enough that a prompt
- * left alone gives its memory back rather than holding it until the
- * next program needs it and cannot have it.
+ * Well past the gap between two messages of one exchange, so work is
+ * never swept through.
  */
 #define QUIET_SWEEP_LAPS 100
 
@@ -9285,24 +9279,11 @@ kernel_run(void)
 		 */
 		ran = dispatch_lap(me);
 
-		/* a machine that has gone quiet gives its heap back.
-		 *
-		 * Most of what the lua heap holds and is not using is the
-		 * large-block cache, kept against the next request of the
-		 * same size. Nothing else empties it until a proc exits or
-		 * the chunk source refuses an allocation -- so a machine
-		 * that ran one program and stopped sits on that program's
-		 * peak, which on a board is the difference between having
-		 * room for the next one and not.
-		 *
-		 * Once per quiet spell, not once per idle lap: the sweep
-		 * walks the free lists against the chunks, and running it
-		 * again with nothing having happened in between finds
-		 * nothing twice. Any dispatch at all arms it afresh.
-		 *
-		 * Nothing lua runs here. The sweep touches the allocator
-		 * only, so unlike gc_step it needs no safe point and can
-		 * run no finalizer.
+		/* a quiet machine gives its heap back: the large-block
+		 * cache is held against a next request that is not coming.
+		 * Once per spell, since the sweep walks the free lists and
+		 * would find nothing twice. No lua runs here, so unlike
+		 * gc_step this needs no safe point.
 		 */
 		if (ran) {
 			quiet_laps = 0;

@@ -371,11 +371,9 @@ function Console:pump()
 			-- input: a program being interrupted should not
 			-- also read the character that interrupted it.
 			sys.send(self.intr, { op = "interrupt" })
-			-- the console is usually inside a read on behalf
-			-- of the program being killed, and a dead program
-			-- never types the line that would end it. End the
-			-- read here, so the notice of its death is served
-			-- rather than deferred until the next keystroke.
+			-- the console is usually inside a read for the
+			-- program being killed, and a dead program never
+			-- types the line that would end it.
 			sys.send(thread.selfright(), { op = "abort" })
 		elseif c ~= nil then
 			sys.send(self.inq, c)
