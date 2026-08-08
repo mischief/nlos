@@ -4479,19 +4479,23 @@ api_meminfo(lua_State *L)
  * no, which covers a machine that keeps running programs. A machine that
  * ran one and went quiet holds the peak until something asks.
  */
-static int
-api_reclaim(lua_State *L)
+static size_t
+heap_release_all(void)
 {
 	size_t freed = 0;
 
-	if (shared_heap) {
-		freed = luaheap_release(shared_heap);
-	} else {
-		for (int i = 0; i < prochigh; i++)
-			if (procv[i] && procv[i]->heap)
-				freed += luaheap_release(procv[i]->heap);
-	}
-	lua_pushinteger(L, (lua_Integer)freed);
+	if (shared_heap)
+		return luaheap_release(shared_heap);
+	for (int i = 0; i < prochigh; i++)
+		if (procv[i] && procv[i]->heap)
+			freed += luaheap_release(procv[i]->heap);
+	return freed;
+}
+
+static int
+api_reclaim(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)heap_release_all());
 	return 1;
 }
 
@@ -8896,6 +8900,14 @@ run_proc(struct kproc *p)
 #define TICK_SLOW_100NS  150000		/* 15ms, honoured accurately */
 #define TICK_IDLE_THRESHOLD 25		/* consecutive empty polls before backing off */
 
+/* consecutive laps with nothing dispatched before the heap is swept.
+ * Well past the gap between two messages of one exchange, so a machine
+ * doing work is never swept mid-exchange; short enough that a prompt
+ * left alone gives its memory back rather than holding it until the
+ * next program needs it and cannot have it.
+ */
+#define QUIET_SWEEP_LAPS 100
+
 /* the watchdog window, and how often the lap pushes it back. Four pets
  * per window, so three consecutive misses are needed for a reset.
  */
@@ -9144,6 +9156,7 @@ kernel_run(void)
 	UINTN index;
 	int idle_polls = 0;
 	int tick_slow = 0;
+	int quiet_laps = 0, swept = 0;
 	unsigned long long last_watchdog_ms = 0;
 
 	/* periodic timer: idle becomes a real firmware sleep (hlt)
@@ -9271,6 +9284,33 @@ kernel_run(void)
 		 * and nothing scans.
 		 */
 		ran = dispatch_lap(me);
+
+		/* a machine that has gone quiet gives its heap back.
+		 *
+		 * Most of what the lua heap holds and is not using is the
+		 * large-block cache, kept against the next request of the
+		 * same size. Nothing else empties it until a proc exits or
+		 * the chunk source refuses an allocation -- so a machine
+		 * that ran one program and stopped sits on that program's
+		 * peak, which on a board is the difference between having
+		 * room for the next one and not.
+		 *
+		 * Once per quiet spell, not once per idle lap: the sweep
+		 * walks the free lists against the chunks, and running it
+		 * again with nothing having happened in between finds
+		 * nothing twice. Any dispatch at all arms it afresh.
+		 *
+		 * Nothing lua runs here. The sweep touches the allocator
+		 * only, so unlike gc_step it needs no safe point and can
+		 * run no finalizer.
+		 */
+		if (ran) {
+			quiet_laps = 0;
+			swept = 0;
+		} else if (!swept && ++quiet_laps >= QUIET_SWEEP_LAPS) {
+			swept = 1;
+			heap_release_all();
+		}
 
 		if (!ran) {
 			/* everyone blocked: sleep until a key, a frame, or
