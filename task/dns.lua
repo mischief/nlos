@@ -21,29 +21,26 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local caps = require("caps")
 local dnsmsg = require("dns")
-local ns = require("ns")
 
-
--- the resolver comes from the LEASE, by reading a file: lib/dhcpd.lua
--- serves /net/dns, one address per line, and this proc has /net in the
--- namespace it was spawned with. so option 6 arrives with no right to
--- dhcpd, no message protocol and nothing told to us at spawn time --
--- which is the whole argument for the lease being a filesystem.
+-- the resolver comes from the lease, asked for rather than mounted:
+-- task/dhcpd.lua answers {op="get", name="dns"} with what /net/dns
+-- holds. Reading the file instead meant adopting a namespace, and the
+-- mount stack cost more than this whole proc.
 --
 -- the fallback is qemu slirp's fixed .3 (a slirp convention), for the
--- case where there is no /net at all: no NIC, or dhcpd never started.
--- it is a fallback rather than the default, which is the difference from
--- how this used to work.
+-- case where there is no lease at all: no NIC, or dhcpd never started.
 local FALLBACK = { 10, 0, 2, 3 }
 local RESOLVER_PORT = dnsmsg.PORT
 
--- re-read rather than cached, because a renewal can change it and
--- because /net may not have a lease yet when the first query arrives.
--- one namespace read per resolve is nothing next to a udp round trip.
+local dhcpd = nil		-- a right, where this machine has one
+
+-- re-asked rather than cached, because a renewal can change it and
+-- because there may be no lease yet when the first query arrives. One
+-- round trip is nothing next to the udp one it precedes.
 local function resolver()
-	local N = ns.current()
-	local txt = N and N:readfile("/net/dns")
-	local first = txt and txt:match("^%s*([%d%.]+)")
+	local txt = dhcpd and thread.rpc(dhcpd, { op = "get", name = "dns" })
+	local first = type(txt) == "table" and txt.data and
+	    txt.data:match("^%s*([%d%.]+)")
 
 	if first then
 		local a, b, c, d =
@@ -83,6 +80,7 @@ local udph = type(a) == "table" and
 if not udph then
 	udph = thread.recv(sys.SELF).udp.__right
 end
+dhcpd = type(a) == "table" and a.dhcpd and a.dhcpd.__right or nil
 
 local udp = caps.udp(udph)
 

@@ -315,6 +315,10 @@ local function newstate(backend, opts)
 		-- serve(backend, port) is what a server wants and only srv
 		-- itself makes the other kind
 		establish = not opts or opts.establish ~= false,
+		-- opts.other(m, reply) -> handled. A server may answer ops
+		-- that are not file ops on the same port; it owns the reply
+		-- right if it takes the message.
+		other = opts and opts.other,
 	}
 
 	function S.put(h)
@@ -352,6 +356,9 @@ local function dispatch(S, m)
 		fn = nil
 	end
 	if not fn then
+		if S.other and S.other(m, reply) then
+			return
+		end
 		if reply then
 			sys.send(reply, { err = dev.Enotimpl, seq = m.seq })
 			sys.close(reply)

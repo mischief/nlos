@@ -403,6 +403,22 @@ end
 -- tree has to answer while a renewal is parked on its timer, and a
 -- renewal has to proceed while nobody is reading.
 thread.spawn(function()
-	srv.serve(backend(), sys.SELF)
+	-- {op="get", name="dns"} -> the same text /net/dns holds.
+	--
+	-- For a client that wants one line of the lease and nothing else:
+	-- task/dns.lua read it through a mount, and the namespace that
+	-- took cost more than the resolver it was after.
+	srv.serve(backend(), sys.SELF, {
+		other = function(m, reply)
+			if m.op ~= "get" or not reply then
+				return false
+			end
+			local f = files[m.name]
+
+			sys.send(reply, { data = f and f() or "" })
+			sys.close(reply)
+			return true
+		end,
+	})
 end)
 thread.run()

@@ -150,8 +150,12 @@ function M.start(list, opts)
 			    " capability, skipping")
 			skipped[#skipped + 1] = name
 		else
+			-- ns = false in the entry: a service that
+			-- opens no file needs no namespace, and the mount
+			-- stack costs more than most of them.
 			local pid, h = proc.spawn(src,
-			    { name = name, ns = opts.ns, arg = arg })
+			    { name = name, arg = arg,
+			      ns = e.ns ~= false and opts.ns or nil })
 
 			if pid then
 				started[#started + 1] =

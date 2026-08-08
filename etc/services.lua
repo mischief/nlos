@@ -54,7 +54,7 @@ return {
 	-- names to addresses, for anything above it. udp is served by
 	-- task/ip.lua here and by the firmware elsewhere, so it is named
 	-- by whichever this machine has.
-	{ path = "/task/dns.lua", caps = { "ip" } },
+	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },
 
 	-- an ssh server, putting a visitor at the same lua console the
 	-- serial port gives. Off by default, on the same terms as webterm

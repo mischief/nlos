@@ -203,6 +203,7 @@ set(EMBED_FILES
     lib/inet.lua
     lib/dhcp.lua
     lib/caps.lua
+    lib/dns.lua
     task/eth.lua
     task/ip.lua
     task/tcp4.lua
