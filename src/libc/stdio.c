@@ -49,7 +49,7 @@ fopen(const char *path, const char *mode)
 	 * threat model here is buggy lua, not hostile users (AGENTS.md
 	 * non-goals), there's nothing confidentiality-sensitive on the
 	 * esp, and a stray read can't corrupt anything the way a runaway
-	 * write can (e.g. clobbering /lib/thread.lua and breaking every
+	 * write can (e.g. clobbering /src/thread.c and breaking every
 	 * future boot). this also means require()/loadfile need no
 	 * special-casing at all -- they only ever read.
 	 */

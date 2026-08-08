@@ -1,5 +1,5 @@
 -- the microvm platform runs ordinary lua-os code: the embedded libs
--- (lib/thread.lua, lib/cons.lua, lib/stdout.lua -- see fs.c) mean this
+-- (src/thread.c, lib/cons.lua, lib/stdout.lua -- see fs.c) mean this
 -- boot payload, proc 0 at PRIV_BOOT, reaches the console through
 -- sys.granted().cons and print() like anything else, rather than the
 -- raw los.platform.cons only the cons task itself may touch.

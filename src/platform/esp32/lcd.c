@@ -119,7 +119,7 @@ static uint16_t *band;
  *
  * It is one bit because full RGB565 measured 64800 bytes and killed the
  * machine -- "proc 0 (cons) died: not enough memory" on a board with no
- * PSRAM, where cons alone wants ~60KB for lib/thread.lua. At 4050 bytes
+ * PSRAM, where cons alone wants ~60KB for src/thread.c. At 4050 bytes
  * this is affordable, and what it is for -- checking that glyphs landed
  * where they should -- needs shape rather than hue.
  */

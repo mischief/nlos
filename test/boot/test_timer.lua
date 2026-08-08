@@ -1,4 +1,4 @@
--- timers: sys.timer(ms) as a port, and the thread.lua sugar over it.
+-- timers: sys.timer(ms) as a port, and the los.thread sugar over it.
 local sys = require("los.sys")
 local thread = require("los.thread")
 local tap = require("tap")

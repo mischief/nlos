@@ -11,7 +11,7 @@
 -- The guarantee this file used to make was the opposite one: that a
 -- thread spinning forever could not starve its siblings. That is given
 -- up deliberately. Defending against it is what made every multi-step
--- update in lib/thread.lua a critical section, and a thread that never
+-- update in src/thread.c a critical section, and a thread that never
 -- yields is a bug in the thread -- libthread has never pretended
 -- otherwise. What is still guaranteed is everything below.
 --

@@ -1941,7 +1941,7 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		/* {__right = handle} copies a right: the sender's handle
 		 * stays live and still counts against MAXRIGHTS, so a
 		 * caller minting one per request must close it. That is
-		 * what lib/thread.lua's rpc does.
+		 * what src/thread.c's rpc does.
 		 *
 		 * A __right that is not an integer handle is a mistake, and
 		 * is refused rather than shipped as data -- which would
@@ -2649,7 +2649,7 @@ kernel_current_is_boot(void)
  * rather than reporting a finished generator to its own caller.
  *
  * coroutine.resume is deliberately left alone. It is the interface a
- * scheduler uses -- lib/thread.lua's resume_one is exactly this -- and
+ * scheduler uses -- src/thread.c's resume_one is exactly this -- and
  * a scheduler has to see the preemption to do its job. Swallowing it
  * there would put a table allocation on the hottest path in the system
  * and leave run() unable to tell a cut thread from a parked one.
@@ -2935,7 +2935,7 @@ api_send(lua_State *L)
  * here with waits already attached means the last block never actually
  * stopped this proc, and the only way that happens is a lua_yield that
  * did not unwind to the kernel: sys.block called from inside a
- * coroutine yields to whoever resumed it -- lib/los/thread.lua's
+ * coroutine yields to whoever resumed it -- src/thread.c's
  * scheduler -- while the kernel has already marked the proc BLOCKED and
  * taken it off the run queue. The thread scheduler then runs the next
  * thread, which blocks again, and now one port carries two waiters for
@@ -3311,7 +3311,7 @@ out:
  * that is our eof, and it counts every right the proc holds rather than
  * testing nrights against one. a caller may hold several to the same
  * port -- a reply port is a receive right to wait on plus a send right
- * to publish, which is what lib/thread.lua's replyport hands out -- and
+ * to publish, which is what src/thread.c's replyport hands out -- and
  * a right it holds itself is not one that can answer it.
  *
  * sys.hungup asks the same question, and must, or the two disagree
@@ -6939,7 +6939,7 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 	 * asked for this. kernel_cowrap reads the mark and resumes again
 	 * rather than reporting a coroutine that is not finished as
 	 * finished; a scheduler using coroutine.resume sees the yield
-	 * itself and handles it, which is what lib/thread.lua does.
+	 * itself and handles it, which is what src/thread.c does.
 	 */
 	if (p && L != p->co)
 		((struct kextra *)lua_getextraspace(L))->preempted = 1;

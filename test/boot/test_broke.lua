@@ -10,7 +10,7 @@
 --
 -- note what a corpse can and cannot catch. lib/thread's scheduler
 -- resumes each thread under coroutine.resume and, on failure, prints
--- "thread error:" and drops it (lib/thread.lua:371), so a fault inside
+-- "thread error:" and drops it (resume_one in src/thread.c), so a fault inside
 -- a thread never reaches lua_resume and never breaks the proc. what
 -- breaks is what kills the proc: a fault in its main coroutine, the
 -- deadlock error out of thread.run, or running out of memory. the

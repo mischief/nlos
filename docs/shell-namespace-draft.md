@@ -291,7 +291,7 @@ optional, later, in any order and none blocking:
   backend.
 - **espfs as an exclusive task**, for the capability refinements above.
 
-**bootstrap caveat, unchanged:** `proc_new` loadfile's `/lib/thread.lua`
+**bootstrap caveat, unchanged:** `proc_new` loadfile's `/src/thread.c`
 and `require` resolves through LUA_PATH — both use `io.open` and both must
 keep working. they stay outside the namespace. only programs and user data
 go through `ns.lua`; do not route `require` through it.

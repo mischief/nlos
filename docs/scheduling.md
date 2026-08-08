@@ -14,7 +14,7 @@ interrupted, at the instruction it interrupted.
 ## The hierarchy
 
     kernel_run (src/kernel.c)          picks a proc, resumes p->co
-      └─ thread.run (lib/thread.lua)   picks a thread, resumes it
+      └─ thread.run (src/thread.c)   picks a thread, resumes it
            └─ a thread
 
 One of these stacks per cpu. On microvm there may be several; every
@@ -180,7 +180,7 @@ rather than a yield: use `thread.yield`.
 The cost is the usual one. A thread that neither parks nor yields keeps
 the proc until it exits. That is a bug in the thread rather than
 something the scheduler defends against — and defending against it is
-what once made every multi-step update in `lib/thread.lua` a critical
+what once made every multi-step update in `src/thread.c` a critical
 section, along with the fid and tag allocators in `lib/p9fs.lua` and
 `lib/srv.lua`. Those are plain read-modify-writes again.
 
@@ -213,7 +213,7 @@ which works only because every level now resumes in place.
 
 `coroutine.resume` is left raw on purpose. It is what a scheduler uses,
 and a scheduler has to see the preemption: `resume_one` in
-`lib/thread.lua` is exactly this.
+`src/thread.c` is exactly this.
 
 ## How a message reaches a parked thread
 
@@ -299,7 +299,7 @@ unmounting sends a clunk and then drops the right — and taking the
 message consumes the wake that would otherwise have reported the
 hangup.
 
-`sys.hangups()` still exists but `lib/thread.lua` does not use it. It
+`sys.hangups()` still exists but `src/thread.c` does not use it. It
 counts every port on the machine losing a reference, so it moves
 constantly on any system where anything else is doing request/reply
 (measured: one file read moves it by 8) and cannot answer a question

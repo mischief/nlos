@@ -367,7 +367,7 @@ end
 -- require starts resolving through the namespace. lib/ps.lua is not in
 -- the image: it is a convenience and it must not be able to cost us the
 -- console. Internal SRAM is ~240KB with no PSRAM behind it (qemu
--- emulates neither PSRAM mode), and ps on top of lib/thread.lua is
+-- emulates neither PSRAM mode), and ps on top of src/thread.c is
 -- enough to run a tight machine out of memory -- which without a pcall
 -- here killed proc 0 during require and left a booted kernel with
 -- nothing to type at.

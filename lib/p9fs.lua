@@ -137,7 +137,7 @@ function M.new(transport, opts)
 	--
 	-- pending[tag] is the waiting caller's own one-slot channel. A
 	-- channel rather than resuming the coroutine directly because the
-	-- reader is a thread like any other and thread.lua's scheduler owns
+	-- reader is a thread like any other and src/thread.c's scheduler owns
 	-- who runs -- handing it the value and letting the scheduler wake
 	-- the waiter is the same shape lib/dos.lua joins its stages with.
 	-- nil for a routed transport, a table for a stream one. Written as

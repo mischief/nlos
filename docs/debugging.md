@@ -113,9 +113,9 @@ being sent.
 
 ### What Broke does not catch
 
-`lib/thread`'s scheduler resumes each thread under `coroutine.resume`
-and, on failure, prints `thread error:` and drops it
-(`lib/thread.lua:371`). A fault inside a thread therefore never reaches
+`los.thread`'s scheduler resumes each thread under `lua_resume` and, on
+failure, prints `thread error:` and drops it (`resume_one` in
+`src/thread.c`). A fault inside a thread therefore never reaches
 `lua_resume` and never breaks the proc. What breaks is what kills the
 proc: a fault in its main coroutine, the deadlock error out of
 `thread.run`, or running out of memory.
@@ -183,16 +183,9 @@ anything short-lived, arm it at spawn:
 
 ### Sizing the ring
 
-Budget by wakeups, not by lines of your own code. A `lib/thread` proc
-spends most of its instructions in the scheduler — serving one file
-read costs `esp` about 860 lines, of which ~700 are `lib/thread.lua`.
-A ring of 40 holds one trip through `gatherports` and nothing else. If
-you want to see the work, size for roughly 50 lines per wakeup plus
-whatever the handler itself runs.
-
-That ratio is not noise to be filtered out; it is what the proc is
-really doing, and reading it is how the wakeup path in
-`docs/scheduling.md` got fixed.
+Budget by wakeups. The scheduler is C and runs no lua lines, so the
+ring holds only the handler's own work — roughly 50 lines per wakeup
+for a file server, and nothing between them.
 
 ## Profiling: `sys.tracehist`
 
@@ -224,7 +217,6 @@ is the point of having both.
 
 From one tcp task, one transfer:
 
-    10.6%  lib/thread.lua:683   48 hits  the scheduler's tryrecv
      7.5%  lib/tcb.lua:1117      7 hits  sndq = sndq:sub(bytes + 1)
      3.1%  lib/tcp4.lua:103     88 hits  tcp4.lt
      2.6%  lib/tcb.lua:576       2 hits  table.concat(self.rcvq)
