@@ -115,6 +115,10 @@ _Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
  * almost nothing in its slice has almost nothing to collect.
  */
 #define GCSTEP_MIN	(16 * 1024)
+/* the largest step gc_step asks for, in kilobytes: enough to keep lua's
+ * debt inside a 32-bit l_mem.
+ */
+#define GCSTEP_MAX_KB	(16 * 1024)
 /* per-port queue ceiling. plan 9's pipes are Queues with a limit
  * (conf.pipeqsize, 256KB) and a writer that sleeps when it is reached;
  * ours had no bound at all, so a fast writer into a slow reader grew the
@@ -6302,6 +6306,13 @@ kbuf_charge(lua_State *L, size_t n)
 	if (p->mem_used > p->mem_peak)
 		p->mem_peak = p->mem_used;
 	p->buf_used += n;
+
+	/* pace the collector by these bytes: a proc that only receives
+	 * buffers holds megabytes of them while its lua heap looks idle.
+	 * gc_step takes the step, at the dispatch point where nothing is
+	 * held -- a step here would run a finalizer under a bucket.
+	 */
+	p->gc_owed += n;
 	return 1;
 }
 
@@ -6385,7 +6396,11 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	p->mem_used += nsize - real_osize;
 	if (p->mem_used > p->mem_peak)
 		p->mem_peak = p->mem_used;
-	p->gc_owed += nsize - real_osize;
+	/* growth only, and the test is what makes it so: gc_owed is
+	 * unsigned, so adding a shrink wraps it to near SIZE_MAX.
+	 */
+	if (nsize > real_osize)
+		p->gc_owed += nsize - real_osize;
 	return q;
 }
 
@@ -6474,8 +6489,13 @@ gc_step(struct kproc *p, lua_State *L)
 
 	kb = p->gc_owed / 1024;
 	p->gc_owed = 0;
-	if (kb > INT_MAX)
-		kb = INT_MAX;
+
+	/* lua turns this back into bytes as an l_mem, which is 32 bits wide
+	 * on esp32. Too large a step overflows it to a negative debt, and
+	 * the collector reads that as credit and does nothing.
+	 */
+	if (kb > GCSTEP_MAX_KB)
+		kb = GCSTEP_MAX_KB;
 
 	lua_pushinteger(L, (lua_Integer)kb);
 	lua_pushcclosure(L, gc_step_k, 1);
