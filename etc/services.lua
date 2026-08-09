@@ -56,6 +56,13 @@ return {
 	-- by whichever this machine has.
 	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },
 
+	-- the wall clock. "time" is the right to sys.settime, and this is
+	-- the only entry naming it: everything else reads the clock and
+	-- cannot move it. dhcpd names the server the lease carried, dns
+	-- is the pool fallback where it carried none; both optional.
+	{ path = "/task/timed.lua", caps = { "ip", "time" },
+	  optcaps = { "dhcpd", "dns" } },
+
 	-- an ssh server, putting a visitor at the same lua console the
 	-- serial port gives. Off by default, on the same terms as webterm
 	-- -- an anonymous visitor gets a shell -- and more so, since it

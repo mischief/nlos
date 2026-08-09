@@ -5,10 +5,11 @@
 -- advances with the machine rather than with the call.
 
 local sys = require("los.sys")
+local thread = require("los.thread")
 local tap = require("tap")
 local time = require("time")
 
-tap.plan(14)
+tap.plan(16)
 
 -- ---- unset ----
 
@@ -43,6 +44,28 @@ tap.ok(sys.time() > t0, "the clock advances with the machine")
 
 tap.ok(not pcall(sys.settime, 0), "settime refuses zero")
 tap.ok(not pcall(sys.settime, -1), "settime refuses a time before the epoch")
+
+-- ---- and refused to anyone without the capability ----
+
+-- we hold "time" because the kernel granted it; a child we spawn does
+-- not, and a spawn hands on nothing that was not put in its arg.
+tap.ok(sys.granted().time ~= nil, "this proc was granted the clock")
+
+local child = sys.newport("clockchild")
+
+sys.spawn([[
+	local sys = require("los.sys")
+	local a = ...
+	local ok, err = pcall(sys.settime, 1000000000)
+
+	sys.send(a.__right, { ok = ok, err = tostring(err),
+	    granted = sys.granted().time ~= nil })
+]], { arg = { __right = sys.sendright(child) } })
+
+local r = thread.recv(child)
+
+tap.ok(not r.ok and not r.granted,
+    "a proc without it cannot move the clock (" .. tostring(r.err) .. ")")
 
 -- ---- the calendar ----
 

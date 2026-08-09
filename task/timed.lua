@@ -1,8 +1,8 @@
--- timed: asks a server what time it is, and tells init.
+-- timed: asks a server what time it is, and sets the machine's clock.
 
--- It cannot set the clock: sys.settime is boot-only. This proposes
--- {time=unix} to the port it was given and init decides, so only the
--- waiting moves out of the boot proc.
+-- It sets it itself. sys.settime is gated on the "time" capability,
+-- which /etc/services.lua grants this and nothing else -- so no proc
+-- above it has to be in the path, and none below it can move the clock.
 
 -- The server comes from the lease, asked of dhcpd rather than read
 -- from /net, so this needs no namespace. Where the lease names none,
@@ -16,11 +16,13 @@ local ntp = require("ntp")
 local a = ...
 local udph = a.ip and a.ip.__right
 local dhcpd = a.dhcpd and a.dhcpd.__right
-local report = a.reply and a.reply.__right
+
+-- a.time is never called. Holding the right is the authorization, and
+-- sys.settime looks for it in this proc's rights table.
 
 -- re-synced rather than set once: the tsc drifts, and a board that is
 -- up for a week is a board whose clock has wandered.
-local EVERY_MS = tonumber(a.every_ms) or 3600 * 1000
+local EVERY_MS = tonumber(a.args and a.args.every_ms) or 3600 * 1000
 local RETRY_MS = 30 * 1000
 local TIMEOUT_MS = 2000
 local TRIES = 3
@@ -66,9 +68,8 @@ local function server()
 	return nil
 end
 
--- one exchange, on a port of its own. udp is lossy, so the wait has a
--- deadline and the abandoned recv is cancelled rather than left pending
--- in the ip task for good.
+-- one exchange, on a port of its own. A recv that timed out is
+-- cancelled, or it stays pending in the ip task for good.
 local function ask(conn, s)
 	local rp = sys.newport("timed.rp")
 	local right = sys.sendright(rp)
@@ -112,7 +113,7 @@ local function sync()
 		return nil
 	end
 
-	local conn = udp.open(0)	-- 0: the stack picks an ephemeral port
+	local conn = udp.open(0)
 
 	if not conn then
 		return nil
@@ -133,8 +134,12 @@ end
 while true do
 	local unix = sync()
 
-	if unix and report then
-		sys.send(report, { time = unix })
+	if unix then
+		local ok, err = pcall(sys.settime, unix)
+
+		if not ok then
+			print("timed: " .. tostring(err))
+		end
 	end
 	-- a failure is usually a lease that has not arrived yet, so try
 	-- again soon rather than in an hour

@@ -1088,6 +1088,9 @@ static struct kport *diskport;
  */
 static struct kport *schedport;
 
+/* the clock capability, the same shape -- see api_settime. */
+static struct kport *clockport;
+
 static int proc_has_port(struct kproc *p, struct kport *port);
 
 static int port_push(struct kport *port, const unsigned char *data,
@@ -1405,37 +1408,6 @@ kernel_walltime(void)
 	return base < 0 ? 0 : base + up;
 }
 
-static int
-api_time(lua_State *L)
-{
-	long long t = kernel_walltime();
-
-	if (t == 0)
-		lua_pushnil(L);
-	else
-		lua_pushinteger(L, (lua_Integer)t);
-	return 1;
-}
-
-/* sys.settime(unix) -- boot procs only. Every proc reads this clock,
- * so a writer is a proc that can lie to all the others.
- */
-static int
-api_settime(lua_State *L)
-{
-	lua_Integer t = luaL_checkinteger(L, 1);
-
-	if (!kernel_current_is_boot())
-		return luaL_error(L, "settime: not a boot proc");
-	if (t <= 0)
-		return luaL_error(L, "settime: not a unix time");
-
-	lock(&timelock);
-	wall_base_s = (long long)t - (long long)(uptime_ms() / 1000);
-	unlock(&timelock);
-	lua_pushinteger(L, t);
-	return 1;
-}
 
 /* one-shot timers. sys.timer(ms) mints a port, hands the caller its
  * receive right, and records a deadline here; expire_timers() pushes one
@@ -6105,6 +6077,38 @@ api_setexit(lua_State *L)
 	return 0;
 }
 
+static int
+api_time(lua_State *L)
+{
+	long long t = kernel_walltime();
+
+	if (t == 0)
+		lua_pushnil(L);
+	else
+		lua_pushinteger(L, (lua_Integer)t);
+	return 1;
+}
+
+/* sys.settime(unix), gated on a right to clockport: handle "time" in
+ * sys.granted(), as set_priority is gated on schedport.
+ */
+static int
+api_settime(lua_State *L)
+{
+	lua_Integer t = luaL_checkinteger(L, 1);
+
+	if (!proc_has_port(self(L), clockport))
+		return luaL_error(L, "no clock capability");
+	if (t <= 0)
+		return luaL_error(L, "settime: not a unix time");
+
+	lock(&timelock);
+	wall_base_s = (long long)t - (long long)(uptime_ms() / 1000);
+	unlock(&timelock);
+	lua_pushinteger(L, t);
+	return 1;
+}
+
 /* sys.uptime_ms(): milliseconds since boot, from the calibrated tsc.
  * prefer this to sys.ticks() for anything time-shaped -- ticks() is a
  * raw cycle counter whose rate differs per machine.
@@ -8017,8 +8021,10 @@ kernel_init(void)
 	diskport = port_new();
 	ethport = port_new();
 	schedport = port_new();
+	clockport = port_new();
 	ipclock_leave();
-	if (!kbdport || !serport || !diskport || !schedport || !ethport)
+	if (!kbdport || !serport || !diskport || !schedport || !ethport ||
+	    !clockport)
 		return -1;
 	/* kernel refs: the pumps (and, for diskport/schedport, the kernel
 	 * itself) hold these ports forever
@@ -8032,6 +8038,7 @@ kernel_init(void)
 	diskport->nrights++;
 	ethport->nrights++;
 	schedport->nrights++;
+	clockport->nrights++;
 
 	/* soft-fail: no NIC (real hardware, or qemu -net none) just means
 	 * no eth task gets spawned later, same as any other optional
@@ -8368,6 +8375,7 @@ spawn_init(const char *code, size_t len, int is_file)
 		grant_named(p, "ptr", devptrport, 1);
 	grant_named(p, "disk", diskport, 0);
 	grant_named(p, "sched", schedport, 0);
+	grant_named(p, "time", clockport, 0);
 
 	/* granted: the boot proc reads its rights table on its first
 	 * line, so it runs only now.

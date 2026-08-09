@@ -102,7 +102,7 @@ if not sa then
 	die("not an address: " .. server .. " (no resolver here; try host)")
 end
 
-local conn = udp.open(0)	-- 0: the stack picks an ephemeral port
+local conn = udp.open(0)
 
 if not conn then
 	die("cannot open a udp port")

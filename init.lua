@@ -239,22 +239,6 @@ local has_dns = caps_of.ip and
 if has_dns then
 	print("dns resolver ready")
 end
-
--- the wall clock, which nothing here has in hardware. task/timed.lua
--- does the asking and reports {time=} to our own port; the settime is
--- below, in the supervisor loop, because only a boot proc may do it.
-if caps_of.ip then
-	proc.spawn(assert(rootns:readfile("/task/timed.lua")), {
-		name = "timed",
-		arg = {
-			ip = { __right = caps_of.ip },
-			dhcpd = caps_of.dhcpd and
-			    { __right = caps_of.dhcpd } or nil,
-			dns = has_dns and { __right = dnssrv } or nil,
-			reply = { __right = sys.sendright(sys.SELF) },
-		},
-	})
-end
 print("")
 
 -- ---- services ----
@@ -568,14 +552,6 @@ while true do
 	sys.close(worker)
 
 	local m = thread.recv(sys.SELF)	-- {exit=pid, normal=, reason=?}
-
-	-- task/timed.lua reports what a server told it; setting the clock
-	-- is ours because sys.settime is boot-only. The repl is still up,
-	-- so go back to waiting rather than restarting it.
-	while m.time do
-		pcall(sys.settime, m.time)
-		m = thread.recv(sys.SELF)
-	end
 
 	print("")
 	if m.normal then
