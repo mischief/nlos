@@ -50,6 +50,7 @@ local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local elf, payload = arg[1], arg[2]
 local want9p, wantnet, wantecho, wantblk = false, false, false, false
 local wantgefs, wantgefscommit, wantgefsgpt = false, false, false
+local wantfat = false
 local wantpci, wantpci0 = false, false
 local wantsmp = 1
 
@@ -73,6 +74,8 @@ for i = 3, #arg do
 		wantgefscommit = true
 	elseif arg[i] == "--gefsgpt" then
 		wantgefsgpt = true
+	elseif arg[i] == "--fat" then
+		wantfat = true
 	elseif arg[i] == "--pci" then
 		wantpci = true
 	elseif arg[i] == "--pci0" then
@@ -226,6 +229,69 @@ if wantblk then
 		f:write(blk_sector(i))
 	end
 	f:close()
+
+	blkargs = table.concat({
+		"-drive if=none,id=d0,format=raw,file=" .. q(blkimg),
+		"-device " .. dev("virtio-blk", 3) .. ",drive=d0",
+	}, " ")
+end
+
+-- --fat seeds the same disk with a FAT volume built by lib/fat: seed
+-- files the guest never writes, checked again from the host after the
+-- guest exits. test/boot/microvm_fat.lua must agree with the constants
+-- and content functions here.
+local FAT_SIZE = 4 * 1024 * 1024
+local FAT_NSEED = 24
+
+local function fatseedname(i)
+	return ("seed%02d.dat"):format(i)
+end
+
+local function fatseedcontent(i)
+	return (("seed-%02d:"):format(i)):rep(100 + i * 97)
+end
+
+local function fatguestcontent()
+	local parts = {}
+
+	for k = 1, 40000 do
+		parts[k] = ("guest line %08d\n"):format(k)
+	end
+	return table.concat(parts)
+end
+
+-- lib/fat and its file device, loaded from the source tree. los.buf
+-- comes from LUA_CPATH, which the meson test entry points at the build
+-- directory's host los.so.
+local function fatlib()
+	package.path = scriptdir .. "/../lib/?.lua;" .. package.path
+	return require("fat"), require("gefs.io")
+end
+
+-- gefs.io writes strings only; lib/fat may hand it a los.buf
+local function fatwrap(f)
+	return {
+		read = function(_, off, len) return f:read(off, len) end,
+		write = function(_, off, s)
+			return f:write(off,
+			    type(s) == "string" and s or s:str())
+		end,
+		size = function() return f:size() end,
+		sync = function() return f:sync() end,
+		close = function() return f:close() end,
+	}
+end
+
+if wantfat then
+	local fat, io_dev = fatlib()
+	local fdev = fatwrap(assert(io_dev.create(blkimg, FAT_SIZE)))
+	local fs = assert(fat.ream(fdev, { secsz = 4096, label = "LUAOS" }))
+
+	for i = 1, FAT_NSEED do
+		assert(fs:writefile("/" .. fatseedname(i), fatseedcontent(i)))
+	end
+	fs:sync()
+	fdev:close()
 
 	blkargs = table.concat({
 		"-drive if=none,id=d0,format=raw,file=" .. q(blkimg),
@@ -502,6 +568,43 @@ if wantgefscommit then
 		os.exit(1)
 	end
 	print("# gefs: the guest's commit survived in the host volume")
+end
+
+-- the durability half for fat: reopen the image cold from the host and
+-- read back both the guest's file and every seeded neighbour.
+if wantfat then
+	local fat, io_dev = fatlib()
+	local fdev = fatwrap(assert(io_dev.open(blkimg, "r")))
+	local fs = fat.open(fdev)
+	local fail
+
+	if not fs then
+		fail = "the image no longer opens as FAT"
+	else
+		local got = fs:readfile("/guest.dat")
+
+		if got ~= fatguestcontent() then
+			fail = "guest.dat read back " ..
+			    tostring(got and #got) .. " bytes"
+		else
+			for i = 1, FAT_NSEED do
+				if fs:readfile("/" .. fatseedname(i)) ~=
+				    fatseedcontent(i) then
+					fail = fatseedname(i) ..
+					    " was disturbed"
+					break
+				end
+			end
+		end
+	end
+
+	if fail then
+		dump("fat image check failed: " .. fail)
+		print("not ok - boottest-microvm harness (fat: " .. fail .. ")")
+		cleanup()
+		os.exit(1)
+	end
+	print("# fat: the guest's write survived in the host image")
 end
 
 cleanup()
