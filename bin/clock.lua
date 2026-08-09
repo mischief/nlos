@@ -357,8 +357,14 @@ local function paint(force, flip, wipe)
 	local ok, err = pcall(face and paint_face or paint_digital, now, force)
 
 	painting:unlock()
+	-- reported and carried on rather than raised. This runs in a
+	-- thread, so raising kills the one that ticks and stops the clock
+	-- for good -- a face that cannot be drawn should cost the face.
 	if not ok then
-		error(err, 0)
+		warn("@on")
+		warn("clock: " .. tostring(err))
+		dropimages()
+		face = false
 	end
 end
 
