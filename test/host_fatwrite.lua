@@ -228,5 +228,55 @@ do
 	    "and the volume is still consistent")
 end
 
+-- ---- and out of space ----
+-- A full volume must refuse cleanly: an error to the writer, a size
+-- that matches what landed, the neighbours untouched. The caller's
+-- half -- not ignoring that error -- cannot be tested here.
+do
+	local small = fat.ram.new(1 * MB, SECSZ)
+
+	assert(fat.ream(small, { secsz = SECSZ, label = "LUAOS" }))
+
+	local fs = assert(fat.open(small, { cache = 128 }))
+	local keep = ("keep me\n"):rep(1000)
+
+	assert(fs:writefile("/keep.dat", keep))
+	fs:sync()
+
+	local B = fatfs.new(fs)
+	local h = B.create(B.attach(), "big.dat", "w")
+	local off, raised = 0, nil
+
+	while off < 2 * MB do
+		local chunk = ("chunk!\n"):rep(1000)
+		local wok, n = pcall(B.write, h, off, chunk)
+
+		if not wok then
+			raised = n
+			break
+		end
+		if n ~= #chunk then
+			break
+		end
+		off = off + n
+	end
+	B.clunk(h)
+	B.sync()
+
+	ok(raised ~= nil, "a full volume raises rather than writing short ("
+	    .. tostring(raised) .. ")")
+
+	local st = fs:stat("/big.dat")
+
+	ok(st and st.size == off, ("the size is what landed (%s, wrote %d)")
+	    :format(tostring(st and st.size), off))
+	ok(fs:readfile("/keep.dat") == keep, "the neighbour is intact")
+
+	local rep = fs:check()
+
+	ok(type(rep) ~= "table" or #rep == 0,
+	    "and the volume still checks clean")
+end
+
 io.write(("1..%d\n"):format(count))
 os.exit(failed == 0 and 0 or 1)
