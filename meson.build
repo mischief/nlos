@@ -582,6 +582,7 @@ lua_payload = files(
   'bin/ls.lua',
   'bin/seq.lua',
   'bin/smiley.lua',
+  'bin/clock.lua',
   # vi, and its ed/ engine and terminal (lib/ed/*). a full-screen program
   # over the tty capability -- see lib/prog.lua and lib/caps.lua.
   'bin/vi.lua',

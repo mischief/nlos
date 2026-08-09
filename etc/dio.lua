@@ -49,5 +49,8 @@ return {
 		{ name = "smiley", cmd = "/bin/smiley.lua",
 		  label = "O", color = 0xffdc00,
 		  desc = "a face, for testing the framebuffer" },
+		{ name = "clock", cmd = "/bin/clock.lua",
+		  label = "T", color = 0xff2418,
+		  desc = "the time; touch it to turn it over" },
 	},
 }
