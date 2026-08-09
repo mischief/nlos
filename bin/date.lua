@@ -15,10 +15,10 @@
 -- bin/host.lua reads /net/dns. A machine whose dhcp server offered no
 -- ntp option has to be told one.
 --
--- The machine's own clock is sys.time(), which init sets from a server
--- at boot. This reads it, and only goes to the network when it is unset
--- or -n says to. Setting it is init's: sys.settime is boot-only, so a
--- program in a shell cannot move the clock every other proc reads.
+-- The machine's own clock is sys.time(), which task/timed.lua sets from
+-- a server. This reads it, and goes to the network only when it is
+-- unset or -n says to. Moving it needs the "time" capability, which
+-- /etc/services.lua grants timed and nothing else.
 
 local unistd = require("posix.unistd")
 local sys = require("los.sys")

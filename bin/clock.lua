@@ -5,8 +5,9 @@
 -- rectangles. A hand at an angle is not, so the face is composed in a
 -- memdraw image and loaded in one go.
 
--- sys.time() is nil until task/timed.lua has set it, and this shows
--- dashes rather than a confident 1970.
+-- sys.time() is nil until task/timed.lua has set it from the network.
+-- Until then this draws the epoch, which is a clock that is wrong
+-- rather than a clock that is missing.
 
 local prog = require("prog")
 local sys = require("los.sys")
@@ -44,6 +45,8 @@ local FACE = {
 }
 
 local face = false		-- which of the two is on the glass
+local faceok = true		-- until the screen will not give it images
+local visible = true		-- false while another app is in front
 
 -- ---- seven segment ----
 --
@@ -168,13 +171,8 @@ end
 local shown, shownday = {}, {}
 
 local function paint_digital(now, force)
-	local txt = "  :  :  "
-
-	if now then
-		local d = time.utc(now)
-
-		txt = ("%02d:%02d:%02d"):format(d.hour, d.min, d.sec)
-	end
+	local d = time.utc(now)
+	local txt = ("%02d:%02d:%02d"):format(d.hour, d.min, d.sec)
 
 	for i = 1, 8 do
 		local c = cells[i]
@@ -182,7 +180,7 @@ local function paint_digital(now, force)
 
 		if force or shown[i] ~= ch then
 			if c.colon then
-				colon(c, now ~= nil)
+				colon(c, true)
 			else
 				digit(ch, c.x, dy, dw, dh, dt)
 			end
@@ -190,13 +188,7 @@ local function paint_digital(now, force)
 		end
 	end
 
-	local day = "          "
-
-	if now then
-		local d = time.utc(now)
-
-		day = ("%04d-%02d-%02d"):format(d.year, d.month, d.day)
-	end
+	local day = ("%04d-%02d-%02d"):format(d.year, d.month, d.day)
 
 	local t = math.max(1, datew // 5)
 	local g = math.max(1, datew // 3)
@@ -311,19 +303,17 @@ local function paint_face(now)
 
 	fb.draw(workid, dialid)
 
-	if now then
-		local d = time.utc(now)
-		local sec = d.sec * math.pi / 30
-		local min = (d.min + d.sec / 60) * math.pi / 30
-		local hr = ((d.hour % 12) + d.min / 60) * math.pi / 6
+	local d = time.utc(now)
+	local sec = d.sec * math.pi / 30
+	local min = (d.min + d.sec / 60) * math.pi / 30
+	local hr = ((d.hour % 12) + d.min / 60) * math.pi / 6
 
-		fb.line(workid, CENTRE, tip(hr, R * 0.52),
-		    math.max(3, R // 14), FACE.hand)
-		fb.line(workid, CENTRE, tip(min, R * 0.76),
-		    math.max(3, R // 20), FACE.hand)
-		fb.line(workid, CENTRE, tip(sec, R * 0.84),
-		    math.max(1, R // 40), FACE.second)
-	end
+	fb.line(workid, CENTRE, tip(hr, R * 0.52),
+	    math.max(3, R // 14), FACE.hand)
+	fb.line(workid, CENTRE, tip(min, R * 0.76),
+	    math.max(3, R // 20), FACE.hand)
+	fb.line(workid, CENTRE, tip(sec, R * 0.84),
+	    math.max(1, R // 40), FACE.second)
 	fb.line(workid, CENTRE, CENTRE, math.max(4, R // 11), FACE.hand)
 	fb.draw(nil, workid, DRECT, FPT)
 end
@@ -353,7 +343,10 @@ local function paint(force, flip, wipe)
 		dropimages()
 	end
 
-	local now = sys.time()
+	-- the epoch until something says otherwise: a clock reading
+	-- 1970 is wrong in a way a person can see, and a blank one is
+	-- not.
+	local now = sys.time() or 0
 	local ok, err = pcall(face and paint_face or paint_digital, now, force)
 
 	painting:unlock()
@@ -406,6 +399,9 @@ end
 -- to know, so repaint the lot.
 local wctl = N and N:open("/dev/wctl", "r")
 
+-- Behind another app there is nothing to draw on: the window system
+-- drops what it is sent, so a tick spent painting is a tick spent
+-- building a message for it to throw away.
 if wctl then
 	thread.spawn(function()
 		while true do
@@ -415,7 +411,10 @@ if wctl then
 				break
 			end
 			if s:match("redraw") then
+				visible = true
 				paint(nil, false, true)
+			elseif s:match("hidden") then
+				visible = false
 			end
 		end
 		wctl:close()
@@ -437,7 +436,12 @@ end
 
 thread.spawn(function()
 	while true do
-		paint(false)
+		-- nothing to draw on behind another app: the window system
+		-- drops what it is sent, so painting is a message built to
+		-- be thrown away.
+		if visible then
+			paint(false)
+		end
 		-- to the next second, not every 1000ms: a fixed interval
 		-- drifts, and a clock that skips a second then shows two
 		-- is worse than one that is late.

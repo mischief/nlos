@@ -144,7 +144,15 @@ local function ask(m)
 	local rp, send = thread.replyport()
 
 	m.reply = { __right = send }
-	sys.send(fb, m)
+
+	-- sendwait, not send: a full queue drops a bare send, and what is
+	-- dropped here is the request this then waits for an answer to.
+	-- A busy screen would wedge the app that asked.
+	local sent, why = sendwait(fb, m)
+
+	if not sent then
+		return nil, why
+	end
 
 	local r = thread.recv(rp)
 
