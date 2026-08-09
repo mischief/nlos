@@ -67,10 +67,16 @@ function File:read(off, len)
   return s
 end
 
+-- All of s or an error. A chan handle answers with a count, and a
+-- short count is a write that never fully reached the device: raising
+-- keeps the sector dirty above rather than losing it silently.
 function File:write(off, s)
   self.f:seek("set", off)
-  local ok, err = self.f:write(s)
-  if not ok then error("write failed: " .. tostring(err), 0) end
+  local n, err = self.f:write(s)
+  if not n then error("write failed: " .. tostring(err), 0) end
+  if type(n) == "number" and n ~= #s then
+    error(("short write at %d: %d of %d"):format(off, n, #s), 0)
+  end
 end
 
 -- flush is as durable as this floor gets: it hands the bytes to the
