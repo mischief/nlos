@@ -140,7 +140,7 @@ local screen = draw.new(fb)
 -- has no op for is the cursor, which is the machine's rather than an
 -- app's. So the raw request/reply is here as well.
 
-local function ask(m)
+local function ask(m, h)
 	local rp, send = thread.replyport()
 
 	m.reply = { __right = send }
@@ -148,7 +148,7 @@ local function ask(m)
 	-- sendwait, not send: a full queue drops a bare send, and what is
 	-- dropped here is the request this then waits for an answer to.
 	-- A busy screen would wedge the app that asked.
-	local sent, why = sendwait(fb, m)
+	local sent, why = sendwait(h or fb, m)
 
 	if not sent then
 		return nil, why
@@ -570,12 +570,12 @@ end
 -- one from the framebuffer; a client that did not is not made to wait
 -- for a round trip it declined -- which is most of what an app sends,
 -- since draw's fill and load are fire-and-forget by default.
-local function forward(m, wait)
+local function forward(m, wait, h)
 	if wait then
-		return ask(m)
+		return ask(m, h)
 	end
 
-	local ok, err = sendwait(fb, m)
+	local ok, err = sendwait(h or fb, m)
 
 	if not ok then
 		return nil, err
@@ -605,7 +605,7 @@ end
 -- the glass is placed. Dropping the id here sent the pixels to the
 -- screen instead, at a window coordinate that meant nothing to them.
 local function rectop(op)
-	return function(m, wait)
+	return function(m, wait, h)
 		local r = m.r
 
 		if m.id == nil then
@@ -617,7 +617,7 @@ local function rectop(op)
 			end
 		end
 		return forward({ op = op, r = r, id = m.id, color = m.color,
-		    data = m.data, fmt = m.fmt }, wait)
+		    data = m.data, fmt = m.fmt }, wait, h)
 	end
 end
 
@@ -629,21 +629,21 @@ ops.load = rectop("load")
 -- Ids pass through untouched: they are the framebuffer's. Only a draw
 -- landing on the screen is this window's business, and it is the only
 -- one placed.
-function ops.alloc(m)
+function ops.alloc(m, wait, h)
 	return ask({ op = "alloc", w = m.w, h = m.h, fmt = m.fmt,
-	    color = m.color })
+	    color = m.color }, h)
 end
 
-function ops.free(m, wait)
-	return forward({ op = "free", id = m.id }, wait)
+function ops.free(m, wait, h)
+	return forward({ op = "free", id = m.id }, wait, h)
 end
 
-function ops.line(m, wait)
+function ops.line(m, wait, h)
 	return forward({ op = "line", id = m.id, p0 = m.p0, p1 = m.p1,
-	    thick = m.thick, color = m.color }, wait)
+	    thick = m.thick, color = m.color }, wait, h)
 end
 
-function ops.draw(m, wait)
+function ops.draw(m, wait, h)
 	local p = m.p
 
 	if m.dst == nil then
@@ -657,7 +657,7 @@ function ops.draw(m, wait)
 		p = { x = at.x, y = at.y }
 	end
 	return forward({ op = "draw", dst = m.dst, src = m.src, r = m.r,
-	    p = p }, wait)
+	    p = p }, wait, h)
 end
 
 function ops.unload(m)
@@ -741,6 +741,14 @@ local function serveapp(a)
 	-- holder left, which is what sys.hungup answers and what stops
 	-- these loops. Closing them anywhere else would be closing a port
 	-- another thread of this proc is parked on.
+	-- an image space of the app's own, so the ids it is given cannot
+	-- name another app's picture and are freed when this right is
+	-- dropped below. Without one an app's images outlive it: dio does
+	-- not die when an app does, and nothing else would let them go.
+	local fbh = ask({ op = "session" })
+
+	fbh = fbh and fbh.port and fbh.port.__right
+
 	thread.spawn(function()
 		while true do
 			local m, why = thread.await(a.fbrecv)
@@ -765,7 +773,8 @@ local function serveapp(a)
 					-- when it comes back.
 					ok = true
 				else
-					ok, err = fn(m, reply ~= nil)
+					ok, err = fn(m, reply ~= nil,
+					    fbh)
 				end
 				if reply then
 					sys.send(reply, ok ~= nil and
@@ -777,6 +786,10 @@ local function serveapp(a)
 		end
 		sys.close(a.fbport)
 		sys.close(a.fbrecv)
+		-- the app is gone, so its images may go too
+		if fbh then
+			sys.close(fbh)
+		end
 	end)
 	thread.spawn(function()
 		srv.serve(a.mouse.backend, a.mrecv)
