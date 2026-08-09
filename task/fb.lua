@@ -78,10 +78,13 @@ function ops.fill(m)
 	return true
 end
 
+-- m.fmt names what the client's bytes are; absent is bgrx. The driver
+-- takes what mode() said it takes without converting, and converts
+-- anything else.
 function ops.load(m)
 	local x, y, w, h = rect(m.r)
 
-	platform.load(x, y, w, h, m.data)
+	platform.load(x, y, w, h, m.data, m.fmt)
 	return true
 end
 

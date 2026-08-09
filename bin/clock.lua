@@ -24,6 +24,12 @@ end
 local mode = fb.mode()
 local W, H = mode.w, mode.h
 
+-- the screen's own format where memdraw has it, so the face reaches
+-- the glass without being converted on the way. A screen naming
+-- something else -- efi reports bltonly and bitmask -- gets bgrx,
+-- which every screen here takes.
+local FMT = memdraw.bpp(mode.format) and mode.format or memdraw.BGRX
+
 local DIGITAL = {
 	bg = 0x000000,
 	fg = 0xff2418,
@@ -216,9 +222,9 @@ local D = math.min(W, H) - 8
 local FX, FY = (W - D) // 2, (H - D) // 2
 local R = D // 2
 
--- The pristine dial and the one the hands go on, each D*D*4 bytes:
--- made when the face is shown, dropped when it is not. Kept apart so
--- a tick is a blit rather than composing the dial again.
+-- The pristine dial and the one the hands go on: made when the face is
+-- shown, dropped when it is not. Kept apart so a tick is a blit rather
+-- than composing the dial again.
 local dial, work
 
 local function disc(img, cx, cy, rad, color)
@@ -248,7 +254,7 @@ local RIMR = R - 1
 local DIALR = R - math.max(2, R // 24)
 
 local function makedial()
-	local img = memdraw.image(D, D, FACE.bg)
+	local img = memdraw.image(D, D, FACE.bg, FMT)
 
 	disc(img, R, R, RIMR, FACE.rim)
 	disc(img, R, R, DIALR, FACE.dial)
@@ -269,7 +275,7 @@ local FRECT = memdraw.rect(FX, FY, D, D)
 local function paint_face(now)
 	if not work then
 		dial = makedial()
-		work = memdraw.image(D, D, FACE.bg)
+		work = memdraw.image(D, D, FACE.bg, FMT)
 	end
 
 	local img = work
@@ -291,7 +297,7 @@ local function paint_face(now)
 
 	-- not given away: bytes() of a whole image is a view onto it, and
 	-- this image is drawn over again next tick.
-	fb.load(FRECT, img:bytes(img:rect()))
+	fb.load(FRECT, img:bytes(img:rect()), false, false, FMT)
 end
 
 -- ---- both, and the switch between them ----

@@ -10,6 +10,7 @@
  */
 
 #include <stddef.h>
+#include <string.h>
 
 #include <esp_random.h>
 #include <esp_system.h>
@@ -720,11 +721,11 @@ pushmode(lua_State *L)
 	lua_setfield(L, -2, "w");
 	lua_pushinteger(L, luaos_lcd_height());
 	lua_setfield(L, -2, "h");
-	/* the layout load() takes, not the panel's own: the panel is
-	 * RGB565 and lcd.c converts. Saying "bgrx" is what lets a client
-	 * written against efi work here unchanged.
+	/* the panel's own, which load() now takes without converting.
+	 * bgrx is still accepted, so a client written against efi works
+	 * here unchanged -- it just pays the conversion lcd.c does.
 	 */
-	lua_pushstring(L, "bgrx");
+	lua_pushstring(L, "r5g6b5");
 	lua_setfield(L, -2, "format");
 }
 
@@ -779,14 +780,25 @@ fb_load(lua_State *L)
 	lua_Integer h = luaL_checkinteger(L, 4);
 	size_t n;
 	const char *pix = luabuf_check(L, 5, &n);
-	size_t need = (size_t)w * (size_t)h * 4;
+	const char *fmt = luaL_optstring(L, 6, "bgrx");
+	int wide = strcmp(fmt, "r5g6b5") == 0;
+	size_t need = (size_t)w * (size_t)h * (wide ? 2 : 4);
 
+	if (!wide && strcmp(fmt, "bgrx") != 0)
+		return luaL_error(L, "fb.load: no such format: %s", fmt);
 	checkrect(L, x, y, w, h);
 	if (n != need)
-		return luaL_error(L, "want %d bytes for %dx%d, got %d",
-		    (int)need, (int)w, (int)h, (int)n);
+		return luaL_error(L, "want %d bytes for %dx%d %s, got %d",
+		    (int)need, (int)w, (int)h, fmt, (int)n);
 	if (need == 0)
 		return 0;
+	/* r5g6b5 is what the panel takes, so it goes straight down */
+	if (wide) {
+		if (luaos_lcd_load16((int)x, (int)y, (int)w, (int)h,
+		    (const unsigned char *)pix) != 0)
+			return luaL_error(L, "load failed");
+		return 0;
+	}
 	if (luaos_lcd_load((int)x, (int)y, (int)w, (int)h,
 	    (const unsigned char *)pix) != 0)
 		return luaL_error(L, "load failed");

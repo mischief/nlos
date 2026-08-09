@@ -13,12 +13,13 @@
 --
 -- ---- pixels ----
 --
--- BGRx, four bytes per pixel, row-major, no padding between rows. that
--- is EFI_GRAPHICS_OUTPUT_BLT_PIXEL's layout and it is the same whatever
--- the hardware format underneath is, because Blt converts (see
--- src/platform/efi/gop.c). colours in the API are 0xRRGGBB integers,
--- which is what anyone writing one by hand expects; the packing to BGRx
--- happens once, here.
+-- Row-major, no padding, and an image says which format its bytes are:
+-- bgrx, four bytes, EFI_GRAPHICS_OUTPUT_BLT_PIXEL's layout; or r5g6b5,
+-- two bytes, which an ST7789 takes. That is plan 9's chan, and it is
+-- here for the same reason -- see fb.mode().format.
+
+-- Colours in the API are 0xRRGGBB integers whichever it is, so the
+-- packing happens once and only M.pixel and pixel16 know the layout.
 --
 -- ---- one buffer, written in place ----
 --
@@ -89,6 +90,38 @@ function M.pixel(color)
 	    (color >> 16) & 0xff, 0)
 end
 
+-- ---- formats ----
+
+-- plan 9's chan, with two of them. An image says what its bytes mean
+-- and a screen says what it takes, so a client allocating the screen's
+-- format is never converted on the way there. bgrx is the default: it
+-- is what EFI's Blt takes.
+M.BGRX = "bgrx"
+M.RGB16 = "r5g6b5"
+
+-- Big-endian, which is what an ST7789 takes on the wire -- so a driver
+-- copies rather than walking pixels. The order costs nothing here: a
+-- fill packs one pixel and repeats it.
+local function pixel16(color)
+	local v = ((color >> 8) & 0xf800) | ((color >> 5) & 0x07e0) |
+	    ((color >> 3) & 0x001f)
+
+	return schar((v >> 8) & 0xff, v & 0xff)
+end
+
+local FMT = {
+	[M.BGRX] = { bpp = 4, pixel = M.pixel },
+	[M.RGB16] = { bpp = 2, pixel = pixel16 },
+}
+
+-- bytes per pixel of a format, so a caller can size a buffer without
+-- knowing how the pixels are laid out.
+function M.bpp(fmt)
+	local f = FMT[fmt or M.BGRX]
+
+	return f and f.bpp
+end
+
 M.black = 0x000000
 M.white = 0xffffff
 M.red = 0xff0000
@@ -106,14 +139,20 @@ Image.__index = Image
 -- a non-zero Memimage.r origin and then spends real effort converting
 -- between image and screen coordinates in libmemlayer; there is no
 -- reason to inherit that here before something needs it.
-function M.image(w, h, color)
-	local px = M.pixel(color or M.black)
-	local img = setmetatable({ w = w, h = h,
-	    b = buf.new(w * h * 4) }, Image)
+function M.image(w, h, color, fmt)
+	local f = FMT[fmt or M.BGRX]
+
+	if not f then
+		error("memdraw: no such format: " .. tostring(fmt), 2)
+	end
+
+	local img = setmetatable({ w = w, h = h, fmt = fmt or M.BGRX,
+	    bpp = f.bpp, pix = f.pixel,
+	    b = buf.new(w * h * f.bpp) }, Image)
 
 	-- black is already what a new buffer holds, and it is the common
 	-- case: a buffer arrives zeroed.
-	if px ~= "\0\0\0\0" then
+	if img.pix(color or M.black):find("[^%z]") then
 		img:fill(img:rect(), color)
 	end
 	return img
@@ -134,11 +173,12 @@ function Image:fill(r, color)
 
 	-- one run, copied into every row of the rectangle. The run is the
 	-- only allocation, and it is one whatever the height.
-	local run = M.pixel(color):rep(c.w)
-	local stride = self.w * 4
+	local bpp = self.bpp
+	local run = self.pix(color):rep(c.w)
+	local stride = self.w * bpp
 
 	for y = c.y, c.y + c.h - 1 do
-		self.b:copy(y * stride + c.x * 4 + 1, run)
+		self.b:copy(y * stride + c.x * bpp + 1, run)
 	end
 	return self
 end
@@ -166,19 +206,32 @@ function Image:draw(p, src, sr)
 	-- place when p is negative or the copy runs off an edge.
 	local skipx = dst.x - (p.x + sr.x)
 	local skipy = dst.y - (p.y + sr.y)
-	local head = dst.x * 4
-	local tail = (dst.x + dst.w) * 4 + 1
 
-	local dstride = self.w * 4
-	local sstride = src.w * 4
-	local sx = (sr.x + skipx) * 4
+	-- unlike formats have to go through a colour. Deliberately the
+	-- slow way and not a converting blit: the point of asking the
+	-- screen its format is that this path is not taken.
+	if self.fmt ~= src.fmt then
+		for i = 0, dst.h - 1 do
+			for j = 0, dst.w - 1 do
+				self:set(dst.x + j, dst.y + i,
+				    M.at(src, sr.x + skipx + j,
+				        sr.y + skipy + i))
+			end
+		end
+		return self
+	end
+
+	local bpp = self.bpp
+	local dstride = self.w * bpp
+	local sstride = src.w * bpp
+	local sx = (sr.x + skipx) * bpp
 
 	for i = 0, dst.h - 1 do
 		local sfrom = (sr.y + skipy + i) * sstride + sx
 
 		-- buffer to buffer: no piece is cut out on the way
-		self.b:copy((dst.y + i) * dstride + dst.x * 4 + 1, src.b,
-		    sfrom + 1, sfrom + dst.w * 4)
+		self.b:copy((dst.y + i) * dstride + dst.x * bpp + 1, src.b,
+		    sfrom + 1, sfrom + dst.w * bpp)
 	end
 	return self
 end
@@ -201,12 +254,13 @@ function M.bytes(img, r)
 
 	-- a part of it has to be gathered, since the rows it wants are not
 	-- next to each other. One buffer, and each row copied in once.
-	local out = buf.new(r.w * r.h * 4)
-	local stride = img.w * 4
-	local rw = r.w * 4
+	local bpp = img.bpp
+	local out = buf.new(r.w * r.h * bpp)
+	local stride = img.w * bpp
+	local rw = r.w * bpp
 
 	for i = 0, r.h - 1 do
-		local from = (r.y + i) * stride + r.x * 4
+		local from = (r.y + i) * stride + r.x * bpp
 
 		out:copy(i * rw + 1, img.b, from + 1, from + rw)
 	end
@@ -217,9 +271,8 @@ Image.bytes = function(self, r) return M.bytes(self, r) end
 
 -- the inverse: wrap raw BGRx bytes as an image, so pixels read back off
 -- a screen can be drawn into and compared like any other image.
-function M.fromBytes(w, h, data)
-	local img = setmetatable({ w = w, h = h,
-	    b = buf.new(w * h * 4) }, Image)
+function M.fromBytes(w, h, data, fmt)
+	local img = M.image(w, h, nil, fmt)
 
 	img.b:copy(1, data)
 	return img
@@ -232,7 +285,22 @@ function M.at(img, x, y)
 		return nil
 	end
 
-	local i = (y * img.w + x) * 4
+	local i = (y * img.w + x) * img.bpp
+
+	if img.bpp == 2 then
+		local hi, lo = img.b:byte(i + 1, i + 2)
+		local v = (hi << 8) | lo
+		-- the low bits back, so a colour survives a round trip
+		-- through 565 as the nearest one that fits rather than
+		-- as a darker one
+		local r = (v >> 11) & 0x1f
+		local g = (v >> 5) & 0x3f
+		local b = v & 0x1f
+
+		return (((r << 3) | (r >> 2)) << 16) |
+		    (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2))
+	end
+
 	local b, g, r = img.b:byte(i + 1, i + 3)
 
 	return (r << 16) | (g << 8) | b

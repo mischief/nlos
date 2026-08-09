@@ -247,10 +247,17 @@ l_load(lua_State *L)
 	lua_Integer h = luaL_checkinteger(L, 4);
 	size_t n;
 	const char *pix = luabuf_check(L, 5, &n);
+	/* Blt speaks BGRx and nothing else, so this refuses rather than
+	 * converts: a client asks the screen what it takes.
+	 */
+	const char *fmt = luaL_optstring(L, 6, "bgrx");
 	size_t need = (size_t)w * (size_t)h * 4;
 	void *buf = 0;
 	EFI_STATUS st;
 
+	if (strcmp(fmt, "bgrx") != 0)
+		return luaL_error(L, "fb.load: this screen takes bgrx, "
+		    "not %s", fmt);
 	checkrect(L, x, y, w, h);
 	if (n != need)
 		return luaL_error(L,

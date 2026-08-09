@@ -125,15 +125,28 @@ function M.new(handle, chunk)
 		return b
 	end
 
-	local function loadband(r, data, wait)
-		local stride = r.w * 4
+	-- from the name, not from how many bytes arrived: a short buffer
+	-- is what the server must catch, and dividing to find the pixel
+	-- width would make it a format of zero bytes instead. memdraw
+	-- defines these names; the map is here so draw need not require it.
+	local BPP = { bgrx = 4, ["r5g6b5"] = 2 }
+
+	local function pixwidth(fmt)
+		return BPP[fmt or "bgrx"]
+	end
+
+	-- fmt still travels: two bytes could be more than one format, and
+	-- the server cannot tell by looking.
+	local function loadband(r, data, wait, fmt, bpp)
+		local stride = r.w * bpp
 		local perband = stride > 0 and (CHUNK // stride) or 0
 
 		-- the whole payload in one message. What the caller handed
 		-- us is the caller's, so it travels as bytes rather than
 		-- being taken away.
 		if perband >= r.h then
-			return tell({ op = "load", r = r, data = data }, wait)
+			return tell({ op = "load", r = r, data = data,
+			    fmt = fmt }, wait)
 		end
 
 		-- not even one row fits, so split the ROW and recurse on what
@@ -146,7 +159,7 @@ function M.new(handle, chunk)
 		-- sub-byte depths; every pixel here is four whole bytes, so
 		-- there is nothing to align.
 		if perband < 1 then
-			local half = CHUNK // 4
+			local half = CHUNK // bpp
 
 			if half < 1 then
 				return nil, "message limit below one pixel"
@@ -167,8 +180,9 @@ function M.new(handle, chunk)
 					local ok, err = tell({ op = "load",
 					    r = { x = r.x + x, y = r.y + y,
 					        w = n, h = 1 },
-					    data = given(piece(row, x * 4 + 1,
-					        (x + n) * 4)) }, last)
+					    fmt = fmt,
+					    data = given(piece(row, x * bpp + 1,
+					        (x + n) * bpp)) }, last)
 
 					if not ok then
 						return nil, err
@@ -194,7 +208,7 @@ function M.new(handle, chunk)
 			-- in order, so its reply reports the whole sequence.
 			local last = y + n >= r.h
 			local ok, err = tell({ op = "load", r = band,
-			    data = given(slice) }, wait and last)
+			    fmt = fmt, data = given(slice) }, wait and last)
 
 			if not ok then
 				return nil, err
@@ -207,8 +221,16 @@ function M.new(handle, chunk)
 	-- give: the bytes are the caller's to lose, so a load that fits one
 	-- message hands them over instead of copying them in. A banded load
 	-- copies either way, since a band is part of the payload.
-	function f.load(r, data, wait, give)
-		return loadband(r, give and given(data) or data, wait)
+	-- fmt names what the bytes are. Absent means bgrx, so a caller
+	-- written before there was a choice keeps working.
+	function f.load(r, data, wait, give, fmt)
+		local bpp = pixwidth(fmt)
+
+		if not bpp then
+			return nil, "no such format: " .. tostring(fmt)
+		end
+		return loadband(r, give and given(data) or data, wait, fmt,
+		    bpp)
 	end
 	-- the reply is a message too, so readback needs the same banding as
 	-- load above -- the limit is on messages, not on direction. plan 9

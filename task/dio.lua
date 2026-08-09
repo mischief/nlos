@@ -569,7 +569,7 @@ local function rectop(op)
 			return nil, err
 		end
 		return forward({ op = op, r = r, color = m.color,
-		    data = m.data }, wait)
+		    data = m.data, fmt = m.fmt }, wait)
 	end
 end
 
