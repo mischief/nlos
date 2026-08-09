@@ -66,14 +66,53 @@ local function segrects(x, y, w, h, t)
 	}
 end
 
--- an unlit segment is painted background rather than skipped, so a
--- digit replacing another erases what it does not light.
+-- the box a glyph's lit segments actually cover. e and f are the left
+-- column, b and c the right, a, d and g the span between: a 1 is bc
+-- alone and sits hard right, a 3 has no left column at all, and both
+-- read as uneven spacing between the pairs.
+local XSPAN = {
+	e = { 0, 0 }, f = { 0, 0 },
+	a = { 1, 1 }, d = { 1, 1 }, g = { 1, 1 },
+	b = { 2, 2 }, c = { 2, 2 },
+}
+
+local function ink(on, w, t)
+	local lo, hi = 2, 0
+
+	for s in on:gmatch(".") do
+		local z = XSPAN[s]
+
+		if z then
+			lo = math.min(lo, z[1])
+			hi = math.max(hi, z[2])
+		end
+	end
+	if lo > hi then
+		return 0, w
+	end
+
+	local edge = { [0] = 0, [1] = t, [2] = w - t }
+	local far = { [0] = t, [1] = w - t, [2] = w }
+
+	return edge[lo], far[hi]
+end
+
+-- centred in its cell, so the gaps between pairs are the gaps that
+-- show. The cell is cleared first: a glyph drawn at one offset cannot
+-- be erased by the segments of one drawn at another.
 local function digit(ch, x, y, w, h, t)
 	local on = SEG[ch] or ""
-	local r = segrects(x, y, w, h, t)
+	local l, r = ink(on, w, t)
+	local dx = (w - (r - l)) // 2 - l
+
+	fb.fill(memdraw.rect(x, y, w, h), DIGITAL.bg)
+
+	local rects = segrects(x + dx, y, w, h, t)
 
 	for _, s in ipairs(ORDER) do
-		fb.fill(r[s], on:find(s, 1, true) and DIGITAL.fg or DIGITAL.bg)
+		if on:find(s, 1, true) then
+			fb.fill(rects[s], DIGITAL.fg)
+		end
 	end
 end
 
@@ -176,7 +215,11 @@ end
 local D = math.min(W, H) - 8
 local FX, FY = (W - D) // 2, (H - D) // 2
 local R = D // 2
-local dial				-- made on first use, kept after
+
+-- The pristine dial and the one the hands go on, each D*D*4 bytes:
+-- made when the face is shown, dropped when it is not. Kept apart so
+-- a tick is a blit rather than composing the dial again.
+local dial, work
 
 local function disc(img, cx, cy, rad, color)
 	for y = -rad, rad do
@@ -201,11 +244,14 @@ local function hand(img, cx, cy, angle, len, wide, color)
 	end
 end
 
+local RIMR = R - 1
+local DIALR = R - math.max(2, R // 24)
+
 local function makedial()
 	local img = memdraw.image(D, D, FACE.bg)
 
-	disc(img, R, R, R - 1, FACE.rim)
-	disc(img, R, R, R - math.max(2, R // 24), FACE.dial)
+	disc(img, R, R, RIMR, FACE.rim)
+	disc(img, R, R, DIALR, FACE.dial)
 	for i = 0, 11 do
 		local a = i * math.pi / 6
 		local wide = (i % 3 == 0) and math.max(3, R // 12)
@@ -221,9 +267,12 @@ end
 local FRECT = memdraw.rect(FX, FY, D, D)
 
 local function paint_face(now)
-	dial = dial or makedial()
+	if not work then
+		dial = makedial()
+		work = memdraw.image(D, D, FACE.bg)
+	end
 
-	local img = memdraw.image(D, D, FACE.bg)
+	local img = work
 
 	img:draw(memdraw.pt(0, 0), dial, dial:rect())
 
@@ -240,28 +289,49 @@ local function paint_face(now)
 	end
 	disc(img, R, R, math.max(2, R // 22), FACE.hand)
 
-	fb.load(FRECT, img:bytes(img:rect()), false, true)
+	-- not given away: bytes() of a whole image is a view onto it, and
+	-- this image is drawn over again next tick.
+	fb.load(FRECT, img:bytes(img:rect()))
 end
 
 -- ---- both, and the switch between them ----
 
-local function clear()
-	fb.fill(memdraw.rect(0, 0, W, H), face and FACE.bg or DIGITAL.bg)
-	shown, shownday = {}, {}
-end
+-- A face is loaded as several bands and yields between them. Without
+-- this, a switch arriving mid-load clears the screen and the remaining
+-- bands land on top of whatever replaced it.
+local painting = require("sync.lock").new()
 
-local function paint(force)
+-- flip: turn the clock over first. clear: wipe before drawing.
+local function paint(force, flip, wipe)
+	painting:lock()
+
+	if flip then
+		face = not face
+	end
+	if wipe or flip then
+		fb.fill(memdraw.rect(0, 0, W, H),
+		    face and FACE.bg or DIGITAL.bg)
+		shown, shownday = {}, {}
+		force = true
+	end
+	-- half a megabyte of dial that a digital clock is not showing.
+	-- collected here rather than left for whenever, since nothing
+	-- else in this program allocates enough to drive a step.
+	if not face and work then
+		dial, work = nil, nil
+		collectgarbage("collect")
+	end
+
 	local now = sys.time()
+	local ok, err = pcall(face and paint_face or paint_digital, now, force)
 
-	if face then
-		paint_face(now)
-	else
-		paint_digital(now, force)
+	painting:unlock()
+	if not ok then
+		error(err, 0)
 	end
 end
 
-clear()
-paint(true)
+paint(nil, false, true)
 
 local N = prog.ns()
 
@@ -287,9 +357,7 @@ if mouse then
 			local tap = b and b % 8 ~= 0 and b % 8 or 0
 
 			if tap ~= 0 and not down then
-				face = not face
-				clear()
-				paint(true)
+				paint(nil, true)
 			end
 			down = tap ~= 0
 		end
@@ -310,8 +378,7 @@ if wctl then
 				break
 			end
 			if s:match("redraw") then
-				clear()
-				paint(true)
+				paint(nil, false, true)
 			end
 		end
 		wctl:close()
