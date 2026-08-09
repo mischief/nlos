@@ -141,6 +141,7 @@ function M.decode(pkt)
 		yiaddr = yiaddr,
 		siaddr = siaddr,
 		dns = {},
+		ntp = {},
 	}
 
 	-- Parse options starting at byte 241
@@ -169,7 +170,6 @@ function M.decode(pkt)
 					end
 				end
 			elseif code == M.OPT_NTP then
-				result.ntp = result.ntp or {}
 				for i = 1, len, 4 do
 					if i + 3 <= len then
 						result.ntp[#result.ntp + 1] = bytes_to_ip(data, i)
@@ -190,6 +190,29 @@ function M.decode(pkt)
 	end
 
 	return result
+end
+
+-- the ACK is authoritative, and `prev` -- the OFFER, or the lease being
+-- renewed -- supplies what a server omits because it has already said
+-- it. One constructor for both: two of them drifted, and the field that
+-- was in neither was the one nothing read.
+function M.lease(ack, prev)
+	prev = prev or {}
+
+	local function list(a, b)
+		return (a and #a > 0) and a or b
+	end
+
+	return {
+		ip = ack.yiaddr,
+		mask = ack.subnet_mask or prev.subnet_mask or prev.mask,
+		router = ack.router or prev.router,
+		dns = list(ack.dns, prev.dns),
+		ntp = list(ack.ntp, prev.ntp),
+		domain = ack.domain or prev.domain,
+		lease_time = ack.lease_time or prev.lease_time,
+		server_id = ack.server_id or prev.server_id,
+	}
 end
 
 -- ---- the client ----
@@ -340,20 +363,7 @@ function M.acquire(udp, udph, opts)
 
 			if ack then
 				udp.close(conn)
-				-- the ACK is authoritative, but a server may
-				-- omit what it already said in the OFFER
-				return {
-					ip = ack.yiaddr,
-					mask = ack.subnet_mask or
-					    offer.subnet_mask,
-					router = ack.router or offer.router,
-					dns = (#ack.dns > 0) and ack.dns or
-					    offer.dns,
-					domain = ack.domain or offer.domain,
-					lease_time = ack.lease_time,
-					server_id = ack.server_id or
-					    offer.server_id,
-				}
+				return M.lease(ack, offer)
 			end
 		end
 	end
@@ -398,15 +408,7 @@ function M.renew(udp, udph, lease, mac)
 
 		if ack then
 			udp.close(conn)
-			return {
-				ip = ack.yiaddr,
-				mask = ack.subnet_mask or lease.mask,
-				router = ack.router or lease.router,
-				dns = (#ack.dns > 0) and ack.dns or lease.dns,
-				domain = ack.domain or lease.domain,
-				lease_time = ack.lease_time or lease.lease_time,
-				server_id = ack.server_id or lease.server_id,
-			}
+			return M.lease(ack, lease)
 		end
 	end
 	udp.close(conn)

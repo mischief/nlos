@@ -1345,6 +1345,17 @@ test('tcp4-codec', lua_interp,
   depends: host_deps,
 )
 
+# lib/dhcp.lua's options, built by hand. A server offers what it is
+# configured to offer, so the ones this machine's server does not send
+# are reachable here and nowhere else.
+test('dhcp-codec', lua_interp,
+  args: [files('test/host_dhcp.lua')],
+  protocol: 'tap',
+  timeout: 20,
+  env: host_env,
+  depends: host_deps,
+)
+
 # lib/tcb.lua is one connection's state machine, and sans-io for the
 # same reason: it takes segments as tables and hands them back, so two
 # of them can be wired to each other here and driven through a handshake
