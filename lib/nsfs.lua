@@ -217,6 +217,14 @@ function M.new(ns, root)
 		return must(w, err)
 	end
 
+	function B.remove(h)
+		if h.chan then
+			pcall(h.chan.close, h.chan)
+			h.chan = nil
+		end
+		must(ns:remove(nspath(h.path)))
+	end
+
 	function B.readdir(h)
 		local ents = must(ns:readdir(nspath(h.path)))
 		local out = {}
