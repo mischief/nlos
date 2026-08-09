@@ -12,7 +12,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(26)
+tap.plan(33)
 
 tap.ok(caps_of.fb ~= nil, "boot payload was granted fb")
 if not caps_of.fb then
@@ -183,6 +183,84 @@ local gone, ferr = fb.draw(nil, id, memdraw.rect(0, 0, 4, 4),
 
 tap.ok(not gone and tostring(ferr):find("no such image"),
     "a freed id is refused: " .. tostring(ferr))
+
+-- ---- an image space per client ----
+
+-- Ids are small integers, so a shared table would let one client name
+-- another's image by guessing. Two sessions each allocate first, both
+-- get the same number, and neither can see the other's pixels.
+
+local s1 = fb.session()
+local s2 = fb.session()
+
+tap.ok(s1 ~= nil and s2 ~= nil, "a client can ask for its own image space")
+
+local i1 = s1.alloc(8, 8, nil, memdraw.green)
+local i2 = s2.alloc(8, 8, nil, memdraw.red)
+
+tap.is(i1, i2, "each session numbers its own images from the same start")
+
+s1.draw(nil, i1, memdraw.rect(0, 0, 8, 8), memdraw.pt(0, 0), true)
+
+local mine = memdraw.fromBytes(8, 8, fb.unload(memdraw.rect(0, 0, 8, 8)))
+
+tap.is(memdraw.at(mine, 0, 0), memdraw.green, "one session's id is its own")
+
+s2.draw(nil, i2, memdraw.rect(0, 0, 8, 8), memdraw.pt(0, 0), true)
+
+local theirs = memdraw.fromBytes(8, 8, fb.unload(memdraw.rect(0, 0, 8, 8)))
+
+tap.is(memdraw.at(theirs, 0, 0), memdraw.red,
+    "and the other's id of the same number is not")
+
+-- the task's own port is a third space. Its ids carry on from the
+-- allocations above rather than restarting, which is what says it is a
+-- space of its own and not one the sessions share.
+local anon = fb.alloc(8, 8, nil, memdraw.blue)
+
+fb.draw(nil, anon, memdraw.rect(0, 0, 8, 8), memdraw.pt(0, 0), true)
+
+local third = memdraw.fromBytes(8, 8, fb.unload(memdraw.rect(0, 0, 8, 8)))
+
+tap.is(memdraw.at(third, 0, 0), memdraw.blue,
+    "the task's own port is a third space, numbered separately")
+
+-- ---- and a client that goes away takes its images with it ----
+
+-- The reason ids are per client rather than merely tidy: nothing else
+-- can free them. A big image makes the drop measurable in the server's
+-- own memory rather than inferred.
+
+local function fbused()
+	for _, pid in ipairs(sys.procs()) do
+		local st = sys.pidstat(pid)
+
+		if st.name == "fb" then
+			return st.used
+		end
+	end
+end
+
+local doomed = fb.session()
+local before2 = fbused()
+
+doomed.alloc(256, 256, nil, memdraw.red)
+
+local held = fbused()
+
+tap.ok(before2 == nil or held > before2 + 200000,
+    "a 256x256 image is charged to the server that holds it")
+
+-- dropping the right is all a dying program does
+sys.close(doomed.handle)
+fb.mode()			-- a message, so the loop notices the hangup
+fb.mode()
+
+local after2 = fbused()
+
+tap.ok(before2 == nil or after2 < held - 200000,
+    "and it goes when the client's right does (" .. tostring(held) ..
+    " -> " .. tostring(after2) .. ")")
 
 -- ---- refusals ----
 --

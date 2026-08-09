@@ -270,9 +270,13 @@ local CENTRE = memdraw.pt(R, R)
 -- composed here and handed over once, then dropped: the copy that
 -- matters from now on is the screen's.
 local function makeimages()
-	dialid = fb.alloc(D, D, FMT, FACE.bg)
-	workid = fb.alloc(D, D, FMT, FACE.bg)
+	local err
+
+	dialid, err = fb.alloc(D, D, FMT, FACE.bg)
+	workid = dialid and fb.alloc(D, D, FMT, FACE.bg)
 	if not dialid or not workid then
+		warn("@on")
+		warn("clock: no images from the screen: " .. tostring(err))
 		return false
 	end
 

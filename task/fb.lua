@@ -47,19 +47,6 @@
 
 local sys = require("los.sys")
 
--- No los.thread: this loop has no concurrency, and on a proc with no
--- threads thread.recv is exactly the tryrecv/block below -- for which
--- it costs ~24KB resident. See task/power.lua.
-local function recv(h)
-	while true do
-		local ok, m = sys.tryrecv(h)
-
-		if ok then
-			return m
-		end
-		sys.block(h)
-	end
-end
 local platform = require("los.platform.fb")
 
 local function rect(r)
@@ -78,19 +65,28 @@ local function md()
 	return memdraw
 end
 
--- id -> image. Ids are handed out, never reused within a boot, so a
--- stale one is an error rather than someone else's picture.
-local images = {}
-local nextid = 1
+-- ---- one image space per client ----
+
+-- Ids are per session, as 9P fids are per connection: a shared table
+-- lets a client name another's image by guessing a small integer, and
+-- a port carries no sender identity. lib/srv.lua says the same of fids.
+local anon = { images = {}, nextid = 1 }
+
+-- parallel: ports is the set altrecv waits on, spaces[i] is whose
+-- images arrive on ports[i]. [1] is this task's own port, for a client
+-- that never asked for a session.
+local ports = { sys.SELF }
+local spaces = { anon }
+local nsession = 0
 
 -- the image an op names, or nil for the screen. Raises on an id that
 -- was never given out, which is a client bug and not a blank draw.
-local function image(id)
+local function image(space, id)
 	if id == nil then
 		return nil
 	end
 
-	local img = images[id]
+	local img = space.images[id]
 
 	if not img then
 		error("no such image: " .. tostring(id), 0)
@@ -107,22 +103,35 @@ end
 
 local ops = {}
 
-function ops.alloc(m)
+-- a client's own image space, and a right to talk on it. Ours is
+-- closed once the reply has gone, so the client holds the only send
+-- right and sys.hungup tells us when it has gone.
+function ops.session()
+	local recv = sys.newport("fb.session")
+	local send = sys.sendright(recv)
+
+	ports[#ports + 1] = recv
+	spaces[#spaces + 1] = { images = {}, nextid = 1 }
+	nsession = nsession + 1
+	return { port = { __right = send } }, send
+end
+
+function ops.alloc(m, space)
 	local w, h = m.w or 0, m.h or 0
 
 	if w <= 0 or h <= 0 then
 		error("alloc: " .. w .. "x" .. h, 0)
 	end
 
-	local id = nextid
+	local id = space.nextid
 
-	nextid = nextid + 1
-	images[id] = md().image(w, h, m.color, m.fmt)
+	space.nextid = id + 1
+	space.images[id] = md().image(w, h, m.color, m.fmt)
 	return id
 end
 
-function ops.free(m)
-	images[m.id] = nil
+function ops.free(m, space)
+	space.images[m.id] = nil
 	return true
 end
 
@@ -139,9 +148,9 @@ function ops.setmode(m)
 	return true
 end
 
-function ops.fill(m)
+function ops.fill(m, space)
 	local x, y, w, h = rect(m.r)
-	local img = image(m.id)
+	local img = image(space, m.id)
 
 	if img then
 		img:fill(m.r, m.color or 0)
@@ -151,8 +160,8 @@ function ops.fill(m)
 	return true
 end
 
-function ops.line(m)
-	local img = image(m.id)
+function ops.line(m, space)
+	local img = image(space, m.id)
 	local x0, y0 = point(m.p0)
 	local x1, y1 = point(m.p1)
 
@@ -168,9 +177,9 @@ end
 -- src into dst at p. dst absent is the screen, and that is the one
 -- direction that reaches the panel: the pixels are here already, so it
 -- is a load with nothing crossing the port.
-function ops.draw(m)
-	local src = image(m.src)
-	local dst = image(m.dst)
+function ops.draw(m, space)
+	local src = image(space, m.src)
+	local dst = image(space, m.dst)
 
 	if not src then
 		error("draw: no source image", 0)
@@ -190,9 +199,9 @@ end
 -- m.fmt names what the client's bytes are; absent is bgrx. The driver
 -- takes what mode() said it takes without converting, and converts
 -- anything else.
-function ops.load(m)
+function ops.load(m, space)
 	local x, y, w, h = rect(m.r)
-	local img = image(m.id)
+	local img = image(space, m.id)
 
 	if img then
 		local band = md().fromBytes(w, h, m.data, m.fmt)
@@ -246,34 +255,71 @@ function ops.cursor(m)
 	return platform.cursor(m.x, m.y, m.on)
 end
 
-while true do
-	local m = recv(sys.SELF)
-	local fn = ops[m.op]
-	local reply = m.reply and m.reply.__right
+-- a session whose client has gone: sys.hungup is sole_holder, so it is
+-- true once we are the only holder left. Its images go with it, which
+-- is the whole reason ids are per client.
+local function reap()
+	local went = false
 
-	if not fn then
-		if reply then
-			sys.send(reply,
-			    { err = "no such op: " .. tostring(m.op) })
-		end
-	else
-		-- one pcall per message, at the boundary, exactly as
-		-- lib/dev.lua describes: everything inside raises freely and
-		-- the caller gets the message back as text.
-		local ok, res = pcall(fn, m)
-
-		if reply then
-			if ok then
-				sys.send(reply, { ok = res })
-			else
-				sys.send(reply, { err = tostring(res) })
-			end
+	for i = #ports, 2, -1 do
+		if sys.hungup(ports[i]) then
+			sys.close(ports[i])
+			table.remove(ports, i)
+			table.remove(spaces, i)
+			nsession = nsession - 1
+			went = true
 		end
 	end
+	-- an image is a few words of table and a los.buf of pixels, and
+	-- the collector only sees the words: dropping a megabyte of them
+	-- moves this heap too little to pace a step of its own.
+	if went then
+		collectgarbage("collect")
+	end
+end
 
-	-- a right in a message is a copy this proc owns, and sending to it
-	-- does not consume it: without this every request leaks one.
-	if reply then
-		sys.close(reply)
+while true do
+	local i, m = sys.altrecv(ports)
+
+	if i and type(m) == "table" then
+		local space = spaces[i]
+		local fn = ops[m.op]
+		local reply = m.reply and m.reply.__right
+
+		if not fn then
+			if reply then
+				sys.send(reply,
+				    { err = "no such op: " .. tostring(m.op) })
+			end
+		else
+			-- one pcall per message, at the boundary, exactly as
+			-- lib/dev.lua describes: everything inside raises
+			-- freely and the caller gets the message back as text.
+			local ok, res, tmp = pcall(fn, m, space)
+
+			if reply then
+				if ok then
+					sys.send(reply, { ok = res })
+				else
+					sys.send(reply, { err = tostring(res) })
+				end
+			end
+			-- the session's own send right, surplus once the
+			-- reply has carried a copy to the client: holding it
+			-- would keep sys.hungup false for ever.
+			if ok and tmp then
+				sys.close(tmp)
+			end
+		end
+
+		-- a right in a message is a copy this proc owns, and
+		-- sending to it does not consume it: without this every
+		-- request leaks one.
+		if reply then
+			sys.close(reply)
+		end
+	end
+	if nsession > 0 then
+		reap()
 	end
 end

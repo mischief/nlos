@@ -83,6 +83,19 @@ function M.new(handle, chunk)
 
 	-- ---- images the server keeps ----
 
+	-- the same screen, with an image space nobody else can name: ids
+	-- are small integers, so without this a client reaches another's
+	-- image by guessing one. The images go when this client's right
+	-- is dropped, so a program that dies stops costing the server.
+	function f.session()
+		local r, err = ask({ op = "session" })
+
+		if not r then
+			return nil, err
+		end
+		return M.new(r.port.__right, chunk)
+	end
+
 	-- alloc answers an id. The pixels never leave the server, so a
 	-- picture built from parts crosses this port once and a frame
 	-- made of it costs a message rather than its own size.
