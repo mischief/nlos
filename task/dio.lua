@@ -323,6 +323,37 @@ end
 -- about whether it is running. What is left to mark is which one is on
 -- the glass, and that is the border.
 
+-- A button's glyph, kept by the screen rather than rendered and shipped
+-- again on every switch, scroll and launch. The set is what the
+-- catalogue holds, so it is small and it stops growing.
+local glyphs = {}
+
+local function glyph(ch, color)
+	local key = ch .. ":" .. color
+	local g = glyphs[key]
+
+	if g then
+		return g
+	end
+
+	local pix, gw, gh = font.render(ch, 0x000000, color)
+
+	if gw <= 0 then
+		return nil
+	end
+
+	local id = screen.alloc(gw, gh)
+
+	if not id then
+		return nil			-- draw it the long way
+	end
+	screen.load({ x = 0, y = 0, w = gw, h = gh }, pix, true, false, nil,
+	    id)
+	g = { id = id, w = gw, h = gh }
+	glyphs[key] = g
+	return g
+end
+
 -- one button: a filled square, a border saying whether it is in front,
 -- and a glyph in the middle.
 local function drawface(r, color, label, edge)
@@ -332,11 +363,12 @@ local function drawface(r, color, label, edge)
 	screen.fill({ x = r.x - 1, y = r.y - 1, w = 1, h = r.h + 2 }, edge)
 	screen.fill({ x = r.x + r.w, y = r.y - 1, w = 1, h = r.h + 2 }, edge)
 
-	local pix, gw, gh = font.render(label:sub(1, 1), 0x000000, color)
+	local g = glyph(label:sub(1, 1), color)
 
-	if gw > 0 and gw <= r.w and gh <= r.h then
-		screen.load({ x = r.x + (r.w - gw) // 2,
-		    y = r.y + (r.h - gh) // 2, w = gw, h = gh }, pix)
+	if g and g.w <= r.w and g.h <= r.h then
+		screen.draw(nil, g.id, { x = 0, y = 0, w = g.w, h = g.h },
+		    { x = r.x + (r.w - g.w) // 2,
+		      y = r.y + (r.h - g.h) // 2 })
 	end
 end
 
