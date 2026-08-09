@@ -54,7 +54,10 @@ end
 -- than a crash on the first create.
 function Fs:now()
   if self.clockfn then return self.clockfn() end
-  if os and os.time then return os.time() * dat.Nsec end
+  -- os.time answers nil where the wall clock has never been set
+  local t = os and os.time and os.time()
+
+  if t then return t * dat.Nsec end
   return 0
 end
 

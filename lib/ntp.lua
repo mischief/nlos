@@ -92,50 +92,10 @@ function ntp.decode(p)
 	}
 end
 
--- days in each month, non-leap
-local MDAYS = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
-
-local function leapyear(y)
-	return (y % 4 == 0 and y % 100 ~= 0) or y % 400 == 0
-end
-
--- unix seconds -> "YYYY-MM-DD HH:MM:SS", UTC.
---
--- Done here rather than with os.date because there is no libc timezone
--- database on this machine and os.time/os.date have nothing to work
--- from -- the point of fetching the time is that nothing else knows it.
+-- unix seconds -> "YYYY-MM-DD HH:MM:SS", UTC. lib/time.lua is the
+-- calendar; this is the one format an ntp reply is usually wanted in.
 function ntp.utc(unix)
-	local days = unix // 86400
-	local rem = unix % 86400
-	local y = 1970
-
-	while true do
-		local n = leapyear(y) and 366 or 365
-
-		if days < n then
-			break
-		end
-		days = days - n
-		y = y + 1
-	end
-
-	local mon = 1
-
-	while true do
-		local n = MDAYS[mon]
-
-		if mon == 2 and leapyear(y) then
-			n = 29
-		end
-		if days < n then
-			break
-		end
-		days = days - n
-		mon = mon + 1
-	end
-
-	return string.format("%04d-%02d-%02d %02d:%02d:%02d", y, mon, days + 1,
-	    rem // 3600, (rem % 3600) // 60, rem % 60)
+	return require("time").date("%Y-%m-%d %H:%M:%S", unix)
 end
 
 return ntp

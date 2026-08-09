@@ -67,6 +67,9 @@ void	kernel_strip_debug(struct lua_State *L);
 void	kernel_wrap_coroutine(struct lua_State *L);
 int	kernel_current_is_boot(void);
 
+/* unix seconds, or 0 where nothing has set the clock. */
+long long kernel_walltime(void);
+
 /* dynamic wait-set for token/Event-based device completions (net.c's
  * tcp4 tokens today). register while an operation is outstanding,
  * unregister once its Event has fired and been handled.

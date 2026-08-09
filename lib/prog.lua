@@ -393,8 +393,29 @@ local function install(ctx)
 	G.os.getenv = function(k)
 		return (ctx.env or {})[k]
 	end
-	G.os.time = function()
-		return sys.uptime_ms() // 1000
+	-- the machine's wall clock, nil until something has set it. A
+	-- program that only wants an interval wants os.clock, which is
+	-- always there.
+	G.os.time = function(t)
+		if type(t) == "table" then
+			return require("time").unix(t)
+		end
+		return sys.time()
+	end
+	G.os.date = function(fmt, when)
+		when = when or sys.time()
+		if not when then
+			return nil
+		end
+		return require("time").date(fmt, when)
+	end
+	G.os.difftime = function(a, b)
+		return (a or 0) - (b or 0)
+	end
+	-- seconds since boot, monotonic: this is the one a timing loop
+	-- wants, and it does not need the clock to have been set.
+	G.os.clock = function()
+		return sys.uptime_ms() / 1000
 	end
 
 	-- io.write/io.stderr must reach the ABI's streams, not the raw

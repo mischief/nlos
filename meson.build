@@ -273,6 +273,7 @@ else
     'lib/dhcp.lua',
     'lib/dhcpc.lua',
     'lib/ntp.lua',
+    'lib/time.lua',
     'lib/dns.lua',
     'lib/dnsc.lua',
     'lib/client/rpc.lua',
@@ -569,6 +570,7 @@ lua_payload = files(
   'bin/host.lua',
   'bin/date.lua',
   'lib/ntp.lua',
+  'lib/time.lua',
   # the irc protocol. On the image ahead of any client for it, so a
   # session can drive it from the repl -- which is how the client is
   # debugged before there is a client.
@@ -692,6 +694,7 @@ lua_payload = files(
   'task/tcp4.lua',
   'lib/dns.lua',
   'task/dns.lua',
+  'task/timed.lua',
   'lib/espfs.lua',
   'task/espsrv.lua',
   'task/fb.lua',
@@ -843,7 +846,8 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
-              'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed']
+              'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
+              'clock']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

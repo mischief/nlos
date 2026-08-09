@@ -3,6 +3,7 @@
 --   > date
 --   > date 162.159.200.1        ask that server instead
 --   > date -u                   seconds since the epoch, for a script
+--   > date -n                   ask a server even if the clock is set
 --
 -- The machine has no real-time clock. microvm's launchers pass rtc=off
 -- and a vmd guest has no battery-backed anything either, so the only
@@ -14,8 +15,10 @@
 -- bin/host.lua reads /net/dns. A machine whose dhcp server offered no
 -- ntp option has to be told one.
 --
--- This prints the time; it does not set anything. There is nothing to
--- set: no proc owns a wall clock for the rest of the machine to read.
+-- The machine's own clock is sys.time(), which init sets from a server
+-- at boot. This reads it, and only goes to the network when it is unset
+-- or -n says to. Setting it is init's: sys.settime is boot-only, so a
+-- program in a shell cannot move the clock every other proc reads.
 
 local unistd = require("posix.unistd")
 local sys = require("los.sys")
@@ -30,16 +33,40 @@ end
 
 local server
 local raw = false
+local net = false
 
 for _, a in ipairs(arg) do
 	if a == "-u" then
 		raw = true
+	elseif a == "-n" then
+		net = true
 	elseif a:sub(1, 1) == "-" and #a > 1 then
-		die("usage: date [-u] [server]")
+		die("usage: date [-un] [server]")
 	elseif not server then
 		server = a
+		net = true
 	else
-		die("usage: date [-u] [server]")
+		die("usage: date [-un] [server]")
+	end
+end
+
+local function show(unix)
+	if raw then
+		unistd.write(1, tostring(unix) .. "\n")
+	else
+		unistd.write(1, ntp.utc(unix) .. " UTC\n")
+	end
+	os.exit(0)
+end
+
+-- the machine's clock, where it has one and nothing asked for a fresh
+-- reading. No network, no lease, and the same answer every other proc
+-- gets from os.time().
+if not net then
+	local now = sys.time()
+
+	if now then
+		show(now)
 	end
 end
 
@@ -75,7 +102,7 @@ if not sa then
 	die("not an address: " .. server .. " (no resolver here; try host)")
 end
 
-local conn = udp.open(20000 + (os.time() % 10000))
+local conn = udp.open(0)	-- 0: the stack picks an ephemeral port
 
 if not conn then
 	die("cannot open a udp port")
@@ -130,8 +157,4 @@ if not reply then
 	die(server .. ": " .. tostring(why or "no reply"))
 end
 
-if raw then
-	unistd.write(1, tostring(reply.unix) .. "\n")
-else
-	unistd.write(1, ntp.utc(reply.unix) .. " UTC\n")
-end
+show(reply.unix)

@@ -1386,6 +1386,57 @@ uptime_ms(void)
 	return (platform_ticks() - boot_tsc) / cyc_per_ms;
 }
 
+/* The wall clock: unix seconds at boot, all a machine with no battery
+ * keeps. Unset reads as nil, not 1970. Locked because a 64-bit store
+ * is not atomic on every target, and a torn read is another century.
+ */
+static struct lock timelock = LOCK_INIT;
+static long long wall_base_s = -1;	/* unix seconds at boot, or -1 */
+
+/* unix seconds, or 0 when the clock has never been set. */
+long long
+kernel_walltime(void)
+{
+	long long base, up = (long long)uptime_ms() / 1000;
+
+	lock(&timelock);
+	base = wall_base_s;
+	unlock(&timelock);
+	return base < 0 ? 0 : base + up;
+}
+
+static int
+api_time(lua_State *L)
+{
+	long long t = kernel_walltime();
+
+	if (t == 0)
+		lua_pushnil(L);
+	else
+		lua_pushinteger(L, (lua_Integer)t);
+	return 1;
+}
+
+/* sys.settime(unix) -- boot procs only. Every proc reads this clock,
+ * so a writer is a proc that can lie to all the others.
+ */
+static int
+api_settime(lua_State *L)
+{
+	lua_Integer t = luaL_checkinteger(L, 1);
+
+	if (!kernel_current_is_boot())
+		return luaL_error(L, "settime: not a boot proc");
+	if (t <= 0)
+		return luaL_error(L, "settime: not a unix time");
+
+	lock(&timelock);
+	wall_base_s = (long long)t - (long long)(uptime_ms() / 1000);
+	unlock(&timelock);
+	lua_pushinteger(L, t);
+	return 1;
+}
+
 /* one-shot timers. sys.timer(ms) mints a port, hands the caller its
  * receive right, and records a deadline here; expire_timers() pushes one
  * message when the deadline passes and lets the port go.
@@ -6138,6 +6189,8 @@ static const luaL_Reg kapi[] = {
 	{ "pidstat", api_pidstat },
 	{ "ticks", api_ticks },
 	{ "uptime_ms", api_uptime_ms },
+	{ "time", api_time },
+	{ "settime", api_settime },
 	{ "timer", api_timer },
 	{ "setexit", api_setexit },
 	{ "hungup", api_hungup },
