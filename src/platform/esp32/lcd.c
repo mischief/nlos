@@ -139,15 +139,14 @@ static unsigned char *shadow;
 static uint16_t *cshadow;
 static int probed, present;
 
-/* Raised when the band has left, so the next one may overwrite it. The
- * pixels belong to the DMA until this fires -- the old per-pixel loop
- * was slow enough to hide that and a memcpy is not.
+/* Raised when a transfer has finished. draw_bitmap queues and returns,
+ * so the pixels belong to the DMA until this fires -- and `band` is one
+ * buffer every caller reuses.
  */
-static SemaphoreHandle_t bandfree;
-static int bandbusy;
+static SemaphoreHandle_t sent;
 
 static bool
-bandsent(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ed,
+transdone(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ed,
     void *arg)
 {
 	BaseType_t woke = pdFALSE;
@@ -155,19 +154,24 @@ bandsent(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ed,
 	(void)io;
 	(void)ed;
 	(void)arg;
-	if (bandfree != NULL)
-		xSemaphoreGiveFromISR(bandfree, &woke);
+	if (sent != NULL)
+		xSemaphoreGiveFromISR(sent, &woke);
 	return woke == pdTRUE;
 }
 
-/* wait for the band to be free, if one is out */
-static void
-bandwait(void)
+/* one rectangle, and not back until the panel has it. Waiting rather
+ * than pipelining costs the setup of one transfer, and is what makes a
+ * reused staging buffer safe to write again.
+ */
+static int
+sendrect(int x, int y, int w, int h, const uint16_t *px)
 {
-	if (bandbusy && bandfree != NULL) {
-		xSemaphoreTake(bandfree, portMAX_DELAY);
-		bandbusy = 0;
-	}
+	if (esp_lcd_panel_draw_bitmap(panel, x, y, x + w, y + h,
+	    (void *)px) != ESP_OK)
+		return -1;
+	if (sent != NULL)
+		xSemaphoreTake(sent, portMAX_DELAY);
+	return 0;
 }
 
 /* ST7789 wants big-endian RGB565 on the wire. Doing the swap here means
@@ -205,7 +209,7 @@ luaos_lcd_present(void)
 		.lcd_param_bits = 8,
 		.spi_mode = 0,
 		.trans_queue_depth = 1,
-		.on_color_trans_done = bandsent,
+		.on_color_trans_done = transdone,
 	};
 	esp_lcd_panel_dev_config_t dev_cfg = {
 		.reset_gpio_num = LCD_RST,
@@ -265,8 +269,8 @@ luaos_lcd_present(void)
 	    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
 	if (band == NULL)
 		return 0;
-	bandfree = xSemaphoreCreateBinary();
-	if (bandfree == NULL)
+	sent = xSemaphoreCreateBinary();
+	if (sent == NULL)
 		return 0;
 
 	/* and blank it before the backlight comes on. The controller's
@@ -281,11 +285,8 @@ luaos_lcd_present(void)
 			int n = (LCD_H - y < BAND_ROWS) ? LCD_H - y :
 			    BAND_ROWS;
 
-			bandwait();
 			memset(band, 0, (size_t)LCD_W * n * sizeof *band);
-			esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_W, y + n,
-			    band);
-			bandbusy = 1;
+			sendrect(0, y, LCD_W, n, band);
 		}
 	}
 
@@ -579,7 +580,7 @@ cursor_blit(int with)
 		for (r = 0; r < h; r++)
 			buf[r * w + (curx - x)] = ink;
 	}
-	esp_lcd_panel_draw_bitmap(panel, x, y, x + w, y + h, buf);
+	sendrect(x, y, w, h, buf);
 }
 
 /* whether a rectangle just written overlaps the cursor, so the caller
@@ -630,7 +631,6 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 	if (!present || w <= 0 || h <= 0 || w > LCD_W)
 		return -1;
 
-	bandwait();
 	for (i = 0; i < w * BAND_ROWS; i++)
 		band[i] = px;
 
@@ -649,12 +649,14 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 				cshadow[(size_t)(y + r) * LCD_W + x + c] = px;
 	}
 
+	/* every band is the same pixels, so the wait is for room in the
+	 * queue rather than for the buffer.
+	 */
 	for (row = 0; row < h; row += BAND_ROWS) {
 		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
-		if (esp_lcd_panel_draw_bitmap(panel, x, y + row, x + w,
-		    y + row + n, band) != ESP_OK)
+
+		if (sendrect(x, y + row, w, n, band) != 0)
 			return -1;
-		bandbusy = 1;
 	}
 	if (cursor_hit(x, y, w, h))
 		cursor_blit(1);
@@ -678,8 +680,6 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 		int i, count = w * n;
 		const unsigned char *src = pix + (size_t)row * w * 4;
 
-		bandwait();
-
 		for (i = 0; i < count; i++) {
 			uint32_t b = src[i * 4 + 0];
 			uint32_t g = src[i * 4 + 1];
@@ -693,10 +693,8 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 				cshadow[(size_t)(y + row + i / w) * LCD_W +
 				    x + i % w] = band[i];
 		}
-		if (esp_lcd_panel_draw_bitmap(panel, x, y + row, x + w,
-		    y + row + n, band) != ESP_OK)
+		if (sendrect(x, y + row, w, n, band) != 0)
 			return -1;
-		bandbusy = 1;
 	}
 	if (cursor_hit(x, y, w, h))
 		cursor_blit(1);
@@ -720,7 +718,6 @@ luaos_lcd_load16(int x, int y, int w, int h, const unsigned char *pix)
 		const unsigned char *src = pix + (size_t)row * w * 2;
 		int i;
 
-		bandwait();
 		memcpy(band, src, (size_t)w * n * 2);
 		if (cshadow != NULL)
 			for (i = 0; i < n; i++)
@@ -734,10 +731,8 @@ luaos_lcd_load16(int x, int y, int w, int h, const unsigned char *pix)
 			for (i = 0; i < w * n; i++)
 				shadow_set(x + i % w, y + row + i / w,
 				    (src[i * 2] | src[i * 2 + 1]) != 0);
-		if (esp_lcd_panel_draw_bitmap(panel, x, y + row, x + w,
-		    y + row + n, band) != ESP_OK)
+		if (sendrect(x, y + row, w, n, band) != 0)
 			return -1;
-		bandbusy = 1;
 	}
 	if (cursor_hit(x, y, w, h))
 		cursor_blit(1);
@@ -773,18 +768,14 @@ luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h)
 		memmove(shadow + (size_t)toy * bpr, shadow + (size_t)y * bpr,
 		    (size_t)h * bpr);
 	}
-	/* DMA straight from the shadow, not through the shared band buffer:
-	 * draw_bitmap queues the transfer and returns, so a band staged in
-	 * one reused buffer is overwritten by the next row before the panel
-	 * has read it. The shadow rows are persistent and each transfer
-	 * reads its own, so the whole move can be in flight at once.
+	/* DMA straight from the shadow rather than staging through band:
+	 * the rows are already there and already in the panel's format.
 	 */
 	for (row = 0; row < h; row += BAND_ROWS) {
 		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
 
-		if (esp_lcd_panel_draw_bitmap(panel, 0, toy + row, LCD_W,
-		    toy + row + n, cshadow + (size_t)(toy + row) * LCD_W)
-		    != ESP_OK)
+		if (sendrect(0, toy + row, LCD_W, n,
+		    cshadow + (size_t)(toy + row) * LCD_W) != 0)
 			return -1;
 	}
 	if (cursor_hit(0, toy, LCD_W, h))

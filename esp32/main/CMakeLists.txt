@@ -137,6 +137,9 @@ set(EMBED_FILES
     task/cons.lua
     task/power.lua
     task/fb.lua
+    # the images task/fb.lua keeps for its clients: required on the
+    # first alloc, so a machine that never asks for one does not load it
+    lib/memdraw.lua
 
     # the block device and what it needs to be served. Only the T-Deck
     # has a card, and only that board starts blksrv -- esp_blk_present

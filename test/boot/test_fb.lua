@@ -12,7 +12,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(16)
+tap.plan(24)
 
 tap.ok(caps_of.fb ~= nil, "boot payload was granted fb")
 if not caps_of.fb then
@@ -112,6 +112,60 @@ local wback = memdraw.fromBytes(mode.w, 24,
 tap.is(memdraw.at(wback, 0, 23), memdraw.red, "full-width load: last row, left edge")
 tap.is(memdraw.at(wback, mode.w - 1, 23), memdraw.green,
     "full-width load: last row, right edge")
+
+-- ---- images the server keeps ----
+
+-- what devdraw's ids buy: pixels cross once, and a frame made of them
+-- is a message. Everything below is checked by reading the screen back,
+-- so it proves the server's own memory reached the glass.
+
+local id = fb.alloc(16, 16, nil, memdraw.blue)
+
+tap.ok(type(id) == "number", "alloc answers an image id")
+
+-- into the image, not the screen: the glass must not change yet
+fb.fill(memdraw.rect(0, 0, 16, 8), memdraw.green, true, id)
+
+local before = memdraw.fromBytes(16, 16, fb.unload(memdraw.rect(0, 0, 16, 16)))
+
+tap.ok(memdraw.at(before, 0, 0) ~= memdraw.green,
+    "a fill into an image leaves the screen alone")
+
+-- and now the same pixels, in one message carrying none of them
+fb.draw(nil, id, memdraw.rect(0, 0, 16, 16), memdraw.pt(0, 0), true)
+
+local shown = memdraw.fromBytes(16, 16, fb.unload(memdraw.rect(0, 0, 16, 16)))
+
+tap.is(memdraw.at(shown, 0, 0), memdraw.green, "drawn to the screen: top")
+tap.is(memdraw.at(shown, 15, 15), memdraw.blue, "drawn to the screen: bottom")
+
+-- image to image, which never touches the glass
+local other = fb.alloc(16, 16, nil, memdraw.red)
+
+fb.draw(other, id, memdraw.rect(0, 0, 16, 4), memdraw.pt(0, 0), true)
+fb.draw(nil, other, memdraw.rect(0, 0, 16, 16), memdraw.pt(0, 0), true)
+
+local both = memdraw.fromBytes(16, 16, fb.unload(memdraw.rect(0, 0, 16, 16)))
+
+tap.is(memdraw.at(both, 0, 0), memdraw.green, "image into image: the part copied")
+tap.is(memdraw.at(both, 0, 8), memdraw.red, "image into image: the part not")
+
+-- a line is drawn in the server, so a diagonal costs one message
+fb.line(other, memdraw.pt(0, 0), memdraw.pt(15, 15), 1, memdraw.white, true)
+fb.draw(nil, other, memdraw.rect(0, 0, 16, 16), memdraw.pt(0, 0), true)
+
+local lined = memdraw.fromBytes(16, 16, fb.unload(memdraw.rect(0, 0, 16, 16)))
+
+tap.is(memdraw.at(lined, 7, 7), memdraw.white, "a line reaches its middle")
+
+fb.free(id)
+fb.free(other)
+
+local gone, ferr = fb.draw(nil, id, memdraw.rect(0, 0, 4, 4),
+    memdraw.pt(0, 0), true)
+
+tap.ok(not gone and tostring(ferr):find("no such image"),
+    "a freed id is refused: " .. tostring(ferr))
 
 -- ---- refusals ----
 --

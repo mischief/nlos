@@ -19,6 +19,19 @@
 --   {op="unload", r=, reply=}               -> the pixels
 --   {op="scroll", r=, to=, reply=}          -> true
 --   {op="cursor", x=, y=, on=, reply=}      -> true
+--   {op="alloc", w=, h=, fmt=}              -> an image id
+--   {op="free", id=}, {op="draw", dst=, src=, r=, p=}
+--   {op="line", id=, p0=, p1=, thick=, color=}
+--
+-- ---- images the server keeps ----
+
+-- alloc answers an id and the pixels stay here, as devdraw's 'd'
+-- carries ids and no pixels. fill, load, line and draw take an `id`,
+-- and absent is the screen, so a caller that allocates nothing writes
+-- what it wrote before. A picture crosses the port once, not per frame.
+
+-- Freeing is the caller's: this loop cannot tell one sender from
+-- another, so it cannot drop a dead client's images as devdraw does.
 --
 -- a rectangle is {x=,y=,w=,h=} and `to` is a {x=,y=} destination
 -- corner. reply is optional on every op that only answers true: a
@@ -56,7 +69,62 @@ local function rect(r)
 	return r.x or 0, r.y or 0, r.w or 0, r.h or 0
 end
 
+-- on first image op, not at boot: a machine whose clients only fill and
+-- load never allocates one, and this task is started on every platform.
+local memdraw
+
+local function md()
+	memdraw = memdraw or require("memdraw")
+	return memdraw
+end
+
+-- id -> image. Ids are handed out, never reused within a boot, so a
+-- stale one is an error rather than someone else's picture.
+local images = {}
+local nextid = 1
+
+-- the image an op names, or nil for the screen. Raises on an id that
+-- was never given out, which is a client bug and not a blank draw.
+local function image(id)
+	if id == nil then
+		return nil
+	end
+
+	local img = images[id]
+
+	if not img then
+		error("no such image: " .. tostring(id), 0)
+	end
+	return img
+end
+
+local function point(p)
+	if type(p) ~= "table" then
+		error("no point", 0)
+	end
+	return p.x or 0, p.y or 0
+end
+
 local ops = {}
+
+function ops.alloc(m)
+	local w, h = m.w or 0, m.h or 0
+
+	if w <= 0 or h <= 0 then
+		error("alloc: " .. w .. "x" .. h, 0)
+	end
+
+	local id = nextid
+
+	nextid = nextid + 1
+	images[id] = md().image(w, h, m.color, m.fmt)
+	return id
+end
+
+function ops.free(m)
+	images[m.id] = nil
+	return true
+end
 
 function ops.mode()
 	return platform.mode()
@@ -73,8 +141,49 @@ end
 
 function ops.fill(m)
 	local x, y, w, h = rect(m.r)
+	local img = image(m.id)
 
+	if img then
+		img:fill(m.r, m.color or 0)
+		return true
+	end
 	platform.fill(x, y, w, h, m.color or 0)
+	return true
+end
+
+function ops.line(m)
+	local img = image(m.id)
+	local x0, y0 = point(m.p0)
+	local x1, y1 = point(m.p1)
+
+	if not img then
+		error("line: the screen cannot be read, so a line on it "
+		    .. "would have to be repaired by the caller", 0)
+	end
+	img:line(md().pt(x0, y0), md().pt(x1, y1), m.thick or 1,
+	    m.color or 0)
+	return true
+end
+
+-- src into dst at p. dst absent is the screen, and that is the one
+-- direction that reaches the panel: the pixels are here already, so it
+-- is a load with nothing crossing the port.
+function ops.draw(m)
+	local src = image(m.src)
+	local dst = image(m.dst)
+
+	if not src then
+		error("draw: no source image", 0)
+	end
+
+	local r = m.r or src:rect()
+	local x, y = point(m.p or { x = r.x, y = r.y })
+
+	if dst then
+		dst:draw(md().pt(x - r.x, y - r.y), src, r)
+		return true
+	end
+	platform.load(x, y, r.w, r.h, src:bytes(r), src.fmt)
 	return true
 end
 
@@ -83,7 +192,14 @@ end
 -- anything else.
 function ops.load(m)
 	local x, y, w, h = rect(m.r)
+	local img = image(m.id)
 
+	if img then
+		local band = md().fromBytes(w, h, m.data, m.fmt)
+
+		img:draw(md().pt(x, y), band, band:rect())
+		return true
+	end
 	platform.load(x, y, w, h, m.data, m.fmt)
 	return true
 end

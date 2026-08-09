@@ -576,6 +576,42 @@ end
 ops.fill = rectop("fill")
 ops.load = rectop("load")
 
+-- ---- images the screen keeps ----
+
+-- Ids pass through untouched: they are the framebuffer's. Only a draw
+-- landing on the screen is this window's business, and it is the only
+-- one placed.
+function ops.alloc(m)
+	return ask({ op = "alloc", w = m.w, h = m.h, fmt = m.fmt,
+	    color = m.color })
+end
+
+function ops.free(m, wait)
+	return forward({ op = "free", id = m.id }, wait)
+end
+
+function ops.line(m, wait)
+	return forward({ op = "line", id = m.id, p0 = m.p0, p1 = m.p1,
+	    thick = m.thick, color = m.color }, wait)
+end
+
+function ops.draw(m, wait)
+	local p = m.p
+
+	if m.dst == nil then
+		local r = m.r or {}
+		local at, err = place({ x = (p and p.x) or 0,
+		    y = (p and p.y) or 0, w = r.w or 0, h = r.h or 0 })
+
+		if not at then
+			return nil, err
+		end
+		p = { x = at.x, y = at.y }
+	end
+	return forward({ op = "draw", dst = m.dst, src = m.src, r = m.r,
+	    p = p }, wait)
+end
+
 function ops.unload(m)
 	local r, err = place(m.r)
 
@@ -627,6 +663,18 @@ end
 local DRAWS = { fill = true, load = true, unload = true, scroll = true,
     cursor = true }
 
+-- An op into an image is the app's own memory and runs wherever the app
+-- is: only the ones landing on the glass belong to whoever is in front.
+local function marksglass(m)
+	if m.op == "draw" then
+		return m.dst == nil
+	end
+	if m.op == "fill" or m.op == "load" then
+		return m.id == nil
+	end
+	return DRAWS[m.op] or false
+end
+
 -- Started once the app it serves exists, and not before.
 --
 -- srv.serve gives up when its port hangs up, and sys.hungup is
@@ -659,7 +707,7 @@ local function serveapp(a)
 
 				if not fn then
 					err = "no such op: " .. tostring(m.op)
-				elseif front ~= a.id and DRAWS[m.op] then
+				elseif front ~= a.id and marksglass(m) then
 					-- dropped, not refused: an app that
 					-- is not in front has nothing to
 					-- fix, and telling it so would turn

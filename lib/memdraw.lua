@@ -187,6 +187,28 @@ function Image:set(x, y, color)
 	return self:fill(M.rect(x, y, 1, 1), color)
 end
 
+-- a line from p0 to p1, `thick` pixels wide, as a run of squares along
+-- it. Square ends, no antialiasing: there is no alpha here to blend a
+-- soft edge with. plan 9's line() takes end styles and a source image;
+-- this takes a colour, which is what a caller has wanted so far.
+function Image:line(p0, p1, thick, color)
+	local dx, dy = p1.x - p0.x, p1.y - p0.y
+	local n = math.max(math.abs(dx), math.abs(dy))
+	local half = (thick or 1) // 2
+	local w = thick or 1
+
+	if n == 0 then
+		return self:fill(M.rect(p0.x - half, p0.y - half, w, w), color)
+	end
+	for i = 0, n do
+		local x = math.floor(p0.x + dx * i / n + 0.5)
+		local y = math.floor(p0.y + dy * i / n + 0.5)
+
+		self:fill(M.rect(x - half, y - half, w, w), color)
+	end
+	return self
+end
+
 -- copy src into self with src's origin landing at p. this is plan 9's
 -- draw() with no mask and the S-over-D operator degenerating to a plain
 -- copy: there is no alpha here, and adding one means adding a channel

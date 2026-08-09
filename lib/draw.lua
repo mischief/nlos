@@ -76,8 +76,32 @@ function M.new(handle, chunk)
 	function f.setmode(n)
 		return ask({ op = "setmode", n = n })
 	end
-	function f.fill(r, color, wait)
-		return tell({ op = "fill", r = r, color = color }, wait)
+	function f.fill(r, color, wait, id)
+		return tell({ op = "fill", r = r, color = color, id = id },
+		    wait)
+	end
+
+	-- ---- images the server keeps ----
+
+	-- alloc answers an id. The pixels never leave the server, so a
+	-- picture built from parts crosses this port once and a frame
+	-- made of it costs a message rather than its own size.
+	function f.alloc(w, h, fmt, color)
+		return ask({ op = "alloc", w = w, h = h, fmt = fmt,
+		    color = color })
+	end
+	function f.free(id, wait)
+		return tell({ op = "free", id = id }, wait)
+	end
+	-- src into dst at p; dst nil is the screen. r is the part of src
+	-- to take, and defaults to all of it.
+	function f.draw(dst, src, r, p, wait)
+		return tell({ op = "draw", dst = dst, src = src, r = r,
+		    p = p }, wait)
+	end
+	function f.line(id, p0, p1, thick, color, wait)
+		return tell({ op = "line", id = id, p0 = p0, p1 = p1,
+		    thick = thick, color = color }, wait)
 	end
 	-- pixels are the one thing here big enough to hit the serializer's
 	-- ceiling: sys.MAXMSG is 64KiB, which is 16384 pixels, which is a
@@ -137,7 +161,7 @@ function M.new(handle, chunk)
 
 	-- fmt still travels: two bytes could be more than one format, and
 	-- the server cannot tell by looking.
-	local function loadband(r, data, wait, fmt, bpp)
+	local function loadband(r, data, wait, fmt, bpp, id)
 		local stride = r.w * bpp
 		local perband = stride > 0 and (CHUNK // stride) or 0
 
@@ -146,7 +170,7 @@ function M.new(handle, chunk)
 		-- being taken away.
 		if perband >= r.h then
 			return tell({ op = "load", r = r, data = data,
-			    fmt = fmt }, wait)
+			    fmt = fmt, id = id }, wait)
 		end
 
 		-- not even one row fits, so split the ROW and recurse on what
@@ -180,7 +204,7 @@ function M.new(handle, chunk)
 					local ok, err = tell({ op = "load",
 					    r = { x = r.x + x, y = r.y + y,
 					        w = n, h = 1 },
-					    fmt = fmt,
+					    fmt = fmt, id = id,
 					    data = given(piece(row, x * bpp + 1,
 					        (x + n) * bpp)) }, last)
 
@@ -208,7 +232,8 @@ function M.new(handle, chunk)
 			-- in order, so its reply reports the whole sequence.
 			local last = y + n >= r.h
 			local ok, err = tell({ op = "load", r = band,
-			    fmt = fmt, data = given(slice) }, wait and last)
+			    fmt = fmt, id = id,
+			    data = given(slice) }, wait and last)
 
 			if not ok then
 				return nil, err
@@ -223,14 +248,14 @@ function M.new(handle, chunk)
 	-- copies either way, since a band is part of the payload.
 	-- fmt names what the bytes are. Absent means bgrx, so a caller
 	-- written before there was a choice keeps working.
-	function f.load(r, data, wait, give, fmt)
+	function f.load(r, data, wait, give, fmt, id)
 		local bpp = pixwidth(fmt)
 
 		if not bpp then
 			return nil, "no such format: " .. tostring(fmt)
 		end
 		return loadband(r, give and given(data) or data, wait, fmt,
-		    bpp)
+		    bpp, id)
 	end
 	-- the reply is a message too, so readback needs the same banding as
 	-- load above -- the limit is on messages, not on direction. plan 9
