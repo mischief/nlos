@@ -561,14 +561,22 @@ function ops.setmode()
 	return nil, "the mode is not an app's to set"
 end
 
+-- A rectangle in an image is that image's own, so only a rectangle on
+-- the glass is placed. Dropping the id here sent the pixels to the
+-- screen instead, at a window coordinate that meant nothing to them.
 local function rectop(op)
 	return function(m, wait)
-		local r, err = place(m.r)
+		local r = m.r
 
-		if not r then
-			return nil, err
+		if m.id == nil then
+			local err
+
+			r, err = place(m.r)
+			if not r then
+				return nil, err
+			end
 		end
-		return forward({ op = op, r = r, color = m.color,
+		return forward({ op = op, r = r, id = m.id, color = m.color,
 		    data = m.data, fmt = m.fmt }, wait)
 	end
 end

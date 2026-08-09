@@ -12,7 +12,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(24)
+tap.plan(26)
 
 tap.ok(caps_of.fb ~= nil, "boot payload was granted fb")
 if not caps_of.fb then
@@ -149,6 +149,23 @@ local both = memdraw.fromBytes(16, 16, fb.unload(memdraw.rect(0, 0, 16, 16)))
 
 tap.is(memdraw.at(both, 0, 0), memdraw.green, "image into image: the part copied")
 tap.is(memdraw.at(both, 0, 8), memdraw.red, "image into image: the part not")
+
+-- the whole of src into the whole of dst, which is what a caller
+-- writes when it means "copy this over that" and is the shape a
+-- pristine background is blitted with
+local under = fb.alloc(16, 16, nil, memdraw.white)
+
+fb.draw(under, id, nil, nil, true)
+fb.draw(nil, under, memdraw.rect(0, 0, 16, 16), memdraw.pt(0, 0), true)
+
+local whole = memdraw.fromBytes(16, 16, fb.unload(memdraw.rect(0, 0, 16, 16)))
+
+tap.is(memdraw.at(whole, 0, 0), memdraw.green,
+    "draw with no rectangle takes all of the source")
+tap.is(memdraw.at(whole, 15, 15), memdraw.blue,
+    "and lands it at the destination's origin")
+
+fb.free(under)
 
 -- a line is drawn in the server, so a diagonal costs one message
 fb.line(other, memdraw.pt(0, 0), memdraw.pt(15, 15), 1, memdraw.white, true)

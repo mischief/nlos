@@ -222,10 +222,11 @@ local D = math.min(W, H) - 8
 local FX, FY = (W - D) // 2, (H - D) // 2
 local R = D // 2
 
--- The pristine dial and the one the hands go on: made when the face is
--- shown, dropped when it is not. Kept apart so a tick is a blit rather
--- than composing the dial again.
-local dial, work
+-- Two images the screen holds: the pristine dial, and the one the hands
+-- go on. The dial crosses the port once, when it is built. After that a
+-- tick is a blit, three lines and a blit -- five messages, none of them
+-- carrying a pixel.
+local dialid, workid
 
 local function disc(img, cx, cy, rad, color)
 	for y = -rad, rad do
@@ -270,17 +271,45 @@ local function makedial()
 	return img
 end
 
-local FRECT = memdraw.rect(FX, FY, D, D)
+local DRECT = memdraw.rect(0, 0, D, D)
+local FPT = memdraw.pt(FX, FY)
+local CENTRE = memdraw.pt(R, R)
 
-local function paint_face(now)
-	if not work then
-		dial = makedial()
-		work = memdraw.image(D, D, FACE.bg, FMT)
+-- composed here and handed over once, then dropped: the copy that
+-- matters from now on is the screen's.
+local function makeimages()
+	dialid = fb.alloc(D, D, FMT, FACE.bg)
+	workid = fb.alloc(D, D, FMT, FACE.bg)
+	if not dialid or not workid then
+		return false
 	end
 
-	local img = work
+	local img = makedial()
 
-	img:draw(memdraw.pt(0, 0), dial, dial:rect())
+	fb.load(DRECT, img:bytes(DRECT), true, false, FMT, dialid)
+	return true
+end
+
+local function dropimages()
+	if dialid then
+		fb.free(dialid)
+		fb.free(workid)
+		dialid, workid = nil, nil
+	end
+end
+
+-- where a hand's tip lands, in the dial's own coordinates
+local function tip(angle, len)
+	return memdraw.pt(math.floor(R + math.sin(angle) * len + 0.5),
+	    math.floor(R - math.cos(angle) * len + 0.5))
+end
+
+local function paint_face(now)
+	if not dialid and not makeimages() then
+		return
+	end
+
+	fb.draw(workid, dialid)
 
 	if now then
 		local d = time.utc(now)
@@ -288,16 +317,15 @@ local function paint_face(now)
 		local min = (d.min + d.sec / 60) * math.pi / 30
 		local hr = ((d.hour % 12) + d.min / 60) * math.pi / 6
 
-		hand(img, R, R, hr, R * 0.52, math.max(3, R // 14), FACE.hand)
-		hand(img, R, R, min, R * 0.76, math.max(3, R // 20), FACE.hand)
-		hand(img, R, R, sec, R * 0.84, math.max(1, R // 40),
-		    FACE.second)
+		fb.line(workid, CENTRE, tip(hr, R * 0.52),
+		    math.max(3, R // 14), FACE.hand)
+		fb.line(workid, CENTRE, tip(min, R * 0.76),
+		    math.max(3, R // 20), FACE.hand)
+		fb.line(workid, CENTRE, tip(sec, R * 0.84),
+		    math.max(1, R // 40), FACE.second)
 	end
-	disc(img, R, R, math.max(2, R // 22), FACE.hand)
-
-	-- not given away: bytes() of a whole image is a view onto it, and
-	-- this image is drawn over again next tick.
-	fb.load(FRECT, img:bytes(img:rect()), false, false, FMT)
+	fb.line(workid, CENTRE, CENTRE, math.max(4, R // 11), FACE.hand)
+	fb.draw(nil, workid, DRECT, FPT)
 end
 
 -- ---- both, and the switch between them ----
@@ -320,12 +348,9 @@ local function paint(force, flip, wipe)
 		shown, shownday = {}, {}
 		force = true
 	end
-	-- half a megabyte of dial that a digital clock is not showing.
-	-- collected here rather than left for whenever, since nothing
-	-- else in this program allocates enough to drive a step.
-	if not face and work then
-		dial, work = nil, nil
-		collectgarbage("collect")
+	-- the screen is holding two images a digital clock is not showing
+	if not face then
+		dropimages()
 	end
 
 	local now = sys.time()
@@ -392,12 +417,17 @@ if wctl then
 end
 
 -- a line on stdin gives the screen back, which is how a program started
--- from the prompt ends. Under dio the tray closes it instead.
-thread.spawn(function()
-	io.read("l")
-	fb.fill(memdraw.rect(0, 0, W, H), 0x000000, true)
-	os.exit(0)
-end)
+-- from the prompt ends. Under dio there is none and the tray closes it.
+local stdin = prog.stdin()
+
+if stdin then
+	thread.spawn(function()
+		stdin:read("l")
+		dropimages()
+		fb.fill(memdraw.rect(0, 0, W, H), 0x000000, true)
+		os.exit(0)
+	end)
+end
 
 thread.spawn(function()
 	while true do
