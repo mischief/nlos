@@ -98,18 +98,9 @@ open_kbd(lua_State *L)
 	return 1;
 }
 
-/* ---- los.platform.rng: the hardware generator ----
- *
- * The same surface efi's EFI_RNG_PROTOCOL and microvm's virtio-rng give,
- * and wanted by the same caller: task/tcp4.lua draws an initial sequence
- * number from it, refuses to invent one without it (RFC 6528), and so
- * cannot dial at all on a machine with no rng.
- *
- * esp_fill_random is a true generator only while an RF subsystem is
- * running -- the entropy comes from the radio's noise -- and reads a
- * pseudo-random sequence otherwise. That is exactly the condition here:
- * platform_have_eth brings the radio up at probe time, before any task
- * that draws from this one is spawned.
+/* los.platform.rng. esp_fill_random is a true generator only while an
+ * RF subsystem runs; platform_have_eth brings the radio up at probe
+ * time, before any task that draws from this one is spawned.
  */
 
 #define RNG_MAX_BYTES 65536	/* one request's worth, as microvm has */
