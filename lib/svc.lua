@@ -160,6 +160,11 @@ function M.start(list, opts)
 			if pid then
 				started[#started + 1] =
 				    { name = name, pid = pid, handle = h }
+				-- a service is a capability to whatever
+				-- comes after it, since the granted table
+				-- holds only what the kernel spawned. Order
+				-- in the file is the dependency.
+				opts.granted[e.capname or name] = h
 				log("svc: " .. name .. " started as pid " ..
 				    pid)
 			else

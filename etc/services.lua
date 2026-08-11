@@ -13,6 +13,11 @@
 -- what to run from what it can see, without this growing a syntax.
 
 return {
+	-- names to addresses, for anything above it. First, because a
+	-- service is a capability to whatever comes after it and the
+	-- panel's programs name this one.
+	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },
+
 	-- the panel, the keyboard and the pointer, as the machine's own
 	-- interface: a tray of apps, one of them a terminal, which starts
 	-- at boot so the board still comes up at a prompt.
@@ -51,11 +56,6 @@ return {
 	-- 7777, and two listeners on one port is EFI_INVALID_PARAMETER.
 	-- { path = "/task/webterm.lua", caps = { "tcp" },
 	--   args = { port = 80 } },
-
-	-- names to addresses, for anything above it. udp is served by
-	-- task/ip.lua here and by the firmware elsewhere, so it is named
-	-- by whichever this machine has.
-	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },
 
 	-- the wall clock. "time" is the right to sys.settime, and this is
 	-- the only entry naming it: everything else reads the clock and
