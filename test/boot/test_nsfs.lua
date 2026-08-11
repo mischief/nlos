@@ -14,13 +14,22 @@ local p9serve = require("p9serve")
 local p9fs = require("p9fs")
 local tap = require("tap")
 
-tap.plan(7)
+tap.plan(9)
 
 -- construct a namespace: two in-memory trees, mounted at two points
 local N = ns.new()
 N:mount("/a", dev.mem({ hello = "from a\n",
-    sub = { deep = "nested\n" } }), "mem")
+    sub = { deep = "nested\n",
+	    -- shadowed by the mount below, and holding a file of the
+	    -- same name, so resolving into the wrong one still finds
+	    -- something and answers with the wrong bytes
+	    over = { mine = "from under\n" } } }), "mem")
 N:mount("/b", dev.mem({ world = "from b\n" }), "mem")
+
+-- a mount UNDER a directory that is itself inside a mount, over a name
+-- that already exists there. A fid holding the walk to /a/sub must not
+-- be stepped into its own `over`: the mount is what that name means now.
+N:mount("/a/sub/over", dev.mem({ mine = "from over\n" }), "mem")
 
 -- export a subtree of N over 9P, mount it back with p9fs (loopback), and
 -- hand the client namespace back for readfile/readdir
@@ -41,6 +50,9 @@ tap.ok(whole:readfile("/b/world") == "from b\n",
 tap.ok(whole:readfile("/a/sub/deep") == "nested\n",
     "whole export: a nested file reads through")
 
+tap.ok(whole:readfile("/a/sub/over/mine") == "from over\n",
+    "whole export: a mount below a walked directory is crossed")
+
 local names = {}
 for _, e in ipairs(whole:readdir("/") or {}) do names[e.name] = true end
 tap.ok(names.a and names.b, "whole export: / lists both mounts")
@@ -51,6 +63,8 @@ tap.ok(rooted:readfile("/hello") == "from a\n",
     "rooted at /a: /hello is a's hello")
 tap.ok(rooted:readfile("/sub/deep") == "nested\n",
     "rooted at /a: the nested file is still reachable")
+tap.ok(rooted:readfile("/sub/over/mine") == "from over\n",
+    "rooted at /a: the mount below sub is crossed there too")
 
 local rnames = {}
 for _, e in ipairs(rooted:readdir("/") or {}) do rnames[e.name] = true end
