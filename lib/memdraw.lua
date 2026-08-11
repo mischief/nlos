@@ -206,6 +206,19 @@ function Image:move(r, to)
 	local bpp = self.bpp
 	local stride = self.w * bpp
 	local n = dst.w * bpp
+
+	-- the whole width is one run of bytes, so the rows are already
+	-- next to each other and the move is a single memmove. A terminal
+	-- scrolls exactly this shape, and doing it a row at a time walks
+	-- the buffer in strides that a small cache cannot hold.
+	if src.x == 0 and dst.x == 0 and dst.w == self.w then
+		local s = src.y * stride
+
+		self.b:copy(dst.y * stride + 1, self.b, s + 1,
+		    s + dst.h * stride)
+		return self
+	end
+
 	local from, step = 0, 1
 
 	if dst.y > src.y then
@@ -312,13 +325,20 @@ function M.bytes(img, r)
 		return img.b:view()
 	end
 
-	-- a part of it has to be gathered, since the rows it wants are not
-	-- next to each other. One buffer, and each row copied in once.
 	local bpp = img.bpp
-	local out = buf.new(r.w * r.h * bpp)
 	local stride = img.w * bpp
 	local rw = r.w * bpp
 
+	-- whole rows are already next to each other, so a band of them is
+	-- part of the same run and needs no copy at all
+	if r.x == 0 and r.w == img.w then
+		return img.b:view(r.y * stride + 1, (r.y + r.h) * stride)
+	end
+
+	local out = buf.new(r.w * r.h * bpp)
+
+	-- a part of it has to be gathered, since the rows it wants are not
+	-- next to each other. One buffer, and each row copied in once.
 	for i = 0, r.h - 1 do
 		local from = (r.y + i) * stride + r.x * bpp
 

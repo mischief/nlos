@@ -335,14 +335,11 @@ function ops.scroll(m, space)
 	if img then
 		img:move(m.r, { x = to.x or 0, y = to.y or 0 })
 
-		local part = onglass(img, { x = to.x or 0, y = to.y or 0,
-		    w = w, h = h })
-
-		if part then
-			platform.scroll(img.at.x + x, img.at.y + y,
-			    img.at.x + part.x, img.at.y + part.y,
-			    part.w, part.h)
-		end
+		-- and the moved pixels to the glass. Not platform.scroll:
+		-- that moves the panel's own shadow, which only knows
+		-- full-width rows at x=0, and a window is neither. Sending
+		-- what the image now holds is what a window can do.
+		shown(img, { x = to.x or 0, y = to.y or 0, w = w, h = h })
 		return true
 	end
 	platform.scroll(x, y, to.x or 0, to.y or 0, w, h)
