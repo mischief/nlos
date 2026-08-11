@@ -1,22 +1,16 @@
-/* los.font: glyphs into a pixel rectangle, for whoever is drawing.
- *
- * Not part of los.platform.fb, on purpose. fb "knows rectangles, pixels
- * and a fill colour; it does not know what a window is, what a font is,
- * or who is drawing" -- so this is a separate mechanism, and the policy
- * (what text, where, in which colours) stays in lua. What comes back is
- * an ordinary BGRx rectangle of the kind fb.load already takes.
- *
- * In C because of where the data lives. The glyph table is 3072 bytes
- * of .rodata, mapped read-only and costing no RAM at all -- the same
- * reason embedfs is free. The same table as lua strings would be ~95
- * TString objects plus a table, several KB, in every proc that required
- * it. On esp32, where .rodata is flash and there is no PSRAM, that is
- * the scarce pool -- which is why this is C and not a lua module, on
- * every platform.
+/* los.font: glyphs into a pixel rectangle of the kind fb.load takes.
+ * Separate from los.platform.fb on purpose -- fb knows nothing of
+ * fonts, so what text goes where stays in lua.
+ */
+
+/* In C because the glyph table is 3072 bytes of .rodata, costing no
+ * RAM; as lua strings it would be ~95 TString objects in every proc
+ * that required it, out of the pool esp32 has least of.
  */
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "lauxlib.h"
 #include "lua.h"
@@ -24,11 +18,20 @@
 
 #include "font_spleen.h"
 
-/* font.render(s, fg, bg) -> pixels, w, h
- *
- * fg and bg are 0xRRGGBB. The result is #s*FONT_W by FONT_H, four bytes
- * per pixel, ready for fb.load -- so drawing a line of text is one
- * render and one load rather than a call per glyph.
+/* 0xRRGGBB to the two big-endian bytes an r5g6b5 image holds, which is
+ * also what an ST7789 takes on the wire. lib/memdraw.lua's pixel16 is
+ * the same arithmetic.
+ */
+static unsigned short
+to565(lua_Unsigned c)
+{
+	return (unsigned short)(((c >> 8) & 0xf800) | ((c >> 5) & 0x07e0) |
+	    ((c >> 3) & 0x001f));
+}
+
+/* font.render(s, fg, bg, wantbuf, fmt) -> pixels, w, h. fg and bg are
+ * 0xRRGGBB; fmt is "bgrx" (the default) or "r5g6b5" -- the
+ * destination's own format, so nothing converts on the way.
  */
 static int
 font_render(lua_State *L)
@@ -38,11 +41,16 @@ font_render(lua_State *L)
 	lua_Unsigned fg = (lua_Unsigned)luaL_checkinteger(L, 2);
 	lua_Unsigned bg = (lua_Unsigned)luaL_optinteger(L, 3, 0);
 	int wantbuf = lua_toboolean(L, 4);
+	const char *fmt = luaL_optstring(L, 5, "bgrx");
+	int bpp = strcmp(fmt, "r5g6b5") == 0 ? 2 : 4;
 	size_t w = n * FONT_W;
-	size_t need = w * FONT_H * 4;
+	size_t need = w * FONT_H * bpp;
 	luaL_Buffer b;
 	unsigned char *out;
 	size_t i, row, col;
+
+	if (bpp == 4 && strcmp(fmt, "bgrx") != 0)
+		return luaL_error(L, "font.render: no such format: %s", fmt);
 
 	if (n == 0) {
 		lua_pushliteral(L, "");
@@ -82,8 +90,15 @@ font_render(lua_State *L)
 				lua_Unsigned c =
 				    (bits & (0x80u >> col)) ? fg : bg;
 				unsigned char *px =
-				    out + ((row * w) + i * FONT_W + col) * 4;
+				    out + ((row * w) + i * FONT_W + col) * bpp;
 
+				if (bpp == 2) {
+					unsigned short v = to565(c);
+
+					px[0] = (unsigned char)(v >> 8);
+					px[1] = (unsigned char)(v & 0xff);
+					continue;
+				}
 				px[0] = (unsigned char)(c & 0xff);	 /* B */
 				px[1] = (unsigned char)((c >> 8) & 0xff); /* G */
 				px[2] = (unsigned char)((c >> 16) & 0xff);/* R */

@@ -291,6 +291,26 @@ end
 
 Image.bytes = function(self, r) return M.bytes(self, r) end
 
+-- raw bytes of the image's own format straight into a rectangle of it,
+-- with no intermediate image. Refuses anything it cannot do as row
+-- copies, so a caller falls back to fromBytes and draw.
+function Image:rows(x, y, w, h, data, fmt)
+	if (fmt or M.BGRX) ~= self.fmt or
+	    x < 0 or y < 0 or x + w > self.w or y + h > self.h then
+		return false
+	end
+
+	local bpp = self.bpp
+	local stride = self.w * bpp
+	local rw = w * bpp
+
+	for i = 0, h - 1 do
+		self.b:copy((y + i) * stride + x * bpp + 1, data,
+		    i * rw + 1, (i + 1) * rw)
+	end
+	return true
+end
+
 -- the inverse: wrap raw BGRx bytes as an image, so pixels read back off
 -- a screen can be drawn into and compared like any other image.
 function M.fromBytes(w, h, data, fmt)

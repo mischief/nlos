@@ -24,20 +24,18 @@
 -- force a layer stack and clipped drawing, and one visible app means a
 -- rectangle and an offset instead.
 --
--- ---- dio proxies, and does not lend ----
---
--- It holds the framebuffer and serves the same protocol on a port of
--- its own. An app is handed that port and asks it for the mode, so it
--- is told the app area's size and believes it: bin/scribble.lua runs
--- here unchanged, and so does anything else written for the whole
--- screen.
---
--- Handing the focused app the framebuffer right instead, and taking it
--- back on a switch, cannot be done. Rights here are copied, never
--- revoked, so an app given the screen keeps it, and one drawing over
--- the foreground could only be stopped by killing it.
---
--- The mouse goes the same way. dio opens /dev/mouse, which is
+-- ---- dio grants a window, and is not in the pixel path ----
+
+-- An image per app, and a framebuffer session over it. That right is
+-- what the app is handed, so its pixels never come here: what is left
+-- is where the window sits and whether it is on the glass, which is a
+-- message per switch rather than one per drawing call.
+
+-- An app cannot name the glass or another app's window, and loses its
+-- own when dio drops its copy of the right. bin/scribble.lua, written
+-- for a whole screen, runs here unchanged.
+
+-- The mouse goes another way. dio opens /dev/mouse, which is
 -- exclusive, and serves an app its own /dev/mouse with the coordinates
 -- moved into app space -- so a tray touch never reaches the app,
 -- because it never leaves dio.
@@ -195,6 +193,13 @@ end
 local TRAY = conf.width
 local APPX, APPY = TRAY, 0
 local APPW, APPH = mode.w - TRAY, mode.h
+
+-- a window image is in the panel's own format, so putting one on the
+-- glass is a copy rather than a conversion of every pixel. A screen
+-- whose format is not one an image can have -- efi reports bltonly --
+-- leaves this nil, and fb picks its default.
+local IMGFMT = { bgrx = true, ["r5g6b5"] = true }
+local FMT = IMGFMT[mode.format] and mode.format or nil
 
 local TRAYBG = 0x202830
 local EDGE = 0x506070
@@ -435,6 +440,8 @@ local function drawtray()
 	drawlist()
 end
 
+local WINAT = { x = APPX, y = APPY }
+
 local function clearapp()
 	screen.fill({ x = APPX, y = APPY, w = APPW, h = APPH }, 0x000000, true)
 end
@@ -541,160 +548,6 @@ local function selectorat(x, y)
 	return nil
 end
 
--- ---- the app's screen ----
---
--- One rectangle, and every coordinate a client sends is relative to its
--- corner.
---
--- Rejected rather than clipped when it does not fit. A partly-clipped
--- fill would be easy and a partly-clipped load would not -- the pixels
--- would have to be re-cut to match -- and a proxy that silently drew
--- less than it was asked to is worse than one that says no. A client
--- that asked for the mode knows the size.
-local function place(r)
-	if type(r) ~= "table" then
-		return nil, "no rectangle"
-	end
-
-	local x, y = r.x or 0, r.y or 0
-	local w, h = r.w or 0, r.h or 0
-
-	if w < 0 or h < 0 or x < 0 or y < 0 or
-	    x + w > APPW or y + h > APPH then
-		return nil, "outside the window"
-	end
-	return { x = x + APPX, y = y + APPY, w = w, h = h }
-end
-
--- forward a translated message. A client that asked for an answer gets
--- one from the framebuffer; a client that did not is not made to wait
--- for a round trip it declined -- which is most of what an app sends,
--- since draw's fill and load are fire-and-forget by default.
-local function forward(m, wait, h)
-	if wait then
-		return ask(m, h)
-	end
-
-	local ok, err = sendwait(h or fb, m)
-
-	if not ok then
-		return nil, err
-	end
-	return true
-end
-
-local ops = {}
-
--- the app area's size, in place of the screen's. An app that asks what
--- it has is answered with what it has.
-function ops.mode()
-	return { n = mode.n, w = APPW, h = APPH, format = mode.format }
-end
-
-function ops.modes()
-	return { ops.mode() }
-end
-
--- refused: the mode belongs to the machine, and an app that could
--- change it would change it for whatever else is running.
-function ops.setmode()
-	return nil, "the mode is not an app's to set"
-end
-
--- A rectangle in an image is that image's own, so only a rectangle on
--- the glass is placed. Dropping the id here sent the pixels to the
--- screen instead, at a window coordinate that meant nothing to them.
-local function rectop(op)
-	return function(m, wait, h)
-		local r = m.r
-
-		if m.id == nil then
-			local err
-
-			r, err = place(m.r)
-			if not r then
-				return nil, err
-			end
-		end
-		return forward({ op = op, r = r, id = m.id, color = m.color,
-		    data = m.data, fmt = m.fmt }, wait, h)
-	end
-end
-
-ops.fill = rectop("fill")
-ops.load = rectop("load")
-
--- ---- images the screen keeps ----
-
--- Ids pass through untouched: they are the framebuffer's. Only a draw
--- landing on the screen is this window's business, and it is the only
--- one placed.
-function ops.alloc(m, wait, h)
-	return ask({ op = "alloc", w = m.w, h = m.h, fmt = m.fmt,
-	    color = m.color }, h)
-end
-
-function ops.free(m, wait, h)
-	return forward({ op = "free", id = m.id }, wait, h)
-end
-
-function ops.line(m, wait, h)
-	return forward({ op = "line", id = m.id, p0 = m.p0, p1 = m.p1,
-	    thick = m.thick, color = m.color }, wait, h)
-end
-
-function ops.draw(m, wait, h)
-	local p = m.p
-
-	if m.dst == nil then
-		local r = m.r or {}
-		local at, err = place({ x = (p and p.x) or 0,
-		    y = (p and p.y) or 0, w = r.w or 0, h = r.h or 0 })
-
-		if not at then
-			return nil, err
-		end
-		p = { x = at.x, y = at.y }
-	end
-	return forward({ op = "draw", dst = m.dst, src = m.src, r = m.r,
-	    p = p }, wait, h)
-end
-
-function ops.unload(m)
-	local r, err = place(m.r)
-
-	if not r then
-		return nil, err
-	end
-	-- always waits: the pixels are the answer.
-	return ask({ op = "unload", r = r })
-end
-
-function ops.scroll(m, wait)
-	local r, err = place(m.r)
-
-	if not r then
-		return nil, err
-	end
-
-	local to = m.to or {}
-	local dst, derr = place({ x = to.x or 0, y = to.y or 0,
-	    w = m.r.w, h = m.r.h })
-
-	if not dst then
-		return nil, derr
-	end
-	return forward({ op = "scroll", r = r, to = { x = dst.x, y = dst.y } },
-	    wait)
-end
-
--- the cursor is the machine's, not an app's: it is drawn over whatever
--- is on the glass, tray included, and it follows the finger rather than
--- anything a client asked for. Passed through in screen coordinates.
-function ops.cursor(m)
-	return forward({ op = "cursor", x = m.x, y = m.y, on = m.on }, false)
-end
-
 -- ---- one window each, and one of them in front ----
 --
 -- Every app gets its own framebuffer port, its own /dev/mouse and its
@@ -703,25 +556,8 @@ end
 -- whole of what focus means here.
 --
 -- an instance is:
---	{ id, entry, name, pid, fbrecv, fbport, mouse, wctl, mport,
+--	{ id, entry, name, pid, winid, fbport, mouse, wctl, mport,
 --	  wport, kind }
--- what is dropped when an app is not in front. mode, modes and setmode
--- are answers rather than marks on the glass, and an app asks for them
--- whenever it likes.
-local DRAWS = { fill = true, load = true, unload = true, scroll = true,
-    cursor = true }
-
--- An op into an image is the app's own memory and runs wherever the app
--- is: only the ones landing on the glass belong to whoever is in front.
-local function marksglass(m)
-	if m.op == "draw" then
-		return m.dst == nil
-	end
-	if m.op == "fill" or m.op == "load" then
-		return m.id == nil
-	end
-	return DRAWS[m.op] or false
-end
 
 -- Started once the app it serves exists, and not before.
 --
@@ -736,61 +572,10 @@ end
 -- is running waits on the port like any other.
 local function serveapp(a)
 
-	-- Each of the three owns its pair of rights and closes them when
-	-- it ends, which is when the app has gone: dio is then the only
-	-- holder left, which is what sys.hungup answers and what stops
-	-- these loops. Closing them anywhere else would be closing a port
+	-- Each owns its pair of rights and closes them when it ends, which
+	-- is when the app has gone: sys.hungup is true once dio is the
+	-- only holder left. Closing them anywhere else would close a port
 	-- another thread of this proc is parked on.
-	-- an image space of the app's own, so the ids it is given cannot
-	-- name another app's picture and are freed when this right is
-	-- dropped below. Without one an app's images outlive it: dio does
-	-- not die when an app does, and nothing else would let them go.
-	local fbh = ask({ op = "session" })
-
-	fbh = fbh and fbh.port and fbh.port.__right
-
-	thread.spawn(function()
-		while true do
-			local m, why = thread.await(a.fbrecv)
-
-			if why then
-				break		-- the app has gone
-			end
-			if type(m) == "table" then
-				local fn = ops[m.op]
-				local reply = m.reply and m.reply.__right
-				local ok, err
-
-				if not fn then
-					err = "no such op: " .. tostring(m.op)
-				elseif front ~= a.id and marksglass(m) then
-					-- dropped, not refused: an app that
-					-- is not in front has nothing to
-					-- fix, and telling it so would turn
-					-- a switch into an error every
-					-- program had to handle. It is told
-					-- to draw again through /dev/wctl
-					-- when it comes back.
-					ok = true
-				else
-					ok, err = fn(m, reply ~= nil,
-					    fbh)
-				end
-				if reply then
-					sys.send(reply, ok ~= nil and
-					    { ok = ok } or
-					    { err = err or "failed" })
-					sys.close(reply)
-				end
-			end
-		end
-		sys.close(a.fbport)
-		sys.close(a.fbrecv)
-		-- the app is gone, so its images may go too
-		if fbh then
-			sys.close(fbh)
-		end
-	end)
 	thread.spawn(function()
 		srv.serve(a.mouse.backend, a.mrecv)
 		sys.close(a.mport)
@@ -842,7 +627,24 @@ end
 -- make an app's windows before it is spawned, since what it is handed
 -- is rights to them.
 local function newapp(entryidx, kind)
-	local fbrecv = sys.newport("dio.fbrecv")
+	-- the window, and a session over it. That right is the app's
+	-- screen: it draws into the image and never into this proc, so
+	-- nothing here is between an app and its pixels.
+	local winid, werr = screen.alloc(APPW, APPH, FMT, 0)
+
+	if not winid then
+		say("no window: " .. tostring(werr))
+		return nil
+	end
+
+	local win = screen.session(winid)
+
+	if not win then
+		screen.free(winid)
+		say("no window session")
+		return nil
+	end
+
 	local mrecv = sys.newport("dio.mrecv")
 	local wrecv = sys.newport("dio.wrecv")
 	-- a keyboard port per app, not one shared: a key belongs to
@@ -853,7 +655,7 @@ local function newapp(entryidx, kind)
 		id = nextid,
 		entry = entryidx,
 		kind = kind,
-		fbrecv = fbrecv, fbport = sys.sendright(fbrecv),
+		winid = winid, fbport = win.handle,
 		mrecv = mrecv, mport = sys.sendright(mrecv),
 		wrecv = wrecv, wport = sys.sendright(wrecv),
 		keys = keys, keysend = sys.sendright(keys),
@@ -873,7 +675,17 @@ end
 -- an instance and everything the tray knows about it, gone.
 local function forget(id)
 	local k = slotof(id)
+	local a = apps[id]
 
+	-- the window is dio's image and the app held only a session over
+	-- it, so this is what actually returns the pixels
+	if a and a.winid then
+		screen.place(a.winid, WINAT, false)
+		screen.free(a.winid)
+		-- and dio's own right to the session, without which fb
+		-- keeps the space the app allocated in
+		sys.close(a.fbport)
+	end
 	apps[id] = nil
 	if k then
 		table.remove(order, k)
@@ -975,10 +787,13 @@ local function focus(id)
 	front = id
 	if was and apps[was] then
 		apps[was].wctl.show(false)
+		screen.place(apps[was].winid, WINAT, false)
 	end
-	clearapp()
 	if id and apps[id] then
 		apps[id].wctl.show(true)
+		screen.place(apps[id].winid, WINAT, true)
+	else
+		clearapp()
 	end
 	-- keys follow the front, and only a terminal reads them
 	wantkeys = id ~= nil and apps[id] ~= nil and apps[id].kind == "term"
@@ -1013,6 +828,9 @@ local function start(i)
 	entry.idx = i
 	local a = newapp(i, entry.kind)
 
+	if not a then
+		return nil, "no window"
+	end
 	a.name = instname(entry, a.id)
 
 	local desc = appns(a)
@@ -1076,6 +894,9 @@ local function opensel()
 		front = nil
 		if apps[was] then
 			apps[was].wctl.show(false)
+			-- off the glass, so the list is not drawn over by
+			-- an app that keeps painting behind it
+			screen.place(apps[was].winid, WINAT, false)
 		end
 		wantkeys = false
 		drawbutton(was)

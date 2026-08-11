@@ -96,28 +96,35 @@ local function image(space, id)
 	return img
 end
 
--- what an app draws is on the glass as soon as it draws it, which is
--- the behaviour it had when it drew to the glass. r is in the image;
--- `at` is where the window manager put the window.
-local function shown(img, r)
-	if not img or not img.on then
-		return
+-- the part of r that is on the glass, in image coordinates, or nothing.
+-- r is in the image; `at` is where the window manager put the window.
+local function onglass(img, r)
+	if not img or not img.on or not r then
+		return nil
 	end
 
-	local w, h = img:rect().w, img:rect().h
 	local x = math.max(r.x or 0, 0)
 	local y = math.max(r.y or 0, 0)
-	local x1 = math.min((r.x or 0) + (r.w or 0), w)
-	local y1 = math.min((r.y or 0) + (r.h or 0), h)
+	local x1 = math.min((r.x or 0) + (r.w or 0), img.w)
+	local y1 = math.min((r.y or 0) + (r.h or 0), img.h)
 
 	if x1 <= x or y1 <= y then
-		return
+		return nil
 	end
+	return { x = x, y = y, w = x1 - x, h = y1 - y }
+end
 
-	local part = { x = x, y = y, w = x1 - x, h = y1 - y }
+-- what an app draws is on the glass as soon as it draws it, which is
+-- the behaviour it had when it drew to the glass. The pixels are cut
+-- out of the image, so a caller with the pixels already in hand should
+-- send those instead of coming here.
+local function shown(img, r)
+	local part = onglass(img, r)
 
-	platform.load(img.at.x + x, img.at.y + y, part.w, part.h,
-	    img:bytes(part), img.fmt)
+	if part then
+		platform.load(img.at.x + part.x, img.at.y + part.y,
+		    part.w, part.h, img:bytes(part), img.fmt)
+	end
 end
 
 local function point(p)
@@ -211,7 +218,15 @@ function ops.fill(m, space)
 
 	if img then
 		img:fill(m.r, m.color or 0)
-		shown(img, m.r)
+
+		-- to the panel as a fill, not as pixels cut back out of
+		-- the image it was just written into
+		local part = onglass(img, m.r)
+
+		if part then
+			platform.fill(img.at.x + part.x, img.at.y + part.y,
+			    part.w, part.h, m.color or 0)
+		end
 		return true
 	end
 	platform.fill(x, y, w, h, m.color or 0)
@@ -269,10 +284,24 @@ function ops.load(m, space)
 	local img = image(space, m.id)
 
 	if img then
-		local band = md().fromBytes(w, h, m.data, m.fmt)
+		if not img:rows(x, y, w, h, m.data, m.fmt) then
+			local band = md().fromBytes(w, h, m.data, m.fmt)
 
-		img:draw(md().pt(x, y), band, band:rect())
-		shown(img, m.r)
+			img:draw(md().pt(x, y), band, band:rect())
+		end
+
+		-- the client's own bytes to the panel, which is what a
+		-- load to the glass has always cost. Cutting the rows back
+		-- out of the image would be a second gather for the same
+		-- pixels.
+		local part = onglass(img, m.r)
+
+		if part and part.w == w and part.h == h then
+			platform.load(img.at.x + x, img.at.y + y, w, h,
+			    m.data, m.fmt)
+		elseif part then
+			shown(img, part)
+		end
 		return true
 	end
 	platform.load(x, y, w, h, m.data, m.fmt)

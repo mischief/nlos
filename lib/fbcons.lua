@@ -217,12 +217,12 @@ function Cons:paintspan(y, from, to)
 			-- the pixels are never a string, and the message
 			-- carries the bytes rather than a copy of them.
 			local pix, w, h = self.font.render(line:sub(c + 1, e),
-			    fg, bg, true)
+			    fg, bg, true, self.fmt)
 
-			post(self.fb, { op = "load",
+			post(self.fb, { op = "load", fmt = self.fmt,
 			    r = { x = c * self.cw, y = y * self.ch, w = w, h = h },
 			    data = buf.is(pix) and { __buf = pix } or pix },
-			    w * h * 4)
+			    w * h * self.bpp)
 			c = e
 		end
 	end
@@ -666,8 +666,13 @@ function M.new(o)
 	local defbg = o.bg or 0x000000
 	local cols, rows = mode.w // cw, mode.h // ch
 	local cells = cols * rows
+	-- glyphs are rendered in the screen's own format, so nothing on
+	-- the way to it converts them a pixel at a time.
+	local BPP = { bgrx = 4, ["r5g6b5"] = 2 }
+	local fmt = BPP[mode.format] and mode.format or "bgrx"
 	local self = setmetatable({
 		fb = o.fb, font = o.font,
+		fmt = fmt, bpp = BPP[fmt],
 		cw = cw, ch = ch,
 		cols = cols, rows = rows,
 		col = 0, row = 0, curon = false, top = 0,
