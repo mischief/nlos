@@ -14,7 +14,6 @@
 -- across mounts is the whole point.
 
 local dev = require("dev")
-local chan = require("chan")
 
 local M = {}
 
@@ -64,32 +63,9 @@ function M.new(ns, root)
 
 	-- wc is the walk that proved this path, kept rather than thrown
 	-- away: a fid is the file it was walked to, and stat asking the
-	-- namespace again resolves the whole path from the root. mp is the
-	-- mount prefix that served it, which says when wc may be stepped.
-	local function h_of(path, wc, mp)
-		return { path = path, wc = wc, mp = mp }
-	end
-
-	-- the single mount serving this path, or nil where the namespace
-	-- has to decide: a union has more than one member to search, and a
-	-- mount below us is a different backend entirely.
-	local function sole(p)
-		local g = ns:lookup(p)
-
-		return g and #g == 1 and g[1].prefix or nil
-	end
-
-	-- One step from the walk we hold, where the namespace would reach
-	-- the same place. Walking from the parent's position inside a
-	-- mount lands exactly where resolving the whole path from that
-	-- mount's root does, so this is the same answer without the walk.
-	local function step(h, cp, name)
-		if not h.wc or not h.mp or sole(nspath(cp)) ~= h.mp then
-			return nil
-		end
-		local ok, c = pcall(h.wc.walk, h.wc, { name })
-
-		return ok and c or nil
+	-- namespace again resolves the whole path from the root.
+	local function h_of(path, wc)
+		return { path = path, wc = wc }
 	end
 
 	function B.attach()
@@ -105,11 +81,6 @@ function M.new(ns, root)
 			return h_of(h.path == "/" and "/" or parentpath(h.path))
 		end
 		local cp = childpath(h.path, name)
-		local one = step(h, cp, name)
-
-		if one then
-			return h_of(cp, one, h.mp)
-		end
 		-- prove the element exists. NS:walk raises if it is not there --
 		-- but a bare mount point (no backend, only mounts below it, like
 		-- /n over /n/gefs) does not walk yet stats as a directory, so
@@ -119,7 +90,7 @@ function M.new(ns, root)
 			proof = ns:walk(nspath(cp))
 		end)
 		if ok then
-			return h_of(cp, proof, sole(nspath(cp)))
+			return h_of(cp, proof)
 		end
 		local st = ns:stat(nspath(cp))
 
@@ -137,23 +108,6 @@ function M.new(ns, root)
 	end
 
 	function B.open(h, mode)
-		-- the walk we hold IS the file, so open it where it sits.
-		-- NS:open would resolve the whole path again to reach the
-		-- same chan and then do exactly this to it.
-		-- A backend may hand back the handle it was given -- dev.mem
-		-- and espfs do, for a directory -- and then the open and the
-		-- walk are one handle with two owners, which clunk closes
-		-- twice. That one goes the long way round.
-		if h.wc then
-			local wc = h.wc
-			local ok, oh = pcall(wc.B.open, wc.h, mode)
-
-			if ok and oh ~= wc.h then
-				return dev.closable(B, { path = h.path,
-				    chan = chan.new(wc.B, wc.path, oh) })
-			end
-		end
-
 		local c, err = ns:open(nspath(h.path), mode)
 		if c then
 			return dev.closable(B, { path = h.path, chan = c })
