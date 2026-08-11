@@ -140,11 +140,15 @@ function M.new(ns, root)
 		-- the walk we hold IS the file, so open it where it sits.
 		-- NS:open would resolve the whole path again to reach the
 		-- same chan and then do exactly this to it.
+		-- A backend may hand back the handle it was given -- dev.mem
+		-- and espfs do, for a directory -- and then the open and the
+		-- walk are one handle with two owners, which clunk closes
+		-- twice. That one goes the long way round.
 		if h.wc then
 			local wc = h.wc
 			local ok, oh = pcall(wc.B.open, wc.h, mode)
 
-			if ok then
+			if ok and oh ~= wc.h then
 				return dev.closable(B, { path = h.path,
 				    chan = chan.new(wc.B, wc.path, oh) })
 			end
