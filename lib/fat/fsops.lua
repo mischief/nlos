@@ -140,20 +140,13 @@ function Fs:read(ent, off, count)
     if not c then break end        -- the chain is shorter than the size
     local n = csz - within
     if n > left then n = left end
-    -- Cut each sector out of the cache where it already sits.
-    -- Staging the run in one buffer first would allocate it and copy
-    -- every sector twice, to hand the same bytes to the same concat.
-    local base = self:clusterlba(c)
+    -- Read whole sectors and cut, rather than reading the run twice:
+    -- the cache holds sectors, so the cut is free.
     local s0 = within // self.secsz
     local s1 = (within + n - 1) // self.secsz
-
-    for s = s0, s1 do
-      local from = s == s0 and within - s0 * self.secsz or 0
-      local to = s == s1 and (within + n - 1) - s * self.secsz or
-          self.secsz - 1
-
-      out[#out + 1] = self:rdsec(base + s):sub(from + 1, to + 1)
-    end
+    local buf = self:rdsecs(self:clusterlba(c) + s0, s1 - s0 + 1)
+    local from = within - s0 * self.secsz
+    out[#out + 1] = buf:sub(from + 1, from + n)
     left = left - n
     within = 0
     c = self:fatget(c)

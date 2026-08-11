@@ -237,30 +237,23 @@ end
 --------------------------------------------------------------------------
 -- the short directory entry
 
--- The whole 32 bytes in one call. The fields are contiguous and in
--- this order, so a field at a time is eleven more calls for the same
--- bytes -- measured 2.3x slower, which a directory scan pays per entry.
-local Dirent = "<c11I1I1I1I2I2I2I2I2I2I2I4"
-
 function M.unpackdirent(s, pos)
-  local name, attr, ntres, tenth, crtt, crtd, lst, hi, wt, wd, lo,
-      size = sunpack(Dirent, s, pos or 1)
-
-  return {
-    name = name,
-    attr = attr,
-    ntres = ntres,
-    crttimetenth = tenth,
-    crttime = crtt,
-    crtdate = crtd,
-    lstaccdate = lst,
-    clushi = hi,
-    wrttime = wt,
-    wrtdate = wd,
-    cluslo = lo,
-    size = size,
-    clus = (hi << 16) | lo,
-  }
+  pos = pos or 1
+  local e = {}
+  e.name = sub(s, pos, pos + 10)
+  e.attr = byte(s, pos + 11)
+  e.ntres = byte(s, pos + 12)
+  e.crttimetenth = byte(s, pos + 13)
+  e.crttime = sunpack("<I2", s, pos + 14)
+  e.crtdate = sunpack("<I2", s, pos + 16)
+  e.lstaccdate = sunpack("<I2", s, pos + 18)
+  e.clushi = sunpack("<I2", s, pos + 20)
+  e.wrttime = sunpack("<I2", s, pos + 22)
+  e.wrtdate = sunpack("<I2", s, pos + 24)
+  e.cluslo = sunpack("<I2", s, pos + 26)
+  e.size = sunpack("<I4", s, pos + 28)
+  e.clus = (e.clushi << 16) | e.cluslo
+  return e
 end
 
 function M.packdirent(e)

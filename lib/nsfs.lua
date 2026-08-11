@@ -61,11 +61,8 @@ function M.new(ns, root)
 		return root .. p
 	end
 
-	-- wc is the walk that proved this path, kept rather than thrown
-	-- away: a fid is the file it was walked to, and stat asking the
-	-- namespace again resolves the whole path from the root.
-	local function h_of(path, wc)
-		return { path = path, wc = wc }
+	local function h_of(path)
+		return { path = path }
 	end
 
 	function B.attach()
@@ -84,26 +81,21 @@ function M.new(ns, root)
 		-- prove the element exists. NS:walk raises if it is not there --
 		-- but a bare mount point (no backend, only mounts below it, like
 		-- /n over /n/gefs) does not walk yet stats as a directory, so
-		-- fall back to that.
-		local proof
+		-- fall back to that. The chan is only for the proof; close it.
 		local ok = pcall(function()
-			proof = ns:walk(nspath(cp))
+			local c <close> = ns:walk(nspath(cp))
 		end)
-		if ok then
-			return h_of(cp, proof)
-		end
-		local st = ns:stat(nspath(cp))
-
-		if not (st and st.dir) then
-			dev.error(dev.Enonexist)
+		if not ok then
+			local st = ns:stat(nspath(cp))
+			if not (st and st.dir) then
+				dev.error(dev.Enonexist)
+			end
 		end
 		return h_of(cp)
 	end
 
 	function B.stat(h)
-		local st = h.wc and h.wc:stat() or
-		    must(ns:stat(nspath(h.path)))
-
+		local st = must(ns:stat(nspath(h.path)))
 		return { name = basename(h.path), size = st.size, dir = st.dir }
 	end
 
@@ -159,10 +151,6 @@ function M.new(ns, root)
 		if h.chan then
 			pcall(h.chan.close, h.chan)
 			h.chan = nil
-		end
-		if h.wc then
-			pcall(h.wc.close, h.wc)
-			h.wc = nil
 		end
 	end
 
