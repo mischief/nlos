@@ -94,36 +94,32 @@
 
 #endif
 
-/* One transfer's worth of RGB565, in DMA-capable internal memory.
- *
- * Sized to a comfortable band rather than the screen: a term redrawing
- * one line of text moves 240x12, and anything larger is chunked by rows
- * below. Callers' pixels come from lua strings on the shared heap,
- * which is not DMA-capable, so a staging buffer is needed regardless of
- * size -- this only decides how many transfers a big rectangle costs.
+/* Staging bands of RGB565, in DMA-capable internal memory. Callers'
+ * pixels are on the shared heap, which is not DMA-capable, so a copy is
+ * needed whatever the size; this only sets how many transfers a large
+ * rectangle costs.
  */
-#define BAND_ROWS	16
+
+/* Several, so a caller fills the next while the panel takes the last.
+ * Smaller and more beats one large, and internal SRAM is the scarce
+ * pool here, so what matters is the product.
+ */
+#define BAND_ROWS	8
+#define NBAND		3
 #define BANDPX		(LCD_W * BAND_ROWS)
 
 static esp_lcd_panel_handle_t panel;
-static uint16_t *band;
+static uint16_t *bands[NBAND];
+static int bandi;
 
-/* An optional copy of what was written, for unload().
- *
- * The panel cannot be read: the Cardputer schematic's LCD connector is
- * eight pins -- RST, RS, MOSI, SCK, CS, BL, 3V3, GND -- and the
- * ST7789's SDO is routed nowhere. So readback is impossible rather than
- * merely unreliable, and the only honest unload is a copy we kept.
- *
- * ONE BIT per pixel, and that is a real limit worth stating: a
- * screenshot shows shape, not colour. Ink is any pixel that is not
- * black.
- *
- * It is one bit because full RGB565 measured 64800 bytes and killed the
- * machine -- "proc 0 (cons) died: not enough memory" on a board with no
- * PSRAM, where cons alone wants ~60KB for src/thread.c. At 4050 bytes
- * this is affordable, and what it is for -- checking that glyphs landed
- * where they should -- needs shape rather than hue.
+/* An optional copy of what was written, for unload(). The panel cannot
+ * be read -- the ST7789's SDO is routed nowhere -- so a copy we kept is
+ * the only honest answer.
+ */
+
+/* One bit a pixel: a screenshot shows shape, not colour, and ink is any
+ * pixel that is not black. RGB565 would be 64800 bytes and kills a
+ * board with no PSRAM, where 4050 is affordable.
  */
 #define SHADOW_BYTES ((LCD_W * LCD_H + 7) / 8)
 static unsigned char *shadow;
@@ -159,18 +155,69 @@ transdone(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ed,
 	return woke == pdTRUE;
 }
 
-/* one rectangle, and not back until the panel has it. Waiting rather
- * than pipelining costs the setup of one transfer, and is what makes a
- * reused staging buffer safe to write again.
+/* Queued and not yet reported done. A transfer that finished before we
+ * came round again is a take that does not block, which is the point:
+ * blocking costs a scheduler tick, many times a transfer.
+ */
+static int inflight;
+
+/* wait for every outstanding transfer. Needed before a buffer that is
+ * not one of ours is handed to the DMA, and before reading the panel.
+ */
+static void
+drain(void)
+{
+	while (inflight > 0) {
+		xSemaphoreTake(sent, portMAX_DELAY);
+		inflight--;
+	}
+}
+
+/* the next staging buffer to fill. Blocks only when every one of them
+ * is still with the DMA.
+ */
+static uint16_t *
+bandnext(void)
+{
+	uint16_t *b;
+
+	/* the queue is served in order and these are handed out in
+	 * order, so the one coming round again is the oldest: fewer
+	 * outstanding than there are buffers means it has been sent.
+	 */
+	while (inflight >= NBAND) {
+		xSemaphoreTake(sent, portMAX_DELAY);
+		inflight--;
+	}
+	b = bands[bandi];
+	bandi = (bandi + 1) % NBAND;
+	return b;
+}
+
+/* queue one rectangle from a staging buffer and return. The pixels
+ * belong to the DMA until a completion is counted, which bandnext does
+ * before handing that buffer out again.
  */
 static int
-sendrect(int x, int y, int w, int h, const uint16_t *px)
+sendband(int x, int y, int w, int h, const uint16_t *px)
 {
 	if (esp_lcd_panel_draw_bitmap(panel, x, y, x + w, y + h,
 	    (void *)px) != ESP_OK)
 		return -1;
-	if (sent != NULL)
-		xSemaphoreTake(sent, portMAX_DELAY);
+	inflight++;
+	return 0;
+}
+
+/* one rectangle from anywhere, and not back until the panel has it.
+ * For a caller whose pixels this cannot keep -- a stack buffer, or the
+ * shadow, which the next write would change underneath the DMA.
+ */
+static int
+sendrect(int x, int y, int w, int h, const uint16_t *px)
+{
+	if (sendband(x, y, w, h, px) != 0)
+		return -1;
+	drain();
 	return 0;
 }
 
@@ -208,7 +255,7 @@ luaos_lcd_present(void)
 		.lcd_cmd_bits = 8,
 		.lcd_param_bits = 8,
 		.spi_mode = 0,
-		.trans_queue_depth = 1,
+		.trans_queue_depth = NBAND,
 		.on_color_trans_done = transdone,
 	};
 	esp_lcd_panel_dev_config_t dev_cfg = {
@@ -265,11 +312,17 @@ luaos_lcd_present(void)
 	esp_lcd_panel_set_gap(panel, LCD_GAP_X, LCD_GAP_Y);
 	esp_lcd_panel_disp_on_off(panel, true);
 
-	band = heap_caps_malloc(BANDPX * sizeof *band,
-	    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-	if (band == NULL)
-		return 0;
-	sent = xSemaphoreCreateBinary();
+	for (int i = 0; i < NBAND; i++) {
+		bands[i] = heap_caps_malloc(BANDPX * sizeof *bands[i],
+		    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+		if (bands[i] == NULL)
+			return 0;
+	}
+	/* counting, not binary: with several in flight the completions
+	 * arrive before anyone waits, and a binary one would lose all
+	 * but the last.
+	 */
+	sent = xSemaphoreCreateCounting(NBAND, 0);
 	if (sent == NULL)
 		return 0;
 
@@ -285,8 +338,10 @@ luaos_lcd_present(void)
 			int n = (LCD_H - y < BAND_ROWS) ? LCD_H - y :
 			    BAND_ROWS;
 
-			memset(band, 0, (size_t)LCD_W * n * sizeof *band);
-			sendrect(0, y, LCD_W, n, band);
+			uint16_t *b = bandnext();
+
+			memset(b, 0, (size_t)LCD_W * n * sizeof *b);
+			sendband(0, y, LCD_W, n, b);
 		}
 	}
 
@@ -631,9 +686,6 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 	if (!present || w <= 0 || h <= 0 || w > LCD_W)
 		return -1;
 
-	for (i = 0; i < w * BAND_ROWS; i++)
-		band[i] = px;
-
 	if (shadow != NULL) {
 		int r, c, ink = shadow_ink(rgb);
 
@@ -649,13 +701,17 @@ luaos_lcd_fill(int x, int y, int w, int h, uint32_t rgb)
 				cshadow[(size_t)(y + r) * LCD_W + x + c] = px;
 	}
 
-	/* every band is the same pixels, so the wait is for room in the
-	 * queue rather than for the buffer.
+	/* a buffer of its own per band, though they all hold the same
+	 * pixels: one sent twice would be written again while the DMA
+	 * still had it.
 	 */
 	for (row = 0; row < h; row += BAND_ROWS) {
 		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
+		uint16_t *b = bandnext();
 
-		if (sendrect(x, y + row, w, n, band) != 0)
+		for (i = 0; i < w * n; i++)
+			b[i] = px;
+		if (sendband(x, y + row, w, n, b) != 0)
 			return -1;
 	}
 	if (cursor_hit(x, y, w, h))
@@ -679,6 +735,7 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
 		int i, count = w * n;
 		const unsigned char *src = pix + (size_t)row * w * 4;
+		uint16_t *band = bandnext();
 
 		for (i = 0; i < count; i++) {
 			uint32_t b = src[i * 4 + 0];
@@ -693,7 +750,7 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 				cshadow[(size_t)(y + row + i / w) * LCD_W +
 				    x + i % w] = band[i];
 		}
-		if (sendrect(x, y + row, w, n, band) != 0)
+		if (sendband(x, y + row, w, n, band) != 0)
 			return -1;
 	}
 	if (cursor_hit(x, y, w, h))
@@ -716,6 +773,7 @@ luaos_lcd_load16(int x, int y, int w, int h, const unsigned char *pix)
 	for (row = 0; row < h; row += BAND_ROWS) {
 		int n = (h - row < BAND_ROWS) ? h - row : BAND_ROWS;
 		const unsigned char *src = pix + (size_t)row * w * 2;
+		uint16_t *band = bandnext();
 		int i;
 
 		memcpy(band, src, (size_t)w * n * 2);
@@ -731,7 +789,7 @@ luaos_lcd_load16(int x, int y, int w, int h, const unsigned char *pix)
 			for (i = 0; i < w * n; i++)
 				shadow_set(x + i % w, y + row + i / w,
 				    (src[i * 2] | src[i * 2 + 1]) != 0);
-		if (sendrect(x, y + row, w, n, band) != 0)
+		if (sendband(x, y + row, w, n, band) != 0)
 			return -1;
 	}
 	if (cursor_hit(x, y, w, h))
