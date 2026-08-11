@@ -247,7 +247,7 @@ end
 -- it and always read the disk, so the checker still sees what is
 -- actually there.
 
-local Ncached = 8       -- directories, before the lot is dropped
+local Ncached = 16      -- directories held, one dropped to make room
 
 local function dirkey(d)
   return d.root and "/" or d.clus
@@ -259,9 +259,19 @@ function Fs:dirindex(d)
   local ix = self.dirs[k]
   if ix then return ix end
 
+  -- One dropped rather than all of them. A single walk touches every
+  -- directory on the path and loading a library touches several, so
+  -- emptying the table makes the next walk rebuild what it just used --
+  -- and rebuilding one is a scan of the whole directory.
   local n = 0
+
   for _ in pairs(self.dirs) do n = n + 1 end
-  if n >= Ncached then self.dirs = {} end
+  if n >= Ncached then
+    for k2 in pairs(self.dirs) do
+      self.dirs[k2] = nil
+      break
+    end
+  end
 
   ix = { names = {}, nslots = self:dirslots(d), freefrom = 0 }
   self:scandir(d, function(e)

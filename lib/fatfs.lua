@@ -106,11 +106,17 @@ function M.new(fs)
 		return h_of("/")
 	end
 
+	-- A step from a directory we already hold, not a fresh resolve of
+	-- the whole path: fs:walk starts at the root every time, so
+	-- walking a path of n elements cost n(n+1)/2 lookups.
 	function B.walk(h, name)
 		if isctl(h) then
 			dev.error(dev.Enotdir)
 		end
-		if not isdir(entof(h)) then
+
+		local pe = entof(h)
+
+		if not isdir(pe) then
 			dev.error(dev.Enotdir)
 		end
 		if name == "." then
@@ -125,7 +131,7 @@ function M.new(fs)
 		end
 
 		local cp = childpath(h.path, name)
-		local e = fs:walk(cp)
+		local e = fs:lookup(fs:dirent(pe), name)
 
 		if e == nil then
 			dev.error(dev.Enonexist)
