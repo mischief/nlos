@@ -166,7 +166,7 @@ end
 -- from and to are cell columns, `to` exclusive. The row is padded so a
 -- span past the end of the text erases what was there.
 function Cons:paintspan(y, from, to)
-	if to <= from then
+	if to <= from or self.paused then
 		return
 	end
 
@@ -252,6 +252,20 @@ function Cons:redraw()
 	self:cursor(self.curon)
 end
 
+-- while hidden nothing is drawn: the grid is the state and the pixels
+-- can be built from it. A screen of output produced behind another app
+-- costs one repaint on the way back rather than a span per write.
+function Cons:hide()
+	self.paused = true
+end
+
+function Cons:show()
+	if self.paused then
+		self.paused = false
+		self:redraw()
+	end
+end
+
 -- mark a span of a row as needing paint before the write returns. The
 -- range widens as more of the row changes, so a write that touches one
 -- row at several columns paints it once.
@@ -280,7 +294,7 @@ end
 -- Four fills rather than one. Each is a strip one pixel thick, so the
 -- four together move a fraction of what the filled cell did.
 function Cons:cursor(on)
-	if self.curon == on then
+	if self.curon == on or self.paused then
 		return
 	end
 	self.curon = on
@@ -319,6 +333,9 @@ end
 -- transfer is the cost and a burst should pay it once. Returns true if it
 -- happened.
 function Cons:doscroll(k)
+	if self.paused then
+		return false
+	end
 	local ok, r = pcall(thread.rpc, self.fb, { op = "scroll",
 	    r = { x = 0, y = k * self.ch, w = self.cols * self.cw,
 	    h = (self.rows - k) * self.ch }, to = { x = 0, y = 0 } })
@@ -642,7 +659,11 @@ function Cons:write(s)
 		-- scroll: nothing survives, so forget the glass and draw it all.
 		local moved = false
 
-		if k < self.rows and self.canscroll ~= false then
+		-- not while paused: doscroll declines then, and remembering
+		-- that as "this screen cannot scroll" would cost every
+		-- later scroll a full repaint.
+		if k < self.rows and self.canscroll ~= false and
+		    not self.paused then
 			moved = self:doscroll(k)
 			self.canscroll = moved
 		end
@@ -709,6 +730,12 @@ function M.new(o)
 		-- to draw itself again.
 		redraw = function()
 			self:redraw()
+		end,
+		hide = function()
+			self:hide()
+		end,
+		show = function()
+			self:show()
 		end,
 		keyport = o.keyport,
 		cols = self.cols,

@@ -325,10 +325,26 @@ function ops.unload(m)
 	return platform.unload(x, y, w, h)
 end
 
-function ops.scroll(m)
+-- within an image, or on the glass. A window's own scroll is what
+-- keeps a terminal in one from repainting its whole grid per burst.
+function ops.scroll(m, space)
 	local x, y, w, h = rect(m.r)
 	local to = m.to or {}
+	local img = image(space, m.id)
 
+	if img then
+		img:move(m.r, { x = to.x or 0, y = to.y or 0 })
+
+		local part = onglass(img, { x = to.x or 0, y = to.y or 0,
+		    w = w, h = h })
+
+		if part then
+			platform.scroll(img.at.x + x, img.at.y + y,
+			    img.at.x + part.x, img.at.y + part.y,
+			    part.w, part.h)
+		end
+		return true
+	end
 	platform.scroll(x, y, to.x or 0, to.y or 0, w, h)
 	return true
 end
@@ -354,7 +370,7 @@ end
 -- them. place is here too: where a window sits is the window manager's
 -- to say, and it holds an id for the image where the app does not.
 local GLASS = {
-	unload = true, unload1 = true, scroll = true, setmode = true,
+	unload = true, unload1 = true, setmode = true,
 	cursor = true, place = true, session = true,
 }
 

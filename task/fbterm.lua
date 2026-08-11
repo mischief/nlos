@@ -83,10 +83,10 @@ end)
 -- ---- the window, where there is one ----
 --
 -- Under task/dio.lua this terminal has an app's namespace, and
--- /dev/wctl in it answers "redraw" when the terminal comes to the
--- front. Its pixels are gone by then -- an app keeps none here -- but
--- its grid is intact, so drawing itself again is all it takes.
---
+-- /dev/wctl in it says whether it is on the glass. Hidden it stops
+-- drawing, so output produced behind another app costs one repaint on
+-- the way back rather than a span per write.
+
 -- On a machine with no window system there is no such file, and this
 -- thread never starts. Nothing else in the terminal differs.
 do
@@ -103,6 +103,10 @@ do
 				end
 				if s:match("redraw") then
 					backend.redraw()
+				elseif s:match("hidden") then
+					backend.hide()
+				elseif s:match("visible") then
+					backend.show()
 				end
 			end
 			wctl:close()

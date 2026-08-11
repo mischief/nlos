@@ -403,9 +403,9 @@ end
 -- to know, so repaint the lot.
 local wctl = N and N:open("/dev/wctl", "r")
 
--- Behind another app there is nothing to draw on: the window system
--- drops what it is sent, so a tick spent painting is a tick spent
--- building a message for it to throw away.
+-- Behind another app the face stays in the window, so a tick spent
+-- painting is a tick spent on a second nobody is looking at. Coming
+-- back shows the time it stopped at, which one paint corrects.
 if wctl then
 	thread.spawn(function()
 		while true do
@@ -417,6 +417,9 @@ if wctl then
 			if s:match("redraw") then
 				visible = true
 				paint(nil, false, true)
+			elseif s:match("visible") then
+				visible = true
+				paint(nil, false, false)
 			elseif s:match("hidden") then
 				visible = false
 			end

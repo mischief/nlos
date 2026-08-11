@@ -1,33 +1,21 @@
 -- wctlfs: whether an app is the one in front, as a file.
 --
---	/dev/wctl	read: "redraw" or "hidden", one line
---
+--	/dev/wctl	read: "visible", "hidden" or "redraw", one line
+
 -- A read blocks until the answer changes, so an app's loop is a read
--- rather than a poll, and the same idiom as reading the mouse. A window
--- system that sent a message to the app's mailbox instead would be the
--- one place it spoke a language the rest of the machine does not.
---
--- ---- redraw means redraw ----
---
--- An app keeps no pixels here. When it comes to the front it is told to
--- draw itself again, from what it knows, onto an area that has been
--- cleared. That is the whole bargain: no backbuffer per app, nothing to
--- restore, and a board that has 4MB does not spend it on copies of a
--- screen it is not showing.
---
--- The cost is that an app must be able to draw itself from its own
--- state. An app with no state -- bin/scribble.lua, whose picture is
--- only ever on the glass -- comes back empty, and that is honest rather
--- than a bug to work around with memory the machine has not got.
---
--- The first read answers at once with the current state, so an app that
--- has just started learns where it stands without waiting to be
--- switched.
---
--- One word covers a shape change too: an app told to redraw asks the
--- framebuffer for its mode and paints what it gets. There is one window
--- shape today, and an app written this way needs nothing new when there
--- is more than one.
+-- rather than a poll, and the same idiom as reading the mouse. The
+-- first read answers at once, so an app that has just started learns
+-- where it stands without waiting to be switched.
+
+-- The framebuffer keeps an app's window, so switching loses no pixels.
+-- "hidden" is an invitation to stop: what an app draws while hidden is
+-- cycles and messages spent on pixels nobody sees. "visible" says it
+-- may start again, and finds its picture where it left it.
+
+-- "redraw" is the one that costs: the window's pixels are gone and the
+-- app must paint from its own state. It follows a shape change, or a
+-- window the system could not keep -- so it is said only when true.
+-- bin/scribble.lua, which keeps no state, comes back empty.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -35,27 +23,40 @@ local dev = require("dev")
 
 local M = {}
 
--- new(visible) -> { show = function(bool), backend = <dev backend> }
-function M.new(visible)
-	local state = visible ~= false and "redraw" or "hidden"
+-- new(visible) -> { show = function(bool), lost = function(),
+--		     state = function(), backend = <dev backend> }
+function M.new()
+	-- a new window has no pixels in it, so the first thing any app is
+	-- told is to paint them, whether or not it is on the glass yet.
+	local state = "redraw"
 	local seq = 0
 	local waiters = {}
 	local self = {}
 
-	function self.show(on)
-		local want = on and "redraw" or "hidden"
-
-		-- an app told twice is an app that redraws twice, so only a
-		-- change is an event
-		if want == state then
-			return
-		end
+	local function say(want)
 		state = want
 		seq = seq + 1
 		for _, w in ipairs(waiters) do
 			sys.send(w.reply, { seq = seq, state = state })
 		end
 		waiters = {}
+	end
+
+	function self.show(on)
+		local want = on and "visible" or "hidden"
+
+		-- only a change is an event: an app told twice would act
+		-- twice on one switch
+		if want ~= state then
+			say(want)
+		end
+	end
+
+	-- the window's pixels are gone, so the app must paint them again.
+	-- Always an event, even to an app that already thinks it is
+	-- visible, because what changed is the window and not the focus.
+	function self.lost()
+		say("redraw")
 	end
 
 	function self.state()

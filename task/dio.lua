@@ -660,10 +660,10 @@ local function newapp(entryidx, kind)
 		wrecv = wrecv, wport = sys.sendright(wrecv),
 		keys = keys, keysend = sys.sendright(keys),
 		mouse = mousefs.new(),
-		-- starts hidden and is shown by the switch below, so an app
-		-- reads one "redraw" rather than a state and then an event
-		-- saying the same thing
-		wctl = wctlfs.new(false),
+		-- a fresh window is empty, so the first word an app reads
+		-- is redraw. Switching says visible and hidden after that,
+		-- and the pixels stay put across both.
+		wctl = wctlfs.new(),
 	}
 
 	nextid = nextid + 1

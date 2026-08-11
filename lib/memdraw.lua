@@ -191,6 +191,36 @@ function Image:fill(r, color)
 	return self
 end
 
+-- move a rectangle within one image, to a corner that may overlap it.
+-- Each row copy is between two disjoint runs, so only the order of the
+-- rows matters: away from the destination, or a row is copied over
+-- one not yet read.
+function Image:move(r, to)
+	local src = M.clip(r, self:rect())
+	local dst = M.clip(M.rect(to.x, to.y, src.w, src.h), self:rect())
+
+	if M.empty(dst) or (src.x == dst.x and src.y == dst.y) then
+		return self
+	end
+
+	local bpp = self.bpp
+	local stride = self.w * bpp
+	local n = dst.w * bpp
+	local from, step = 0, 1
+
+	if dst.y > src.y then
+		from, step = dst.h - 1, -1
+	end
+	for k = 0, dst.h - 1 do
+		local i = from + k * step
+		local s = (src.y + i) * stride + src.x * bpp
+
+		self.b:copy((dst.y + i) * stride + dst.x * bpp + 1, self.b,
+		    s + 1, s + n)
+	end
+	return self
+end
+
 function Image:set(x, y, color)
 	return self:fill(M.rect(x, y, 1, 1), color)
 end

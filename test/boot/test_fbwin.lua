@@ -10,7 +10,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(11)
+tap.plan(12)
 
 tap.ok(caps_of.fb ~= nil, "boot payload was granted fb")
 if not caps_of.fb then
@@ -70,6 +70,17 @@ local corner = memdraw.fromBytes(16, 16, fb.unload(outside))
 tap.is(memdraw.at(corner, 0, 0), memdraw.red,
     "a fill outside the window does not reach the glass at all")
 
+-- scrolling within a window, which is what keeps a terminal in one
+-- from repainting its whole grid per burst
+app.fill(memdraw.rect(0, 0, W, H), memdraw.blue, true)
+app.fill(memdraw.rect(0, 0, W, 8), memdraw.green, true)
+app.scroll(memdraw.rect(0, 8, W, H - 8), memdraw.pt(0, 0), true)
+
+local rolled = memdraw.fromBytes(W, H, fb.unload(memdraw.rect(AT.x, AT.y, W, H)))
+
+tap.is(memdraw.at(rolled, 0, 0), memdraw.blue,
+    "a window scrolls within itself, and the glass follows")
+
 local nope, err = app.unload(memdraw.rect(0, 0, 8, 8))
 
 tap.ok(not nope and tostring(err):find("not a window"),
@@ -80,14 +91,17 @@ local moved, merr = app.place(nil, { x = 0, y = 0 }, true, true)
 tap.ok(not moved and tostring(merr):find("not a window"),
     "nor move itself: where a window sits is the manager's to say")
 
--- an offscreen image of its own still works, and stays offscreen
-local off = app.alloc(8, 8, nil, memdraw.red)
+-- an offscreen image of its own still works, and stays offscreen: a
+-- fill carrying an id must not reach the window it did not name.
+app.fill(memdraw.rect(0, 0, W, H), memdraw.red, true)
+
+local off = app.alloc(8, 8, nil, memdraw.blue)
 
 app.fill(memdraw.rect(0, 0, 8, 8), memdraw.green, true, off)
 
 local edge = memdraw.fromBytes(W, H, fb.unload(memdraw.rect(AT.x, AT.y, W, H)))
 
-tap.is(memdraw.at(edge, 0, 0), memdraw.green,
+tap.is(memdraw.at(edge, 0, 0), memdraw.red,
     "an image of its own is not its window")
 
 tap.done()
