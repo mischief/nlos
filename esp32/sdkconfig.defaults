@@ -87,3 +87,16 @@ CONFIG_LUAOS_BOARD_TDECK=y
 # glass itself cannot be read: the display's SDO is not routed. 9600
 # bytes for this 320x240 panel, against 8MB of PSRAM.
 CONFIG_LUAOS_FB_SHADOW=y
+
+# 240MHz, the S3's top speed. A scroll is 16.0ms at 160 and 13.3 here,
+# and the panel work that is pure transfer gains less.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
+# The clock drops to the XTAL when the machine is idle and returns when
+# a driver takes a lock, which IDF's own drivers do. Measured cost is
+# 10-13% on small panel rectangles, which wait on an interrupt, and
+# nothing on large ones or on cpu. Light sleep needs TICKLESS_IDLE and
+# is not on.
+CONFIG_PM_ENABLE=y
+CONFIG_PM_DFS_INIT_AUTO=y
