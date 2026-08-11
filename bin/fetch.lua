@@ -65,19 +65,14 @@ end
 -- store, so a validity window is not something it can check. Nothing
 -- persists the key yet, so "first use" is every run and -k skips even
 -- that.
-local seen = {}
 local opts = {
 	rand = prog.rand(),
 	insecure = insecure,
-	verify = not insecure and require("tls.tofu").new({
-		host = url:match("^https://([^:/]+)") or "",
-		known = function(h) return seen[h] end,
-		learn = function(h, fp) seen[h] = fp end,
-		ask = function(h, fp)
-			unistd.write(2, ("fetch: %s is %s\n"):format(h, fp))
-			return true
-		end,
-	}) or nil,
+	verify = not insecure and require("tlstcp").tofu(
+	    url:match("^https://([^:/]+)") or "",
+	    function(h, fp)
+		unistd.write(2, ("fetch: %s is %s\n"):format(h, fp))
+	    end) or nil,
 }
 if url:match("^https://") and not opts.rand then
 	die("no entropy: this shell was lent no seed, and tls needs one")

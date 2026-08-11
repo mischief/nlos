@@ -10,6 +10,30 @@ local tlsconn = require("tls.conn")
 
 local M = {}
 
+-- Trust on first use: the key is remembered per host and a change is
+-- refused, which is what a machine with no clock it believes and no
+-- root store can honestly do. The store lives as long as the caller,
+-- so first use is every run. onnew is told what was accepted.
+function M.tofu(host, onnew)
+	local seen = {}
+
+	return require("tls.tofu").new({
+		host = host,
+		known = function(h)
+			return seen[h]
+		end,
+		learn = function(h, fp)
+			seen[h] = fp
+		end,
+		ask = function(h, fp)
+			if onnew then
+				onnew(h, fp)
+			end
+			return true
+		end,
+	})
+end
+
 -- Records arrive whole or in pieces, and neither is visible from here:
 -- a handshake step is "read some bytes, feed them in, send what comes
 -- back" until the state says established.
