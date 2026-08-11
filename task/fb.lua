@@ -79,11 +79,13 @@ local ports = { sys.SELF }
 local spaces = { anon }
 local nsession = 0
 
--- the image an op names, or nil for the screen. Raises on an id that
--- was never given out, which is a client bug and not a blank draw.
+-- the image an op names. Absent is the screen, or in a windowed session
+-- that session's window, which is what keeps an app inside it: the
+-- glass has no name there at all. Raises on an id that was never given
+-- out, which is a client bug and not a blank draw.
 local function image(space, id)
 	if id == nil then
-		return nil
+		return space.win
 	end
 
 	local img = space.images[id]
@@ -92,6 +94,30 @@ local function image(space, id)
 		error("no such image: " .. tostring(id), 0)
 	end
 	return img
+end
+
+-- what an app draws is on the glass as soon as it draws it, which is
+-- the behaviour it had when it drew to the glass. r is in the image;
+-- `at` is where the window manager put the window.
+local function shown(img, r)
+	if not img or not img.on then
+		return
+	end
+
+	local w, h = img:rect().w, img:rect().h
+	local x = math.max(r.x or 0, 0)
+	local y = math.max(r.y or 0, 0)
+	local x1 = math.min((r.x or 0) + (r.w or 0), w)
+	local y1 = math.min((r.y or 0) + (r.h or 0), h)
+
+	if x1 <= x or y1 <= y then
+		return
+	end
+
+	local part = { x = x, y = y, w = x1 - x, h = y1 - y }
+
+	platform.load(img.at.x + x, img.at.y + y, part.w, part.h,
+	    img:bytes(part), img.fmt)
 end
 
 local function point(p)
@@ -103,17 +129,38 @@ end
 
 local ops = {}
 
--- a client's own image space, and a right to talk on it. Ours is
--- closed once the reply has gone, so the client holds the only send
--- right and sys.hungup tells us when it has gone.
-function ops.session()
+-- a client's own image space, and a right to talk on it. Ours is closed
+-- once the reply has gone, so the client holds the only send right and
+-- sys.hungup tells us when it has gone. m.win, an id in the asking
+-- space, makes the session a window on that image.
+function ops.session(m, space)
 	local recv = sys.newport("fb.session")
 	local send = sys.sendright(recv)
 
 	ports[#ports + 1] = recv
-	spaces[#spaces + 1] = { images = {}, nextid = 1 }
+	spaces[#spaces + 1] = { images = {}, nextid = 1,
+	    win = m and m.win and image(space, m.win) }
 	nsession = nsession + 1
 	return { port = { __right = send } }, send
+end
+
+-- where a window image sits on the glass, and whether it is on it. The
+-- window manager holds an id for the image and says; the app holding
+-- the session cannot, having no id for its own window.
+function ops.place(m, space)
+	local img = image(space, m.id)
+
+	if not img then
+		error("place: no image", 0)
+	end
+	img.at = { x = (m.at and m.at.x) or 0, y = (m.at and m.at.y) or 0 }
+	if m.on ~= nil then
+		img.on = m.on and true or false
+	end
+	if img.on then
+		shown(img, img:rect())
+	end
+	return true
 end
 
 function ops.alloc(m, space)
@@ -135,8 +182,18 @@ function ops.free(m, space)
 	return true
 end
 
-function ops.mode()
-	return platform.mode()
+-- a window's client asks this to size itself, so it must answer the
+-- window rather than the glass behind it.
+function ops.mode(m, space)
+	local mode = platform.mode()
+
+	if space.win then
+		local r = space.win:rect()
+
+		return { n = mode.n, w = r.w, h = r.h,
+		    format = space.win.fmt }
+	end
+	return mode
 end
 
 function ops.modes()
@@ -154,6 +211,7 @@ function ops.fill(m, space)
 
 	if img then
 		img:fill(m.r, m.color or 0)
+		shown(img, m.r)
 		return true
 	end
 	platform.fill(x, y, w, h, m.color or 0)
@@ -171,6 +229,12 @@ function ops.line(m, space)
 	end
 	img:line(md().pt(x0, y0), md().pt(x1, y1), m.thick or 1,
 	    m.color or 0)
+
+	-- the ends and the width, which is all a line's extent is
+	local pad = (m.thick or 1) + 1
+
+	shown(img, { x = math.min(x0, x1) - pad, y = math.min(y0, y1) - pad,
+	    w = math.abs(x1 - x0) + 2 * pad, h = math.abs(y1 - y0) + 2 * pad })
 	return true
 end
 
@@ -190,6 +254,7 @@ function ops.draw(m, space)
 
 	if dst then
 		dst:draw(md().pt(x - r.x, y - r.y), src, r)
+		shown(dst, { x = x, y = y, w = r.w, h = r.h })
 		return true
 	end
 	platform.load(x, y, r.w, r.h, src:bytes(r), src.fmt)
@@ -207,6 +272,7 @@ function ops.load(m, space)
 		local band = md().fromBytes(w, h, m.data, m.fmt)
 
 		img:draw(md().pt(x, y), band, band:rect())
+		shown(img, m.r)
 		return true
 	end
 	platform.load(x, y, w, h, m.data, m.fmt)
@@ -255,6 +321,14 @@ function ops.cursor(m)
 	return platform.cursor(m.x, m.y, m.on)
 end
 
+-- ops that can only mean the glass, so a windowed session is refused
+-- them. place is here too: where a window sits is the window manager's
+-- to say, and it holds an id for the image where the app does not.
+local GLASS = {
+	unload = true, unload1 = true, scroll = true, setmode = true,
+	cursor = true, place = true, session = true,
+}
+
 -- a session whose client has gone: sys.hungup is sole_holder, so it is
 -- true once we are the only holder left. Its images go with it, which
 -- is the whole reason ids are per client.
@@ -286,7 +360,12 @@ while true do
 		local fn = ops[m.op]
 		local reply = m.reply and m.reply.__right
 
-		if not fn then
+		if space.win and GLASS[m.op] then
+			if reply then
+				sys.send(reply, { err = m.op ..
+				    ": the screen is not a window's to touch" })
+			end
+		elseif not fn then
 			if reply then
 				sys.send(reply,
 				    { err = "no such op: " .. tostring(m.op) })

@@ -87,13 +87,21 @@ function M.new(handle, chunk)
 	-- are small integers, so without this a client reaches another's
 	-- image by guessing one. The images go when this client's right
 	-- is dropped, so a program that dies stops costing the server.
-	function f.session()
-		local r, err = ask({ op = "session" })
+	-- win, an id of ours, makes the new session a window on that image:
+	-- its client draws into it and cannot name the glass. Sending the
+	-- right is the whole grant, and dropping ours revokes it.
+	function f.session(win)
+		local r, err = ask({ op = "session", win = win })
 
 		if not r then
 			return nil, err
 		end
 		return M.new(r.port.__right, chunk)
+	end
+
+	-- where a window image sits on the glass, and whether it is on it.
+	function f.place(id, at, on, wait)
+		return tell({ op = "place", id = id, at = at, on = on }, wait)
 	end
 
 	-- alloc answers an id. The pixels never leave the server, so a
