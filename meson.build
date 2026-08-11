@@ -846,7 +846,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'replyright', 'rightsundo', 'procpriv', 'portlimit', 'trace',
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
-              'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
+              'efigefs', 'reboot', 'nsfs', 'nsfsprog', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock']
 foreach t : boot_tests
