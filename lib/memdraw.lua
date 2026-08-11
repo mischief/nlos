@@ -171,14 +171,22 @@ function Image:fill(r, color)
 		return self
 	end
 
-	-- one run, copied into every row of the rectangle. The run is the
-	-- only allocation, and it is one whatever the height.
+	-- one run of the image's whole width, kept until the colour
+	-- changes, and a prefix of it copied into each row. Building the
+	-- run per call made a fill allocate, which a program drawing a
+	-- shape as one span per row does hundreds of times.
 	local bpp = self.bpp
-	local run = self.pix(color):rep(c.w)
+
+	if self.runc ~= color then
+		self.run = self.pix(color):rep(self.w)
+		self.runc = color
+	end
+
 	local stride = self.w * bpp
+	local n = c.w * bpp
 
 	for y = c.y, c.y + c.h - 1 do
-		self.b:copy(y * stride + c.x * bpp + 1, run)
+		self.b:copy(y * stride + c.x * bpp + 1, self.run, 1, n)
 	end
 	return self
 end
