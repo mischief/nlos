@@ -1,4 +1,4 @@
--- trace [-n entries] pid: the last lines a proc ran.
+-- trace [-n entries] [-h [rows]] pid: what a proc ran, in order or by cost.
 --
 -- The companion to stack. A stack shows the calls that are still open,
 -- which after a fault describes the shape of the failure rather than
@@ -15,6 +15,10 @@
 -- Most useful on a broke proc, whose ring is held with its state until
 -- it is reaped, so the trace and the stack answer for the same instant.
 
+-- -h reads the same ring by cost instead of in order. Read it as a
+-- proportion: the line hook charges the traced proc about 4.7x, and it
+-- charges cheap lines most.
+
 local unistd = require("posix.unistd")
 
 local ok, ps = pcall(require, "ps")
@@ -25,7 +29,7 @@ if not ok then
 end
 
 local sys = require("los.sys")
-local n, pid
+local n, pid, hist, rows
 
 local i = 1
 
@@ -36,6 +40,14 @@ while arg[i] do
 		if not n then
 			unistd.write(2, "trace: -n wants a number\n")
 			os.exit(2)
+		end
+	elseif arg[i] == "-h" then
+		hist = true
+		-- a bare number after -h is the row count, but a lone
+		-- one is the pid, so it takes the second of two
+		if tonumber(arg[i + 1]) and tonumber(arg[i + 2]) then
+			i = i + 1
+			rows = tonumber(arg[i])
 		end
 	else
 		pid = tonumber(arg[i])
@@ -58,7 +70,7 @@ if n then
 	return
 end
 
-local got, out = pcall(ps.trace, pid)
+local got, out = pcall(hist and ps.tracehist or ps.trace, pid, rows)
 
 if not got then
 	unistd.write(2, "trace: " .. tostring(out) .. "\n")
