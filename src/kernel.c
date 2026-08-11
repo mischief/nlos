@@ -6582,7 +6582,7 @@ gc_step_k(lua_State *L)
  * counts the bytes anyway for mem_used, so it costs an add.
  */
 static void
-gc_step(struct kproc *p, lua_State *L)
+gc_step(struct kproc *p, lua_State *L, int mark)
 {
 	size_t kb;
 
@@ -6593,6 +6593,13 @@ gc_step(struct kproc *p, lua_State *L)
 
 	kb = p->gc_owed / 1024;
 	p->gc_owed = 0;
+
+	/* From the count hook this falls between two line events, and is
+	 * charged to the interrupted line -- the heaviest allocator, which
+	 * raises gc_owed fastest. From dispatch it is inside <scheduled>.
+	 */
+	if (mark)
+		trace_mark(p, "<gc>");
 
 	/* lua turns this back into bytes as an l_mem, which is 32 bits wide
 	 * on esp32. Too large a step overflows it to a negative debt, and
@@ -6976,7 +6983,7 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 	 * execution rather than a boundary.
 	 */
 	if (p)
-		gc_step(p, L);
+		gc_step(p, L, 1);
 
 	/* torture: cut this thread between EVERY pair of instructions,
 	 * rather than wherever the quantum happens to land.
@@ -9090,7 +9097,7 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 		 * point before its next resume, and its garbage would
 		 * sit for as long as it stayed parked.
 		 */
-		gc_step(p, p->L);
+		gc_step(p, p->L, 0);
 		prev = p;
 	}
 	return ran;
