@@ -429,7 +429,7 @@ M.dispatch = dispatch
 -- an open file. 9P closes a connection's fids when the connection ends
 -- for that reason, and a backend that keeps anything per handle needs
 -- the same. An exclusive device is where it shows first -- one
--- interrupted reader of lib/mousefs.lua and nothing can open the mouse
+-- interrupted reader of a device and nothing can open it
 -- again until the server proc is restarted.
 local function clunkall(S)
 	for fid, h in pairs(S.fids) do

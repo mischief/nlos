@@ -3,7 +3,7 @@
 --	> scribble
 --
 -- A pointer program, which is a thing this machine could not have had
--- before /dev/mouse. It reads the mouse the way any program reads a
+-- before a pointer. It reads the mouse the way any program reads a
 -- file -- open, read 49 bytes, get one event -- and holds no capability
 -- for it at all. What it does need a capability for is the screen,
 -- which it takes whole and gives back on the way out, the Windows 3.1
@@ -30,41 +30,26 @@ if not fb then
 end
 
 local N = prog.ns()
-local mouse, err = N and N:open("/dev/mouse", "r")
+local mouse = prog.mouse()
 
 if not mouse then
-	io.stderr:write("scribble: no /dev/mouse: " .. tostring(err) .. "\n")
+	io.stderr:write("scribble: no pointer on this machine\n")
 	os.exit(1)
 end
 
 local mode = fb.mode()
 local W, H = mode.w, mode.h
 
--- plan 9's mouse record, fixed width: 'm' then x, y, buttons and a
--- millisecond clock. Fixed width is why a read of 49 bytes is exactly
--- one event and this needs no framing of its own.
--- three answers, and they are deliberately different:
+-- two answers, and they are deliberately different:
 --	x, y, b   an event
---	false     something that is not a record; say so and read again
---	nil, why  the file is gone, and so are we
---
--- A record that will not parse used to end the program, which is the
--- same silence as a crash from the outside: the drawing stops and
--- nothing says why. It is not even a good reason to stop -- one bad
--- read out of a device says nothing about the next.
+--	nil, why  the pointer is gone, and so are we
 local function event()
-	local rec, rerr = mouse:read(49)
-
-	if not rec then
-		return nil, "read: " .. tostring(rerr)
-	end
-
-	local x, y, b = rec:match("^m%s*(%-?%d+)%s+(%-?%d+)%s+(%-?%d+)")
+	local x, y, b, why = mouse.read()
 
 	if not x then
-		return false, ("%d bytes, %q"):format(#rec, rec:sub(1, 24))
+		return nil, tostring(why)
 	end
-	return tonumber(x), tonumber(y), tonumber(b)
+	return x, y, b
 end
 
 -- wheel bits, as plan 9 numbers them. 1 is a click, whether it came
@@ -268,5 +253,5 @@ end)
 
 thread.run()
 
-mouse:close()
+
 fb.fill(memdraw.rect(0, 0, W, H), 0x000000)

@@ -684,6 +684,8 @@ function M.main()
 
 	-- the screen, if the launcher lent us one. see M.screen below.
 	ctx.fb = ctx.fb and ctx.fb.__right or nil
+	-- the pointer, if the launcher lent us one. see M.mouse below.
+	ctx.ptr = ctx.ptr and ctx.ptr.__right or nil
 	-- the terminal, if the launcher lent us one. see M.tty below.
 	ctx.tty = ctx.tty and ctx.tty.__right or nil
 	-- the network, if the launcher lent us one. see M.net below.
@@ -737,6 +739,7 @@ function M.corun(spec)
 		stdout = spec.stdout,
 		stderr = spec.stderr or spec.stdout,
 		fb = spec.fb,
+		ptr = spec.ptr,
 		-- a coroutine stage carries the terminal as the bare handle the
 		-- shell holds, where M.main gets it wrapped in {__right=} off the
 		-- wire -- see Sh:pipecoro. either way M.tty() reads ctx.tty.
@@ -778,6 +781,18 @@ function M.screen()
 		return nil
 	end
 	return require("draw").new(ctx.fb)
+end
+
+-- the pointer, as a reader over the right the launcher lent us. A
+-- program that draws with a finger asks for this the way it asks for
+-- the screen, and gets nil where the machine has none.
+function M.mouse()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.ptr then
+		return nil
+	end
+	return require("mouse").reader(ctx.ptr)
 end
 
 -- whether the launcher gave this program an input stream at all, which

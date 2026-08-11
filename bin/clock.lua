@@ -371,21 +371,18 @@ local N = prog.ns()
 
 -- a touch anywhere turns the clock over. Press, not release, so it
 -- answers under the finger.
-local mouse = N and N:open("/dev/mouse", "r")
+local mouse = prog.mouse()
 
 if mouse then
 	thread.spawn(function()
 		local down = false
 
 		while true do
-			local rec = mouse:read(49)
+			local _, _, b = mouse.read()
 
-			if not rec then
+			if not b then
 				break
 			end
-
-			local b = tonumber(rec:match(
-			    "^m%s*%-?%d+%s+%-?%d+%s+(%-?%d+)") or "")
 			-- the wheel is buttons 8 and 16 on a T-Deck's
 			-- trackball, and rolling it is not a tap
 			local tap = b and b % 8 ~= 0 and b % 8 or 0
@@ -395,7 +392,6 @@ if mouse then
 			end
 			down = tap ~= 0
 		end
-		mouse:close()
 	end)
 end
 

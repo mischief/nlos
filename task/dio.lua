@@ -66,7 +66,7 @@
 -- switching is the one done constantly.
 --
 -- The wheel over the tray scrolls the list -- the trackball rolled
--- vertically, which is this machine's scroll and what lib/mousefs.lua
+-- vertically, which is this machine's scroll and what lib/mouse.lua
 -- already reports as buttons 8 and 16. So how many apps may run is a
 -- question about memory rather than about how tall the screen is. The
 -- launcher does not scroll with them: it is the way to start anything,
@@ -76,7 +76,7 @@
 --
 -- Every app keeps running whether or not it is in front. What being in
 -- front buys is the glass and the pointer: a draw from any other app is
--- dropped here, and the pointer's records go to one /dev/mouse.
+-- dropped here, and the pointer's records go to one app.
 --
 -- Dropped rather than refused. An app behind has nothing to fix, and an
 -- error per drawing call would make every program handle a window
@@ -93,7 +93,7 @@ local thread = require("los.thread")
 local font = require("los.font")
 local draw = require("draw")
 local sendwait = require("client.rpc").sendwait
-local mousefs = require("mousefs")
+local mouse = require("mouse")
 local wctlfs = require("wctlfs")
 local proc = require("proc")
 local srv = require("srv")
@@ -117,7 +117,7 @@ local function say(s)
 end
 
 -- the namespace this proc was given, which is where /etc/dio.lua, the
--- programs and /dev/mouse are. Described from here rather than taken
+-- programs are. Described from here rather than taken
 -- from the message: proc.spawn adopts it before this chunk runs, so
 -- what arrives in the message is the capability table alone.
 local N = require("ns").current()
@@ -551,7 +551,7 @@ end
 
 -- ---- one window each, and one of them in front ----
 --
--- Every app gets its own framebuffer port, its own /dev/mouse and its
+-- Every app gets its own framebuffer port, its own pointer and its
 -- own /dev/wctl. A port carries no sender identity, so a shared port
 -- could not tell whose draw had arrived -- and knowing that is the
 -- whole of what focus means here.
@@ -578,7 +578,7 @@ local function serveapp(a)
 	-- only holder left. Closing them anywhere else would close a port
 	-- another thread of this proc is parked on.
 	thread.spawn(function()
-		srv.serve(a.mouse.backend, a.mrecv)
+		a.mouse.serve(a.mrecv)
 		sys.close(a.mport)
 		sys.close(a.mrecv)
 	end)
@@ -597,8 +597,6 @@ end
 local function appns(a)
 	local desc = N:describe()
 
-	table.insert(desc, 1, { prefix = "/dev", kind = "mnt",
-	    args = { port = { __right = a.mport } } })
 	table.insert(desc, 1, { prefix = "/dev", kind = "mnt",
 	    args = { port = { __right = a.wport } } })
 	return desc
@@ -646,7 +644,7 @@ local function newapp(entryidx, kind)
 		return nil
 	end
 
-	local mrecv = sys.newport("dio.mrecv")
+	local mrecv = sys.newport("dio.mouse")
 	local wrecv = sys.newport("dio.wrecv")
 	-- a keyboard port per app, not one shared: a key belongs to
 	-- whichever terminal is in front, and a port handed to two of them
@@ -660,7 +658,7 @@ local function newapp(entryidx, kind)
 		mrecv = mrecv, mport = sys.sendright(mrecv),
 		wrecv = wrecv, wport = sys.sendright(wrecv),
 		keys = keys, keysend = sys.sendright(keys),
-		mouse = mousefs.new(),
+		mouse = mouse.server(),
 		-- a fresh window is empty, so the first word an app reads
 		-- is redraw. Switching says visible and hidden after that,
 		-- and the pixels stay put across both.
@@ -747,6 +745,7 @@ local function startterm(a, entry, desc)
 
 	sys.send(h, {
 		fb = { __right = a.fbport },
+		ptr = { __right = a.mport },
 		kbd = { __right = a.keys },
 		-- the serial line, for what the terminal cannot report
 		-- about itself. Its own output goes to the glass.
@@ -857,6 +856,7 @@ local function start(i)
 				cwd = "/",
 				nsdesc = desc,
 				fb = { __right = a.fbport },
+				ptr = { __right = a.mport },
 				stdout = cons and { __right = cons } or nil,
 				stderr = cons and { __right = cons } or nil,
 			})
@@ -980,7 +980,7 @@ local BADMAX = 8
 local DOUBLE = 800
 local lasttap, lastms = nil, 0
 
--- the wheel, as lib/mousefs.lua reports it: 8 up, 16 down, one click
+-- the wheel, as lib/mouse.lua reports it: 8 up, 16 down, one click
 -- per record. On the T-Deck that is the trackball rolled vertically,
 -- which is the machine's scroll and is already what a list scrolls
 -- with -- so the tray uses it rather than a gesture of its own.
@@ -993,12 +993,12 @@ thread.spawn(function()
 
 	while true do
 		local rec = thread.recv(ptr)
-		local x, y, b = mousefs.parse(rec)
+		local x, y, b = mouse.parse(rec)
 
 		-- the cursor, before the record is routed: it belongs to
 		-- the machine, so it moves whoever the record is for. A
 		-- wheel click carries where it scrolled and moves nothing.
-		if x and fb and not mousefs.iswheel(rec) then
+		if x and fb and not mouse.iswheel(rec) then
 			sys.send(fb, { op = "cursor", x = x, y = y,
 			    on = true })
 		end
@@ -1117,8 +1117,8 @@ thread.spawn(function()
 				-- the pointer belongs to the app in front,
 				-- and to nothing else: an app behind sees no
 				-- part of a stroke it is not in.
-				apps[front].mouse.post(
-				    mousefs.format(x - APPX, y - APPY, b))
+				apps[front].mouse.post(x - APPX,
+				    y - APPY, b)
 			end
 			down = pressed
 		end
