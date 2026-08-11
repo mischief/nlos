@@ -1,7 +1,8 @@
 -- fetch: an HTTP GET.
 --
 --   > fetch http://192.168.0.12/
---   > fetch -i http://example.com/       (with the status and headers)
+--   > fetch -i https://example.com/      (with the status and headers)
+--   > fetch -k https://self-signed/       (without checking the key)
 --   > fetch http://192.168.0.12/big | p
 --
 -- The protocol is lib/http.lua, which owns no capability and rides
@@ -27,13 +28,16 @@ local function die(s)
 end
 
 local showhead = false
+local insecure = false
 local url
 
 for _, a in ipairs(arg) do
 	if a == "-i" then
 		showhead = true
+	elseif a == "-k" then
+		insecure = true
 	elseif a:sub(1, 1) == "-" and #a > 1 then
-		unistd.write(2, "usage: fetch [-i] url\n")
+		unistd.write(2, "usage: fetch [-ik] url\n")
 		os.exit(2)
 	else
 		url = url or a
@@ -41,7 +45,7 @@ for _, a in ipairs(arg) do
 end
 
 if not url then
-	unistd.write(2, "usage: fetch [-i] url\n")
+	unistd.write(2, "usage: fetch [-ik] url\n")
 	os.exit(2)
 end
 
@@ -57,9 +61,29 @@ if not net then
 	die("no network capability: this shell was lent none")
 end
 
--- no resolver on this machine yet, so http.get is handed nil and
--- refuses a name itself with a message naming the host.
-local res, err = http.get(net, nil, url)
+-- https trusts on first use: no clock this machine believes and no root
+-- store, so a validity window is not something it can check. Nothing
+-- persists the key yet, so "first use" is every run and -k skips even
+-- that.
+local seen = {}
+local opts = {
+	rand = prog.rand(),
+	insecure = insecure,
+	verify = not insecure and require("tls.tofu").new({
+		host = url:match("^https://([^:/]+)") or "",
+		known = function(h) return seen[h] end,
+		learn = function(h, fp) seen[h] = fp end,
+		ask = function(h, fp)
+			unistd.write(2, ("fetch: %s is %s\n"):format(h, fp))
+			return true
+		end,
+	}) or nil,
+}
+if url:match("^https://") and not opts.rand then
+	die("no entropy: this shell was lent no seed, and tls needs one")
+end
+
+local res, err = http.get(net, prog.dns(), url, opts)
 
 if not res then
 	die(tostring(err))

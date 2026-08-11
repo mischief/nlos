@@ -13,7 +13,7 @@
 --	cons		a send right to the console (this proc's port)
 --	notices		a receive port carrying the console's leftovers
 --	ns		the namespace to run programs out of
---	fb, net, udp, power	lent to every program, where the terminal has them
+--	fb, net, udp, dns, power  lent to every program, where the terminal has them
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -24,7 +24,8 @@ local M = {}
 function M.run(o)
 	local sh = dos.new({
 		ns = o.ns, cons = o.cons, fb = o.fb,
-		net = o.net, udp = o.udp, power = o.power,
+		net = o.net, udp = o.udp, dns = o.dns, power = o.power,
+		seed = o.seed,
 		notices = o.notices,
 	})
 

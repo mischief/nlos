@@ -189,6 +189,11 @@ end
 --
 -- Both are described to each service, so a child rebuilds the same two
 -- mounts in the same order.
+-- what a started service answers on, by name. The kernel's granted
+-- table holds the drivers it spawned itself; a service written in lua
+-- is not in it, so nothing could reach the resolver until this.
+local svcport = {}
+
 local function services()
 	local nsmod = require("ns")
 	local rootns = nsmod.new()
@@ -308,7 +313,7 @@ local function services()
 		print("svc: " .. tostring(why))
 		return
 	end
-	svc.start(list, {
+	local started = svc.start(list, {
 		ns = rootns:describe(),
 		granted = caps,
 		readfile = function(p)
@@ -321,6 +326,10 @@ local function services()
 		-- the same on the other platforms.
 		seed = rng and rng.bytes or nil,
 	})
+
+	for _, s in ipairs(started or {}) do
+		svcport[s.name] = s.handle
+	end
 end
 
 local sok, serr = pcall(services)
@@ -384,8 +393,12 @@ _G.dos = setmetatable({}, {
 		-- udp is the ip task: it serves the datagram ops on the
 		-- same right, and nothing publishes a capability by that
 		-- name. bin/host.lua and bin/date.lua spend it.
+		-- a seed rather than the draw: this proc is the only one
+		-- with los.platform.rng, and what a program gets is bytes.
 		require("dos").start({ ns = N, cons = caps.cons,
 		    fb = caps.fb, net = caps.tcp, udp = caps.ip,
+		    dns = svcport.dns,
+		    seed = rng and rng.bytes(32) or nil,
 		    power = caps.power },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")

@@ -108,6 +108,11 @@ local cons = job.cons and job.cons.__right
 local tcp = job.tcp and job.tcp.__right
 local power = job.power and job.power.__right
 local ip = job.ip and job.ip.__right
+local dnsh = job.dns and job.dns.__right
+-- the machine's entropy as data, which lib/svc.lua hands every
+-- service. Expanded here so each app gets its own draw.
+local rng = job.seed and
+    require("crypto.drbg").new(job.seed) or nil
 local ptr = job.ptr and job.ptr.__right
 
 local function say(s)
@@ -751,6 +756,8 @@ local function startterm(a, entry, desc)
 		-- about itself. Its own output goes to the glass.
 		cons = cons and { __right = cons } or nil,
 		tcp = tcp and { __right = tcp } or nil,
+		dns = dnsh and { __right = dnsh } or nil,
+		seed = rng and rng.bytes(32) or nil,
 		-- and power, which is what bin/reboot.lua spends. The panel
 		-- is a local terminal: it holds what the serial console
 		-- holds, and a session over the network does not.

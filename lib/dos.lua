@@ -141,6 +141,13 @@ function M.new(caps)
 		-- independently (see kernel.c's driver table), so a machine
 		-- with one and not the other lends what it has.
 		udp = caps.udp,
+		-- and the resolver, so a program may use a name where it
+		-- would otherwise need an address.
+		dns = caps.dns,
+		-- entropy as data, not authority: one draw per program, so
+		-- two of them never start from the same bytes.
+		rng = caps.seed and
+		    require("crypto.drbg").new(caps.seed) or nil,
 		-- the power task, on the same terms again. This one is the
 		-- machine itself, so a public session (sshd, webterm) is
 		-- given none and its programs cannot reset the machine --
@@ -455,6 +462,13 @@ function Sh:spawn1(path, argv, streams)
 	if self.udp then
 		msg.udp = { __right = self.udp }
 	end
+	-- the resolver (prog.dns -> fetch, host).
+	if self.dns then
+		msg.dns = { __right = self.dns }
+	end
+	if self.rng then
+		msg.seed = self.rng.bytes(32)
+	end
 	-- and the power task, for bin/reboot.lua. Every program gets it
 	-- where the shell has it, like the screen and the network: the
 	-- authority is the grant, and a program that never asks
@@ -612,6 +626,8 @@ function Sh:pipecoro(stages)
 			-- likewise udp, as a bare handle: a coro stage
 			-- reaches the same tasks a spawned one does.
 			udp = self.udp,
+			dns = self.dns,
+			seed = self.rng and self.rng.bytes(32) or nil,
 		}
 
 		thread.spawn(function()

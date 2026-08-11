@@ -15,7 +15,8 @@
 -- v1 scope: HTTP/1.1, Connection: close (no keep-alive), no chunked
 -- transfer-encoding (M.get reads until the peer closes, same as
 -- curl -0 would; the server side reads exactly Content-Length bytes
--- of request body -- see read_request). no https. M.get itself only
+-- of request body -- see read_request). https is lib/tlstcp, which
+-- M.get wraps the transport in where the scheme says so. M.get itself only
 -- ever issues GET, but M.serve's request parsing is method-agnostic
 -- (POST bodies work, for lib/mcp.lua's JSON-RPC traffic).
 
@@ -25,16 +26,16 @@ local ns = require("ns")
 local M = {}
 
 local function parse_url(url)
-	local host, port, path =
-	    url:match("^https?://([^:/]+):?(%d*)(/?.*)$")
+	local scheme, host, port, path =
+	    url:match("^(https?)://([^:/]+):?(%d*)(/?.*)$")
 	if not host then
 		return nil, "bad url"
 	end
-	port = tonumber(port) or 80
+	port = tonumber(port) or (scheme == "https" and 443 or 80)
 	if path == "" then
 		path = "/"
 	end
-	return host, port, path
+	return host, port, path, scheme
 end
 
 local function parse_ip(ip)
@@ -51,15 +52,29 @@ end
 M.MAXBODY = 1024 * 1024
 
 -- returns {status=, headers=, body=} or nil, "reason"
-function M.get(tcp, dns, url)
-	local host, port, path = parse_url(url)
+function M.get(tcp, dns, url, opts)
+	local host, port, path, scheme = parse_url(url)
 	if not host then
 		return nil, "bad url"
+	end
+
+	-- https is the same protocol over a different transport, so it is
+	-- the transport that changes and nothing below this line does.
+	-- opts carries the trust decision through to lib/tlstcp.
+	if scheme == "https" then
+		local ok, tlstcp = pcall(require, "tlstcp")
+
+		if not ok then
+			return nil, "no tls on this machine: " ..
+			    tostring(tlstcp)
+		end
+		tcp = tlstcp.new(tcp, opts)
 	end
 
 	-- a dotted quad needs no resolver, and asking one to resolve
 	-- "1.2.3.4" just fails.
 	local a, b, c, d = parse_ip(host)
+	local named = a == nil		-- a name, rather than a dotted quad
 
 	if not a then
 		if not dns then
@@ -76,9 +91,11 @@ function M.get(tcp, dns, url)
 		end
 	end
 
-	local conn = tcp.dial(a, b, c, d, port)
+	-- the name, not the address: it is what SNI carries and what a
+	-- pinning verifier keys on. A url naming an ip has none.
+	local conn, derr = tcp.dial(a, b, c, d, port, named and host or nil)
 	if not conn then
-		return nil, "connect failed"
+		return nil, derr or "connect failed"
 	end
 
 	local req = table.concat({

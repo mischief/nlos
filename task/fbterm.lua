@@ -132,6 +132,8 @@ thread.spawn(function()
 		fb = fb,
 		net = job.tcp and job.tcp.__right,
 		udp = job.ip and job.ip.__right,
+		dns = job.dns and job.dns.__right,
+		seed = job.seed,
 		power = job.power and job.power.__right,
 	})
 end)

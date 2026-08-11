@@ -692,6 +692,9 @@ function M.main()
 	ctx.net = ctx.net and ctx.net.__right or nil
 	-- and udp, which is a task of its own. see M.udp below.
 	ctx.udp = ctx.udp and ctx.udp.__right or nil
+	-- the resolver, if the launcher lent us one. see M.dns below.
+	ctx.dns = ctx.dns and ctx.dns.__right or nil
+	-- entropy, as data. see M.rand below; ctx.seed is already bytes.
 	-- the power task, if the launcher lent us one. see M.power below.
 	ctx.power = ctx.power and ctx.power.__right or nil
 
@@ -746,6 +749,8 @@ function M.corun(spec)
 		tty = spec.tty,
 		net = spec.net,
 		udp = spec.udp,
+		dns = spec.dns,
+		seed = spec.seed,
 	}
 
 	if not ctx.ns then
@@ -781,6 +786,31 @@ function M.screen()
 		return nil
 	end
 	return require("draw").new(ctx.fb)
+end
+
+-- a generator of this program's own, from the seed the launcher drew
+-- for it. Entropy is data here: the raw draw stays in the boot proc and
+-- what travels is bytes, so two programs never start from the same.
+function M.rand()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.seed then
+		return nil
+	end
+	ctx.rng = ctx.rng or require("crypto.drbg").new(ctx.seed)
+	return ctx.rng.bytes
+end
+
+-- the resolver, where the launcher lent one. A program that takes a
+-- url or a host name asks for this; one given none is left to say so
+-- rather than to fail at a name it cannot turn into an address.
+function M.dns()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.dns then
+		return nil
+	end
+	return require("client.dns").new(ctx.dns)
 end
 
 -- the pointer, as a reader over the right the launcher lent us. A

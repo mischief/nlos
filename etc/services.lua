@@ -34,7 +34,7 @@ return {
 	-- allowed to restart it; a session that arrives over the network
 	-- is not, which is why the grant is here and not in dos.
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "tcp", "ip", "power" } },
+	  optcaps = { "tcp", "ip", "dns", "power" } },
 
 	-- the panel and the keyboard as a plain terminal, for a board
 	-- with no pointer. Exactly one of this and dio above belongs in a
