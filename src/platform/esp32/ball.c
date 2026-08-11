@@ -79,7 +79,6 @@ esp_ball_present(void)
 		.pull_up_en = GPIO_PULLUP_ENABLE,
 		.intr_type = GPIO_INTR_DISABLE,
 	};
-	esp_err_t e;
 
 	if (probed)
 		return present;
@@ -88,11 +87,7 @@ esp_ball_present(void)
 	if (gpio_config(&rot) != ESP_OK || gpio_config(&btn) != ESP_OK)
 		return 0;
 
-	/* the service may already be installed by another driver; that
-	 * is not a failure, it is the second caller.
-	 */
-	e = gpio_install_isr_service(0);
-	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
+	if (esp_gpio_isr() != 0)
 		return 0;
 
 	if (gpio_isr_handler_add(TB_UP, ball_isr, (void *)TB_UP) != ESP_OK)

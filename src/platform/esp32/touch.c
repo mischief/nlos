@@ -1,34 +1,33 @@
-/* the T-Deck's touch panel: a GT911 at 0x5d on the shared i2c bus.
- *
- * State, not a stream. A pointer has a current position and a current
- * button, and a reader that falls behind wants where the finger is now
- * rather than every place it has been -- so this keeps one position and
- * a changed flag, and nothing queues. That is the same bargain plan 9's
- * mouse file makes, and it is why a slow client lags in resolution
- * rather than in time.
- *
- * Polled from the idle path beside the keyboard rather than driven off
- * TDECK_TOUCH_INT, for the reason kbd.c gives: the read is i2c and an
- * isr cannot do one, so the interrupt could only set a flag for this
- * poll to notice. The pin is defined and stays unused; it is what a
- * board that sleeps between touches would need.
- *
- * Register map: a 16-bit big-endian register address, 0x814e holding
+/* the T-Deck's touch panel: a GT911 at 0x5d on the shared i2c bus. */
+
+/* State, not a stream: one position and a changed flag, nothing queued.
+ * A reader that falls behind wants where the finger is now, so it lags
+ * in resolution rather than in time, as plan 9's mouse file does.
+ */
+
+/* TDECK_TOUCH_INT says a frame is ready. An isr cannot do i2c, so it
+ * raises a flag and the read happens in the poll below -- the pin is
+ * not there to make the read faster, it is there so the bus is left
+ * alone while nothing is touching the panel.
+ */
+
+/* Register map: a 16-bit big-endian register address, 0x814e holding
  * the buffer status (bit 7) and the number of points (low nibble), and
  * the first point at 0x8150 as x, y and size, each a little-endian
- * pair. The track id is at 0x814f, below the coordinates rather than
- * in front of them -- reading it as the first byte of the point shifts
- * every field by one and produces coordinates in the tens of
- * thousands, which is what a byte in the high half looks like.
- *
- * The status must be written back as zero or the controller never
- * reports another frame.
+ * pair.
+ */
+
+/* The track id at 0x814f sits below the coordinates, not in front of
+ * them: read as the first byte of the point it shifts every field by
+ * one and gives coordinates in the tens of thousands. And the status
+ * must be written back as zero or no further frame is reported.
  */
 
 #include <sdkconfig.h>
 
 #if CONFIG_LUAOS_BOARD_TDECK
 
+#include <driver/gpio.h>
 #include <driver/i2c_master.h>
 #include <esp_timer.h>
 #include <stdint.h>
@@ -43,11 +42,24 @@
 #define GT911_STATUS		0x814e
 #define GT911_POINT1		0x8150
 
-/* 10ms. A finger crossing the panel takes a good fraction of a second,
- * so this is far finer than a hand can steer, and it is one 8-byte
- * read on a bus the keyboard is already using at 8ms.
+/* The controller raises TDECK_TOUCH_INT when it has a frame, so the bus
+ * is read when there is something to read. The backstop runs if that
+ * pin never fires: a board wired differently still works, late.
  */
 #define TOUCH_POLL_US		10000
+#define TOUCH_BACKSTOP_US	100000
+
+/* raised by the pin, cleared by the read it provokes. An isr cannot do
+ * i2c, so this is all it can do and all it needs to.
+ */
+static volatile int pending;
+
+static void
+touch_isr(void *arg)
+{
+	(void)arg;
+	pending = 1;
+}
 
 static i2c_master_dev_handle_t tp;
 static int probed, present;
@@ -66,13 +78,9 @@ static int dirty;
  */
 static int panw = 240, panh = 320;
 
-/* panel coordinates to screen coordinates.
- *
- * lcd.c drives this glass with swap_xy and mirror_x, and the touch
- * controller reports in the glass's own frame, so the same two
- * operations undo it: the axes trade places and one of them counts
- * backwards. Established by tapping the screen's top left corner, which
- * reads as panel (218, 16) -- y near zero and x near its maximum.
+/* panel to screen. lcd.c uses swap_xy and mirror_x and the controller
+ * reports in the glass's frame, so the axes trade places and one counts
+ * backwards. The screen's top left reads as panel (218, 16).
  */
 static void
 to_screen(int px, int py, int *sx, int *sy)
@@ -148,6 +156,20 @@ esp_touch_present(void)
 			panh = r[0] | (r[1] << 8);
 	}
 
+	/* the frame-ready pin. Its absence is not fatal: the backstop
+	 * above keeps the panel working, slower.
+	 */
+	{
+		gpio_config_t irq = {
+			.pin_bit_mask = 1ULL << TDECK_TOUCH_INT,
+			.mode = GPIO_MODE_INPUT,
+			.pull_up_en = GPIO_PULLUP_ENABLE,
+			.intr_type = GPIO_INTR_NEGEDGE,
+		};
+		if (esp_gpio_isr() == 0 && gpio_config(&irq) == ESP_OK)
+			gpio_isr_handler_add(TDECK_TOUCH_INT, touch_isr, NULL);
+	}
+
 	present = 1;
 	return 1;
 }
@@ -170,6 +192,9 @@ esp_touch_poll(void)
 	now = esp_timer_get_time();
 	if (now - last_us < TOUCH_POLL_US)
 		return 0;
+	if (!pending && now - last_us < TOUCH_BACKSTOP_US)
+		return 0;
+	pending = 0;
 	last_us = now;
 
 	if (reg_read(GT911_STATUS, &st, 1) != 0)

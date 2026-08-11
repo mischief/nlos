@@ -138,3 +138,23 @@ esp_tdeck_i2c(i2c_master_bus_handle_t *out)
 }
 
 #endif /* CONFIG_LUAOS_BOARD_TDECK */
+
+/* the gpio interrupt service, installed once. Three drivers here want a
+ * pin interrupt and IDF logs the second and third installs as errors,
+ * which is a fault in the log and not in the machine.
+ */
+int
+esp_gpio_isr(void)
+{
+	static int done;
+	esp_err_t e;
+
+	if (done)
+		return 0;
+
+	e = gpio_install_isr_service(0);
+	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
+		return -1;
+	done = 1;
+	return 0;
+}

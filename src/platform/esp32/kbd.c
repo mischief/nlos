@@ -254,19 +254,20 @@ esp_kbd_read(void)
 
 /* the T-Deck's keyboard is a microcontroller of its own -- an ESP32-C3
  * on i2c at 0x55 -- so almost nothing is left to do here. A one-byte
- * read hands back the ascii of the last key, or zero for none: the
- * scanning, the debounce and the modifier handling all happen on the
- * far side. Contrast kbd.c's Cardputer half, which drives a 74HC138
- * and owns all three.
- *
- * Polled from the idle path rather than driven off TDECK_KB_INT. The
- * interrupt exists and would work, but an i2c read cannot happen in an
- * isr -- it would only set a flag for this same poll to notice -- and
- * one register read every 8ms costs less than the machinery would. If
- * the board ever sleeps between keys that trade changes, and the pin is
- * why it can.
+ * read hands back the ascii of the last key, or zero for none.
  */
 
+/* TDECK_KB_INT says a byte is waiting. An isr cannot do i2c, so the pin
+ * is not there to make the read faster; it is there so nothing touches
+ * the bus while nobody is typing.
+ */
+
+/* The far side is 35ms behind a key -- its own scan is 5 columns by 7
+ * rows at a millisecond each -- so nothing here can make the keyboard
+ * feel quicker, and this rate is not what decides that.
+ */
+
+#include <driver/gpio.h>
 #include <driver/i2c_master.h>
 #include <esp_timer.h>
 
@@ -280,6 +281,21 @@ static unsigned long irqs;
 
 static char ring[16];
 static unsigned rhead, rtail;
+
+/* The C3 raises TDECK_KB_INT when it has a byte and keeps raising it
+ * until the byte is read, so a missed edge is followed by another. The
+ * backstop covers a board whose pin never fires.
+ */
+#define KBD_BACKSTOP_US 100000
+
+static volatile int pending;
+
+static void
+kb_isr(void *arg)
+{
+	(void)arg;
+	pending = 1;
+}
 
 int
 esp_kbd_present(void)
@@ -302,6 +318,17 @@ esp_kbd_present(void)
 		return 0;
 	if (i2c_master_bus_add_device(bh, &dev, &kb) != ESP_OK)
 		return 0;
+
+	/* the byte-ready pin, whose absence the backstop covers */
+	{
+		gpio_config_t irq = {
+			.pin_bit_mask = 1ULL << TDECK_KB_INT,
+			.mode = GPIO_MODE_INPUT,
+			.intr_type = GPIO_INTR_POSEDGE,
+		};
+		if (esp_gpio_isr() == 0 && gpio_config(&irq) == ESP_OK)
+			gpio_isr_handler_add(TDECK_KB_INT, kb_isr, NULL);
+	}
 	present = 1;
 	return 1;
 }
@@ -320,6 +347,9 @@ esp_kbd_poll(void)
 		return 0;
 	if (now - last_us < KBD_POLL_US)
 		return 0;
+	if (!pending && now - last_us < KBD_BACKSTOP_US)
+		return 0;
+	pending = 0;
 	last_us = now;
 
 	/* a short timeout: this runs on the idle path, and a keyboard

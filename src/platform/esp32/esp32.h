@@ -78,6 +78,9 @@ int	esp_tdeck_spi_init(void);
 struct i2c_master_bus_t;
 int	esp_tdeck_i2c(struct i2c_master_bus_t **out);
 
+/* the gpio interrupt service, installed once for every driver here */
+int	esp_gpio_isr(void);
+
 #endif
 
 #endif
