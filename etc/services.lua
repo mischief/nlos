@@ -17,12 +17,13 @@ return {
 	-- interface: a tray of apps, one of them a terminal, which starts
 	-- at boot so the board still comes up at a prompt.
 	--
-	-- ptr is named although dio never uses the right -- it reaches
-	-- the pointer as /dev/mouse, like any other program. What naming
-	-- it does is decide the machine: a service naming a capability
-	-- the machine has not got is skipped, and every button in this
-	-- one is a place to touch. A board with a panel and no pointer
-	-- wants task/fbterm.lua instead, which is the entry below.
+	-- ptr is the pointer: dio holds the receive right and hands each
+	-- app its own, as it already did for the keyboard.
+
+	-- Naming it also decides the machine: a service naming a
+	-- capability the machine has not got is skipped, and a board with
+	-- a panel and no pointer wants task/fbterm.lua instead, which is
+	-- the entry below.
 	--
 	-- tcp is optional rather than required: a panel is still a panel
 	-- on a board with no stack. Where there is one it reaches the

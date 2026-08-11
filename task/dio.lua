@@ -35,10 +35,10 @@
 -- own when dio drops its copy of the right. bin/scribble.lua, written
 -- for a whole screen, runs here unchanged.
 
--- The mouse goes another way. dio opens /dev/mouse, which is
--- exclusive, and serves an app its own /dev/mouse with the coordinates
--- moved into app space -- so a tray touch never reaches the app,
--- because it never leaves dio.
+-- The pointer arrives the same way: dio holds the machine's receive
+-- right and gives each app its own, with the coordinates moved into
+-- app space. A tray touch never reaches an app because it never
+-- leaves dio, and the cursor is moved from here.
 --
 -- ---- an app dies with dio ----
 --
@@ -108,6 +108,7 @@ local cons = job.cons and job.cons.__right
 local tcp = job.tcp and job.tcp.__right
 local power = job.power and job.power.__right
 local ip = job.ip and job.ip.__right
+local ptr = job.ptr and job.ptr.__right
 
 local function say(s)
 	if cons then
@@ -944,14 +945,16 @@ end
 
 -- ---- the pointer ----
 --
--- One reader of the machine's mouse, and it is this proc. A record in
--- the tray is a touch on a button; anything else is moved into app
--- space and posted to the app's own file.
+-- The machine's pointer port, held here. A record in the tray is a
+-- touch on a button; anything else is moved into app space and posted
+-- to the app's own mouse.
 
-local mouse, merr = N:open("/dev/mouse", "r")
+-- The cursor follows the finger from here, with no client in the loop:
+-- on the finger rather than a round trip behind whatever is reading.
+-- The pointer reports and the framebuffer draws, as in plan 9.
 
-if not mouse then
-	say("no /dev/mouse: " .. tostring(merr))
+if not ptr then
+	say("no pointer")
 	return
 end
 
@@ -989,20 +992,24 @@ thread.spawn(function()
 	local bad = 0
 
 	while true do
-		local rec, rerr = mouse:read(49)
-
-		if not rec then
-			say("mouse: " .. tostring(rerr))
-			break
-		end
-
+		local rec = thread.recv(ptr)
 		local x, y, b = mousefs.parse(rec)
+
+		-- the cursor, before the record is routed: it belongs to
+		-- the machine, so it moves whoever the record is for. A
+		-- wheel click carries where it scrolled and moves nothing.
+		if x and fb and not mousefs.iswheel(rec) then
+			sys.send(fb, { op = "cursor", x = x, y = y,
+			    on = true })
+		end
 
 		if not x then
 			bad = bad + 1
 			if bad == 1 then
-				say(("mouse: not a record: %d bytes, %q")
-				    :format(#rec, rec:sub(1, 24)))
+				say(("mouse: not a record: %s")
+				    :format(type(rec) == "string" and
+				    ("%d bytes, %q"):format(#rec,
+				    rec:sub(1, 24)) or type(rec)))
 			end
 			if bad >= BADMAX then
 				say(("mouse: %d bad records; the tray is "
