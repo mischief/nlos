@@ -109,11 +109,17 @@ The layout is in `partitions.csv`:
 | `luafs` | `0x310000` | 4M |
 | `config` | `0x710000` | 512K |
 
-Build the image from the top of the tree, which is where these
-directories are:
+The image is built by the flash target, not by hand: `CMakeLists.txt`
+runs `tools/mkfatimg.lua` over those four directories, taking both the
+offset and the size from the row in `partitions.csv`, so neither number
+is written down twice. Adding a program under `bin/` rebuilds it.
 
-    lua5.4 tools/mkfatimg.lua esp32/luafs.img 4M \
-        bin/=/bin lib/=/lib task/=/task etc/=/etc
+It hangs off flashing rather than off the build, because mkfatimg holds
+a sector in a `los.buf` and loads it from `build/los.so`, which meson
+builds for the host. `idf.py build` therefore needs no host build;
+`idf.py flash` does. To make the image alone, without a board:
+
+    ninja -C build-tdeck luafs
 
 The sector is 4096 bytes, matching the flash erase block, so a sector
 write is one erase and one program. The tool reopens the image and
@@ -132,19 +138,19 @@ one a firmware rebuild just changed.
 
     idf.py -B build-tdeck -p /dev/ttyACM0 flash
 
-or, to write the filesystem alongside the firmware:
+That writes the bootloader, the partition table, the firmware and
+`luafs`, which is what `build-tdeck/flash_args` lists. esptool can be
+driven from that file directly, and reading it beats copying offsets
+out of this file:
 
     python -m esptool --chip esp32s3 -p /dev/ttyACM0 -b 460800 \
-        write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
-        0x0 build-tdeck/bootloader/bootloader.bin \
-        0x8000 build-tdeck/partition_table/partition-table.bin \
-        0x10000 build-tdeck/luaos.bin \
-        0x310000 luafs.img
+        write-flash "@build-tdeck/flash_args"
 
-The firmware and the filesystem are independent. Reflashing `0x10000`
-alone keeps whatever is on `luafs`, and reflashing `0x310000` alone
-replaces the programs without touching the kernel. Reflashing the
-filesystem does remove anything written on `luafs`.
+The firmware and the filesystem stay independent on the board even so.
+`idf.py app-flash` writes the firmware alone and keeps whatever is on
+`luafs`; writing `luafs.img` at its offset alone replaces the programs
+without touching the kernel. Either way, rewriting the filesystem
+removes anything that was written on `luafs` from the board itself.
 
 `config` at `0x710000` is not in that command and is not written by any
 build. It is what the machine knows about itself -- the network to join

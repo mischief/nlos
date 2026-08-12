@@ -220,8 +220,9 @@ set(EMBED_FILES
 # What is not here: the programs in bin/, the shell and the terminal
 # above it, the panel console, the http client, the pager, and the
 # machine's own /etc/services.lua. All of that is on the luafs
-# partition, built by tools/mkfatimg.lua and flashed separately, so a
-# change to any of it is an upload rather than a rebuild.
+# partition, which ../CMakeLists.txt builds with tools/mkfatimg.lua and
+# writes as its own image, so a change to any of it is an upload rather
+# than a rebuild.
 #
 # What that costs is that a board with an empty or unflashed partition
 # reaches the lua repl on the serial line and stops there -- no
