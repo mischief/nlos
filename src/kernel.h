@@ -76,6 +76,11 @@ void	kernel_confine_gc(struct lua_State *L);
 void	kernel_wrap_coroutine(struct lua_State *L);
 int	kernel_current_is_boot(void);
 
+/* the los.dbg opener. Registered in package.preload for every proc;
+ * every function in the module gates on the target it names.
+ */
+int	luaopen_los_dbg(struct lua_State *L);
+
 /* unix seconds, or 0 where nothing has set the clock. */
 long long kernel_walltime(void);
 
