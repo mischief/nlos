@@ -210,7 +210,22 @@ write_all(const char *s, size_t n)
 	 * driver, so ask it too. Attached with nobody reading -- a cable
 	 * in a PC, no terminal open -- still sends SOF, so that answers
 	 * yes and the buffer fills anyway; `detached` is for that one.
+	 *
+	 * How long "briefly" is depends on who owns the line. In cooked
+	 * mode it is print output, and losing the tail of it beats holding
+	 * the machine for a console nobody reads. In raw mode a proc has
+	 * taken the console for a transfer, where a dropped byte is not a
+	 * lost line but a crc failure and a rewind -- so waiting is the
+	 * cheaper answer, and the proc doing the transfer has its own
+	 * clock for giving up.
+	 *
+	 * The floor is set by the reader, not by the link: a host between
+	 * reads leaves the buffer full for as long as its scheduler says.
+	 * 50ms is inside that, which is why a sender fast enough to fill
+	 * 4KB in the gap started losing bytes to it.
 	 */
+	const int patience = rawmode ? 50 : 5;	/* x10ms */
+
 	if (!usb_serial_jtag_is_connected())
 		return;
 
@@ -232,8 +247,8 @@ write_all(const char *s, size_t n)
 			detached = false;
 		} else if (detached) {
 			return;
-		} else if (++idle > 5) {
-			detached = true;	/* ~50ms, nobody reading */
+		} else if (++idle > patience) {
+			detached = true;	/* nobody reading */
 			return;
 		}
 	}
