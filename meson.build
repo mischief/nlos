@@ -522,8 +522,8 @@ have_hostutil = lua54_dep.found()
 # purpose: nothing in the guest depends on either, and socat is here
 # only because lrzsz wants its stdio on a pipe pair while hostutil hands
 # out sockets.
-sz_prog = find_program('lsz', 'sz', required: false)
-rz_prog = find_program('lrz', 'rz', required: false)
+sz_prog = find_program('sz', required: false)
+rz_prog = find_program('rz', required: false)
 socat_prog = find_program('socat', required: false)
 # BlueZ's virtual controller, for the HCI tests. Rarely on PATH: it is
 # a noinst program, built only with ./configure --enable-testing, so

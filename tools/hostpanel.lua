@@ -294,7 +294,7 @@ function Panel:shot(out, rows)
 	-- read as the start of the transfer.
 	self:drain(3, 0.3)
 
-	-- lrz writes to the current directory under the name the sender
+	-- rz writes to the current directory under the name the sender
 	-- gave and cannot be told otherwise, so ask for a name of our
 	-- choosing and move it afterwards.
 	local tmp = ".shot-esp32.pbm"
@@ -308,11 +308,11 @@ function Panel:shot(out, rows)
 	self:say(("shot %s%s"):format(tmp, rows and (" " .. rows) or ""),
 	    0.5)
 
-	local pid = self.hu.spawn({ "lrz", "-y" },
+	local pid = self.hu.spawn({ "rz", "-y" },
 	    { stdin = self.fd, stdout = self.fd, stderr = 2 })
 
 	if not pid then
-		return nil, "cannot run lrz (install lrzsz)"
+		return nil, "cannot run rz (install lrzsz)"
 	end
 
 	-- Slack for a guest that is busy rather than for a transfer that
@@ -401,7 +401,7 @@ function Panel:shot(out, rows)
 	w, h = tonumber(w), tonumber(h)
 
 	-- A transfer that stopped early leaves a file with a good header
-	-- and a short body, and lrz keeps what it got. Read as an image
+	-- and a short body, and rz keeps what it got. Read as an image
 	-- that is a screenshot of the top of the screen and black below --
 	-- which is a picture wrong in a way nothing downstream can catch,
 	-- since every pixel in it is correct. The header says how many
