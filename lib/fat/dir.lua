@@ -516,6 +516,10 @@ function Fs:delent(d, ent)
   end
   local ix = self:dirindex(d)
   ix.names[fold(ent.name)] = nil
+  -- and the parsed entry, which is keyed by slot rather than by name:
+  -- the next file created here reuses the slot, and a lookup would
+  -- answer with this one's clusters and size.
+  ix.ents[ent.slot] = nil
   if ix.shorts then ix.shorts[shorthash(ent.short)] = nil end
   if ent.first < ix.freefrom then ix.freefrom = ent.first end
 end
