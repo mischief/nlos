@@ -597,6 +597,10 @@ lua_payload = files(
   'bin/irc.lua',
   'bin/stack.lua',
   'bin/trace.lua',
+  # the debugger. lib/ only here and not in embed_files: nothing before
+  # a mount needs it, and the microvm gets /bin off the 9p mount.
+  'lib/dbg.lua',
+  'bin/dbg.lua',
   'bin/ls.lua',
   'bin/seq.lua',
   'bin/smiley.lua',
