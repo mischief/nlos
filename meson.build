@@ -867,7 +867,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill',
               'replyright', 'rightsundo', 'procpriv', 'portlimit', 'trace',
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
-              'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
+              'layout', 'strictglobals', 'bufout', 'bufmove', 'serialize', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',

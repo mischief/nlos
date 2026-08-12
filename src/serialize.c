@@ -116,6 +116,12 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 {
 	if (depth > MAXDEPTH)
 		return -1;
+	/* a level holds a table and a key across the recursive call, and a
+	 * C function is only guaranteed LUA_MINSTACK. MAXDEPTH levels need
+	 * more than that, so each level asks for its own.
+	 */
+	if (!lua_checkstack(L, 4))
+		return -1;
 	idx = lua_absindex(L, idx);
 
 	switch (lua_type(L, idx)) {
@@ -150,8 +156,13 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		/* {__right = handle} copies a right: the sender's handle
 		 * stays live and counts against MAXRIGHTS, so a caller
 		 * minting one per request must close it.
+		 *
+		 * Raw, both here and for __buf: a metamethod would run lua
+		 * in the middle of the walk, and one that raises longjmps
+		 * out with the refs already taken pinned for good.
 		 */
-		lua_getfield(L, idx, "__right");
+		lua_pushliteral(L, "__right");
+		lua_rawget(L, idx);
 		if (!lua_isnil(L, -1)) {
 			/* refused, not shipped as data: shipping it would
 			 * silently drop the capability it meant to send.
@@ -189,7 +200,8 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 		 * empty handle that raises on use. luabuf_borrow decides
 		 * what may travel; the rest is refused, never copied.
 		 */
-		lua_getfield(L, idx, "__buf");
+		lua_pushliteral(L, "__buf");
+		lua_rawget(L, idx);
 		if (!lua_isnil(L, -1)) {
 			size_t n;
 			void *handle;
@@ -199,6 +211,15 @@ serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
 				lua_pop(L, 1);
 				return -1;
 			}
+			/* storage travels once. the same buffer named twice
+			 * would arrive as two owners of one allocation, and
+			 * free it twice.
+			 */
+			for (int j = 0; j < w->bufs.n; j++)
+				if (w->bufown[j] == handle) {
+					lua_pop(L, 1);
+					return -1;
+				}
 			int i = w->bufs.n;
 
 			if (wbyte(w, 'M') || wbyte(w, (unsigned char)i)) {
@@ -279,6 +300,12 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 {
 	if (depth > MAXDEPTH)
 		return -1;
+	/* the sender picks the nesting, so it is another proc that drives
+	 * this stack. -2 because running out of it is a local limit here,
+	 * not bad bytes.
+	 */
+	if (!lua_checkstack(L, 4))
+		return -2;
 	if (*off >= len)
 		return -1;
 	unsigned char tag = p[(*off)++];
@@ -392,19 +419,22 @@ deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
 		if (pi >= MAXPORTS || !portv[pi])
 			return -1;
 
+		/* before the mint, so a right that minted_undo has no room
+		 * to record is never made. serialize refuses to write more
+		 * than MAXMSGRIGHTS, but a message is bytes, so the bound
+		 * is checked rather than trusted.
+		 */
+		if (mt->n >= MAXMSGRIGHTS)
+			return -1;
+
 		int h = right_new(receiver, portv[pi], recv);
 
 		/* a full rights table is a local limit, not bad bytes */
 		if (h < 0)
-			return -2;	/* out of rights, not bad bytes */
+			return -2;
 		/* recorded before the table is built, because building it
 		 * allocates and a failure there must give this back too.
-		 * the bound cannot be exceeded -- serialize refuses to
-		 * write more than MAXMSGRIGHTS -- but a message is bytes,
-		 * so it is checked rather than trusted.
 		 */
-		if (mt->n >= MAXMSGRIGHTS)
-			return -1;
 		mt->h[mt->n++] = h;
 		lua_createtable(L, 0, 1);
 		lua_pushinteger(L, h);
