@@ -6,7 +6,7 @@
 #include "cpu.h"
 #include "kernel.h"
 #include "kproc.h"
-#include "sched.h"
+#include "ksched.h"
 #include "timer.h"
 #include "debug.h"
 #include "platform.h"

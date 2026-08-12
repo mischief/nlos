@@ -21,7 +21,7 @@
 #include "kproc.h"
 #include "serialize.h"
 #include "timer.h"
-#include "sched.h"
+#include "ksched.h"
 #include "port.h"
 #include "proc.h"
 #include "sysapi.h"

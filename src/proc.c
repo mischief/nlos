@@ -20,7 +20,7 @@
 #include "kernel.h"
 #include "kproc.h"
 #include "port.h"
-#include "sched.h"
+#include "ksched.h"
 #include "timer.h"
 #include "proc.h"
 #include "serialize.h"

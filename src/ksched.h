@@ -1,5 +1,5 @@
-#ifndef SCHED_H
-#define SCHED_H
+#ifndef KSCHED_H
+#define KSCHED_H
 
 /* the run queues and what decides who runs. see docs/scheduling.md. */
 

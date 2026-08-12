@@ -19,7 +19,7 @@
 #include "kproc.h"
 #include "port.h"
 #include "proc.h"
-#include "sched.h"
+#include "ksched.h"
 #include "serialize.h"
 #include "sysapi.h"
 #include "platform.h"

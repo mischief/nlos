@@ -15,7 +15,7 @@
 #include "kernel.h"
 #include "kproc.h"
 #include "port.h"
-#include "sched.h"
+#include "ksched.h"
 #include "platform.h"
 
 /* the lock over everything shared between procs: the port and proc
