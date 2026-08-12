@@ -1296,15 +1296,22 @@ if host_arch in ['x86_64', 'aarch64', 'riscv64']
 
   # NCPU only has to exceed 1 to select the ticket lock; the thread count
   # is separate, and belongs to the host rather than to that constant.
-  # Oversubscribing a spinlock does not find more races, it just spins:
-  # on a four-core machine eight threads cost minutes of cpu and time the
-  # test out. Two is the floor, below which there is nothing to exclude.
+  # Bounded at both ends. Below two there is nothing to exclude. Above
+  # eight buys no more interleaving and costs a great deal: the work is
+  # NTHREAD x NITER, and the threads spin, so a 32-way host quadruples
+  # the test and saturates every core -- which times out the qemu tests
+  # meson is running beside it, not just this one.
   nproc = run_command('nproc', check: false)
   if nproc.returncode() != 0
     nproc = run_command('sysctl', '-n', 'hw.ncpu', check: false)
   endif
   ncpu = nproc.returncode() == 0 ? nproc.stdout().strip().to_int() : 4
-  nthread = ncpu > 2 ? ncpu : 2
+  nthread = ncpu
+  if nthread < 2
+    nthread = 2
+  elif nthread > 8
+    nthread = 8
+  endif
 
   lock_test = executable('lock_test',
     ['test/lock_test.c'],
