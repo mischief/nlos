@@ -228,6 +228,11 @@ else
     'lib/srv.lua',
     'lib/mnt.lua',
     'lib/ns.lua',
+    # ns:adopt reaches nsio, and lib/proc.lua's bootstrap is what calls
+    # adopt. Without both, no proc on this platform can take a namespace
+    # it was handed -- which is how every service task gets one.
+    'lib/nsio.lua',
+    'lib/proc.lua',
     'lib/lazy.lua',
     'lib/devtree.lua',
     'lib/chan.lua',
@@ -1035,6 +1040,7 @@ microvm_tests = [
   ['arp', ['--net']],
   ['ping', ['--net']],
   ['dhcp', ['--net']],
+  ['netfiles', ['--net']],
   ['dns', ['--net']],
   ['iptask', ['--net']],
   ['udpq', ['--net']],
