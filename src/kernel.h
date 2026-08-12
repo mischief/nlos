@@ -66,6 +66,10 @@ void	kernel_strip_debug(struct lua_State *L);
  * itself and leaves the stack as it found it.
  */
 void	kernel_confine_load(struct lua_State *L);
+/* kernel_confine_gc replaces collectgarbage with a safe full collect,
+ * so lua cannot restart the collector the kernel schedules.
+ */
+void	kernel_confine_gc(struct lua_State *L);
 /* kernel_wrap_coroutine expects the coroutine table on top of the stack
  * and replaces wrap with one that is transparent to preemption.
  */

@@ -2665,6 +2665,26 @@ kernel_confine_load(lua_State *L)
 	lua_pop(L, 1);
 }
 
+/* collectgarbage with the verb ignored: one full collect, never a
+ * restart. The kernel owns the schedule (GCSTOP, gc_step); a restart
+ * would let a finalizer run mid-allocation. GCCOLLECT keeps the stop.
+ */
+static int
+confined_collectgarbage(lua_State *L)
+{
+	lua_gc(L, LUA_GCCOLLECT);
+	lua_pushinteger(L, 0);	/* what collectgarbage("collect") returns */
+	return 1;
+}
+
+/* replace collectgarbage in every proc, boot included. */
+void
+kernel_confine_gc(lua_State *L)
+{
+	lua_pushcfunction(L, confined_collectgarbage);
+	lua_setglobal(L, "collectgarbage");
+}
+
 int
 kernel_current_is_boot(void)
 {
@@ -7480,6 +7500,9 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		lua_setglobal(p->L, "dofile");
 		kernel_confine_load(p->L);
 	}
+
+	/* every proc, boot included: lua does not schedule the collector. */
+	kernel_confine_gc(p->L);
 
 	p->co = lua_newthread(p->L);
 	luaL_ref(p->L, LUA_REGISTRYINDEX);	/* anchor the thread */
