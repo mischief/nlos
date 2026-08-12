@@ -273,7 +273,10 @@ function Fs:dirindex(d)
     end
   end
 
-  ix = { names = {}, nslots = self:dirslots(d), freefrom = 0 }
+  -- ents is filled as names are looked up, not by the scan: a walk
+  -- touches a handful of a directory's entries and holding all of
+  -- them costs memory on the machine least able to spare it.
+  ix = { names = {}, ents = {}, nslots = self:dirslots(d), freefrom = 0 }
   self:scandir(d, function(e)
     ix.names[fold(e.name)] = e.slot
   end)
@@ -322,10 +325,29 @@ end
 -- full UCS-2 case folding needs a table this has no business carrying,
 -- and getting it wrong would make two names collide that a firmware
 -- reader keeps apart.
+-- Reading the entry is what costs: a slot, its long name reassembled
+-- backwards, and a checksum over the short one -- repeated on every
+-- walk of the same path. The index remembers where a name lives, so it
+-- may as well remember what was there; dropindex clears both together.
 function Fs:lookup(d, name)
-  local slot = self:dirindex(d).names[fold(name)]
+  local ix = self:dirindex(d)
+  local slot = ix.names[fold(name)]
   if not slot then return nil end
-  return self:entat(d, slot)
+  local e = ix.ents[slot]
+
+  if e == nil then
+    e = self:entat(d, slot)
+    if e == nil then return nil end
+    ix.ents[slot] = e
+  end
+
+  -- a copy: a caller mutates what it gets -- write updates size in
+  -- place -- and two fids must not end up sharing one entry
+  return {
+    name = e.name, short = e.short, attr = e.attr, clus = e.clus,
+    size = e.size, mtime = e.mtime, ctime = e.ctime, slot = e.slot,
+    first = e.first, long = e.long,
+  }
 end
 
 function Fs:isempty(d)
@@ -473,6 +495,10 @@ function Fs:updent(d, ent, changes)
   for k, v in pairs(changes) do e[k] = v end
   if changes.clus then e.clus = changes.clus end
   self:wrslot(d, ent.slot, pack.packdirent(e))
+  -- what lookup cached for this slot describes the entry as it was
+  local ix = self.dirs and self.dirs[dirkey(d)]
+
+  if ix then ix.ents[ent.slot] = nil end
   for k, v in pairs(changes) do
     if k == "clus" or k == "size" then ent[k] = v end
   end
