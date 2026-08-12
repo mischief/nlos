@@ -2670,6 +2670,37 @@ kernel_confine_load(lua_State *L)
 	lua_pop(L, 1);
 }
 
+/* Confine a non-boot proc. Called protected: lua_getglobal fires _G's
+ * lazy loader, which allocates, and proc_new has no error handler -- a
+ * failed allocation here aborts the machine, not the spawn.
+ */
+static int
+confine_proc(lua_State *L)
+{
+	/* referencing "io" here also FORCES the lazy load, so the table
+	 * exists and is stripped rather than being created fresh (and
+	 * whole) at first use.
+	 */
+	lua_getglobal(L, "io");
+	kernel_strip_io(L);
+	lua_pop(L, 1);
+
+	lua_getglobal(L, "debug");
+	kernel_strip_debug(L);
+	lua_pop(L, 1);
+
+	/* loadfile/dofile off the disk, load "b" out of a string: one
+	 * hole, three names. confine_load forces text and drops
+	 * string.dump.
+	 */
+	lua_pushnil(L);
+	lua_setglobal(L, "loadfile");
+	lua_pushnil(L);
+	lua_setglobal(L, "dofile");
+	kernel_confine_load(L);
+	return 0;
+}
+
 /* collectgarbage with the verb ignored: one full collect, never a
  * restart. The kernel owns the schedule (GCSTOP, gc_step); a restart
  * would let a finalizer run mid-allocation. GCCOLLECT keeps the stop.
@@ -7484,26 +7515,16 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * confined to until it has made one.
 	 */
 	if (priv != PRIV_BOOT) {
-		/* referencing "io" here also FORCES the lazy load, so the
-		 * table exists and is stripped rather than being created
-		 * fresh (and whole) at first use.
-		 */
-		lua_getglobal(p->L, "io");
-		kernel_strip_io(p->L);
-		lua_pop(p->L, 1);
-
-		lua_getglobal(p->L, "debug");
-		kernel_strip_debug(p->L);
-		lua_pop(p->L, 1);
-
-		/* loadfile/dofile off the disk, load "b" out of a string:
-		 * one hole, three names. confine_load forces text and drops
-		 * string.dump. */
-		lua_pushnil(p->L);
-		lua_setglobal(p->L, "loadfile");
-		lua_pushnil(p->L);
-		lua_setglobal(p->L, "dofile");
-		kernel_confine_load(p->L);
+		lua_pushcfunction(p->L, confine_proc);
+		if (lua_pcall(p->L, 0, 0, 0) != LUA_OK) {
+			kputs("proc confine error: ");
+			kputs(lua_tostring(p->L, -1));
+			kputs("\n");
+			lua_pop(p->L, 1);
+			right_drop(p, &p->rights[0]);
+			proc_freestate(p);
+			return -1;
+		}
 	}
 
 	/* every proc, boot included: lua does not schedule the collector. */
