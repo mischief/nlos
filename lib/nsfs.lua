@@ -100,6 +100,63 @@ function M.new(ns, root)
 		return h_of(cp)
 	end
 
+	-- element at a time, releasing what it passes through. The same
+	-- loop srv runs when a backend offers no walkmany, kept here
+	-- because the handles are ours to close and it holds a chan now.
+	local function stepwise(h, names)
+		local cur, made = h, {}
+
+		for _, name in ipairs(names) do
+			local ok, res = pcall(B.walk, cur, name)
+
+			if not ok then
+				for _, x in ipairs(made) do
+					pcall(B.clunk, x)
+				end
+				dev.error(tostring(res) .. ": '" .. name .. "'")
+			end
+			if res ~= cur then
+				made[#made + 1] = res
+			end
+			cur = res
+		end
+		for i = 1, #made - 1 do
+			pcall(B.clunk, made[i])
+		end
+		return cur
+	end
+
+	-- The whole path in one resolve: NS:walk crosses mounts and
+	-- searches unions itself, where element at a time resolved every
+	-- prefix from the root. The loop still answers anything unusual --
+	-- it names the element that failed and handles a bare mount point.
+	function B.walkmany(h, names)
+		if h.chan then
+			dev.error(dev.Enotdir)
+		end
+		if #names == 0 then
+			return h_of(h.path)
+		end
+		local cp = h.path
+
+		for _, name in ipairs(names) do
+			if name == "." or name == ".." then
+				return stepwise(h, names)
+			end
+			cp = childpath(cp, name)
+		end
+
+		local proof
+		local ok = pcall(function()
+			proof = ns:walk(nspath(cp))
+		end)
+
+		if ok then
+			return h_of(cp, proof)
+		end
+		return stepwise(h, names)
+	end
+
 	function B.stat(h)
 		local st = h.wc and h.wc:stat() or
 		    must(ns:stat(nspath(h.path)))
