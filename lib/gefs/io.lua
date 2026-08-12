@@ -71,6 +71,9 @@ end
 -- short count is a write that never fully reached the device: raising
 -- keeps the sector dirty above rather than losing it silently.
 function File:write(off, s)
+  -- fat hands the sector out as it holds it, which is a los.buf. A stock
+  -- lua file handle takes a string, so ask the buffer for its bytes.
+  if type(s) ~= "string" then s = tostring(s.str and s:str() or s) end
   self.f:seek("set", off)
   local n, err = self.f:write(s)
   if not n then error("write failed: " .. tostring(err), 0) end
