@@ -360,6 +360,10 @@ local repl_worker_src = [[
 	local udph = (m.udp and m.udp.__right) or (m.ip and m.ip.__right)
 	local dnsh = m.dns and m.dns.__right
 	local fbh = m.fb and m.fb.__right
+	-- the debug capability: a right to it debugs any proc, which is
+	-- what reaches a boot service. The console gets it and dos
+	-- inherits it; nothing else is offered one.
+	local dbgh = m.dbg and m.dbg.__right
 
 	-- pre-imported as bare globals (_G.x, not local x): the repl's
 	-- evaluate() loads each typed line as its own chunk via load(),
@@ -435,7 +439,7 @@ local repl_worker_src = [[
 			-- A public session gets no such grant.
 			launcher.start({ ns = require("ns").current(),
 			    cons = consh, fb = fbh, net = tcph,
-			    udp = udph, power = powerh },
+			    udp = udph, power = powerh, dbg = dbgh },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")
 			return "back at the lua repl"
@@ -530,6 +534,9 @@ while true do
 		power = { __right = caps_of.power },
 		disk = { __right = caps_of.disk },
 	}
+	if caps_of.dbg then
+		grant.dbg = { __right = caps_of.dbg }
+	end
 	if has_tcp then
 		grant.tcp = { __right = caps_of.tcp }
 	end

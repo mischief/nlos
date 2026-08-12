@@ -153,6 +153,9 @@ function M.new(caps)
 		-- given none and its programs cannot reset the machine --
 		-- which is a grant a level up, not a check in bin/reboot.lua.
 		power = caps.power,
+		-- the debug capability, same terms again: it debugs any
+		-- proc on the machine, so a public session is given none.
+		dbg = caps.dbg,
 		-- where the exit notices of the programs this shell starts
 		-- arrive, and where the console sends the interrupt. A shell
 		-- in a proc of its own reads the mailbox, which is the
@@ -475,6 +478,11 @@ function Sh:spawn1(path, argv, streams)
 	-- (prog.power) is unaffected.
 	if self.power then
 		msg.power = { __right = self.power }
+	end
+	-- and the debug capability, for bin/dbg.lua. Same rule: the grant
+	-- is the authority, and a program that never asks is unaffected.
+	if self.dbg then
+		msg.dbg = { __right = self.dbg }
 	end
 	-- the pull flag rides BESIDE stdin, not inside it. a table carrying
 	-- __right is serialized as the right and nothing else (see

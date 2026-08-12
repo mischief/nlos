@@ -697,6 +697,9 @@ function M.main()
 	-- entropy, as data. see M.rand below; ctx.seed is already bytes.
 	-- the power task, if the launcher lent us one. see M.power below.
 	ctx.power = ctx.power and ctx.power.__right or nil
+	-- the debug capability, if the launcher lent one. bin/dbg.lua is
+	-- the only program that asks.
+	ctx.dbg = ctx.dbg and ctx.dbg.__right or nil
 
 	local N, nerr = ns.restore(ctx.nsdesc)
 
