@@ -22,6 +22,13 @@ int luaos_lcd_present(void);		/* probe once; brings up the panel */
 int luaos_lcd_shadow(int on);
 int luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out);
 
+/* the same rectangle as RGB, three bytes and no pad, for a caller
+ * writing a file rather than drawing: the channels are already eight
+ * bits wide inside unload, and taking the pad out again in lua costs
+ * more than the transfer that follows it.
+ */
+int luaos_lcd_unload_rgb(int x, int y, int w, int h, unsigned char *out);
+
 /* the same rectangle as packed 1bpp, MSB first -- the shadow's own
  * layout, so nothing expands it to BGRx and packs it again.
  */

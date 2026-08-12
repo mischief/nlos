@@ -909,6 +909,12 @@ fb_load(lua_State *L)
 	return 0;
 }
 
+/* fb.unload(x,y,w,h [, fmt]) -> the pixels.
+ *
+ * "bgrx" by default, which is the shared fb protocol's layout and what
+ * every drawing client reads. "rgb" is the same pixels with no pad, for
+ * a caller writing a file: see luaos_lcd_unload_rgb.
+ */
 static int
 fb_unload(lua_State *L)
 {
@@ -916,18 +922,26 @@ fb_unload(lua_State *L)
 	lua_Integer y = luaL_checkinteger(L, 2);
 	lua_Integer w = luaL_checkinteger(L, 3);
 	lua_Integer h = luaL_checkinteger(L, 4);
-	size_t need = (size_t)w * (size_t)h * 4;
+	const char *fmt = luaL_optstring(L, 5, "bgrx");
+	int rgb = strcmp(fmt, "rgb") == 0;
+	size_t need = (size_t)w * (size_t)h * (rgb ? 3 : 4);
 	luaL_Buffer b;
 	char *out;
+	int rc;
 
+	if (!rgb && strcmp(fmt, "bgrx") != 0)
+		return luaL_error(L, "fb.unload: no such format: %s", fmt);
 	checkrect(L, x, y, w, h);
 	if (need == 0) {
 		lua_pushliteral(L, "");
 		return 1;
 	}
 	out = luaL_buffinitsize(L, &b, need);
-	if (luaos_lcd_unload((int)x, (int)y, (int)w, (int)h,
-	    (unsigned char *)out) != 0)
+	rc = rgb ? luaos_lcd_unload_rgb((int)x, (int)y, (int)w, (int)h,
+	    (unsigned char *)out)
+	    : luaos_lcd_unload((int)x, (int)y, (int)w, (int)h,
+	    (unsigned char *)out);
+	if (rc != 0)
 		return luaL_error(L, "fb.unload: no copy kept -- "
 		    "this panel cannot be read, call fb.shadow(true) first");
 	luaL_pushresultsize(&b, need);

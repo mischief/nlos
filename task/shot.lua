@@ -72,32 +72,26 @@ local size = #header + H * stride
 -- rewind, which a plain generator could not serve -- but a row is
 -- always recomputable from the panel.
 --
--- unload hands back BGRx, the shared framebuffer layout: real colors
--- where the driver keeps a color copy, or black and white where the
--- shadow is one bit per pixel. PPM wants RGB, so each pixel is
--- reordered as it is read.
+-- unload hands back real colors where the driver keeps a color copy, or
+-- black and white where the shadow is one bit per pixel.
+--
+-- fmt="rgb" asks for the three bytes PPM wants, which task/fb.lua
+-- promises: the driver leaves the pad off where it knows how, and the
+-- fb task narrows the answer where it does not. Doing it here instead
+-- was a string.char per pixel -- 2.7 seconds for a 320x240 screen, a
+-- third of the transfer, for bytes the driver already had.
 local cached, cachedy = nil, -1
 
 local function row(y)
 	if y ~= cachedy then
-		local r = rpc(fb, fbport,
-		    { op = "unload", r = { x = 0, y = y, w = W, h = 1 } })
+		local r = rpc(fb, fbport, { op = "unload", fmt = "rgb",
+		    r = { x = 0, y = y, w = W, h = 1 } })
 
 		if not (r and r.ok) then
 			error("unload row " .. y .. ": " ..
 			    tostring(r and r.err), 0)
 		end
-
-		local bgrx = r.ok
-		local rgb = {}
-
-		for i = 1, W do
-			local o = (i - 1) * 4
-
-			rgb[i] = string.char(bgrx:byte(o + 3),
-			    bgrx:byte(o + 2), bgrx:byte(o + 1))
-		end
-		cached = table.concat(rgb)
+		cached = r.ok
 		cachedy = y
 	end
 	return cached

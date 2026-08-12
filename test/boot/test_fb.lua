@@ -12,7 +12,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(33)
+tap.plan(35)
 
 tap.ok(caps_of.fb ~= nil, "boot payload was granted fb")
 if not caps_of.fb then
@@ -45,6 +45,29 @@ local img = memdraw.fromBytes(64, 32, pix)
 
 tap.is(memdraw.at(img, 0, 0), memdraw.red, "the filled corner really is red")
 tap.is(memdraw.at(img, 63, 31), memdraw.red, "and so is the far corner")
+
+-- ---- the same rectangle with the pad left off ----
+--
+-- What task/shot.lua reads, so that a screenshot is not a string.char
+-- per pixel. The check that matters is not the length: it is that the
+-- three bytes are the same three the BGRx answer carries, in the order
+-- a PPM wants -- a driver writing them backwards passes a length test
+-- and hands back a picture with red and blue swapped.
+local rgb = fb.unload(r, "rgb")
+
+tap.is(#rgb, 64 * 32 * 3, "unload rgb returns w*h*3 bytes")
+
+local sheared = false
+
+for i = 0, 64 * 32 - 1 do
+	if rgb:sub(i * 3 + 1, i * 3 + 3) ~=
+	    string.char(pix:byte(i * 4 + 3), pix:byte(i * 4 + 2),
+	        pix:byte(i * 4 + 1)) then
+		sheared = true
+		break
+	end
+end
+tap.ok(not sheared, "every rgb pixel is its bgrx pixel, unpadded")
 
 -- ---- load an image built in lua ----
 --

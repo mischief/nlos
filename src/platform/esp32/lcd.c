@@ -426,10 +426,18 @@ shadow_set(int x, int y, int ink)
 
 /* white for ink, black for paper, as BGRx -- the layout load() takes.
  * Not the colours that were drawn: see the shadow's comment.
+ *
+ * bgrx picks which of the two layouts goes out. BGRx is the shared fb
+ * protocol's, and every drawing client wants it. RGB is three bytes and
+ * no pad, for a caller writing a file: the alternative is handing over
+ * the pad so that lua can walk the rectangle a pixel at a time to take
+ * it out again, which for a T-Deck screen measured 2.7 seconds -- while
+ * the channels are already eight bits wide right here.
  */
-int
-luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
+static int
+unload_px(int x, int y, int w, int h, unsigned char *out, int bgrx)
 {
+	const size_t bpp = bgrx ? 4 : 3;
 	int row, col;
 
 	if (!present)
@@ -453,12 +461,24 @@ luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
 				unsigned g6 = (v >> 5) & 0x3f;
 				unsigned b5 = v & 0x1f;
 				unsigned char *px = out +
-				    ((size_t)row * w + col) * 4;
+				    ((size_t)row * w + col) * bpp;
+				unsigned char r =
+				    (unsigned char)((r5 << 3) | (r5 >> 2));
+				unsigned char g =
+				    (unsigned char)((g6 << 2) | (g6 >> 4));
+				unsigned char b =
+				    (unsigned char)((b5 << 3) | (b5 >> 2));
 
-				px[0] = (unsigned char)((b5 << 3) | (b5 >> 2));
-				px[1] = (unsigned char)((g6 << 2) | (g6 >> 4));
-				px[2] = (unsigned char)((r5 << 3) | (r5 >> 2));
-				px[3] = 0;
+				if (bgrx) {
+					px[0] = b;
+					px[1] = g;
+					px[2] = r;
+					px[3] = 0;
+				} else {
+					px[0] = r;
+					px[1] = g;
+					px[2] = b;
+				}
 			}
 		return 0;
 	}
@@ -469,15 +489,28 @@ luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
 		for (col = 0; col < w; col++) {
 			size_t bit = (size_t)(y + row) * LCD_W + x + col;
 			int ink = (shadow[bit >> 3] >> (bit & 7)) & 1;
-			unsigned char *px = out + ((size_t)row * w + col) * 4;
+			unsigned char *px = out + ((size_t)row * w + col) * bpp;
 			unsigned char v = ink ? 0xff : 0x00;
 
 			px[0] = v;
 			px[1] = v;
 			px[2] = v;
-			px[3] = 0;
+			if (bgrx)
+				px[3] = 0;
 		}
 	return 0;
+}
+
+int
+luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
+{
+	return unload_px(x, y, w, h, out, 1);
+}
+
+int
+luaos_lcd_unload_rgb(int x, int y, int w, int h, unsigned char *out)
+{
+	return unload_px(x, y, w, h, out, 0);
 }
 
 /* the shadow's own representation, handed over as-is.
@@ -847,6 +880,13 @@ luaos_lcd_shadow(int on)
 
 int
 luaos_lcd_unload(int x, int y, int w, int h, unsigned char *out)
+{
+	(void)x; (void)y; (void)w; (void)h; (void)out;
+	return -1;
+}
+
+int
+luaos_lcd_unload_rgb(int x, int y, int w, int h, unsigned char *out)
 {
 	(void)x; (void)y; (void)w; (void)h; (void)out;
 	return -1;

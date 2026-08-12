@@ -281,12 +281,21 @@ function M.new(handle, chunk)
 	-- the reply is a message too, so readback needs the same banding as
 	-- load above -- the limit is on messages, not on direction. plan 9
 	-- splits unloadimage identically, for identically this reason.
-	function f.unload(r)
-		local stride = r.w * 4
+	--
+	-- fmt is "bgrx" unless asked otherwise, and the banding below
+	-- counts in whatever it is: a band sized in the wrong pixel is a
+	-- reply over the message limit or a picture in pieces.
+	--
+	-- Not BPP above: these are the formats pixels can be read BACK in,
+	-- and "rgb" is not one a load takes. Sharing the map would offer a
+	-- load format the driver refuses.
+	function f.unload(r, fmt)
+		local bpp = fmt == "rgb" and 3 or 4
+		local stride = r.w * bpp
 		local perband = stride > 0 and (CHUNK // stride) or 0
 
 		if perband >= r.h then
-			return ask({ op = "unload", r = r })
+			return ask({ op = "unload", r = r, fmt = fmt })
 		end
 
 		local out = {}
@@ -295,7 +304,7 @@ function M.new(handle, chunk)
 		-- the pieces have to be concatenated PER ROW, since the
 		-- result is one contiguous run of rows.
 		if perband < 1 then
-			local half = CHUNK // 4
+			local half = CHUNK // bpp
 
 			if half < 1 then
 				return nil, "message limit below one pixel"
@@ -310,6 +319,7 @@ function M.new(handle, chunk)
 						n = half
 					end
 					local piece, err = ask({ op = "unload",
+					    fmt = fmt,
 					    r = { x = r.x + x, y = r.y + y,
 					        w = n, h = 1 } })
 
@@ -331,7 +341,7 @@ function M.new(handle, chunk)
 			if n > perband then
 				n = perband
 			end
-			local piece, err = ask({ op = "unload",
+			local piece, err = ask({ op = "unload", fmt = fmt,
 			    r = { x = r.x, y = r.y + y, w = r.w, h = n } })
 
 			if not piece then

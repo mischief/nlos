@@ -16,7 +16,7 @@
 --   {op="setmode", n=, reply=}              -> true
 --   {op="fill", r=, color=, reply=}         -> true
 --   {op="load", r=, data=, reply=}          -> true
---   {op="unload", r=, reply=}               -> the pixels
+--   {op="unload", r=, fmt=, reply=}         -> the pixels
 --   {op="scroll", r=, to=, reply=}          -> true
 --   {op="cursor", x=, y=, on=, reply=}      -> true
 --   {op="alloc", w=, h=, fmt=}              -> an image id
@@ -319,10 +319,35 @@ if platform.unload1 then
 	end
 end
 
+-- fmt reaches the driver, which is where the pad is best left off: the
+-- channels are already eight bits wide inside an unload, so a driver
+-- that knows "rgb" pays nothing for it. Nothing but a caller writing a
+-- file wants it -- the fb protocol's own layout is BGRx and every
+-- drawing client reads that.
+--
+-- A driver that does not know the format answers in BGRx anyway, and
+-- the answer is narrowed here rather than refused: the format is a
+-- promise this task keeps, so a screenshot on a platform whose driver
+-- has not learned it is slow rather than absent. The length is what
+-- says which happened -- there is nothing else to ask.
 function ops.unload(m)
 	local x, y, w, h = rect(m.r)
+	local pix = platform.unload(x, y, w, h, m.fmt)
 
-	return platform.unload(x, y, w, h)
+	if m.fmt ~= "rgb" or type(pix) ~= "string" or #pix == w * h * 3 then
+		return pix
+	end
+
+	local out = {}
+	local sc = string.char
+
+	for i = 0, w * h - 1 do
+		local o = i * 4
+
+		out[i + 1] = sc(pix:byte(o + 3), pix:byte(o + 2),
+		    pix:byte(o + 1))
+	end
+	return table.concat(out)
 end
 
 -- within an image, or on the glass. A window's own scroll is what
