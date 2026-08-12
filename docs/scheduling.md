@@ -32,6 +32,47 @@ second level at all — its chunk runs directly in `p->co`.
 `proc_new`, and is what the kernel resumes. Every other coroutine of
 the proc is created by Lua.
 
+## The lap
+
+The kernel dispatches in laps. Each lap runs two phases over the run
+queues, then the device pumps, the timers and the firmware tick. Phase
+one takes the highest priority first, so an interactive proc answers
+before a hog gets another turn. Phase two takes whatever is left,
+priority never consulted, including anything woken during phase one.
+
+Phase two is the starvation guarantee, and it is deliberately
+independent of the priority function: every proc runnable when the lap
+began runs once in it whatever `reprioritize` computes, and one woken
+during the lap runs in it or the next. A policy that is buggy, hostile
+or merely untuned can cost latency; it cannot wedge the machine. That
+matters because policy is the part we expect to get wrong.
+
+"Already had its turn" is membership in `donq` rather than a per-lap
+marker, so nothing here is sized against `MAXPROCS` and nothing scans.
+The lap ends when `runq` is empty, and whichever cpu empties it swaps
+the two. With one queue that is the only workable boundary — a cpu
+cannot swap on its own schedule without handing the others procs that
+already had a turn. Counting the cpus inside a lap and letting the last
+one out swap livelocks instead: cpus finishing early re-enter at once,
+so they are never all out together, and every cpu churns empty laps over
+a `runq` whose procs all sit in `donq`.
+
+### Why phase two is bounded
+
+The bound is what makes a lap terminate at all. A proc woken mid-lap
+joins the current `runq`, so two procs feeding each other hand phase two
+a fresh proc every time it takes one. An unbounded drain never reaches
+the top of the loop again — where the timers and the device pumps live —
+so one busy pair would stop every timer on the machine.
+
+`LAPSPILL` is the floor on that bound, and it is sized to amortize
+rather than merely to terminate. Everything between laps costs a fixed
+toll: a port write on a virtual machine, several firmware calls on efi.
+A bound of "whatever was queued" charges a ping-pong pair the whole toll
+on every exchange, which measured several times the cost of the round
+trip itself. What it costs in return is the delay a busy pair can impose
+on a timer, which is this many round trips — well under one tick.
+
 ## The quantum
 
 A slice is `QUANTUM_MS` (2ms) of wall clock, not a count of
@@ -40,6 +81,28 @@ which instructions they are. The count hook is only the sampling rate —
 `preempt_hook` fires every `REDUCTIONS` (25000) VM instructions, checks
 `platform_ticks() - p->resumed` against the quantum, and returns
 without yielding if the slice is not spent.
+
+A slice costs one lap, so the quantum decides how much of the machine
+goes to scheduling rather than to work. A platform whose lap is
+expensive overrides it in `param.h`. The bound it must respect is the
+timer, not the tick: timers expire once per lap, so a busy proc delays
+one by at most a quantum, while an idle machine cannot beat the tick
+anyway.
+
+`REDUCTIONS` is measured at boot rather than fixed, because the right
+value depends entirely on how fast the machine executes bytecode. A
+fixed count is a different fraction of the quantum on every machine, and
+on a slow one it can exceed the quantum outright — at which point time
+slicing quietly degrades back into instruction slicing. Calibration
+targets a fixed fraction of the quantum instead, so the overshoot bound
+holds anywhere.
+
+Frequency scaling makes that approximate, deliberately. An invariant
+cycle counter is what makes a usable clock, and is exactly why it does
+not track how fast instructions retire. The quantum check stays correct
+regardless, because both sides of it are in cycle units; only the
+sampling granularity drifts, and the overshoot stays bounded by one
+period either way.
 
 `lua_newthread` copies hook, mask and count into every coroutine at
 creation (`lua/lstate.c`) and never revisits them. Two consequences,
@@ -304,6 +367,143 @@ counts every port on the machine losing a reference, so it moves
 constantly on any system where anything else is doing request/reply
 (measured: one file read moves it by 8) and cannot answer a question
 about one proc.
+
+## The run queues
+
+One pair for the machine, not one pair per cpu. Any cpu takes the next
+runnable proc from the same place, so a proc is never stuck behind a
+busy cpu while another idles, and there is no placement decision to make
+at spawn. That decision is the one that cannot be made well: it is made
+before the proc has done anything, and nothing revisits it. Plan 9's
+`runq` is global for the same reason, where OpenBSD uses per-cpu queues
+and work stealing.
+
+`p->home` survives as a record of where a proc last ran — affinity as a
+report, not a placement. Nothing decides anything from it today. It
+answers "which cpu is this on" for the smp tests, and soft affinity, if
+it is ever wanted, is a use of exactly this field.
+
+### What the single lock costs
+
+The usual argument for per-cpu queues is keeping cpus off one lock on
+the hottest path. That was dismissed while the ipc lock was always held
+longer, so this one could not contend first. Splitting the ipc lock into
+buckets ended that: at eight cpus, a ping-pong benchmark leaves
+`schedlock` heavily contended while the ipc buckets are nearly free. It
+is the ceiling now. Below eight cpus it is not — the same test is flat
+from one to four — so this is a real problem at one width and not yet at
+the others.
+
+What costs is the number of acquisitions, not the work under them.
+Timing the critical sections says the lock is held for well under half
+the cycles a run takes, while the cpus spin for several times that
+between them: a section is a few tens of cycles of work on one cpu and
+several times that when eight are passing the line around, and it is
+that handoff being paid millions of times. Proportional backoff in the
+spin was tried and measured nothing, which is the same finding from the
+other side — the waiters are not the problem, the traffic is.
+
+So `dispatch_phase` folds the requeue of the proc just run into the same
+acquisition as the take of the next one, and reads its bound there too.
+That cut roughly a quarter of the acquisitions and a third of the
+spinning, for about a fifth off the wall clock. What is left is around
+seven acquisitions per round trip: one per dispatch, one per
+`make_ready`, one per `proc_block`, and the lap boundary.
+
+Splitting further has two shapes. Plan 9's is to lock each priority
+queue separately rather than the whole set, which does nothing for a
+workload whose procs all sit in one bucket — this one. The other is
+per-cpu queues, which is what made the ipc side cheap, and which is
+exactly what the top of this section gives up on purpose.
+
+## Priorities
+
+`sys.set_priority` writes a clamped weight, and that is the whole of the
+policy interface. The dispatch loop reads it every lap, so no lua runs
+inside a scheduling decision and a crashing policy proc cannot wedge or
+corrupt dispatch — the reason `sched_ext` bounds its programs rather
+than letting them be the dispatcher. It is gated on the scheduling
+capability, or any child could hand itself the largest weight and starve
+every other proc.
+
+Weight 1 is plain round-robin. A higher weight is a proportionally
+bigger share, taken as being resumed up to `weight` times per lap
+instead of once.
+
+Dynamic priority is inversely proportional to recent cpu use against an
+equal share, clamped to the static weight — plan 9's `reprioritize`,
+with weight playing `basepri`'s part. A proc using exactly its share
+lands at its weight, a hog sinks toward zero, and one that has been
+starved clamps to the top. Nobody is demoted by a rule.
+
+It is computed when a proc is made ready rather than at dispatch, so the
+dispatcher only reads an integer, and the computation runs once per
+wakeup instead of once per ready proc per lap. That depends on the decay
+being independent of how often it is sampled.
+
+### The fair-share estimate
+
+`p->cpu` is an exponentially weighted average of the fraction of wall
+time a proc spent running, in per-mille, measured from the cycle
+counter.
+
+An instruction count was tried and dropped. The hook fires every N
+instructions, so counting the fires is an exact reduction count — but
+only for procs that reach their period. A proc that yields sooner
+registers zero, which is most ipc-bound work, and lua exposes no way to
+read the partial countdown. Exact reductions would mean patching the vm,
+and vanilla lua stays vanilla. Cycles have no floor, catch time spent in
+C too, and are what real schedulers use.
+
+Plan 9 samples "was this proc running at the tick" and decays from
+there, which suits a tick-driven kernel. Procs here run for tens of
+microseconds at a time, far below the clock, so sampling would read zero
+forever. The fraction is computed directly from measured cycles and then
+averaged. The decay is lazy: a closed form over the elapsed interval, so
+a proc untouched for seconds decays correctly in one call and no
+periodic sweep is needed.
+
+Two traps in the arithmetic, both of which read as a large systematic
+undercount rather than as a failure:
+
+- The mixing weight is `n/D`, which approximates a true exponential only
+  while `n` stays small next to `D`. `SCHED_DECAY_MS` must therefore
+  stay well above the lap period. When the estimate was computed on
+  demand instead of every lap, `n` could reach a third of the window and
+  the linear form ran far off the real figure.
+- The fraction is formed straight from cycles. Converting to whole
+  milliseconds first truncates, which was harmless when `n` was hundreds
+  of milliseconds and is a systematic undercount at lap scale.
+
+The window converges in roughly three times its own length, which suits
+procs that live for seconds.
+
+## Idle and accounting
+
+`cpu_self()->current` is who is running now, set around every resume and
+cleared after. Plain C with no `lua_State` — the `fopen` reached from
+lua's io library — uses it to find out who is asking, and it is the only
+way to check a capability from a context where the caller's state is not
+available at all.
+
+The idle counter advances whenever the dispatch loop finds every proc
+blocked and goes to a real firmware sleep. It separates a genuinely idle
+machine, which advances it steadily, from one busy-spinning with some
+proc always ready, which never does. That distinction is otherwise
+invisible from inside a proc: sampling `wchan` cannot see it, because a
+task woken and re-blocked between two samples looks identical to one
+that never woke.
+
+Dispatch accounting is plain counters, for answering where a round trip
+goes without guessing. Laps per round trip is what showed that a
+ping-pong pair never reaches the top of a lap, and therefore that the
+serial pump is no bound on how long the uart fifo goes undrained.
+Anything needing a timestamp belongs in a temporary probe rather than
+there.
+
+`sys.pidstat(pid)` reports `cputime` and `resumes`: the same
+milliseconds spread over thousands of resumes is a proc round-tripping
+on ipc; over a handful, one doing its work in a block.
 
 ## What preemption still cannot do
 

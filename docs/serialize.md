@@ -45,7 +45,7 @@ Three table shapes are not data:
 
 Serializing can fail after it has taken port refs; deserializing can fail
 after it has minted rights into the receiver. Both must be undone, and
-the second is the sharper one: a message is accepted whole or not at all,
+the second matters more: a message is accepted whole or not at all,
 and a half-installed right was never pushed to lua, so the receiver
 cannot name it to close it. It is lost for the life of the proc. A sender
 chooses both the count and the point of failure, so without `minted_undo`

@@ -1,14 +1,10 @@
-/* cooperative mach-lite kernel: lua_State procs, ports, rights.
+/* mach-lite kernel: procs are isolated lua_States, ports are kernel
+ * message queues, rights are per-proc handles onto ports. Lua sees no
+ * pointers, and handle 0 is always a proc's own receive port. Preempted
+ * on a count hook, so a busy loop cannot starve the machine.
  *
- * - each proc = own lua_State (heap isolation) + one lua thread the
- *   chunk runs on
- * - ports = kernel-side fifo of serialized messages
- * - rights = small-int handles in a per-proc table; lua never sees
- *   pointers. handle 0 is always the proc's own receive port.
- * - blocking recv/readline is lua-side sugar over tryrecv + block
- * - preemption via count hook: busy loops can't starve the machine
- * - keyboard: kernel pumps ConIn into a port whose receive right is
- *   given to proc 0
+ * The dispatch loop and the device pumps live here. See docs/proc.md,
+ * docs/ipc.md, docs/scheduling.md and docs/serialize.md.
  */
 
 #include <stdatomic.h>
@@ -32,28 +28,9 @@
 #include "debug.h"
 #include "platform.h"
 
-/* MAXPROCS and MAXPORTS come from the platform's param.h, because what
- * is headroom on a machine with gigabytes is a third of a board's ram.
- *
- * bodies are heap-allocated, so what these cost statically is one
- * pointer each -- but that is per entry, in .bss, whether or not a proc
- * ever exists. on a 32-bit target 4096 procs and 32768 ports is 144KB,
- * measured against the esp32's 242KB of internal sram at heap_init.
- *
- * they are headroom rather than reachable counts: spawning until it
- * fails stops at about 960 procs on efi, because each is a lua_State
- * and the heap runs out long before the tables do. dispatch and wakeups
- * do not scan, so the round trip is flat across the whole range (about
- * 26k cycles at 64 procs and at 8192) -- which is exactly why a small
- * platform can pick a small number and lose nothing but headroom.
- *
- * going further wants a two-level index rather than a flat one, which
- * would add an indirection to every serialize.
- *
- * MAXRIGHTS is what bounds a supervisor: sys.spawn hands the parent a
- * right per child, so holding them caps the tree at MAXRIGHTS unless the
- * parent closes each handle and tracks children by pid through
- * sys.monitor. only the first NRIGHTS_INLINE cost anything per proc.
+/* MAXPROCS and MAXPORTS come from the platform's param.h: what is
+ * headroom on a machine with gigabytes is a large share of a board's
+ * ram. Ceilings, not reachable counts -- see docs/proc.md.
  */
 #include "param.h"
 
@@ -70,17 +47,10 @@
 #define REDUCTIONS	25000
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
 #define MAXTIMERS	128	/* outstanding one-shot timers, machine-wide */
-/* floor on phase two's dispatch bound -- see kernel_run.
- *
- * the bound is what ends a lap at all, because a mid-lap wakeup joins
- * the current runq and two procs feeding each other hand phase two a
- * fresh proc every time it takes one. sized to amortise rather than
- * merely to terminate: everything between laps costs a fixed toll, one
- * port-i/o trap on microvm and three firmware calls on efi, and a bound
- * of "whatever was queued" charges a ping-pong pair the whole toll per
- * exchange -- measured at 3.8x on a bare cross-proc round trip. what it
- * costs in return is the delay a busy pair can impose on a timer, which
- * is this many round trips, ~0.1ms. the tick is 10ms.
+/* floor on phase two's dispatch bound. The bound is what ends a lap at
+ * all: two procs feeding each other hand phase two a fresh proc every
+ * time it takes one. Sized to amortize the fixed cost between laps, not
+ * merely to terminate -- see docs/scheduling.md.
  */
 #define LAPSPILL	64
 
@@ -93,47 +63,15 @@
  * debt inside a 32-bit l_mem.
  */
 #define GCSTEP_MAX_KB	(16 * 1024)
-/* per-port queue ceiling. plan 9's pipes are Queues with a limit
- * (conf.pipeqsize, 256KB) and a writer that sleeps when it is reached;
- * ours had no bound at all, so a fast writer into a slow reader grew the
- * kernel heap without limit -- and that memory is charged to no proc's
- * mem_limit, so it did not even show up in the containment story.
- *
- * this is the interim: over the limit, the send FAILS rather than
- * blocking. that closes the memory hole without inventing send-side
- * blocking, which needs a new blocked-on-write proc state and a wakeup
- * when the queue drains. a writer outrunning its reader gets an error,
- * which is at least a real signal rather than silent growth.
- *
- * The limit itself is in kernel.h, with MAXMSG.
- */
-/* fair-share averaging window. plan 9 uses schedgain=30 SECONDS, which
- * suits long-lived unix-ish processes; ours are short and interactive.
- *
- * the mixing weight below is n/D, which approximates a true exponential
- * only while n is small next to D. that holds now that the scheduler
- * samples every lap (n is ~15ms), but it is why the metric used to
- * depend on how often anyone asked for it: one on-demand call with
- * n=1500 mixed at 0.75 where the real figure is 1-exp(-0.75)=0.53, and
- * read a spinning proc at 729 instead of the ~950 it deserved.
- *
- * 500ms converges in roughly 1.5s, which suits procs that live for
- * seconds. it must stay well above the lap period for the linear
- * approximation to hold.
+/* fair-share averaging window. The mixing weight is n/D, which
+ * approximates an exponential only while n stays small next to D, so
+ * this must stay well above the lap period -- see docs/scheduling.md.
  */
 #define SCHED_DECAY_MS	500
-/* wall-clock slice a proc may hold before the count hook yields it. the
- * hook fires on instruction count; this converts that into a time bound.
- *
- * What a slice costs is one lap of kernel_run, so the quantum decides
- * how much of the machine goes to scheduling rather than to work. A
- * platform whose lap is expensive says so in its param.h: esp32
- * measured 130us a lap, where 2ms spends 6% of the cpu on switching.
- *
- * The bound it must respect is the timer, not the tick. expire_timers
- * runs once per lap, so a busy proc delays a timer by at most one
- * quantum -- while an idle machine cannot beat the tick anyway, which
- * is 10ms and backs off to 15ms.
+/* wall-clock slice a proc may hold before the count hook yields it. A
+ * slice costs one lap, so this decides how much of the machine goes to
+ * scheduling rather than to work. A platform whose lap is expensive
+ * overrides it in param.h -- see docs/scheduling.md.
  */
 #ifndef QUANTUM_MS
 #define QUANTUM_MS	2
@@ -144,65 +82,55 @@
  */
 #define PRI_BASE	10
 
-/* BROKE is plan 9's: a proc that died of an error and is being held so
- * something can look at it. it is not runnable and holds no rights, but
- * its lua_State is still standing, which is the whole point -- a
- * coroutine that errors out of lua_resume does not unwind, so at the
- * moment of death every frame is still there. today that stack lives
- * exactly long enough for luaL_traceback to flatten it into one string
- * and is then closed, which throws away everything except the summary
- * right when the summary stops being enough.
- *
- * sys.stack already reads a suspended proc's state without disturbing
- * it (see src/debug.c). a corpse is a proc suspended forever, so the
- * rules that file keeps -- run nothing, allocate nothing, restore the
- * top -- hold on it unchanged. holding the state costs nothing but the
- * heap it sits in, so the number of corpses is capped.
- */
-/* HATCHING is a proc that exists and has never run: proc_new made it,
- * proc_launch has not. It is distinct from BLOCKED because BLOCKED
- * means "waiting on a port" and carries a waiter to name; a hatching
- * proc waits on its creator and is on no port. The wake paths test for
- * BLOCKED, so nothing can make one runnable but its creator.
- */
+/* proc states. see docs/proc.md */
+enum {
+	DEAD,
+	READY,
 
-/* STOPPED is a proc a debugger holds: on no queue, resumed only by
- * dbg.cont. Not a count on kproc.frozen, which keeps it queued and
- * cannot be told from a reader's hold -- docs/debugging.md.
- */
-enum { DEAD, READY, BLOCKED, BROKE, HATCHING, STOPPED };
-/* PRIV_BOOT is proc 0 and nothing else. it is not a device capability
- * like the rest -- it means "this proc is where the raw ESP reaches",
- * which is true only of the proc the kernel starts itself, and is what
- * lets it build the root namespace every other proc inherits.
- */
-enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
-    PRIV_P9, PRIV_ETH, PRIV_FB, PRIV_BLK, PRIV_FLASH };
+	/* waiting on a port, and carries a waiter naming it. */
+	BLOCKED,
 
-/* line trace: the last N lines a proc executed, in a ring.
- *
- * sys.stack answers "where is this proc now", which is the wrong
- * question after a fault -- by then the interesting part is how it got
- * there, and a stack shows the calls that are still open, not the ones
- * that returned. this is the other half, and it is only worth having
- * because a broke proc survives long enough to be read.
- *
- * cost is the reason it is off by default. a line hook fires per line
- * rather than per REDUCTIONS instructions, so the fixed cost per entry
- * decides what a traced proc runs like. hence: the line number arrives
- * free (lua fills ar->currentline before calling the hook for a line
- * event, so no lua_getinfo is needed for it), and the source name is
- * interned by pointer, which hits on every line of a run inside one
- * function -- that is nearly all of them.
- *
- * the ring is C memory, deliberately: charging it to the proc's
- * mem_limit would mean the act of debugging a proc near its cap could
- * push it over, the same reason src/debug.c allocates nothing in a
- * target it is reading.
- */
-/* entries per proc, allocated only while a trace is armed. sized so one
- * directory listing fits: a ring that wraps leaves a histogram of the
- * tail of an operation that looks like all of it.
+	/* died of an error, held so something can read it. holds no
+	 * rights, but the lua_State still stands, so every frame at the
+	 * moment of death is there.
+	 */
+	BROKE,
+
+	/* made but never run. waits on its creator rather than on a port,
+	 * so nothing but its creator can make it runnable.
+	 */
+	HATCHING,
+
+	/* a debugger holds it: on no queue, resumed by dbg.cont. not
+	 * kproc.frozen, which keeps the proc queued.
+	 */
+	STOPPED,
+};
+/* device capabilities, one per class of hardware a proc may reach. */
+enum {
+	PRIV_NONE,
+
+	/* proc 0 and nothing else. not a device capability: it means raw
+	 * ESP access reaches this proc, which is what lets it build the
+	 * root namespace every other proc inherits.
+	 */
+	PRIV_BOOT,
+
+	PRIV_ESP,
+	PRIV_CONS,
+	PRIV_WIRE,
+	PRIV_POWER,
+	PRIV_P9,
+	PRIV_ETH,
+	PRIV_FB,
+	PRIV_BLK,
+	PRIV_FLASH,
+};
+
+/* the last N lines a proc executed, in a ring. Off by default: a line
+ * hook fires per line, so the cost per entry decides what a traced proc
+ * runs like. Allocated only while a trace is armed, and sized so one
+ * directory listing fits without wrapping. See docs/proc.md.
  */
 #define TRACEMAX	16384
 
@@ -233,91 +161,31 @@ msgbufs_bytes(const struct msgbufs *b)
  */
 static struct kproc *procv[MAXPROCS];
 static int prochigh;
-/* ports live on the heap; this is the index that names them. the wire
- * carries the index, not a pointer, so a message stays the same size and
- * a port's identity survives being moved -- and .bss no longer holds a
- * body for every port that could ever exist.
+/* ports live on the heap; this is the index that names them. The wire
+ * carries the index, not a pointer, so a message stays one size and a
+ * port keeps its identity if its body moves.
  */
 /* the lock over everything shared between procs: the port and proc
- * index tables, every port's message list and waiter list, the
- * refcounts that decide when a port dies, and the rights a sender
- * mints into a receiving proc's table.
- *
- * One lock, not one per port. Per-port is the obvious next refinement
- * and is speculative until something measures contention here: a
- * proc's own heap needs no lock (see kalloc), its lua execution needs
- * none, and its run queues belong to its cpu, so this is taken on the
- * ipc path only. lock.h's order already anticipates the split.
- *
- * The discipline is caller-holds, because the helpers nest --
- * port_push_owned calls wake_receivers calls wait_clear and
- * make_ready -- so a lock taken inside each would deadlock on itself.
- * It is acquired at the outer entry points instead.
- *
- * Two things make "outer" not simply mean "the syscall boundary":
- *
- * the five calls that block (api_block, api_sendblock, api_altblock,
- * api_altrecv, call_k) lua_yield in the middle, and a lock held across
- * a yield is held until that proc is next resumed; and any lua C
- * function may raise, which longjmps out past whatever would have
- * released. So on the lua-facing paths the lock has to go around a
- * region that neither yields nor raises, which is narrower than the
- * function.
- *
- * It is not one lock but an array of them, hashed on the port index.
- * The bucket array is the middle ground between one lock and a lock
- * per port, and it is the cheap way to find out which of those the
- * workload actually wants: buckets are static, so they raise none of
- * the questions a per-port lock does -- what its lifetime is against
- * the port's, and how it orders against the refcount that decides that
- * lifetime. Linux hashes futexes onto a fixed bucket array for the
- * same reason.
- *
- * Eight of them. The number is small on purpose: it costs an acquire
- * per bucket on the paths that need all of them, and the question it
- * has to answer -- does spreading the ports over separate cachelines
- * recover the scaling microvm_pairs loses -- is answered as well by
- * eight as by eighty.
- *
- * Two ways in, and which one a caller uses is the whole of the split:
- *
- *	ipclock_enter()		every bucket, ascending
- *	ipclock_enter_port(p)	the one bucket covering p
- *
- * Taking all of them is what every caller does until measurement moves
- * it, because it is what the single lock did. A caller narrowed to one
- * bucket takes on two obligations that the wide form carries for it:
- * it must touch no port outside that bucket, and it must allocate no
- * lua memory, because the collector reaches api_close and a handle in
- * another bucket -- which is the re-entry the depth counter below
- * absorbs today, and which no lock order can absorb once the two
- * buckets are chosen by a hash.
+ * index tables, every port's messages and waiters, the refcounts that
+ * decide when a port dies, and the rights a sender mints into a
+ * receiver's table. Buckets hashed on port index, taken caller-holds.
+ * Read docs/locking.md before narrowing a caller to one bucket.
  */
 #define NIPCLOCK 8
 
 struct ipcbucket {
 	struct lock lk;
-	/* atomic because it is read by a cpu that does not hold the
-	 * lock -- that is the whole of ipclock_enter_one's fast path --
-	 * while another cpu writes it. Relaxed is enough: the only
-	 * value any cpu acts on is its own struct cpu, and a cpu is the
-	 * only writer of that value, so a read that races can be stale
-	 * but can never be wrongly equal to me.
-	 *
-	 * depth needs none of that. It is touched only by the owner,
-	 * and by definition there is exactly one.
+	/* atomic because ipclock_enter_one's fast path reads it without
+	 * the lock. Relaxed is enough: a cpu is the only writer of its
+	 * own value, so a racing read can be stale but never wrongly
+	 * equal to me. depth is owner-only, so it needs none of that.
 	 */
 	_Atomic(struct cpu *) owner;
 	int depth;
 
-	/* how long it is held, summed. lock.h counts the waiting; this
-	 * counts the other half, and the two together say whether
-	 * splitting further would buy anything -- a lock nobody holds
-	 * for long is not the thing to split.
-	 *
-	 * Owner-only, like depth, so no atomics. One rdtsc pair per
-	 * outermost acquire is about 1% of one, which is worth paying
-	 * for the one number the design question turns on.
+	/* how long it is held, summed. lock.h counts the waiting; these
+	 * two together say whether splitting further would buy
+	 * anything. Owner-only, like depth.
 	 */
 	unsigned long long held, t0;
 };
@@ -337,40 +205,9 @@ ipcbucket_of(const struct kport *p)
 	return &ipcbuckets[p->idx & (NIPCLOCK - 1)];
 }
 
-/* the ipc lock is recursive, and it is not a shortcut.
- *
- * Measured, by making re-entry abort and naming both ends:
- *
- *	PANIC: ipclock re-entered: api_close inside api_tryrecv
- *
- * api_tryrecv holds the lock across port_pop_to_lua, which
- * deserializes the message, which allocates, which can run the
- * collector, and a __gc handler here is arbitrary lua -- clunking a
- * handle is the whole reason those handlers exist, so it comes back
- * through api_close. Six tests hung on exactly this and nothing else.
- *
- * There is no "acquire around the shared work only" that avoids it,
- * because the shared work IS the allocation: a message cannot be
- * delivered to lua without building lua objects. The alternatives are
- * stopping the collector across every ipc call, or forbidding
- * finalizers from touching handles, and both are worse than a depth
- * counter.
- *
- * The usual objection to a recursive lock is that it hides a contract
- * bug rather than reporting it. That holds, and the answer here is
- * that this re-entry is neither a bug nor avoidable.
- *
- * The pitfall, because it passes the whole suite: a bucket whose
- * owner is set but whose leave is missed is never released, and every
- * later acquire on that cpu takes the depth fast path and succeeds.
- * The kernel then runs unlocked and green. Anything that changes these
- * two functions wants the assertions in kernel_run -- no bucket held
- * across a lap -- to be the thing that is trusted, not the tests.
- */
-/* does this cpu hold this bucket. Not lock.h's holding(), which
- * answers for the machine: under smp another cpu holding a bucket is
- * the ordinary case and says nothing about whether this one may touch
- * the ports under it.
+/* does this cpu hold this bucket. Not lock.h's holding(), which answers
+ * for the machine: under smp another cpu holding a bucket is ordinary
+ * and says nothing about whether this one may touch the ports under it.
  */
 static int
 ipcheld_one(struct ipcbucket *b)
@@ -391,10 +228,9 @@ ipcheld(void)
 	return 1;
 }
 
-/* any bucket at all. The weakest of the three, for a helper whose
- * requirement is that its caller reached it from inside an ipc region
- * rather than that any particular port is covered -- proc_block, which
- * records a decision some port's bucket was holding still.
+/* any bucket at all. The weakest of the three, for a helper that needs
+ * its caller to be inside an ipc region rather than to cover a named
+ * port -- proc_block, which records a decision a bucket held still.
  */
 static int
 ipcheld_any(void)
@@ -405,15 +241,10 @@ ipcheld_any(void)
 	return 0;
 }
 
-/* the contract the inner helpers assert. Named after OpenBSD's
- * MUTEX_ASSERT_LOCKED (mutex(9)), and live on every platform: the
- * owner is recorded even where NCPU is 1, so efi, aarch64 and riscv64
- * -- which run this same file -- check it too.
- *
- * IPC_ASSERT_PORT is the one to reach for in a helper that touches a
- * named port and nothing else. It is the weaker demand, and a helper
- * that can honestly make it is one the split can eventually narrow;
- * IPC_ASSERT_LOCKED marks the rest.
+/* what the inner helpers assert, after OpenBSD's MUTEX_ASSERT_LOCKED.
+ * Live on every platform: the owner is recorded even where NCPU is 1.
+ * Reach for IPC_ASSERT_PORT in a helper that touches one named port --
+ * it is the weaker demand, and marks a caller the buckets can narrow.
  */
 #define IPC_ASSERT_LOCKED() do {					\
 	if (!ipcheld()) {						\
@@ -442,6 +273,14 @@ ipcheld_any(void)
 	}								\
 } while (0)
 
+/* recursive by need: a receive holds the lock across a deserialize,
+ * which allocates, which can run a __gc handler that closes a handle.
+ *
+ * Pitfall: a bucket whose owner is set but whose leave is missed is
+ * never released, and every later acquire on that cpu takes the depth
+ * fast path and succeeds. The kernel runs unlocked and the whole suite
+ * passes. Trust kernel_run's no-bucket-held assertion, not the tests.
+ */
 static void
 ipclock_enter_one(struct ipcbucket *b)
 {
@@ -482,9 +321,8 @@ ipclock_leave_port(struct kport *p)
 	ipclock_leave_one(ipcbucket_of(p));
 }
 
-/* every bucket, ascending, which is the order two of the same class
- * are taken in everywhere. Releasing runs the other way for no reason
- * beyond symmetry -- release order is free.
+/* every bucket, ascending, which is the order two locks of one class
+ * are taken in everywhere. Release order is free.
  */
 void
 ipclock_enter(void)
@@ -510,136 +348,30 @@ static unsigned long long portgen;
 static struct kport *kbdport;
 
 /* the second terminal's keys, where the machine has a keyboard that is
- * not the console (platform_have_kbd). Separate from kbdport on
- * purpose: two terminals that shared an input port would race for every
- * keystroke, and which one got it would depend on who asked first.
+ * not the console. Separate from kbdport: two terminals sharing one
+ * input port race for every keystroke.
  */
 static struct kport *devkbdport;
 
-/* the pointer's events, where the machine has one (platform_have_ptr).
- * A port of its own for the reason devkbdport is: whoever holds this
- * is the mouse, and two readers of one pointer would each see half a
- * drag.
+/* the pointer's events, where the machine has one. Its own port for the
+ * same reason: two readers would each see half of a drag.
  */
 static struct kport *devptrport;
 static int nlive;
 
-/* one heap per proc, in p->heap.
- *
- * This used to be a single heap behind every lua_State on the machine,
- * and the argument for that was measured and good: a proc's lua heap is
- * small, so the tail of its last chunk gets paid once per proc instead
- * of once for the machine, and one proc reusing another's freed blocks
- * lowers total fragmentation rather than raising it. Measured over 20
- * idle procs on microvm: 24646 bytes of mapped memory per proc shared
- * against 31211 per proc, 27% more, with heap waste going from 15.0%
- * to 30.5%. What lua actually asked for is identical, 21670 either
- * way -- the whole difference is chunk tails.
- *
- * A second cpu is what changes the answer, and only one clause of the
- * old argument: "there is nothing to lock either way under cooperative
- * scheduling". There is now. A shared heap needs a lock taken on every
- * lua allocation, which is the most frequent thing this kernel does --
- * so the choice is 27% more memory, or serialising every cpu on the
- * hottest path in the system. That is not a close call.
- *
- * What makes the per-proc heap need no lock of its own: a proc runs on
- * one cpu at a time, and its heap is touched only while it is running.
- * The chunk source underneath is shared and is locked (pmm.c), but a
- * heap asks it for another 8K only a handful of times in a proc's life.
- *
- * Containment is unaffected either way -- mem_used and mem_limit are
- * counted in kalloc, per proc, and never depended on the heap being
- * separate.
- *
- * A proc that allocates hugely and dies returns those chunks either
- * way. Per-proc it is destroy that does it, the whole heap at once;
- * shared, the blocks dissolve into the common free lists and
- * luaheap_reclaim gathers up whatever chunks came out empty. The
- * shared arrangement recovers less of it -- a dead proc's blocks share
- * chunks with whatever else was allocating at the time, and a chunk
- * with one survivor in it stays -- but it is no longer the whole loss
- * it would otherwise be.
- *
- * ---- and why both arrangements are still here ----
- *
- * The 27% is worth paying where there is a second cpu to spend it on,
- * and is pure loss where there is not. efi, aarch64 and riscv64 cannot
- * have one, and neither can esp32, which is the one that cares: it is
- * a board where memory is the binding constraint.
- *
- * Measured on efi with 26 procs live, which is what that costs:
- *
- *	per-proc  1300552 bytes mapped, 50021/proc, 30.3% waste
- *	shared    1062872 bytes mapped, 40879/proc, 14.7% waste
- *
- * 232KB, and lua_live is 907060 in both -- so, again, all of it is
- * chunk tails.
- *
- * So the arrangement follows NCPU. Note what is NOT here: a lock. The
- * only combination that needs one is shared-and-parallel, and that is
- * the combination this never picks --
- *
- *	NCPU == 1   one heap, and one cpu, so nothing to lock
- *	NCPU  > 1   one heap per proc, each touched only by the cpu
- *		    running that proc, so nothing to lock
- *
- * which is why this is a memory question rather than a contention one.
- *
- * NCPU rather than platform_ncpu(), deliberately: the count is not
- * known when the first proc is made. smp_start_aps() runs after it on
- * purpose (see microvm/main.c -- an AP started before there is a proc
- * falls straight out of the dispatch loop and parks for good), so a
- * runtime test would hand the boot proc a shared heap and every later
- * proc its own. NCPU is what the build can have, which is the question
- * that stays true for the life of the machine. The cost is that a
- * microvm image booted -smp 1 keeps per-proc heaps; it is a qemu guest
- * with memory to spare, and the platform that cares is compile-time
- * uniprocessor anyway.
- */
 static int nextpid;
 
-/* the machine-wide heap, when there is one. Null where NCPU > 1, and
- * that is the test for whether a proc owns the heap it points at.
+/* the machine-wide heap, where NCPU is 1. Null above that, and that is
+ * the test for whether a proc owns the heap it points at. The
+ * arrangement follows NCPU rather than platform_ncpu() -- see
+ * docs/proc.md, which is worth reading before changing that.
  */
 static struct luaheap *shared_heap;
 
-/* who's running right now is cpu_self()->current, which run_proc sets
- * before every lua_resume and clears after. plain C code with no
- * lua_State (stdio.c's fopen, called via liolib.c with no proc
- * identity threaded through) uses this to find out who's asking --
- * the only way to check a capability from a context where self(L)
- * isn't available at all.
- */
-
-
-/* how many times kernel_run has found every proc blocked and gone to
- * a real firmware sleep. exposed via sys.stats() as an idleness
- * signal: a machine that is genuinely idle advances this steadily,
- * one that is busy-spinning (some proc always READY) never does. that
- * distinction is otherwise invisible from inside a proc -- wchan
- * sampling can't see it, because a task woken and re-blocked between
- * two samples looks identical to one that never woke.
- */
-
-
-/* dispatch accounting, for answering "where does a round trip go?"
- * without guessing -- laps per round trip is what showed the ping-pong
- * never reaches the top of a lap, and so that pump_serial is no bound on
- * how long the uart fifo goes undrained. plain increments; anything
- * needing a timestamp belongs in a temporary probe, not here.
- */
-
-
-/* disk gates write/append only -- read is deliberately ambient (see
- * stdio.c's fopen): the threat model is buggy lua, not hostile users
- * (AGENTS.md non-goals), nothing on the esp is confidentiality-
- * sensitive, and a stray read can't corrupt anything the way a
- * runaway write can. write still can't use the exclusive-task trick
- * cons/wire/power do (liolib.c calls our fopen() as plain C with no
- * lua_State, so there's no require()-registration boundary to
- * police); diskport is a reserved, message-free capability token,
- * holding any right to it is what fopen() checks for writes.
+/* the disk capability. A reserved port that carries no message: holding
+ * any right to it is what fopen checks. It gates write and append only,
+ * because a stray read corrupts nothing and the threat model is buggy
+ * lua rather than a hostile user. See AGENTS.md on non-goals.
  */
 static struct kport *diskport;
 
@@ -671,12 +403,10 @@ extern unsigned long long platform_ticks(void);
 
 /* the C heap's own accounting, per platform.
  *
- * Named kheap_stats and not malloc_stats, which is a libc symbol: a
- * platform that links a libc resolves that name to it, and newlib's
- * takes no arguments and does nothing, so the four out-params keep
- * whatever was on the stack. Nothing warns -- the declaration here is
- * the only one the compiler sees, and the linker is happy to match a
- * name.
+ * Not named malloc_stats: that is a libc symbol, and a platform linking
+ * a libc resolves it to one that takes no arguments and does nothing,
+ * leaving the out-params holding whatever was on the stack. Nothing
+ * warns, because the linker is happy to match the name.
  */
 extern void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
@@ -702,15 +432,10 @@ static int count_runnable(void);
 static struct lock schedlock;
 
 /* the run queues are one structure for the machine, so every hand that
- * touches them needs this. Same shape as IPC_ASSERT_LOCKED, and it
- * answers the same weaker question -- held by anyone, not held by me --
- * for the same reason: lock.h stays below cpu identity.
- *
- * It exists because the alternative is silence. A queue mutated from a
- * syscall while another cpu is in dispatch_lap does not fail there. It
- * hands one proc to two cpus, and that arrives much later as a page
- * fault on a pointer that was good, or as lua refusing to resume a
- * coroutine that is already running.
+ * touches them needs this. It exists because the alternative is
+ * silence: a queue mutated from a syscall while another cpu is in
+ * dispatch hands one proc to two cpus, and that surfaces much later as
+ * a fault on a good pointer, or as lua refusing to resume.
  */
 #define SCHED_ASSERT_LOCKED() do {					\
 	if (!holding(&schedlock)) {					\
@@ -740,15 +465,11 @@ static void
 release_inflight(const unsigned short *refs, const unsigned char *refrecv,
     int n)
 {
-	/* caller holds ipclock, unless there is nothing to release.
-	 * CONTEXT: msg_free, port_push, port_send_from_lua, and
-	 * api_spawn via release_inflight_locked.
-	 *
-	 * The empty case is not a shortcut, it is the common one: a
-	 * message carrying no rights names no port, so this touches
-	 * nothing and may be called from anywhere. That is what lets the
-	 * send and receive paths dispose of an ordinary message without
-	 * leaving their one bucket to take all eight.
+	/* caller holds ipclock, unless there is nothing to release. The
+	 * empty case is the common one: a message carrying no rights
+	 * names no port, so this touches nothing and may be called from
+	 * anywhere -- which is what lets an ordinary message be disposed
+	 * of without leaving one bucket to take all eight.
 	 */
 	if (n == 0)
 		return;
@@ -767,13 +488,9 @@ release_inflight(const unsigned short *refs, const unsigned char *refrecv,
 static struct kport *port_new(void);
 int right_new(struct kproc *p, struct kport *port, int recv);
 
-/* the eth task's wakeup, and the only device port here that is driven
- * by a real interrupt rather than by a poll.
- *
- * Everything above the frame wants to block until a frame arrives, and
- * until there was something to park on, every layer had to poll. This
- * is pushed only when a device has actually signalled, so a machine
- * with a quiet wire sleeps instead of asking.
+/* the eth task's wakeup, and the only device port here driven by an
+ * interrupt rather than a poll. Pushed only when a device signals, so a
+ * machine with a quiet wire sleeps instead of asking.
  */
 static struct kport *ethport;
 
@@ -822,39 +539,10 @@ static unsigned long long last_uart_drain;
 static unsigned long long quantum_cycles;
 
 /* how often the preempt hook samples the clock, in lua VM instructions.
- * measured at boot rather than fixed, because the right value depends
- * entirely on how fast this machine executes bytecode.
- *
- * since the hook now yields on elapsed TIME, this count is a sampling
- * rate and not a slice length: a proc can overshoot its quantum by at
- * most one period. a fixed count therefore means very different
- * behaviour on different hardware. measured here: ~32 cycles per
- * instruction, so 25000 is 176us (9% of a 2ms quantum) and 100000 is
- * 705us (35%) -- both fine. on a machine four times slower, 100000 would
- * be 2.8ms, longer than the quantum itself, and time-slicing would
- * quietly degrade back into instruction-slicing.
- *
- * calibrating targets a fixed FRACTION of the quantum instead, so the
- * overshoot bound holds on any machine.
- *
- * frequency scaling makes this approximate, and deliberately so. the TSC
- * is invariant -- constant rate whatever the P-state -- which is exactly
- * what makes it a usable clock, and exactly why it does not track how
- * fast instructions actually retire. so this measures TSC ticks per
- * instruction at whatever frequency the machine happened to be running
- * at during boot, which is typically not the frequency it will settle
- * at.
- *
- * it degrades gracefully. the quantum check itself stays correct
- * regardless: both sides of it are TSC units, so a 2ms slice is 2ms.
- * only the sampling GRANULARITY drifts, and the overshoot stays bounded
- * by one period. calibrating while throttled and then boosting just
- * means checking more often than needed; the other direction costs a
- * little more overshoot. neither is a correctness problem.
- *
- * if it ever needs to be better, the fix is self-correcting rather than
- * more calibration: the hook already knows the elapsed time, so a proc
- * that consistently overshoots could have its own period lowered.
+ * The hook yields on elapsed time, so this is a sampling rate rather
+ * than a slice length, and a proc overshoots its quantum by at most one
+ * period. Measured at boot so the period stays a fixed fraction of the
+ * quantum on any machine -- see docs/scheduling.md.
  */
 static int default_reductions = REDUCTIONS;
 
@@ -907,16 +595,10 @@ calibrate_reductions(void)
 	default_reductions = (int)target;
 }
 
-/* the TSC half, split out of the rest of calibration so it can run as
- * the very first thing the kernel does. it needs only BS->Stall and
- * rdtsc, both available at efi_main entry, and until it has run there is
- * no clock to stamp a log line with -- which is why the earliest boot
- * messages used to have none.
- *
- * the epoch is taken BEFORE the stall, so the 100ms calibration shows up
- * as real boot time rather than being hidden. anyone measuring boot
- * latency would otherwise be short by 100ms with nothing to explain it,
- * hence the rate line below.
+/* the clock half of calibration, separate so it can run first: until it
+ * has, there is no clock to stamp a log line with. The epoch is taken
+ * before the stall, so calibration counts as real boot time rather than
+ * vanishing from anyone's boot latency measurement.
  */
 void
 kernel_clock_init(void)
@@ -977,25 +659,13 @@ kernel_walltime(void)
 
 
 /* one-shot timers. sys.timer(ms) mints a port, hands the caller its
- * receive right, and records a deadline here; expire_timers() pushes one
- * message when the deadline passes and lets the port go.
+ * receive right, and records a deadline here; expire_timers pushes one
+ * message when the deadline passes and lets the port go. A timer is a
+ * port so that recv-with-timeout falls out of thread.alt with no new
+ * api, as thread.alt({{port = reply}, {port = sys.timer(500)}}).
  *
- * a timer is a PORT rather than a sys.sleep() call because that makes
- * recv-with-timeout fall out of thread.alt() with no new api at all:
- *
- *	thread.alt({ {port = reply}, {port = sys.timer(500)} })
- *
- * deliberately a flat unsorted array scanned linearly, not a timing
- * wheel. a wheel buys O(1) insert at the cost of real bookkeeping, and
- * earns that at thousands of timers; MAXTIMERS is 128, a 2KB array and
- * one pass per lap. sorting would buy nothing either, since insertion
- * costs the same scan.
- *
- * resolution is the scheduler tick, ~10-15ms (see TICK_FAST_100NS and
- * docs/uefi-notes.md), so a timer may fire up to one tick late and
- * never early. that is why no per-deadline EFI timer event is armed:
- * SetTimer cannot beat 10ms anyway and every deadline in this system is
- * hundreds of milliseconds.
+ * A flat unsorted array, scanned once per lap. Resolution is the
+ * scheduler tick, so a timer fires up to one tick late and never early.
  */
 struct ktimer {
 	struct kport *port;		/* 0 = free slot */
@@ -1012,9 +682,8 @@ static struct ktimer timers[MAXTIMERS];
 static void
 reap_dead_timers(void)
 {
-	/* caller holds ipclock: reached both from expire_timers, which
-	 * already has it, and from api_timer, which must take it. This
-	 * is the nesting that made the whole-function version deadlock.
+	/* caller holds ipclock: expire_timers already has it, api_timer
+	 * must take it.
 	 */
 	for (int i = 0; i < MAXTIMERS; i++)
 		if (timers[i].port && timers[i].port->dead) {
@@ -1296,26 +965,14 @@ right_slot_grow(struct kproc *p, int h)
 int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
-	/* The caller needs no lock, and this is the one helper here that
-	 * genuinely needs none.
+	/* The one helper here that needs no lock. p's right table belongs
+	 * to p, and only p runs at a time; port->nrights is atomic, and
+	 * taking a reference destroys nothing, because the caller already
+	 * holds one. That is what lets deserialize run outside every
+	 * bucket, which it must: building lua values allocates.
 	 *
-	 * It writes two things. p's right table belongs to p, and only p
-	 * runs on any cpu at a time. port->nrights is atomic, and taking
-	 * a reference cannot destroy anything -- the caller already holds
-	 * one, or the message it is deserializing does.
-	 *
-	 * That is what lets deserialize run outside every bucket, which
-	 * is the whole point: turning a message into lua values allocates
-	 * lua memory, and the collector reaches api_close from there.
-	 *
-	 * CONTEXT: api_newport, api_sendright, api_timer, api_spawn,
-	 * deserialize, grant_named, proc_new, release_inflight,
-	 * spawn_driver.
-	 */
-	/* start where a free slot was last seen. without it a proc holding
-	 * five hundred rights rescans all of them for each new one, which is
-	 * quadratic for exactly the case a large MAXRIGHTS is meant to allow
-	 * -- a supervisor holding a right per child.
+	 * Start where a free slot was last seen, or a proc holding many
+	 * rights rescans all of them for each new one.
 	 */
 	for (int i = p->rhint; i < MAXRIGHTS; i++) {
 		struct right *r = right_slot_grow(p, i);
@@ -1349,10 +1006,7 @@ right_new(struct kproc *p, struct kport *port, int recv)
 void
 right_drop(struct kproc *p, struct right *r)
 {
-	/* caller holds ipclock.
-	 * CONTEXT: api_close, proc_detach, proc_new, grant_named,
-	 * minted_undo.
-	 */
+	/* caller holds ipclock. */
 	IPC_ASSERT_LOCKED();
 	struct kport *port = r->port;
 
@@ -1365,13 +1019,11 @@ right_drop(struct kproc *p, struct right *r)
 	port_unref(port);
 }
 
-/* grant a named capability: take a right the ordinary way (first free
- * slot) and record what it was called, in the proc's grant list, so lua
- * can look the handle up by name through sys.granted(). a NULL port is a
- * no-op -- exactly the "this capability doesn't exist this boot" case.
- * the list has no fixed ceiling on purpose: a fixed array here once
- * silently dropped grants past its size, and a missing grant reads to a
- * client as the device being broken (the dhcpd overflow).
+/* grant a named capability: take a right the ordinary way and record
+ * its name in the proc's grant list, so lua can find the handle through
+ * sys.granted(). A null port is a no-op, which is the "not this boot"
+ * case. The list has no ceiling: a fixed array silently drops grants
+ * past its size, and a missing grant reads as a broken device.
  */
 static void
 grant_named(struct kproc *p, const char *name, struct kport *port, int recv)
@@ -1477,24 +1129,15 @@ wait_clear(struct kproc *p)
 	}
 }
 
-/* collect the waits left over from the last block, on the proc's own
- * cpu and just before it is resumed.
+/* collect the waits left over from the last block, on the proc's own cpu
+ * and just before it is resumed. The waker holds one port's bucket, so
+ * it unlinks only the entry it woke on; a proc in an alt is on several,
+ * and collects the rest here, one bucket at a time. Linux's poll splits
+ * pollwake and poll_freewait the same way round.
  *
- * This is the half of the wake that the waker deliberately does not do.
- * A waker holds one port's bucket, so the only waiter list it may touch
- * is that port's -- and a proc in an alt is on several. So the waker
- * unlinks the one it woke on and leaves the rest, and the proc collects
- * them here, taking each port's bucket in turn and holding exactly one
- * at a time.
- *
- * Linux's poll works the same way round: pollwake touches the one wait
- * queue it was called on, and poll_freewait walks the rest from the
- * woken task. Because only one lock is ever held here, there is no
- * order to violate between them.
- *
- * Also where `woken` is cleared, which is what re-arms the proc to be
- * claimed the next time it blocks. Nothing may claim it in between,
- * because a running proc is not BLOCKED.
+ * Also where `woken` is cleared, which re-arms the proc to be claimed
+ * the next time it blocks. Nothing can claim it in between, because a
+ * running proc is not BLOCKED.
  */
 static void
 wait_reap(struct kproc *p)
@@ -1522,20 +1165,14 @@ wait_reap(struct kproc *p)
 	atomic_store_explicit(&p->woken, 0, memory_order_relaxed);
 }
 
-/* how the claim goes, reported through sys.stats().lock.ipc.
+/* how the claim goes, reported through sys.stats().lock.ipc. Losing
+ * counts the times two ports reached one alt-blocked proc at once, so
+ * it says how much of an alt set is live at the same moment.
  *
- * Losing is the interesting number. It counts the times two ports
- * reached one alt-blocked proc at once, which is a real property of a
- * workload and not only a test hook: it says how much of an alt set is
- * genuinely live at the same moment.
- *
- * It is also the only way to know the losing branch runs at all. It is
+ * It is also the only evidence the losing branch runs at all: it is
  * reachable on more than one cpu and never on one, so a suite that
- * exercises it by accident stops doing so the moment scheduling shifts,
- * and nothing would say. Measured by making the loss abort: the whole
- * suite passed, smp2 and smp4 variants included, so at that commit the
- * branch had never once executed. test/boot/microvm_claim.lua asserts
- * this counter is nonzero for that reason.
+ * exercises it by accident stops the moment scheduling shifts. A test
+ * asserts this counter is nonzero for that reason.
  */
 static atomic_ullong claim_won, claim_lost;
 
@@ -1559,10 +1196,9 @@ wake_claim(struct kproc *p)
 static void
 wake_receivers(struct kport *port)
 {
-	/* caller holds the bucket covering `port`.
-	 * CONTEXT: port_push_owned and port_unref. Touches another
-	 * proc's run queue, and this port's waiter list -- but no
-	 * other port's, which is what lets a sender hold one bucket.
+	/* caller holds the bucket covering `port`. Touches another proc's
+	 * run queue and this port's waiter list, but no other port's,
+	 * which is what lets a sender hold one bucket.
 	 */
 	IPC_ASSERT_PORT(port);
 	struct waiter *w, *n;
@@ -1580,27 +1216,16 @@ wake_receivers(struct kport *port)
 	}
 }
 
-/* the mirror of wake_receivers: anyone parked for ROOM on this port.
- *
- * called from exactly two places, and both are required. draining a
- * message (api_tryrecv) frees space, which is the ordinary wakeup. a
- * port dying (port_unref) is the other one -- without it a writer
- * blocked on a full port whose reader just vanished would sleep
- * forever, which is the send-side twin of the eof problem the
- * wake_receivers call in port_unref exists to solve.
- *
- * a spurious wake is harmless: sys.sendblock only promises the port
- * MIGHT have room, and every caller loops on the send anyway (see
- * lib/prog.lua's PipeStream:write), exactly as api_block's callers
- * loop on tryrecv.
+/* the mirror of wake_receivers: anyone parked for room on this port.
+ * Draining a message is the ordinary wakeup; a port dying is the other,
+ * and without it a writer blocked on a full port whose reader vanished
+ * sleeps forever. A spurious wake is harmless, since sys.sendblock only
+ * promises the port might have room and every caller loops.
  */
 static void
 wake_senders(struct kport *port)
 {
-	/* caller holds the bucket covering `port`.
-	 * CONTEXT: port_pop_to_lua and port_unref. Same reach as
-	 * wake_receivers.
-	 */
+	/* caller holds the bucket covering `port`. */
 	IPC_ASSERT_PORT(port);
 	struct waiter *w, *n;
 
@@ -1617,36 +1242,22 @@ wake_senders(struct kport *port)
 	}
 }
 
-/* queue a message. refs/nrefs are in-flight right refs (may be null).
- * a dead port silently drops -- erlang semantics, the sender learns
- * from the monitor, not the send.
- */
-/* takes ownership of `data` only when it returns 0. On any refusal the
- * caller still owns both the buffer and the in-flight refs, and must
- * free the one and release the other.
+/* queue a message, taking ownership of `data` only when it returns 0. A
+ * dead port drops it silently: the sender learns from a monitor, not
+ * from the send. refs/nrefs are in-flight right refs, and may be null.
  *
- * That is the awkward half of the contract and it is deliberate. This
- * runs under one bucket -- the one covering `port` -- and releasing a
- * reference does not: it can drop a port to zero and flush its queue,
- * which reaches other ports under other buckets, so it demands all of
- * them. A narrow region cannot widen, so the disposal has to happen
- * after the caller leaves. release_inflight is a no-op for a message
- * carrying no rights, which is nearly all of them, so the usual cost of
- * this arrangement is a branch.
- *
- * this exists so a serialized message is built once and queued without a
- * second copy. the serializer already malloc'd exactly the buffer we
- * want; copying it into a flexible array on the kmsg meant every send
- * paid a full memcpy of its own payload for nothing.
+ * On any refusal the caller still owns the buffer and the refs, and
+ * must free the one and release the other. That is deliberate: this
+ * runs under one bucket, and releasing a reference can flush a queue,
+ * which reaches ports under other buckets and so demands all of them.
+ * A narrow region cannot widen, so disposal waits for the caller.
  */
 static int
 port_push_owned(struct kport *port, unsigned char *data, size_t len,
     const unsigned short *refs, const unsigned char *refrecv, int nrefs,
     const struct msgbufs *bufs)
 {
-	/* caller holds the bucket covering `port`.
-	 * CONTEXT: port_push, notify_exit, port_send_from_lua.
-	 */
+	/* caller holds the bucket covering `port`. */
 	IPC_ASSERT_PORT(port);
 	if (port->dead) {
 		port->ndrop_dead++;
@@ -1869,40 +1480,13 @@ kernel_current_is_boot(void)
 
 /* ---- coroutine.wrap, made transparent to preemption ----
  *
- * preempt_hook stops whatever state is running and yields it, and
- * lua_yield unwinds to the RESUMER of that state. For a thread that is
- * thread.run, which knows what the yield meant. For an ordinary
- * coroutine it is whoever called it -- and `for v in seq(n)` reads a
- * yield of no values as the generator being finished, so the loop ends
- * early and the caller is handed short data with no error at all.
- *
- * Measured before this existed, items delivered out of 10 by work done
- * per item: 10 at 1, 10 at 100, 3 at 10000, none at 200000. A generator
- * was usable only while it stayed under a quantum.
- *
- * The fix is not to stop preempting -- that is what stops a proc
- * spinning inside a coroutine from holding the machine, and it is the
- * only thing that does (see the walk-out in preempt_hook and
- * test_nesting). It is to resume again rather than believe the yield.
- * The coroutine's state is untouched by being stopped, so resuming
- * continues at the instruction it was stopped at, and the caller never
- * learns it happened.
- *
- * Yielding OURSELVES first is what keeps that from defeating the
- * preemption it hides: the level above -- thread.run, or the kernel --
- * gets its chance to deschedule, and both resume in place, so control
- * comes back here and the generator carries on. The proc still honours
- * its quantum; only the generator is spared knowing about it.
- *
- * Nested wraps compose because the explicit yield below marks THIS
- * state preempted too, so an enclosing wrap treats it the same way
- * rather than reporting a finished generator to its own caller.
- *
- * coroutine.resume is deliberately left alone. It is the interface a
- * scheduler uses -- src/thread.c's resume_one is exactly this -- and
- * a scheduler has to see the preemption to do its job. Swallowing it
- * there would put a table allocation on the hottest path in the system
- * and leave run() unable to tell a cut thread from a parked one.
+ * The hook yields whatever state is running, and a yield unwinds to
+ * that state's resumer. For a generator that is whoever called it, and
+ * `for v in seq(n)` reads a yield of no values as the generator being
+ * finished: the loop ends early and hands back short data, no error. So
+ * resume again rather than believe the yield. Yielding ourselves first
+ * keeps that from defeating the preemption it hides, and marks this
+ * state preempted, so nested wraps compose.
  */
 static int kernel_cowrap_resume(lua_State *L, lua_State *co, int narg);
 
@@ -2024,34 +1608,22 @@ self(lua_State *L)
 	return *(struct kproc **)lua_getextraspace(L);
 }
 
-/* serialize the value at `idx` and queue it on r's port. shared by
- * api_send and api_call, which differ only in what they do afterwards.
- * the wbuf is disposed of on every path, success or not.
+/* serialize the value at `idx` and queue it on r's port. Shared by
+ * api_send and api_call, which differ only in what follows. The wbuf is
+ * disposed of on every path.
  *
- * It takes no lock on entry, and that is the point: the serializer is the
- * expensive half of a send and it is also the half that must not run
- * under a bucket, because building the message allocates lua memory and
- * the collector reaches api_close from there. So it runs first, with
- * nothing held, and only the queue insert and the wakeup happen under
- * the one bucket covering r->port.
- *
- * The references serialize mints are what make that safe. They are
- * taken with no lock, which is sound because taking one cannot destroy
- * anything, and they keep every port the message names alive for as
- * long as the message exists.
+ * It takes no lock on entry, which is the point: serializing allocates
+ * lua memory and the collector reaches api_close from there, so it must
+ * not run under a bucket. Only the queue insert and the wakeup do. The
+ * refs the serializer mints keep every port the message names alive
+ * meanwhile.
  */
 enum { SEND_OK = 0, SEND_UNSERIALIZABLE, SEND_DEAD, SEND_FULL, SEND_NOMEM };
 
 /* `len`, if given, is filled with the serialized size of the message.
- *
- * On SEND_FULL that is the number a caller needs in order to wait for
- * room. sys.sendblock and an alt send case both ask for room for a
- * stated number of bytes, and a waiter that asks for room for zero
- * wakes when anything drains, fails to send again, and parks again;
- * api_sendblock describes that trap in full.
- *
- * Only the kernel can know the figure, because the serializer produces
- * it. So it reports the figure, and lua never has to estimate one.
+ * On SEND_FULL that is what a caller needs to wait for room: only the
+ * kernel can know the figure, so lua never has to estimate one. See
+ * api_sendblock for what asking for zero bytes costs.
  */
 static int
 port_send_from_lua(lua_State *L, struct kproc *p, struct right *r, int idx,
@@ -2141,26 +1713,14 @@ api_send(lua_State *L)
 		return 2;
 	}
 
-	/* a full queue RETURNS rather than raising, so it is an ordinary
-	 * outcome the caller chooses a policy for, distinguishable from
-	 * "dead" by the second value. it used to raise, and that made the
-	 * choice for everyone: a pipe writer died at MAXQUEUE instead of
-	 * applying backpressure, which is what a pipe is supposed to do.
+	/* a full queue returns rather than raising, so the caller picks a
+	 * policy for it. The kernel must not pick: it cannot tell a pipe
+	 * write from a server reply, and blocking here would let one slow
+	 * reader wedge a server for every other client. Same split the
+	 * receive side makes, with the loop living in lua.
 	 *
-	 * blocking here in the KERNEL would be the wrong fix. a file
-	 * server replying to a client whose port is full would block, and
-	 * one slow reader would then wedge that server for every other
-	 * client. the kernel cannot tell a pipe write from a server
-	 * reply, so it must not pick: it reports, and lua decides. that is
-	 * the same split the receive side already makes -- sys.tryrecv
-	 * plus sys.block, with the blocking loop living in lua.
-	 */
-	/* the third value is how many bytes were refused, and it exists so
-	 * that the policy lua picks can be "wait for room" without lua
-	 * having to work out how much room. It is the serialized size, so
-	 * nothing short of the serializer could produce it, and it is what
-	 * sys.sendblock and an altblock send wait both want. See
-	 * port_send_from_lua.
+	 * The third value is how many bytes were refused, so that policy
+	 * can be "wait for room" without lua working out how much.
 	 */
 	if (rc == SEND_FULL) {
 		lua_pushboolean(L, 0);
@@ -2174,81 +1734,28 @@ api_send(lua_State *L)
 	return 1;
 }
 
-/* BLOCKED_TWICE_MSG, and why the test that raises it is spelled out at
- * each of its four call sites now rather than living in a helper: the
- * test reads shared state and has to sit inside the same region as the
- * wait_add it guards, while the raise has to sit outside it, because
- * luaL_error longjmps. One helper cannot be in both places.
+/* A proc about to block holds no waits: a blocked proc is not running,
+ * so it cannot ask to block again. Reaching here with waits attached
+ * means the last block never stopped this proc -- a yield that did not
+ * unwind to the kernel. One port then carries two waiters for one proc,
+ * and the waker walks an entry wait_clear has freed.
  *
- * A proc about to block must hold no waits, because a proc that is
- * blocked is not running and so cannot ask to block again. Reaching
- * here with waits already attached means the last block never actually
- * stopped this proc, and the only way that happens is a lua_yield that
- * did not unwind to the kernel: sys.block called from inside a
- * coroutine yields to whoever resumed it -- src/thread.c's
- * scheduler -- while the kernel has already marked the proc BLOCKED and
- * taken it off the run queue. The thread scheduler then runs the next
- * thread, which blocks again, and now one port carries two waiters for
- * one proc. wake_receivers saves the next waiter before wait_clear
- * frees every wait the proc holds, so it walks a freed entry: a #GP,
- * far from the mistake.
- *
- * An error rather than a panic, since any lua code can reach it. The
- * fix is always to park instead -- los.thread's park() and recv() pick
- * the right one via inthread(). Note that a second copy of that module
- * loaded under another name is a second scheduler with its own
- * _current, so inthread() answers no and lands here.
- *
- * SLIST_EMPTY rather than a scan for this port: the invariant is that
- * there are no waits at all, which is both stronger and O(1).
- * api_altblock is not guarded because it clears any waits up front.
+ * The test sits at each call site rather than in a helper: it reads
+ * shared state and belongs inside the region guarding wait_add, while
+ * the raise must sit outside it, because luaL_error jumps.
  */
 #define BLOCKED_TWICE_MSG "already blocked (sys.block from a coroutine? " \
 	"use los.thread's park)"
 
-/* block until this port might have room for a message of `need` bytes,
- * the send-side api_block. `need` is optional and defaults to zero,
- * which asks the old question: "is there any room at all".
+/* a park must be issued from the state the kernel resumed. A yield
+ * unwinds to the resumer of the state it fired in, so a block from a
+ * coroutine below p->co lands in whoever resumed that, while this proc
+ * is already marked BLOCKED and off the run queue -- surfacing later as
+ * a protocol stalling somewhere else. Threads are safe: lib/thread
+ * parks by yielding to thread.run, which blocks from the top.
  *
- * needs only a SEND right: a writer waiting for its reader to catch up
- * has no business holding the receive end.
- *
- * the size argument is not a refinement, it is the difference between
- * parking and spinning. port_push_owned admits a message only if
- * qbytes + len <= MAXQUEUE, so a caller whose message is a large
- * fraction of the queue can be refused while qbytes < MAXQUEUE is still
- * true -- and then this function says "there is room" and returns
- * immediately, the send fails again, and the loop between them burns
- * the proc's whole slice instead of sleeping.
- *
- * that is not hypothetical: two 63KiB pixel bands against a 64KiB
- * MAXQUEUE spun for 33ms per band, which measured as the framebuffer
- * being slow and was really this. small messages never notice, which is
- * why nothing else here had.
- *
- * a `need` larger than MAXQUEUE could never be satisfied, so it returns
- * rather than sleeping forever and lets the send report the failure --
- * the same reason the dead-port case above returns.
- */
-/* a park must be issued from the state the kernel resumed.
- *
- * lua_yield unwinds to the resumer of the state it fired in, so a block
- * from a coroutine below p->co lands in whoever resumed THAT -- while
- * this proc is already marked BLOCKED and off the run queue. The kernel
- * believes it is parked and it carries on running, which shows up later
- * as a protocol that stalls somewhere else entirely.
- *
- * Threads are not affected: lib/thread parks them by yielding to
- * thread.run, which does the real block from the top (thread.park's
- * inthread branch). This catches everyone else -- typically a library
- * that owns a coroutine and calls back into code that parks.
- *
- * At entry rather than at the point of descheduling: a call that
- * happens to find its message already there would not park this time,
- * but the code is still wrong and the next call is the one that hangs.
- * Refusing early also keeps the waiter list clean -- a guard after
- * wait_add leaves a waiter registered, and the next block reports
- * "already blocked" instead.
+ * Checked at entry, not where the proc is descheduled: a call that
+ * finds its message waiting would not park, but is still wrong.
  */
 static void
 nopark(lua_State *L, struct kproc *p)
@@ -2259,6 +1766,16 @@ nopark(lua_State *L, struct kproc *p)
 		    "reach it");
 }
 
+/* sys.sendblock(h, need) -- block until the port might have room for a
+ * message of `need` bytes. Needs only a send right, and `need` defaults
+ * to zero, which asks whether there is any room at all.
+ *
+ * Pass the real size. A message that is a large fraction of MAXQUEUE is
+ * refused while the queue still reports room, so a caller asking for
+ * zero wakes, fails to send, and parks again -- burning its slice
+ * instead of sleeping. A `need` above MAXQUEUE returns rather than
+ * sleeping forever, and lets the send report the failure.
+ */
 static int
 api_sendblock(lua_State *L)
 {
@@ -2276,22 +1793,15 @@ api_sendblock(lua_State *L)
 	 */
 	nopark(L, p);
 
-	/* the first entry point narrowed to one bucket, and it qualifies
-	 * on both counts: everything below names r->port and nothing
-	 * else, and nothing below allocates lua memory -- wait_add's
-	 * malloc is the kernel's, over the pmm, with no collector behind
-	 * it.
+	/* narrowed to one bucket, and it qualifies on both counts:
+	 * everything below names r->port alone, and nothing below
+	 * allocates lua memory. The right lookup comes first because it
+	 * says which bucket to take, which is sound because a proc's own
+	 * right table is touched only while that proc runs.
 	 *
-	 * The right lookup happens before any bucket is taken, because
-	 * it is what says which bucket to take. That is sound because a
-	 * proc's own right table is not shared: it is read and written
-	 * only while that proc runs, and a proc runs on one cpu.
-	 * api_anyready reads it with no lock at all on the same grounds.
-	 *
-	 * The room test and the wait_add are one region, for the reason
-	 * api_block's are: a receiver draining the port between them
-	 * would wake nobody and leave this proc parked on a port that
-	 * has the room it asked for.
+	 * The room test and the wait_add are one region: a receiver
+	 * draining between them would wake nobody, leaving this proc
+	 * parked on a port that has the room it asked for.
 	 */
 	r = right_get(p, h);
 	if (!r) {
@@ -2522,63 +2032,22 @@ out:
 
 /* sys.call(h, msg, replyh) -> reply | nil, why
  *
- * one kernel entry for the client half of an rpc: send msg on h, then
- * block on replyh for the answer. this is mach_msg's
- * MACH_SEND_MSG|MACH_RCV_MSG, and it exists for the reason mach's does
- * -- a caller making a synchronous call has nothing to do between the
- * two halves, so making it come back out to say so buys nothing and
- * costs a scheduler pass. today that shape is sys.send, return to lua,
- * loop, sys.tryrecv, park: four transitions where this is one.
- *
- * it is also what makes handoff possible at all. the kernel can only
- * switch straight to the receiver if it knows, AT SEND TIME, that the
- * sender is about to sleep on a particular port -- and with the send and
- * the block as separate calls there is no moment at which it knows that.
- * the scheduling change is not here yet; this is the call shape it needs.
- *
- * failures to SEND are reported (nil plus "dead" or "full") rather than
- * raised, exactly as sys.send reports them, because the caller's policy
- * for a full queue is its own. a send that succeeds always waits.
- *
- * a reply port that has hung up reports nil plus "hungup" rather than
- * waiting. this is where thread.recv's rule does not apply: recv cannot
- * treat a quiet port as an ending, because a right that can send is not
- * distinguishable from one that will (see api_hungup). but the port
- * here is a reply port, and while a request is in flight someone else
- * holds a right to it: the one that travelled with the message. so a
- * drop back to what we hold ourselves, with nothing queued, says the
- * message was consumed and whoever held that right is gone, and no
- * answer can ever arrive. lib/mnt.lua has always made that test by hand
- * after each wake; doing it here is what lets it stop.
- *
- * it is not a timeout, and deliberately: a slow server is not a broken
- * one and no deadline tells them apart, but the refcount does. a caller
- * that wants a deadline anyway still composes sys.timer with alt().
+ * The client half of an rpc in one kernel entry: send on h, then block
+ * on replyh. It is also the only shape that can hand off straight to
+ * the receiver, which needs the kernel to know at send time that the
+ * sender is about to sleep on a named port. Send failures report nil
+ * plus "dead" or "full", as sys.send does; a hung-up reply port reports
+ * "hungup" rather than waiting. Not a timeout -- no deadline tells a
+ * slow server from a broken one.
  */
 
-/* is this proc the only holder of a right to `port`?
+/* may this proc act on that one? Holding a right to the target's self
+ * port is the authority, and that port outlives the proc's own right to
+ * it, so this answers for a corpse too.
  *
- * that is our eof, and it counts every right the proc holds rather than
- * testing nrights against one. a caller may hold several to the same
- * port -- a reply port is a receive right to wait on plus a send right
- * to publish, which is what src/thread.c's replyport hands out -- and
- * a right it holds itself is not one that can answer it.
- *
- * sys.hungup asks the same question, and must, or the two disagree
- * about when a server has gone: this is checked before parking again in
- * call_k, and that is checked by whoever parked in lua.
- */
-/* may this proc act on that one? holding a right to the target's self
- * port is the authority -- see api_kill, which explains why.
- *
- * the self port outlives the proc's own right to it (see
- * kproc.selfidx), so this answers for a corpse too.
- *
- * it gates what ACTS on a proc, not what reads one. sys.stack,
- * sys.trace and sys.pidstat stay ambient with sys.procs and sys.name,
- * which is lib/procfs.lua's whole argument: a debugger is `cat
- * /proc/4/stack`, and what those report is structure rather than any
- * proc's data. sys.set_trace is on this side of the line because it
+ * It gates what acts on a proc, not what reads one: sys.stack, sys.trace
+ * and sys.pidstat stay ambient, because what they report is structure
+ * rather than a proc's data. sys.set_trace is on this side because it
  * writes -- it reallocates a ring the target's own hook is filling.
  */
 static int
@@ -2589,6 +2058,13 @@ may_control(struct kproc *p, struct kproc *target)
 	return port && proc_has_port(p, port);
 }
 
+/* is this proc the only holder of a right to `port`? That is our eof.
+ * It counts every right the proc holds rather than testing nrights
+ * against one, because a caller may hold several to one port -- a reply
+ * port is a receive right to wait on plus a send right to publish -- and
+ * a right it holds itself cannot answer it. sys.hungup must ask the same
+ * question, or the two disagree about when a server has gone.
+ */
 static int
 sole_holder(struct kproc *p, struct kport *port)
 {
@@ -2614,17 +2090,9 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 	ipclock_enter();
 	rr = right_get(p, (int)ctx);
 	/* re-resolved rather than carried across the yield: a handle is an
-	 * index into a table this proc can rearrange, and the struct right
-	 * behind it may have moved.
-	 *
-	 * It used to say the proc could not have closed it while parked,
-	 * so failing to find it was a bug rather than a race. That was
-	 * true of a machine where the only way to reach here was through
-	 * this proc's own resume. It is still this proc's own handle
-	 * table, so a second cpu cannot close it -- but the port behind
-	 * it can be torn down by the last other right going away while we
-	 * were parked, so treat the miss as the ordinary outcome it now
-	 * is rather than an impossibility.
+	 * index into a table this proc can rearrange, and the right behind
+	 * it may have moved. A miss is ordinary, not a bug -- the port can
+	 * be torn down by the last other right going away while we parked.
 	 */
 	if (!rr || !rr->recv) {
 		ipclock_leave();
@@ -2746,26 +2214,12 @@ api_call(lua_State *L)
 	return call_k(L, LUA_OK, (lua_KContext)rh);
 }
 
-/* which entry of the handle table at stack index 1 has a message
- * waiting, or 0 for none. the INDEX rather than the handle, so the
- * caller can find it again in the table it passed.
- *
- * this is advisory and must stay that way. it answers a level question
- * -- "is there something there" -- which is exactly the kind that goes
- * stale the moment a second cpu exists. every caller re-checks with a
- * real sys.tryrecv and parks again if it lost the race, so a wrong
- * answer here costs a wasted wake or a late one and can never lose a
- * message. the mp-clean version of this is an atomic take-from-any (a
- * port set), which replaces it rather than building on it.
- */
 /* an alt set may carry send waits as well as receive waits: sends[i] is
- * the size entry i wants room for, and anything else means entry i is
- * an ordinary receive. Kept as a parallel table rather than boxing every
- * entry, so the common all-receive call passes nothing extra and builds
- * no garbage.
- *
- * -1 for "not a send wait", since a send of zero bytes is a real
- * question (is there any room at all).
+ * the size entry i wants room for, and anything else makes entry i an
+ * ordinary receive. A parallel table rather than a box per entry, so
+ * the common all-receive call passes nothing extra and builds no
+ * garbage. -1 means "not a send wait", since a send of zero bytes is a
+ * real question.
  */
 static lua_Integer
 altneed(lua_State *L, int i)
@@ -2781,6 +2235,15 @@ altneed(lua_State *L, int i)
 	return need < 0 ? -1 : need;
 }
 
+/* which entry of the handle table at stack index 1 is ready, or 0 for
+ * none. The index rather than the handle, so the caller can find it
+ * again in the table it passed.
+ *
+ * Advisory, and it must stay that way: it answers a level question,
+ * which goes stale the moment a second cpu exists. Every caller
+ * re-checks with a real receive and parks again if it lost the race, so
+ * a wrong answer costs a wasted wake and can never lose a message.
+ */
 static int
 altready(lua_State *L, struct kproc *p)
 {
@@ -2816,17 +2279,13 @@ altready(lua_State *L, struct kproc *p)
 }
 
 /* sys.hangups() -> a counter that changes whenever any port anywhere
- * loses a reference.
+ * loses a reference. A ready-port hint can never name a hangup, because
+ * the thread that must notice its peer is gone has nothing queued. So a
+ * scheduler watches this instead, at one compare per pass, and wakes
+ * everyone only when the answer to sys.hungup could have changed.
  *
- * a ready-port hint can never name a hangup: the thread that needs to
- * notice its peer is gone has nothing queued, which is the whole point.
- * so los.thread cannot use the hint alone -- it would leave such a
- * thread parked forever. watching this instead costs one integer
- * compare per scheduler pass and wakes everyone only on the rare pass
- * where the answer to sys.hungup could actually have changed.
- *
- * deliberately global rather than per-port: it is a "something may have
- * changed, go look" edge, and the going-and-looking is sys.hungup.
+ * Machine-wide rather than per-port: it is a "go look" edge, and the
+ * looking is sys.hungup.
  */
 static int
 api_hangups(lua_State *L)
@@ -2835,20 +2294,15 @@ api_hangups(lua_State *L)
 	return 1;
 }
 
-/* sys.anyready() -> bool. does any port this proc can receive on have a
- * message waiting?
+/* sys.anyready() -> bool. Does any port this proc can receive on have a
+ * message waiting? The question a runnable proc cannot otherwise ask: a
+ * push wakes whoever is parked, which does nothing for a proc already
+ * running, so a thread that never parks would not learn that a message
+ * arrived for a parked sibling.
  *
- * the question a RUNNABLE proc cannot otherwise ask. port_push wakes
- * whoever is parked on the port, which does nothing for a proc that is
- * in the middle of running -- so a lib/thread proc with one thread that
- * never parks has no event telling it a message arrived for one of its
- * parked siblings, and the message waits for the run queue to drain.
- *
- * this is deliberately coarser than sys.altpoll and much cheaper: no
- * table to build or read, no port set, just a scan of this proc's own
- * rights bounded by the highest it has ever held. it answers "is a
- * sweep worth doing at all", so the scheduler can ask every round and
- * pay for altpoll only when the answer is yes.
+ * Coarser and much cheaper than sys.altpoll -- no table, just a scan of
+ * this proc's own rights. It answers "is a sweep worth doing", so a
+ * scheduler can ask every round and pay for altpoll only when it is.
  */
 static int
 api_anyready(lua_State *L)
@@ -2904,23 +2358,14 @@ altblock_k(lua_State *L, int status, lua_KContext ctx)
 	return 1;
 }
 
-/* take the first available message from a set of receive rights,
- * without ever having merely looked at one.
+/* take the first available message from a set of receive rights, never
+ * having merely looked at one. Peeking answers a level question that
+ * goes stale as soon as a second cpu exists, and the answer is not a
+ * better peek but holding the port across the check and the dequeue.
+ * Go's chansend and 9front's altexec both do this; neither ever wakes a
+ * waiter to let it look for itself.
  *
- * this is what altready/altpoll should become. peeking answers a level
- * question that goes stale the instant a second cpu exists, and the fix
- * is not a better peek -- it is holding the port across the check and
- * the dequeue, which is just this: block, then take. go's chansend
- * takes c.lock, dequeues a sudog from recvq, copies the value into it
- * and readies that one goroutine; 9front libthread's altexec dequeues a
- * specific waiting Alt and _threadready's its thread. neither ever wakes
- * a waiter to let it look for itself.
- *
- * the two passes below (find, then take) are one critical section: this
- * kernel is cooperative and cannot yield between them. when a lock
- * arrives it goes around both, and nothing else about this changes.
- *
- * returns index, message -- the index into the caller's own table, so
+ * Returns index, message. The index is into the caller's own table, so
  * it can tell which port answered.
  */
 static int
@@ -3018,21 +2463,14 @@ api_altblock(lua_State *L)
 		return luaL_error(L, "altblock: need at least one port");
 	luaL_checkstack(L, 2, "altblock");	/* raises; before the region */
 
-	/* the whole scan is one region, and that is the point of this
-	 * commit. The loop adds a waiter to each port as it goes, so by
-	 * the time it reaches port 5 it is already on port 1's list --
-	 * and a sender to port 1 would wake this proc and wait_clear its
-	 * waiters, after which the loop carries on, adds more, sets
-	 * BLOCKED and yields. The proc then sleeps having already been
-	 * woken, with its message sitting in a port it is no longer
-	 * waiting on. A hang, not a wrong answer.
+	/* the whole scan is one region. The loop adds a waiter to each
+	 * port as it goes, so a sender to the first could wake this proc
+	 * and clear its waiters while the loop is still adding more --
+	 * leaving it asleep, already woken, with its message on a port it
+	 * no longer waits on. A hang, not a wrong answer.
 	 *
-	 * Nothing that raises may run in here, so the handle is read
-	 * with lua_tointegerx rather than luaL_checkinteger and a bad
-	 * one becomes an outcome reported below. altready's comment
-	 * about level questions going stale the moment a second cpu
-	 * exists is this, and is now answered by holding the lock across
-	 * both passes rather than by asking more carefully.
+	 * Nothing that raises may run in here, so a handle is read with
+	 * lua_tointegerx and a bad one is reported below as an outcome.
 	 */
 	ipclock_enter();
 	wait_clear(p);
@@ -3267,26 +2705,13 @@ dump_writer(lua_State *L, const void *src, size_t sz, void *ud)
 	return 0;
 }
 
-/* sys.spawn(code_or_fn, opts): code_or_fn may be a source string (as
- * before) or an actual lua function value. a function is lua_dump'd
- * to a bytecode buffer here, which crosses into the child exactly
- * like a string would (luaL_loadbuffer auto-detects binary chunks) --
- * still bytes at runtime, just no explicit string.dump() at the call
- * site. only plain lua closures dump (lua_dump rejects C functions);
- * upvalues beyond _ENV don't carry values across -- same isolation
- * limit as passing source text, just easier to trip since a closure
- * makes it easy to accidentally capture an outer local.
- */
-/* sys.sendright(h) -> a new handle to the same port, SEND ONLY.
+/* sys.sendright(h) -> a new handle to the same port, send only.
  *
- * mach's shape: a receive right is the authority to hand out send rights.
- * we had the recv flag but no way to derive one from lua, and
- * {__right=h} COPIES the flag -- so handing out a port you created also
- * handed out the ability to receive on it. for a port many clients share
- * that lets any of them take another's requests, or take their own and
- * never answer.
- *
- * api_send ignores recv, so a send right is all a client ever needs.
+ * Mach's shape: a receive right is the authority to hand out send
+ * rights. {__right=h} copies the recv flag, so handing out a port you
+ * created would also hand out the ability to receive on it -- and on a
+ * port many clients share, any of them could then take another's
+ * requests, or take their own and never answer.
  */
 static int
 api_sendright(lua_State *L)
@@ -3324,6 +2749,13 @@ release_inflight_locked(const unsigned short *refs, const unsigned char *refrecv
 	ipclock_leave();
 }
 
+/* sys.spawn(code_or_fn, opts) -> pid. code_or_fn is source text or a
+ * plain lua function, which is dumped to bytecode here and crosses into
+ * the child as bytes either way. C functions cannot be dumped, and
+ * upvalues beyond _ENV do not carry values across -- the same isolation
+ * limit as source text, but easier to trip, since a closure captures an
+ * outer local without being asked to.
+ */
 static int
 api_spawn(lua_State *L)
 {
@@ -3393,32 +2825,15 @@ api_spawn(lua_State *L)
 		lua_pop(L, 1);
 	}
 
-	/* the budgets are inherited, and may only be asked downward.
+	/* budgets are inherited and may only be asked downward, so a child
+	 * is never less contained than its parent. Absent means the
+	 * parent's, and a larger request is clamped rather than refused:
+	 * refusing would make a supervisor's containment its children's
+	 * problem to know about.
 	 *
-	 * "instruction budgets and memory caps make a proc a real
-	 * containment unit" was true only of procs whose parent chose to
-	 * make it true: both fields went to proc_new as given, so a proc
-	 * held to 2MB could spawn a child with no cap at all, and one cut
-	 * to a short budget could spawn a child that runs between hooks
-	 * long enough to hold a cpu. Neither is a bug a caller sees, which
-	 * is why it stood -- a proc asks for what it wants and gets it.
-	 *
-	 * so absent means the parent's, not the machine default, and a
-	 * larger request is clamped rather than refused. refusing would
-	 * make a supervisor's own containment its children's problem to
-	 * know about; clamping lets the same code run either way and get
-	 * whatever the parent can actually give.
-	 *
-	 * mem_limit and port_limit are 0 for unlimited, so they clamp only
-	 * when the parent has a cap; reductions runs the other way, since
-	 * a smaller budget is the more contained one.
-	 *
-	 * a port cap is inherited rather than divided: a parent held to 8
-	 * ports may spawn two children of 8 each, exactly as it may with
-	 * mem. What it bounds is any one proc, which is what makes a
-	 * runaway loop cost its own proc first -- dividing would bound a
-	 * whole tree, and needs an accounting of who spawned whom that
-	 * nothing here keeps.
+	 * Inherited rather than divided. A cap bounds any one proc, which
+	 * makes a runaway loop cost its own proc first; dividing bounds a
+	 * tree, and needs an account of who spawned whom.
 	 */
 	if (reductions <= 0 || reductions > p->reductions)
 		reductions = p->reductions;
@@ -3428,18 +2843,12 @@ api_spawn(lua_State *L)
 		port_limit = p->port_limit;
 
 	/* opts.arg: one value handed to the child before its chunk runs,
-	 * arriving as the chunk's `...`.
+	 * arriving as the chunk's `...`. A message cannot do this job,
+	 * because the child's first line is typically require, which runs
+	 * before any receive -- so its namespace has to be there already.
 	 *
-	 * a message cannot do this job. the child's first line is typically
-	 * require(...), which runs before any recv, so anything the child
-	 * needs in order to load code at all -- its namespace -- has to be
-	 * there already. that is what fork gives plan 9 for free and what
-	 * spawn otherwise cannot express.
-	 *
-	 * the kernel does not interpret it. it is the ordinary serializer,
-	 * so rights travel exactly as they do in a message and the value
-	 * is mechanism: "deliver this before the chunk starts". what it
-	 * means is entirely lua's business.
+	 * The kernel does not interpret it. It goes through the ordinary
+	 * serializer, so rights travel as they do in any message.
 	 */
 	struct wbuf argw = { 0 };
 	int have_arg = 0;
@@ -3612,18 +3021,12 @@ api_monitor(lua_State *L)
 
 /* sys.owned(h): the right, as a to-be-closed value.
  *
- *	local recv = sys.newport("srv.session")
- *	local guard <close> = sys.owned(recv)
+ *	local guard <close> = sys.owned(sys.newport("srv.session"))
  *
- * Lua 5.4 closes it when the block ends -- by return, by break, or by
- * an error raised anywhere inside -- so a port's lifetime becomes a
- * scope rather than a discipline. Every hand-written close is a path
- * somebody has to remember, and the paths that get forgotten are the
- * error ones, which is where a leak is hardest to see.
- *
- * __close only, deliberately not __gc: a right can travel in a message,
- * and a finalizer runs at whatever safepoint the collector chooses. The
- * whole value here is that the moment is known.
+ * Closed when the block ends, by return, break or error, so a port's
+ * lifetime is a scope rather than a discipline. __close only, never
+ * __gc: a right can travel in a message, and a finalizer runs at
+ * whatever moment the collector picks. Here the moment is the point.
  */
 static int
 owned_close(lua_State *L)
@@ -4122,17 +3525,13 @@ api_procname(lua_State *L)
 	return 1;
 }
 
-/* sys.wchan(pid): a unix-"wchan"-style debugging hint -- what a
- * blocked proc is actually waiting on, exposed as the receive port's
- * index in the global ports[] table (the same number serialize()
- * already uses to tag right transfers, not a friendly name, but
- * stable and unique -- good enough for ps/debugging). "ready"/"dead"
- * for the other two states; "alt[...]" lists every port a
- * thread.alt() is waiting across.
+/* sys.wchan(pid): what a blocked proc is waiting on, as unix reports a
+ * wchan. A port is named by its index -- the number the wire already
+ * carries: not friendly, but stable and unique. Other states report
+ * themselves, and "alt[...]" lists every port an alt waits across.
  */
-/* pushes the wchan string for p and returns 1, so api_wchan and
- * api_pidstat report the same thing by construction rather than by two
- * copies of this agreeing.
+/* pushes the wchan string for p, so api_wchan and api_pidstat report the
+ * same thing by construction rather than by two copies agreeing.
  */
 static int push_wchan(lua_State *L, struct kproc *p);
 
@@ -4217,42 +3616,19 @@ push_wchan(lua_State *L, struct kproc *p)
 
 /* ---- holding a proc still while another one reads it ----
  *
- * Reading another proc's stack was once safe for free: the machine was
- * cooperative and single-threaded, so every proc but the caller was
- * suspended between resumes and there was no moment at which a stack
- * was half-built. On more than one cpu that is simply false -- the
- * target can be running, pushing and popping frames, while the reader
- * walks it.
- *
- * Refusing to read a running proc would be easy and useless: a spinning
- * proc is running by definition, and it is the one you most want to
- * sample. So the target is held still instead.
- *
- * Freeze first, then wait. Setting frozen stops dispatch from resuming
- * it again; waiting for it to stop being some cpu's `current` is what
- * makes the stack quiet. In that order there is no window -- the other
- * order lets it be re-dispatched between the check and the walk.
- *
- * The wait ends even for a proc that never yields, because the preempt
- * hook cuts one every quantum, so it stops being current within a
- * quantum whatever it is doing.
- *
- * And the wait yields rather than spins, which is what keeps two
- * readers from deadlocking on each other: a reader that yields is no
- * longer running, so the proc it is waiting for is free to stop.
+ * The target can be running, pushing and popping frames, while a reader
+ * walks it. A spinning proc is the one worth sampling, so it is held
+ * still rather than refused. Freeze first, then wait: raising frozen
+ * stops dispatch from resuming it, and waiting for it to stop being
+ * some cpu's `current` makes the stack quiet. The other order lets it
+ * be re-dispatched between the check and the walk. The wait yields
+ * rather than spins, so two readers cannot deadlock.
  */
-/* one lock, and it is the scheduler's: that is where a proc is taken
- * and given back, and the one make_ready already takes to decide the
- * same thing.
- *
- * The proc is asked, not the cpus. Asking every cpu whether it is
- * running p means asking `cpu_at(i)` for i below `platform_ncpu()`, and
- * that count trails reality during boot -- startap raises it only once
- * an AP has come up, so an AP that is already dispatching is not in it
- * yet. A scan misses that cpu. p->oncpu cannot: it is written by
- * whichever cpu has p in hand, counted or not.
- *
- * p->home says where it last ran, which is a report and not an answer.
+
+/* Ask the proc, not the cpus. A scan over platform_ncpu() misses an AP
+ * that is already dispatching but not yet counted; p->oncpu is written
+ * by whichever cpu has p in hand, counted or not. p->home says where it
+ * last ran, which is a report rather than an answer.
  */
 static int
 proc_running(struct kproc *p)
@@ -4301,33 +3677,17 @@ proc_still_running(struct kproc *p)
 
 /* ---- the shape every cross-proc syscall takes ----
  *
- * Reading or changing another proc needs it held still, and that is not
- * particular to stacks: a trace ring is walked while the target writes
- * it, set_trace frees a ring the target may be mid-write into, and
- * anything that lands here later will have the same problem. So the
- * waiting is written once.
- *
- * What cannot be shared is the yield itself -- lua_yieldk names the
- * continuation, and each syscall's is its own. So this returns which of
- * the three situations the caller is in and lets it yield by name:
- *
- *	static int api_x_k(lua_State *L, int status, lua_KContext ctx)
- *	{
- *		struct kproc *p;
- *
- *		switch (proc_hold(L, 1, &p, ctx)) {
- *		case HOLD_WAIT:	return lua_yieldk(L, 0, 1, api_x_k);
- *		case HOLD_GONE:	return luaL_error(L, "no such proc");
- *		case HOLD_SELF:	... do it, nothing to hold ...
- *		case HOLD_HELD:	... do it, then proc_thaw(p) ...
- *		}
- *	}
- *
- * A body that can RAISE must run protected, because a raise past the
- * thaw leaves the target frozen -- a proc that never runs again, which
- * is a worse bug than the race being fixed. Anything building a table
- * in the caller's state can raise: it allocates, and the caller has a
- * memory limit.
+ * The yield cannot be shared: lua_yieldk names a continuation, and each
+ * syscall's is its own. So this reports the caller's situation and lets
+ * it yield by name -- HOLD_WAIT yields to its own continuation,
+ * HOLD_GONE raises, HOLD_SELF acts with nothing to hold, and HOLD_HELD
+ * acts and then thaws.
+ */
+
+/* A body that can raise must run protected: a raise past the thaw
+ * leaves the target frozen, and a proc that never runs again is worse
+ * than the race. Anything building a table in the caller's state can
+ * raise, because it allocates against that caller's memory limit.
  */
 enum { HOLD_SELF, HOLD_HELD, HOLD_WAIT, HOLD_GONE };
 
@@ -4361,28 +3721,13 @@ proc_hold(lua_State *L, int argn, struct kproc **out, lua_KContext ctx)
 
 /* sys.stack(pid) -> { {source=, line=, name=, what=}, ... }
  *
- * a traceback of another proc, held still first: see proc_freeze above.
- * lua_getstack/lua_getinfo on a suspended coroutine are ordinary
- * read-only debug API, and once the target cannot be resumed they are
- * as quiet as they were when one cpu made that true for free.
- *
- * two rules make it safe:
- *
- * 1. Nothing is pushed onto the target's stack. the "Sln" info string is
- *    push-free (unlike "f" or "L"), and every result table is built on
- *    the caller's state. leave the target unbalanced and it resumes into
- *    garbage.
- * 2. No lua code runs in the target. luaL_traceback would allocate in
- *    the target's heap, charged to its mem_limit -- exactly why
- *    kernel_run skips it on LUA_ERRMEM -- and stringifying a value could
- *    invoke __tostring, which in this system has been known to power the
- *    machine off. so this reports structure only: source, line, function
- *    name. locals are values rather than structure and are deliberately
- *    not here; when they land they want a capability, unlike this.
- *
- * ambient for the same reason sys.procs/name/wchan are: it says what the
- * machine is doing, not what any proc's data is, and the threat model is
- * buggy lua rather than hostile users.
+ * A traceback of another proc, held still first. Two rules keep it safe.
+ * Nothing is pushed onto the target's stack: the "Sln" info string is
+ * push-free, unlike "f" or "L", and an unbalanced target resumes into
+ * garbage. And no lua runs in the target -- a traceback would allocate
+ * against its mem_limit, and stringifying a value could call __tostring
+ * in a proc that is supposed to be still. So this reports structure
+ * only. Ambient, like sys.procs and sys.wchan.
  */
 #define MAXFRAMES	64
 
@@ -4396,10 +3741,9 @@ stack_walk(lua_State *L)
 {
 	struct kproc *p = lua_touserdata(L, 1);
 
-	/* src/debug.c: every coroutine, not just the proc's own. A proc
-	 * built on lib/thread keeps its threads as coroutines inside its
-	 * state, and walking only p->co reported the scheduler -- the same
-	 * three frames for an idle proc and a deadlocked one.
+	/* every coroutine, not just p->co: a proc built on lib/thread
+	 * keeps its threads as coroutines, and walking p->co alone reports
+	 * the scheduler -- the same frames idle or deadlocked.
 	 */
 	debug_push_stacks(L, p->L, p->co);
 	return 1;
@@ -4481,39 +3825,21 @@ trace_arm(struct kproc *p, int n)
 /* sys.set_trace(pid, entries): record the last N lines this proc runs.
  * entries = 0 turns it off and frees the ring.
  *
- * this is the expensive one, and says so. a line hook fires per line
- * instead of every REDUCTIONS instructions: measured on a tight
- * arithmetic loop, 3ms untraced against 14ms traced, so 4.7x. that is
- * the whole cost model -- it buys a record of how a proc reached its
- * fault, which a stack cannot give because a stack shows only the calls
- * still open.
- *
- * concretely: a proc recursing through outer -> inner until it raises
- * has a traceback of "dier:8: in function <dier:7> | (...tail calls...)
- * | dier:11: in main chunk". the recursion is not in it, collapsed into
- * one tail-call marker, because those frames are exactly the ones no
- * longer open. the ring holds every iteration and the line the last one
- * diverged on.
- *
- * an untraced proc pays nothing: the mask carries LUA_MASKLINE only
- * while a ring exists, so the line hook is absent rather than idle.
- *
- * ambient, like sys.stack and sys.reap, and this is the weakest of the
- * three claims: slowing a proc down is a real effect on it, unlike
- * reading it. what makes it acceptable is the same threat model the
- * rest of this file runs on -- buggy lua, not hostile procs -- plus the
- * fact that anything wanting to wreck a neighbour's timing can already
- * do it by spinning. it is a tool for the person at the console.
+ * The expensive one: a line hook fires per line rather than per
+ * instruction budget, costing a traced proc several times its untraced
+ * runtime. It buys a record of how a proc reached its fault, which a
+ * stack cannot give -- a traceback collapses the recursion that led
+ * there into one tail-call marker. An untraced proc pays nothing: the
+ * mask carries the line bit only while a ring exists.
  */
-/* sys.set_torture(pid, on) -- see preempt_hook. A debugging knob that
- * costs the machine a real guarantee while it is on, so it is PRIV_BOOT
- * only: a boot payload (which is what every test is) may ask for it,
- * and nothing else can.
+
+/* sys.set_torture(pid, on) -- yield between every instruction. Costs
+ * the machine a real guarantee while it is on, so PRIV_BOOT only.
  *
- * Arming is by inheritance as much as by the sweep below:
- * lua_newthread copies hook, mask and count from the state that
- * created it, so a thread spawned after this returns is born tortured.
- * Turn it on BEFORE spawning the threads that are meant to be cut.
+ * Arming is by inheritance as much as by the sweep: lua_newthread
+ * copies hook, mask and count from its creator, so a thread made after
+ * this returns is born tortured. Turn it on before spawning the threads
+ * that are meant to be cut.
  */
 static int
 api_set_torture(lua_State *L)
@@ -4563,9 +3889,9 @@ set_trace_k(lua_State *L, int status, lua_KContext ctx)
 		if (!p)
 			return luaL_error(L, "no such proc");
 		/* the one call here that writes to another proc, so the
-		 * one that takes a right to it. reading a trace does not:
-		 * arming is what costs the target ~4.7x and what frees
-		 * and reallocates a ring its hook is filling.
+		 * one that takes a right to it. Reading does not: arming
+		 * is what slows the target down, and what reallocates a
+		 * ring its own hook is filling.
 		 */
 		if (p != self(L) && !may_control(self(L), p))
 			return luaL_error(L, "no right to proc %d", p->id);
@@ -4588,14 +3914,10 @@ set_trace_k(lua_State *L, int status, lua_KContext ctx)
 		    "proc %d is broke; trace before it dies, or spawn "
 		    "with opts.trace", p->id);
 
-	/* held for the arm itself, and only for that. This is the one
-	 * cross-proc call that writes: trace_arm frees and reallocates a
-	 * ring the target's line hook is putting entries into, so doing it
-	 * to a running proc frees memory out from under a writer.
-	 *
-	 * Everything above that can raise has already run, so the freeze
-	 * spans nothing that could longjmp past the thaw. trace_arm itself
-	 * only allocates C memory and reports failure by return.
+	/* held for the arm itself, and only for that: trace_arm frees a
+	 * ring the target's line hook is writing into. Everything above
+	 * that can raise has already run, so the freeze spans nothing that
+	 * could jump past the thaw.
 	 */
 	if (p != self(L)) {
 		if (ctx == 0) {
@@ -4701,28 +4023,12 @@ trace_read_k(lua_State *L, int status, lua_KContext ctx)
 
 /* sys.tracehist(pid): the ring, aggregated by source and line.
  *
- * Every caller that wanted a profile was writing the same fifteen lines
- * of Lua -- count by source:line, sort, count again by file -- and the
- * first time anyone did it, it found a task rebuilding a kernel timer
- * on every message. That is worth having built in.
- *
- * It is computed here rather than in the caller for the reason
- * src/debug.c allocates nothing in its target: handing over a
- * 4096-entry table charges the reader's mem_limit for the act of
- * reading, and the ring is bigger than anything debug.c builds.
- *
- * Keyed on source and line, NOT on thread. What a line costs is a
- * property of the line; which coroutine ran it is a different question
- * and the raw ring still answers it. Keying on both would multiply the
- * rows of a lib/thread proc, where the same scheduler lines run in
- * every thread, and bury the total that is usually wanted.
- *
- * Sorted by cpu, so the answer to "where does the time go" is the top
- * of the list. With no timestamps in play that degenerates to sorting
- * by count, which is the older question and still a useful one.
- */
-/* The fallback table, used only if the exact one cannot be allocated.
- * See the allocation below for why exact matters.
+ * Aggregated here rather than in the caller, because handing over a
+ * whole ring charges the reader's mem_limit for the act of reading.
+ * Keyed on source and line, not on thread: what a line costs is a
+ * property of the line, and keying on both multiplies the rows of a
+ * threaded proc. Sorted by cpu, so the answer to "where does the time
+ * go" is the top of the list.
  */
 #define HISTMAX 256
 
@@ -4751,21 +4057,11 @@ tracehist_body(lua_State *L)
 	n = t->n < t->cap ? t->n : t->cap;
 	start = t->n - n;
 
-	/* Sized to the ring, so every distinct line gets a row and the
-	 * result is the hottest lines rather than the earliest ones.
-	 *
-	 * A fixed table cannot do that. Aggregation meets keys in the order
-	 * they occur, so a table that fills simply stops admitting new
-	 * ones -- and the lines it then fails to report are not the cold
-	 * ones, they are whichever happened to appear late. A histogram
-	 * that quietly does that is worse than no histogram, because it
-	 * looks like an answer. Measured before this: 256 rows kept, 303
-	 * entries dropped, on a trace of one task.
-	 *
-	 * Allocated per call and freed below, so tracing costs what it
-	 * costs and reading it costs nothing lasting. If the allocation
-	 * fails the fixed table still answers, with `dropped` saying how
-	 * much it could not.
+	/* Sized to the ring, so every distinct line gets a row. A fixed
+	 * table cannot: aggregation meets keys in the order they occur, so
+	 * one that fills stops admitting new lines -- and the ones it then
+	 * fails to report are whichever appeared late, not the cold ones.
+	 * A histogram that quietly does that looks like an answer.
 	 */
 	cap = (int)n;
 	row = malloc((size_t)cap * sizeof *row);
@@ -4808,7 +4104,7 @@ tracehist_body(lua_State *L)
 	}
 
 	/* selection sort: a few hundred rows, once, in a debugging call.
-	 * Anything cleverer would be optimising the reader.
+	 * Anything cleverer would be optimizing the reader.
 	 */
 	for (int i = 0; i < nrow; i++) {
 		int best = i;
@@ -4851,17 +4147,11 @@ tracehist_body(lua_State *L)
 	return 1;
 }
 
-/* There used to be a static fallback table here for when that malloc
- * failed, and a comment saying it was safe because the machine was
- * cooperative and single-threaded. It is not: sys.tracehist is an
- * ordinary syscall, so two procs on two cpus can be inside this at
- * once, both writing one shared array.
- *
- * Raising instead of falling back, rather than locking it, because the
- * lock would have to be held across the table building below -- which
- * allocates in the caller's state and can therefore raise straight
- * through the unlock. A debugger that says "out of memory" is honest;
- * one that quietly shares a buffer is not.
+/* No static fallback table when that malloc fails: sys.tracehist is an
+ * ordinary syscall, so two procs on two cpus can be inside it at once,
+ * both writing one shared array. Raising rather than locking, because
+ * the lock would have to span the table building below, which allocates
+ * in the caller's state and can raise straight through the unlock.
  */
 static int
 tracehist_read_k(lua_State *L, int status, lua_KContext ctx)
@@ -6148,27 +5438,15 @@ api_reap(lua_State *L)
 	return 1;
 }
 
-/* sys.kill(pid): stop a proc that will not stop on its own.
- *
- * The cooperative path is the hangup cascade -- a proc watching its own
- * port exits when its clients leave, and a shutdown drops rights and lets
- * that flow down the mounts (test/boot/microvm_gefsshutdown.lua). This is
- * the backstop for a proc that ignores it, a loop that never parks, so a
- * shutdown can reclaim it after a deadline instead of waiting forever.
- *
- * It becomes a corpse exactly as a crash does: proc_break detaches it --
- * wait_clear and rq_del unlink it from whatever port or run queue it sits
- * on, its rights drop (which is what makes killing a client hang up the
- * server below it), and its monitors are told -- then it is held BROKE
- * for inspection and reaping. The target is never the running proc, so
- * its state is freed later by reap, not here; killing self is refused
- * because freeing the caller mid-syscall is not a thing to smuggle in.
+/* sys.kill(pid): stop a proc that will not stop on its own. The
+ * cooperative path is the hangup cascade, and this is the backstop for
+ * a loop that never parks. The target becomes a corpse exactly as a
+ * crash makes one, held BROKE for inspection and reaping. Killing self
+ * is refused: freeing the caller mid-syscall is not smuggled in here.
  *
  * The authority is a right to the target's self port, which sys.spawn
- * returns to the parent. So a supervisor may stop what it started, and
- * a proc that learned a pid from sys.procs may not stop a stranger. The
- * pid still names the target because that is what a monitor message and
- * a job table carry; the right is what is checked.
+ * returns to the parent: a supervisor may stop what it started, and a
+ * proc that learned a pid from sys.procs may not stop a stranger.
  */
 static int
 api_kill(lua_State *L)
@@ -6190,23 +5468,15 @@ api_kill(lua_State *L)
 	return 1;
 }
 
-/* sys.set_priority(pid, weight): a scheduling POLICY knob, not the
- * scheduler itself -- this just writes a clamped integer into the
- * target proc's kproc struct. kernel_run's dispatch loop (the
- * mechanism) reads it mechanically every lap; no lua code ever runs
- * synchronously inside a scheduling decision, so a crashing "sched"
- * proc that computes weights however it likes can never wedge or
- * corrupt the dispatch loop itself -- same reason sched_ext's eBPF
- * programs are verified/bounded rather than being the dispatcher.
- * weight=1 is the default (plain round-robin); higher weight is a
- * proportionally bigger share, via getting resumed up to `weight`
- * times per lap instead of once (see kernel_run).
+/* sys.set_priority(pid, weight): a policy knob, not the scheduler. It
+ * writes a clamped integer that the dispatch loop reads every lap, so
+ * no lua runs inside a scheduling decision and a crashing policy proc
+ * cannot wedge dispatch -- the reason sched_ext bounds its programs
+ * rather than letting them be the dispatcher. Weight 1 is plain
+ * round-robin; higher weight is resumed up to `weight` times per lap.
  *
- * gated on the scheduling capability (a right to schedport, handle
- * "sched" in sys.granted()), exactly like disk writes are gated on a
- * to diskport. without it any ordinary sys.spawn child could hand
- * itself weight=MAXWEIGHT and starve every other proc, which is a
- * denial of service the capability model is supposed to prevent.
+ * Gated on the scheduling capability, or any child could hand itself
+ * the largest weight and starve every other proc.
  */
 static int
 api_set_priority(lua_State *L)
@@ -6227,15 +5497,10 @@ api_set_priority(lua_State *L)
 	return 0;
 }
 
-/* reading a weight is not gated: it's the same class of information
- * sys.procs()/sys.meminfo() already hand out for free.
- */
-/* sys.priority(pid) -> weight, pri, cpu
- *
- * weight is the static capability-gated knob, pri what the feedback
- * computes from it, cpu per-mille of wall time decayed. nothing
- * dispatches on pri yet -- it is exposed first so the numbers can be
- * watched before anything bets on them.
+/* sys.priority(pid) -> weight, pri, cpu. weight is the gated knob, pri
+ * what the feedback computes from it, cpu per-mille of wall time
+ * decayed. Reading is not gated: the same class of information
+ * sys.procs and sys.meminfo hand out already.
  */
 static int
 api_priority(lua_State *L)
@@ -6252,16 +5517,9 @@ api_priority(lua_State *L)
 }
 
 /* sys.pidstat(pid): everything ps wants about one proc, in one table
- * and one call.
- *
- * The alternative was another single-value accessor beside name,
- * meminfo, priority and wchan, and four is already the point at which
- * rendering one row costs four kernel entries and adding a column means
- * adding an entry point. A table has room to grow without either.
- *
- * The older accessors stay: they are what tests and /proc read, and
- * they now share push_wchan with this rather than describing a proc
- * twice.
+ * and one call, so rendering a row costs one kernel entry and adding a
+ * column costs no new entry point. The single-value accessors stay,
+ * because tests and /proc read them, and share push_wchan with this.
  */
 static int
 api_pidstat(lua_State *L)
@@ -6307,17 +5565,13 @@ api_pidstat(lua_State *L)
 	lua_setfield(L, -2, "portspeak");
 	lua_pushinteger(L, p->port_limit);
 	lua_setfield(L, -2, "portlimit");
-	/* raw tsc cycles this proc has actually spent running, which the
-	 * scheduler has accumulated since the beginning for its own decay
-	 * and which nothing could read until now.
-	 *
-	 * It answers a question no other tool here can. A line trace fires
-	 * only inside lua, so the kernel's own work -- dispatch, port push
-	 * and pop, serialising a message -- appears in no proc's trace at
-	 * all; and instrumenting a task measures the instrumentation. Two
-	 * reads of this around a piece of work attribute it across procs
-	 * exactly, with nothing added to any hot path, and whatever the
-	 * wall clock has that the sum does not is the kernel's.
+	/* raw cycles this proc has spent running, which the scheduler
+	 * accumulates for its own decay. It answers what a line trace
+	 * cannot: the kernel's own work -- dispatch, push and pop,
+	 * serializing -- appears in no proc's trace. Two reads around a
+	 * piece of work attribute it across procs with nothing added to a
+	 * hot path, and what the wall clock has that the sum does not is
+	 * the kernel's.
 	 */
 	lua_pushinteger(L, (lua_Integer)p->cputime);
 	lua_setfield(L, -2, "cputime");
@@ -6429,23 +5683,14 @@ api_timer(lua_State *L)
 }
 
 /* sys.hungup(h): is this proc the only holder of the port behind h?
- *
- * that is our eof, and the formulation matters. plan 9's devpipe counts
- * opens of each end (qref) and calls qhangup on the peer's queue when a
- * count hits zero -- it can, because a Chan is explicitly a read or a
- * write end. our rights make no such distinction: api_send never checks
- * r->recv, so ANY right can send, and recv only feeds port-death
- * bookkeeping. "no senders left" is therefore not a question our model
- * can answer.
- *
- * "am I the only holder" is, and for a pipe it means the same thing: if
- * nobody else has a right, nobody can ever write again, so whatever is
- * queued is all there will be. in-flight rights inside undelivered
- * messages still count toward nrights, so a right on its way to a new
- * writer correctly keeps the pipe open.
- *
- * the pipe's creator must drop its own right after handing the ends out,
- * or it stays a holder forever and eof never arrives.
+ * That is our eof, and the formulation matters. Plan 9's pipes count
+ * opens of each end, which they can because a Chan is explicitly a read
+ * or a write end. Rights make no such distinction -- any right can send
+ * -- so "no senders left" is not a question this model can answer. "Am
+ * I the only holder" is, and for a pipe it means the same thing.
+ * In-flight rights still count, so a right on its way to a new writer
+ * keeps it open. A pipe's creator must drop its own right, or eof never
+ * arrives.
  */
 static int
 api_hungup(lua_State *L)
@@ -6461,29 +5706,14 @@ api_hungup(lua_State *L)
 }
 
 /* sys.setexit(status): record this proc's exit status, reported to
- * whoever monitors it. does NOT terminate anything -- the proc goes on
- * to end however it was going to.
- *
- * split that way on purpose. a real exit() has to unwind from arbitrary
- * depth, which from C means raising, and a raise can be swallowed by any
- * pcall between here and the top. keeping the status separate from the
- * unwinding means lib/prog.lua implements os.exit() as "record, then
- * raise a sentinel it catches itself", and the kernel needs no special
- * case in its error path at all.
- *
- * status may be a NUMBER or a STRING, and both are meant:
- *
- *   nil / 0     success, plan 9's exits(nil)
- *   n           posix status n, what a ported utility's os.exit(1) does
- *   "why"       plan 9's exits("why") -- also reported as status 1, so
- *               a numeric consumer still sees failure
- *
- * plan 9 makes exit status a string for the same reason 9P makes Rerror
- * one: a number is useless without a table to look it up in. we already
- * took that argument for errors (see lib/dev.lua's 9front strings), so
- * taking it here too is consistency rather than novelty. the number
- * survives because the utilities being ported call os.exit(1) and the
- * whole point is that they need no diff.
+ * whoever monitors it. Terminates nothing -- the proc ends however it
+ * was going to. Split that way because a real exit must unwind from
+ * arbitrary depth, which from C means raising, and any pcall in between
+ * can swallow a raise. So lua implements os.exit as "record, then raise
+ * a sentinel it catches itself".
+ *   nil / 0   success
+ *   n         posix status n, what a ported os.exit(1) gives
+ *   "why"     plan 9's exits("why"), reported as status 1 as well
  */
 static int
 api_setexit(lua_State *L)
@@ -6784,22 +6014,16 @@ extern int luaopen_los_platform_fb(lua_State *L);	/* gop.c: efi only, no-op else
  * require("los.sys"). the proc pointer comes from the state's extra
  * space, so the api needs no upvalues.
  */
-/* One los.sys call, counted.
+
+/* One los.sys call, counted. A wrapper at registration rather than an
+ * increment inside each api_ function, because registration is the one
+ * door: a syscall added to kapi later is counted without anyone
+ * remembering to.
  *
- * A wrapper at registration rather than an increment inside each of the
- * thirty-eight api_ functions, because registration is the single door:
- * a syscall added to kapi later is counted without anyone remembering
- * to, and the one that someone forgets is invisible in exactly the way
- * that matters. The arguments are already on the stack, so forwarding is
- * a call and nothing else.
- *
- * Counts only, no cycles. Two tsc reads per syscall would be real
- * overhead on the cheapest ones, and the line profile already prices the
- * line a syscall sits on -- what it cannot say is how many calls that
- * line made and which. This closes exactly that gap: the case it was
- * built for was task/tcp4.lua closing and recreating a timer on every
- * message, which sys.tracehist could point at only as "the scan around
- * it", because a syscall is not a Lua line.
+ * Counts only, no cycles: two clock reads per syscall would be real
+ * overhead on the cheapest ones. The line profile already prices the
+ * line a syscall sits on; what it cannot say is how many calls that
+ * line made, and which.
  */
 static int
 counted(lua_State *L)
@@ -6841,31 +6065,21 @@ los_sys_open(lua_State *L)
 
 	/* SELF is the only well-known handle, and the only one that can
 	 * be: it is how a proc receives at all, so there is nothing to
-	 * bootstrap it from. everything else -- cons, wire, power, disk,
-	 * tcp, udp, sched -- is granted at whatever slot right_new picked
-	 * and looked up BY NAME through sys.granted(). the numbers are
-	 * not an abi and nothing may hardcode them.
+	 * bootstrap it from. Every other capability is granted at
+	 * whatever slot right_new picked and looked up by name through
+	 * sys.granted(). Those numbers are not an abi.
 	 *
-	 * they used to be fixed constants, which broke exactly the way
-	 * fixed numbers do: an ungranted one (no NIC, so no tcp task)
-	 * left an empty slot, right_new's first-free search handed that
-	 * slot to the next sys.spawn child, and sys.TCP silently became
-	 * a right to that child. a name that isn't in the mapping cannot
-	 * alias anything.
+	 * Hardcoding one aliases: an ungranted capability leaves an empty
+	 * slot, and the first-free search hands it to the next child.
 	 */
 	lua_pushinteger(L, 0);
 	lua_setfield(L, -2, "SELF");
 
-	/* the serializer's ceiling on one message, so a client that has to
-	 * split a large payload can ask instead of hardcoding it. reported
-	 * rather than merely enforced because the alternative is every
-	 * caller carrying its own copy of the number and one of them being
-	 * wrong after it changes -- lib/caps.lua's fb.load splits raw pixel
-	 * rectangles on exactly this bound.
-	 *
-	 * the whole message is bounded by this, not just the payload
-	 * string, so a caller splitting to exactly MAXMSG still fails on
-	 * the table around it. leave room.
+	/* the ceiling on one message, so a client splitting a large
+	 * payload can ask instead of carrying its own copy of the number.
+	 * It bounds the whole message, not just the payload string, so a
+	 * caller splitting to exactly MAXMSG still fails on the table
+	 * around it. Leave room.
 	 */
 	lua_pushinteger(L, MAXMSG);
 	lua_setfield(L, -2, "MAXMSG");
@@ -6877,21 +6091,15 @@ int luaopen_los_thread(lua_State *L);
 
 /* ---- proc lifecycle ---- */
 
-/* chunks for the lua heap.
+/* chunks for the lua heap, through the platform's pool. The machine
+ * loses about a quarter again on top of every byte the heap believes it
+ * mapped, and kheap_stats cannot see it, because the pool's metadata is
+ * not ours.
  *
- * Through malloc, and so through the firmware's pool, which does cost
- * something: the machine loses about 1.26 bytes of conventional memory
- * per byte the heap believes it mapped, and kheap_stats cannot see the
- * difference because AllocatePool's metadata is not ours.
- *
- * Taking whole pages instead -- AllocatePages, no pool, no malloc header,
- * the chunk header already living inside the chunk -- looks like the
- * obvious fix and measured three times worse: 1.77 bytes per mapped byte
- * against 1.26, and 73216 bytes per proc against 52224. The excess was
- * also flat across 8K and 64K chunks, so it is not per-call overhead
- * being amortised badly; the pool is simply better at reusing pages it
- * already holds than we are at asking for new ones. Do not retry this
- * without re-measuring both.
+ * Taking whole pages instead looks like the obvious fix and measures
+ * substantially worse, flat across chunk sizes: the pool reuses pages
+ * it already holds better than we ask for new ones. Do not retry it
+ * without measuring both.
  */
 static void *
 kalloc_chunk(void *ud, size_t n)
@@ -6912,24 +6120,14 @@ static const struct luaheap_ops kalloc_ops = {
 	.chunk_free = kalloc_free_chunk,
 };
 
-/* ---- pooled bytes (src/buf.c) ----
+/* ---- pooled bytes ----
  *
- * los.buf takes its storage from the chunk source rather than from a
- * proc's lua heap, so kalloc above never sees it. It is charged here
- * instead, against the same cap: a proc that can allocate outside its
- * budget has no budget.
- *
- * mem_used is the cap's counter, so pooled bytes go in it and a
- * buffer's memory means what every other byte of a proc's memory means.
- * buf_used is the same bytes counted again on their own, which is what
- * makes them visible: memory that is not in the numbers is memory
- * nobody finds.
- *
- * Every counter here belongs to one proc, and a proc runs on one cpu at
- * a time, so nothing is shared and nothing needs a lock. The machine's
- * total is summed from the procs when it is asked for rather than kept
- * -- a running total would be exactly the shared word this design has
- * none of.
+ * los.buf takes storage from the chunk source rather than a proc's lua
+ * heap, so kalloc never sees it. It is charged here against the same
+ * cap: a proc that can allocate outside its budget has no budget.
+ * buf_used counts the same bytes again on their own, because memory
+ * that is not in the numbers is memory nobody finds. Every counter
+ * belongs to one proc, so nothing here needs a lock.
  */
 int
 kbuf_charge(lua_State *L, size_t n)
@@ -7060,21 +6258,15 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	return q;
 }
 
-/* where a lua warning goes. Without one of these lua drops them:
- * luaE_warning does nothing when warnf is null, and lua_newstate leaves
- * it null -- only luaL_newstate installs a default, and that is for the
- * host tools rather than for procs.
+/* where a lua warning goes. Without one, lua drops them: lua_newstate
+ * leaves warnf null and only luaL_newstate installs a default.
  *
- * The one warning that matters here is an error inside a __gc handler.
- * GCTM runs a finalizer under luaD_pcall and reports a failure through
- * this path rather than raising, so with no warn function a finalizer
- * that throws is invisible: no message, no counter, and the handle it
- * was supposed to clunk stays open.
- *
- * `tocont` means lua will send the rest in further calls. Buffering to
- * join them would need a per-state buffer for a case that does not
- * arise -- luaE_warnerror sends one piece -- so each piece is logged as
- * it comes and a split message reads as two lines.
+ * The warning that matters here is an error inside a __gc handler. Lua
+ * runs a finalizer protected and reports failure through this path
+ * rather than raising, so with no warn function a finalizer that throws
+ * is invisible -- no message, no counter, and the handle it was meant
+ * to close stays open. A split message reads as two lines, since
+ * joining them would need a buffer for a case that does not arise.
  */
 static void
 kernel_warn(void *ud, const char *msg, int tocont)
@@ -7089,16 +6281,11 @@ kernel_warn(void *ud, const char *msg, int tocont)
 	kernel_log(b);
 }
 
-/* one collector step, called through lua_pcall.
- *
- * The protection is not decoration. A step allocates -- gray lists, the
- * string table -- and an allocation that cannot be served raises
- * LUA_ERRMEM after the emergency collection fails. Reached from plain C
- * that error finds no handler, and luaD_throw's last resort is the
- * panic function, which lua_newstate also leaves null, so it calls
- * abort(): the whole machine, for one proc that ran out of memory.
- * Inside lua_pcall the same error is this proc's error, which is what
- * it was before the collector moved.
+/* one collector step, called through lua_pcall. The protection is not
+ * decoration: a step allocates, and an allocation that cannot be served
+ * raises. Reached from plain C that error finds no handler, and lua's
+ * last resort is a panic function this state does not install, so it
+ * aborts the machine for one proc that ran out of memory.
  */
 static int
 gc_step_k(lua_State *L)
@@ -7110,28 +6297,14 @@ gc_step_k(lua_State *L)
 }
 
 /* run the collector for one proc, at the one place it is allowed to.
- *
- * The collector is stopped (see proc_new), so this is the only thing
- * that advances it and the only place a __gc handler can run. That is
- * the whole point: a __gc handler is arbitrary lua and clunking a
- * handle is what those handlers are for, so it reaches api_close and
- * port_unref on a port nobody named. Under the ipc buckets that needs
- * every bucket, and a caller holding one may not ask for the wide form.
- * Here nothing is held, so it may.
- *
- * What paces it is how often this runs, not the size passed to it.
- * Lua defaults to the generational collector, and genstep does one
- * minor collection per call whatever the debt says -- the size is read
- * only to decide whether to promote to a major collection. So the
- * residency floor is one safe-point interval of allocation, which for
- * a tight allocation loop is a few hundred kilobytes. Real procs stay
- * far below it; a synthetic loop that does nothing but build tables
- * sits on it.
- *
- * The size is still computed and passed, because incstep does honour
- * it -- it repeats singlestep until the debt is repaid -- so a state
- * switched to the incremental collector is paced by this number. kalloc
- * counts the bytes anyway for mem_used, so it costs an add.
+ * The collector is stopped, so this is the only thing that advances it
+ * and the only place a __gc handler can run. That is the point: such a
+ * handler is arbitrary lua, and closing a handle is what they are for,
+ * so it reaches port_unref on a port nobody named -- which needs every
+ * bucket, and a caller holding one may not widen. Here nothing is held.
+ * How often this runs is what paces it, not the size passed in: the
+ * generational collector does one minor collection per call whatever
+ * the debt says. The size still matters to an incremental one.
  */
 static void
 gc_step(struct kproc *p, lua_State *L, int mark)
@@ -7228,19 +6401,14 @@ proc_freestate(struct kproc *p)
 	dbg_free(p);
 }
 
-/* lua's per-state creation and teardown hooks (src/coreg.h).
+/* lua's per-state creation and teardown hooks, from coreg.h.
  *
- * costart runs after lua has copied the new state's extra space from
- * the main thread, so the kproc pointer is already right and only the
- * links need setting. cofree runs before the state's memory goes back,
- * which is the last moment the link is still valid -- and it is reached
- * for every coroutine, including on lua_close, since that frees them
- * through the same path.
- *
- * a state created before the proc's own pointer is in place (the main
- * state itself) has no proc to be listed under and is simply not
- * listed; the kernel never needs to arm it, because the chunk runs in
- * p->co and every coroutine descends from there.
+ * costart runs after lua has copied the new state's extra space, so the
+ * kproc pointer is already right and only the links need setting.
+ * cofree runs before the state's memory goes back, the last moment the
+ * link is valid, and is reached for every coroutine. The main state is
+ * created before the proc pointer exists, so it is not listed -- and
+ * nothing needs to arm it, because the chunk runs in p->co.
  */
 void
 kernel_costart(lua_State *from, lua_State *nw)
@@ -7266,44 +6434,13 @@ kernel_cofree(lua_State *from, lua_State *dead)
 	memset(&kx->link, 0, sizeof kx->link);
 }
 
-/* the closest thing we have to plan 9's hzsched.
- *
- * plan 9 preempts from the clock interrupt, so it can decide "you have
- * had your 100ms" regardless of what the running proc is doing. we have
- * no interrupt: this hook is our only preemption, and it fires every N
- * lua VM instructions.
- *
- * a slice was therefore N INSTRUCTIONS, which is a poor unit -- how much
- * wall time it buys depends entirely on how expensive those opcodes are,
- * so two procs doing equal instruction counts got wildly unequal machine
- * time. the hook now yields only once a wall-clock QUANTUM has elapsed,
- * using the instruction count purely as the sampling rate. slices are
- * therefore ~QUANTUM_MS of real time, checked every N instructions.
- *
- * be clear about the trade: this makes each slice LONGER, not shorter.
- * 25000 instructions is roughly 200us, so a compute-bound proc now holds
- * the cpu for 2ms instead of yielding ten times. that is fewer context
- * switches (measured: +4% on a spin loop) at the cost of up to 2ms of
- * added latency for anyone waiting -- which is only paid when something
- * is actually compute-bound, since a proc that blocks yields at once.
- *
- * it does NOT fix the real hole, and nothing here can: the hook cannot
- * fire inside a single C call, so string.rep("x", 1e8) holds the machine
- * for as long as it takes. that needs an interrupt, which means leaving
- * boot services.
- */
-/* record one line. only ever called from a line event, where lua has
- * already filled ar->currentline -- asking lua_getinfo for it would be
- * paying twice for something the hook was handed.
- */
 /* the only place a hook mask is decided.
  *
  * LUA_MASKCOUNT is not conditional and must never become so: it is the
  * preemption budget, and a proc whose count hook went missing holds the
- * machine until it blocks. tracing can only ever ADD LUA_MASKLINE to
- * it, and every lua_sethook in this kernel goes through here with
- * p->reductions rather than naming a mask of its own, so turning
- * tracing off cannot be a route to turning preemption off with it.
+ * machine until it blocks. Tracing can only add LUA_MASKLINE to it, and
+ * every lua_sethook here comes through this, so turning tracing off is
+ * not a route to turning preemption off with it.
  */
 static int
 proc_hookmask(struct kproc *p)
@@ -7415,19 +6552,14 @@ trace_put(struct kproc *p, struct ktrace *t, int line, int src, int co)
 	    (p->resumed && now > p->resumed ? now - p->resumed : 0);
 	struct tracent *e;
 
-	/* The elapsed time belongs to the PREVIOUS entry, not this one.
-	 *
-	 * A line hook fires before its line runs, so the interval between
+	/* The elapsed time belongs to the previous entry, not this one: a
+	 * line hook fires before its line runs, so the interval between
 	 * two hooks is the cost of the earlier line. Recording it against
-	 * the arriving entry shifts the whole profile down by one, and the
-	 * shift is not harmless: it blamed `snd_una = seg.ack` for 7.5% of
-	 * a tcp task, when the cost was the reslice of the send buffer on
-	 * the line above it. A profile that names the wrong line is worse
-	 * than none, because the wrong line is usually innocent and cheap
-	 * and the reader concludes something strange is happening.
+	 * the arriving entry shifts the whole profile down by one, and
+	 * names a line that is usually innocent and cheap.
 	 *
-	 * The newest entry therefore carries zero until the next line
-	 * arrives, which is honest: nothing has happened after it yet.
+	 * The newest entry carries zero until the next line arrives,
+	 * which is honest: nothing has happened after it yet.
 	 */
 	if (t->n > 0) {
 		struct tracent *prev = &t->ent[(t->n - 1) % t->cap];
@@ -7456,14 +6588,11 @@ trace_put(struct kproc *p, struct ktrace *t, int line, int src, int co)
 	t->n++;
 }
 
-/* A marker entry, for something that is not a line of Lua.
- *
- * A context switch is the one that matters. Without it the gap shows up
- * as an enormous wall delta on whichever line happened to run last, and
- * the reader has to guess whether that line was slow or the proc was
- * simply not running. With it the discontinuity is a thing in the trace
- * rather than an adjustment to be trusted -- and the histogram has
- * somewhere honest to put those intervals instead of blaming a line.
+/* A marker entry, for something that is not a line of lua. A context
+ * switch is the one that matters: without it the gap appears as a huge
+ * wall delta on whichever line ran last, and the reader has to guess
+ * whether that line was slow or the proc was not running. With it the
+ * histogram has somewhere honest to put those intervals.
  *
  * The name is interned in the same table as a source file, so it costs
  * one of TRACESRC's slots and reads as a filename with line 0.
@@ -7523,6 +6652,14 @@ preempt_walkout(struct kproc *p, lua_State *L)
 	lua_yield(L, 0);
 }
 
+/* the only preemption there is: no clock interrupt reaches a running
+ * proc, so this fires every N lua instructions and yields once a
+ * wall-clock quantum has passed. The instruction count is the sampling
+ * rate, not the slice.
+ *
+ * It cannot fire inside a single C call, so string.rep("x", 1e8) holds
+ * the machine for as long as it takes. Nothing here can fix that.
+ */
 static void
 preempt_hook(lua_State *L, lua_Debug *ar)
 {
@@ -7567,53 +6704,28 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 	if (!lua_isyieldable(L))
 		return;
 
-	/* the second safe point, and the one that does the pacing.
-	 *
-	 * The point in dispatch_lap runs once a slice, and a proc can
-	 * allocate megabytes inside one slice -- measured at roughly a
-	 * megabyte of garbage held between steps, against 34KB with the
-	 * collector left to itself. Stepping harder there does not help,
-	 * because the garbage is made after the step and not before it.
-	 *
-	 * A count hook is a legal place for it. It fires between two vm
-	 * instructions, so no kernel c function is on the stack and no
-	 * bucket can be held -- the same property that makes the
-	 * dispatch point safe, established a different way. A finalizer
-	 * running from here cannot recurse into this hook either,
-	 * because GCTM clears allowhook around the call.
-	 *
-	 * After the yieldable test on purpose: that a yield would be
-	 * legal here is the cheapest evidence that this is ordinary lua
-	 * execution rather than a boundary.
+	/* the second safe point, and the one that paces the collector.
+	 * The dispatch point runs once a slice, and a proc can allocate
+	 * megabytes inside one slice -- stepping harder there cannot
+	 * help, because the garbage is made after the step.
+	 * A count hook is a legal place: it fires between two vm
+	 * instructions, so no kernel function is on the stack and no
+	 * bucket is held, and lua bars a finalizer from recursing into
+	 * this hook. After the yieldable test on purpose -- a legal yield
+	 * here is the cheapest evidence this is not a boundary.
 	 */
 	if (p)
 		gc_step(p, L, 1);
 
-	/* torture: cut this thread between EVERY pair of instructions,
-	 * rather than wherever the quantum happens to land.
-	 *
+	/* torture: stop this thread between every pair of instructions.
 	 * A race between a thread and thread.run is a window of one or
-	 * two instructions, and whether a run lands in one is a question
-	 * of how many preemptions the work gets cut into -- which is why
-	 * this class of bug is found on slow hardware and not on fast.
-	 * This stops leaving it to chance: every window is landed on,
-	 * every run.
-	 *
-	 * Threads only (L != p->co). The point is to interleave a proc's
-	 * THREADS, and that needs no more than a yield to thread.run --
-	 * which is why the forced walk-out to p->co below is deliberately
-	 * skipped here: it would put a kernel round trip between every
-	 * pair of instructions and turn a ten second test into an
-	 * afternoon.
-	 *
-	 * The cost of skipping it is that a tortured proc does not honour
-	 * its quantum while a thread is running, so it can hold the cpu
-	 * for as long as that thread cares to. That is exactly the
-	 * property a027800 exists to protect, which is why this is
-	 * PRIV_BOOT only and why nothing but a test payload should ever
-	 * ask for it. The proc's own main coroutine is left alone and
-	 * still trips the quantum below, so a tortured proc that returns
-	 * to thread.run is descheduled normally.
+	 * two instructions, and whether a run lands in one depends on how
+	 * finely the work gets cut, which is why this class of bug shows
+	 * on slow hardware and not on fast.
+	 * Threads only: the walk-out below is skipped, because a kernel
+	 * round trip per instruction turns a ten second test into an
+	 * afternoon. So a tortured proc does not honor its quantum while
+	 * a thread runs, and is PRIV_BOOT only for that reason.
 	 */
 	if (p && p->torture && L != p->co) {
 		((struct kextra *)lua_getextraspace(L))->preempted = 1;
@@ -7642,26 +6754,15 @@ preempt_hook(lua_State *L, lua_Debug *ar)
 	    platform_ticks() - p->resumed < quantum_cycles)
 		return;		/* under quantum: let it keep the cpu */
 
-	/* yielding only ever reaches the resumer of the state the hook
-	 * fired in. for a thread that is the proc's own scheduler, one
-	 * level down from the kernel, so yielding here suspends the
-	 * thread and hands the cpu straight back to thread.run -- the
-	 * proc keeps the machine and the quantum means nothing. measured
-	 * with a spinner inside a thread, everything else on the machine
-	 * got 0.02 of its fair share.
-	 *
-	 * lua has no yield-across-levels to ask for, so the trip is
-	 * forced instead: arm the proc's outermost state to fire on its
-	 * very next instruction. the thread yields to thread.run,
-	 * thread.run runs one instruction, and the hook fires again with
-	 * L == p->co, where a yield does reach the kernel.
-	 *
-	 * that also lands the proc in the right place. resuming into the
-	 * interrupted coroutine would let one thread hold the cpu across
-	 * proc slices; resuming into thread.run leaves the choice of what
-	 * runs next where it belongs, with the scheduler that owns
-	 * threads. the kernel picks procs, thread.run picks threads, and
-	 * neither has to know how the other decides.
+	/* A yield reaches only the resumer of the state the hook fired
+	 * in. For a thread that is the proc's own scheduler, so yielding
+	 * here hands the cpu back to thread.run and the proc keeps the
+	 * machine -- a spinner in a thread starves everything else.
+	 * Lua has no yield-across-levels, so the trip is forced: arm the
+	 * proc's outermost state to fire on its next instruction, and the
+	 * hook fires again with L == p->co, where a yield does reach the
+	 * kernel. That also leaves the choice of what runs next with
+	 * thread.run, where it belongs.
 	 */
 	preempt_walkout(p, L);
 }
@@ -7711,28 +6812,14 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	TAILQ_INIT(&p->coros);
 	p->hookforced = 0;
-	/* No placement. There is one run queue for the machine, so
-	 * whichever cpu looks next runs this proc, and it is not tied
-	 * to that one either -- the next time it is runnable, whichever
-	 * cpu looks next takes it again.
+	/* No placement: there is one run queue for the machine, so
+	 * whichever cpu looks next runs this proc, and takes it again
+	 * whenever it is next runnable.
 	 *
-	 * There used to be a least-loaded scan here, plus a rule
-	 * pinning drivers to the boot cpu. Both are gone with the
-	 * per-cpu queues they served. Placement at spawn is a guess
-	 * made before the proc has done anything, and with p->home
-	 * never reassigned it was a guess that lasted forever: procs
-	 * spawned during boot were all placed when the machine had one
-	 * cpu, so they stayed on it no matter what the other cpus were
-	 * doing.
-	 *
-	 * p->home survives as a record of where it last RAN, set by
-	 * run_proc, which is plan 9's `affinity` rather than a
-	 * placement. Nothing reads it to make a decision today; it is
-	 * there because "which cpu is this actually running on" is the
-	 * question the smp tests ask, and because soft affinity, if it
-	 * is ever wanted, is a use of exactly this field (port/proc.c's
-	 * runproc, whose first pass prefers a proc that last ran here
-	 * and whose second takes anything).
+	 * p->home records where it last ran, set by run_proc -- plan 9's
+	 * affinity rather than a placement. Nothing decides anything from
+	 * it today; it answers "which cpu is this on" for the smp tests,
+	 * and soft affinity would be a use of exactly this field.
 	 */
 	p->home = 0;
 
@@ -7760,45 +6847,28 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * Incremental rather than the default generational, and gc_step
 	 * depends on it: genstep does one minor collection per call and
 	 * ignores the step size it is given, where incstep loops until the
-	 * debt is paid and so honours it.
+	 * debt is paid and so honors it.
 	 */
 	lua_gc(p->L, LUA_GCINC, GCPAUSE, 0, 0);
 
 	lua_setwarnf(p->L, kernel_warn, p);
 
 	/* the collector runs where this kernel says and nowhere else.
-	 *
-	 * Left alone lua collects inside an allocation, whenever the debt
-	 * says so. That puts an arbitrary __gc handler in the middle of
-	 * whatever was allocating -- and clunking a handle is what those
-	 * handlers are for, so it reaches api_close and port_unref on a
-	 * port the allocating code never named. Under the ipc buckets
-	 * that needs every bucket, which a caller holding one may not
-	 * ask for.
-	 *
-	 * Stopping the collector makes that impossible rather than
-	 * merely avoided: with GCSTPUSR set luaC_condGC never steps, so
-	 * no allocation anywhere can run lua. gc_step then advances it,
-	 * from the one place where nothing is held.
-	 *
-	 * Two collections still happen unasked, and both are wanted. An
-	 * allocation failure runs an emergency collection, because
-	 * cantryagain consults gcstopem rather than gcstp, which keeps a
-	 * proc recoverable under memory pressure. And lua_close runs
-	 * every pending finalizer through GCTM directly, which is how a
-	 * dying proc's handles get clunked. Neither can run a finalizer
-	 * anywhere unsafe: an emergency collection sets gcemergency and
-	 * every finalizer path tests it, and lua_close is called with no
-	 * bucket held.
+	 * Left alone, lua collects inside an allocation, which puts an
+	 * arbitrary __gc handler in the middle of whatever was
+	 * allocating -- and closing a handle is what those handlers are
+	 * for, so it reaches port_unref on a port that code never named.
+	 * Stopping it makes that impossible rather than avoided.
+	 * Two collections still happen unasked, and both are wanted: an
+	 * emergency one on allocation failure, and lua_close running
+	 * pending finalizers, which closes a dying proc's handles.
 	 */
 	lua_gc(p->L, LUA_GCSTOP);
 
-	/* stash the proc pointer where the kernel api finds it (self()).
-	 * set before the thread is created so lua_newthread copies it into
-	 * the coroutine's extra space too.
-	 */
-	/* the whole record, not just the pointer: the links are copied
-	 * into every coroutine from here, so they have to start empty
+	/* where self() finds the proc, set before any thread exists so
+	 * lua_newthread copies it in. The whole record, not just the
+	 * pointer: the links are copied from here too, so they must start
+	 * empty.
 	 */
 	memset(lua_getextraspace(p->L), 0, LUA_EXTRASPACE);
 	((struct kextra *)lua_getextraspace(p->L))->p = p;
@@ -7855,27 +6925,15 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	lua_pushcfunction(p->L, luaopen_los_dbg);
 	lua_setfield(p->L, -2, "los.dbg");
 
-	/* crypto.native (src/native.c): chacha20, poly1305, sha-256,
-	 * sha-512 and aes. Ambient, unlike everything below, and the
-	 * distinction is the one this file already draws for sys.send:
-	 * authority is an ARGUMENT here, not the function. It computes on
-	 * a key the caller supplies and does nothing for a caller that has
-	 * not got one -- so there is nothing to attenuate and no owner to
-	 * be the only one. Contrast los.platform.rng, where the raw draw
-	 * IS the capability.
-	 *
-	 * src/native.c is a VERBATIM copy of the ssh tree's src/native.c
-	 * -- the host tree is where these are developed and where the RFC
-	 * vectors run against both the C and the Lua implementations, which
-	 * is where a disagreement would be caught. Keeping it byte for byte
-	 * identical makes the sync a cp and the check a diff; the previous
-	 * arrangement hand-ported a subset and had already diverged.
-	 *
-	 * The Lua module name is ours rather than upstream's, because
-	 * lua-os's tree puts these at crypto.* where the host tree has
-	 * ssh.crypto.*. The C symbol keeps its upstream name: what a module
-	 * is called and what its opener is called are independent, which is
-	 * exactly what lets the file be copied untouched.
+	/* crypto.native: chacha20, poly1305, sha-256, sha-512, aes.
+	 * Ambient, unlike everything below it: authority is an argument
+	 * here rather than the function, since it computes on a key the
+	 * caller supplies and does nothing for a caller without one.
+	 * Contrast los.platform.rng, where the raw draw is the capability.
+	 * The C file is a verbatim copy from the ssh tree, where it is
+	 * developed and where the RFC vectors run against both the C and
+	 * the lua implementations. Keep it identical so the sync stays a
+	 * copy and the check stays a diff.
 	 */
 	lua_pushcfunction(p->L, luaopen_ssh_crypto_native);
 	lua_setfield(p->L, -2, "crypto.native");
@@ -8012,27 +7070,15 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * that workaround is gone and require() just works.
 	 */
 
-	/* every proc EXCEPT proc 0 loses the file half of io, and loadfile
-	 * and dofile with it.
+	/* every proc but proc 0 loses the file half of io, and loadfile
+	 * and dofile with it. lib/nsio.lua puts io.open back over the
+	 * proc's namespace, so a proc reaches exactly what was mounted for
+	 * it and a proc given none cannot open a file at all.
 	 *
-	 * lib/nsio.lua puts io.open back, resolving through this proc's
-	 * namespace -- so a proc that was given one reaches exactly what
-	 * was mounted for it, and a proc that was given none has no way to
-	 * open a file at all. that is the whole point: the namespace stops
-	 * being advisory and starts being the boundary.
-	 *
-	 * removing the reference is the mechanism, not a check inside it.
-	 * a check exists in every proc's C surface and is one bug away from
-	 * everything; a function that is not there cannot be called wrong.
-	 * same rule as los.platform.* (see AGENTS.md).
-	 *
-	 * io.write, io.read, print, stdout and stderr STAY. they are the
-	 * console, not files -- a device we have no namespace entry for
-	 * yet. see lib/nsio.lua on that seam.
-	 *
-	 * proc 0 keeps them because it is where the raw ESP reaches and
-	 * where the root namespace is built; it has no namespace to be
-	 * confined to until it has made one.
+	 * Removing the reference is the mechanism, not a check inside it:
+	 * a function that is not there cannot be called wrong. The console
+	 * half stays. Proc 0 keeps everything, because it builds the root
+	 * namespace and has none to be confined to until it has.
 	 */
 	if (priv != PRIV_BOOT) {
 		lua_pushcfunction(p->L, confine_proc);
@@ -8111,13 +7157,9 @@ proc_launch(struct kproc *p)
 }
 
 /* build and deliver an exit notification: {exit=pid, normal=bool,
- * reason=string?, broke=true?} to the watcher's self port.
- *
- * broke=true is what makes a plain sys.monitor into linux's
- * core_pattern handler: the notification arrives while the corpse is
- * still held, so a watcher that cares can sys.stack the pid it was just
- * told about and sys.reap it when done. one flag on a message that was
- * already being sent, rather than a second notification mechanism.
+ * reason=string?, broke=true?} to the watcher's self port. broke=true
+ * arrives while the corpse is still held, so a watcher can read the
+ * stack of the pid it was just told about, and reap it when done.
  */
 /* caller holds ipclock: proc_detach has it, the noproc path takes it.
  * locking here as well hangs any teardown with a watcher attached.
@@ -8126,26 +7168,15 @@ static void
 notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
     const char *exitmsg, int broke, int priv)
 {
-	/* `reason` and `exitmsg` are the dying proc's own text -- an error
-	 * message, whatever it passed to sys.setexit -- and they are the
-	 * only part of this notice that is its data rather than the fact
-	 * of its death. so they go to a watcher that held a right to it
-	 * when it asked to watch (kproc.wpriv) and to nobody else.
-	 *
-	 * that a proc exited stays ambient, which is what monitor is for:
-	 * a child watching the parent that spawned it, so it does not
-	 * outlive the terminal it prompts on (lib/webterm.lua), holds no
-	 * right to that parent and must not need one. gating the notice
-	 * itself would force handing out control of a proc merely to
-	 * permit watching it.
-	 *
-	 * an emptied reason still reads as an abnormal exit -- `normal`
-	 * below is false whenever there was one at all -- so a watcher
-	 * learns that its peer died badly without learning what it said.
-	 *
-	 * priv is 1 for a synthetic notice -- api_monitor's noproc --
-	 * where the reason is our answer about the request rather than
-	 * anything a proc said.
+	/* `reason` and `exitmsg` are the dying proc's own text, the only
+	 * part of this notice that is its data rather than the fact of its
+	 * death, so they go only to a watcher that held a right to it when
+	 * it asked. That a proc exited stays ambient: a child watching the
+	 * parent that spawned it holds no right to that parent and must
+	 * not need one. An emptied reason still reads as an abnormal exit,
+	 * so a watcher learns its peer died badly without learning what it
+	 * said. priv is 1 for a synthetic notice, where the reason is our
+	 * answer rather than anything a proc said.
 	 */
 	if (!priv) {
 		reason = reason ? "" : 0;
@@ -8222,20 +7253,13 @@ fail:
 
 /* everything dying does except freeing the state.
  *
- * the split exists for BROKE: a corpse must stop being part of the
- * machine the instant it dies -- off the run queue, holding no rights,
- * with its monitors already told -- and only then linger. deferring any
- * of that until the reaper ran would make a corpse a hazard rather than
- * a record. a parent blocked in sys.monitor would wait on a proc that is
- * never coming back, and a broke fileserver would hold its ports open
- * and wedge every client instead of failing them.
- *
- * the deferred half is only lua_close, and only the __gc finalizers care
- * that the rights are already gone. they are written to tolerate it:
- * lib/mnt.lua's fid and session finalizers wrap the send and the close
- * in pcall, and src/dirs.c's is idempotent by construction. a finalizer
- * running against a released right fails and is swallowed, exactly as it
- * does for a handle closed by hand.
+ * The split exists for BROKE: a corpse stops being part of the machine
+ * the instant it dies -- off the run queue, holding no rights, monitors
+ * told -- and only then lingers. Deferring any of that to the reaper
+ * makes a corpse a hazard: a parent would block in sys.monitor forever,
+ * and a broke fileserver would wedge every client.
+ * Only lua_close is deferred, so a __gc finalizer runs after its rights
+ * are gone. They tolerate it, and one that fails is swallowed.
  */
 static void
 proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
@@ -8512,17 +7536,13 @@ pump_devkbd(void)
 	ipclock_leave();
 }
 
-/* the pointer, onto its own port.
- *
- * What goes out is plan 9's mouse record: 'm' and four fixed-width
- * fields, x, y, buttons and a millisecond clock. Fixed width because a
- * reader asks for 49 bytes and gets exactly one event, which is what
- * lets /dev/mouse be read without a framing rule of its own -- and the
- * format is the one every plan 9 program already knows.
+/* the pointer, onto its own port. What goes out is plan 9's mouse
+ * record: 'm' and four fixed-width fields -- x, y, buttons, and a
+ * millisecond clock. Fixed width so a reader asks for one record's
+ * worth and gets exactly one event, needing no framing rule of its own.
  *
  * The driver coalesces, so this pushes at most one message per lap and
- * that message is the current state. A finger that has not moved costs
- * a comparison.
+ * that message is the current state.
  */
 static void
 pump_devptr(void)
@@ -8657,16 +7677,13 @@ kernel_init(void)
 	clockport->nrights++;
 	dbgport->nrights++;
 
-	/* soft-fail: no NIC (real hardware, or qemu -net none) just means
-	 * no eth task gets spawned later, same as any other optional
-	 * boot-time resource.
+	/* soft-fail: no card means no eth task is spawned later, like any
+	 * other optional boot-time resource.
 	 *
-	 * platform_have_eth() on efi calls DisconnectController, which
-	 * unbinds the firmware's MNP/IP4/TCP4/UDP4 from the card. It has
-	 * to: SNP has one receive queue and no fan-out, so a firmware
-	 * stack left bound would eat frames we never see. There is nothing
-	 * left to fall back TO -- one stack, task/eth.lua under
-	 * task/ip.lua under task/tcp4.lua, on every platform.
+	 * On efi this unbinds the firmware's own network stack from the
+	 * card, and has to: SNP has one receive queue and no fan-out, so a
+	 * stack left bound eats frames we never see. There is nothing to
+	 * fall back to -- one stack, ours, on every platform.
 	 */
 	have_eth = platform_have_eth();
 	have_p9 = platform_have_p9();
@@ -8722,19 +7739,11 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 	return pid;
 }
 
-/* spawn the boot payload (init.lua or an injected fw_cfg test buffer)
- * and hand it send-rights to cons/wire/power plus the disk capability
- * -- the full boot-level grant, same shape as the old KBD/SERIAL/CONIO
- * grant it replaces. ordinary sys.spawn children still get none of
- * this by default; only the boot payload (analogous to pid 1 on a
- * unix system) starts this privileged.
- */
-/* one row per driver task the boot payload gets a right to. "enabled"
- * is decided before this table is built (have_net/have_udp come from
- * the net_init() probe in kernel_init()) -- this is still a one-shot,
- * boot-time, C-side table, not a runtime bus/match-and-attach
- * registry. disk and sched aren't in it: there's no lua owner task for
- * either, they're bare capability ports granted to init directly.
+/* one row per driver task the boot payload gets a right to. Whether a
+ * row is enabled is decided by the probes in kernel_init, before this
+ * table is built: a one-shot boot-time table, not a runtime bus and
+ * match-and-attach registry. Disk and sched are not here, having no
+ * owner task -- they are bare capability ports granted to init.
  */
 struct driver_desc {
 	const char *path;
@@ -8758,17 +7767,14 @@ struct driver_desc {
 	 */
 	const char *needs;
 
-	/* this task needs to draw random bytes (los.platform.rng).
-	 *
-	 * Only the boot proc gets that module by default, which is the
-	 * right default -- the raw draw IS the capability, as the comment
-	 * on luaopen_ssh_crypto_native puts it, so it goes to as few procs
-	 * as possible. But tcp cannot do without one: RFC 6528 requires an
-	 * initial sequence number that is neither a counter nor derivable
-	 * from another connection's, because an off-path attacker who can
-	 * guess it can inject into the stream. lib/tcb.lua deliberately
-	 * refuses to invent one -- it has no clock and no secret -- so the
-	 * task that owns the connections has to be able to.
+	/* this task needs to draw random bytes. The raw draw is the
+	 * capability, so it goes to as few procs as possible -- only the
+	 * boot proc by default. But tcp cannot do without one: RFC 6528
+	 * wants an initial sequence number that is neither a counter nor
+	 * derivable from another connection's, or an off-path attacker
+	 * who guesses it can inject into the stream. lib/tcb.lua refuses
+	 * to invent one, having no clock and no secret, so the task that
+	 * owns the connections must be able to.
 	 */
 	unsigned rng;
 };
@@ -8809,18 +7815,14 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .what = "the virtio-9p filesystem", .enabled = have_p9,
 		  .capname = "p9" },
 		/* the block device: the only proc with los.platform.blk,
-		 * re-serving it over a port as a dev backend
-		 * (lib/blkfs.lua) the same way p9srv does. Unlike every
-		 * other backend here what it serves is not a filesystem --
-		 * it is one file, /data, that IS the disk. Whatever
-		 * eventually reads a filesystem out of those bytes mounts
-		 * this and needs to know nothing about virtio, which is the
-		 * point of putting the seam here.
+		 * re-serving it over a port. Unlike every other backend
+		 * here, what it serves is not a filesystem but one file,
+		 * /data, that is the disk. Whatever reads a filesystem out
+		 * of those bytes mounts this and knows nothing of virtio.
 		 *
-		 * No devport: nothing is routed to this device's interrupt
-		 * line, so there is no wakeup to deliver. blk.read and
-		 * blk.write yield and re-poll instead, which is what
-		 * virtio-9p has always done.
+		 * No devport: nothing routes this device's interrupt, so
+		 * there is no wakeup to deliver, and its reads and writes
+		 * yield and re-poll instead.
 		 */
 		{ .path = "/task/blksrv.lua", .chunkname = "=blksrv",
 		  .priv = PRIV_BLK, .devport = 0, .devrecv = 0,
@@ -9016,34 +8018,13 @@ kernel_spawn_buffer(const char *code, size_t len)
 	return spawn_init(code, len, 0);
 }
 
-/* resume one READY proc, spending its whole WRR weight. returns 1 if it
- * ran at all, which is what tells kernel_run the machine is not idle.
+/* exponentially weighted average of the fraction of wall time this proc
+ * spent running, in per-mille, from measured cycles. Lazy: the decay is
+ * a closed form over the elapsed interval, so a proc untouched for
+ * seconds decays correctly in one call and nothing sweeps.
  *
- * factored out of the dispatch loop so the handoff hint can dispatch a
- * proc out of slot order without duplicating any of this.
- */
-/* exponentially-weighted average of the fraction of wall time this proc
- * spent running, in per-mille, from the TSC.
- *
- * an instruction count was tried instead and dropped: the preempt hook
- * fires every lua_gethookcount() instructions, so counting fires is an
- * exact reduction count -- but only for procs that REACH their period. a
- * proc that yields sooner registers zero, which is most IPC-bound work,
- * and lua exposes no way to read the partial countdown (L->hookcount is
- * internal; lua_gethookcount returns the configured period). exact
- * reductions would mean patching the VM, and vanilla lua is a pillar.
- * cycles have no floor, catch time spent in C too, and are what real
- * schedulers use.
- *
- * plan 9's updatecpu samples "was this proc running at the tick" and
- * decays from there, which suits a tick-driven kernel. ours resumes
- * procs for tens of microseconds at a time, far below the 1ms clock, so
- * sampling would read zero forever. we have measured cycles instead, so
- * the fraction is computed directly and then averaged.
- *
- * lazy on purpose: the decay is a closed form over the elapsed interval,
- * so a proc untouched for five seconds decays correctly in one call and
- * no periodic sweep is needed.
+ * See docs/scheduling.md for why this is cycles rather than an instruction
+ * count, and for the two arithmetic traps below.
  */
 static void
 updatecpu(struct kproc *p)
@@ -9057,13 +8038,9 @@ updatecpu(struct kproc *p)
 
 	unsigned long long used = p->cputime - p->lastcpu;
 	unsigned long long window = n > SCHED_DECAY_MS ? SCHED_DECAY_MS : n;
-	/* form the fraction straight from cycles rather than converting to
-	 * whole milliseconds first. the intermediate truncation was
-	 * harmless when this was only called on demand, with n in the
-	 * hundreds of ms -- but the scheduler now calls it every lap, where
-	 * n is ~15ms and losing up to 1ms per sample is a systematic 7%
-	 * undercount. it read a spinning proc at 478 per-mille instead of
-	 * 876.
+	/* straight from cycles, never through whole milliseconds: the
+	 * truncation is a systematic undercount at lap scale, where the
+	 * interval is a handful of milliseconds.
 	 */
 	unsigned long long denom = n * (cyc_per_ms ? cyc_per_ms : 1);
 	unsigned frac = denom ? (unsigned)((used * 1000) / denom) : 0;
@@ -9079,14 +8056,10 @@ updatecpu(struct kproc *p)
 }
 
 /* dynamic priority: inversely proportional to recent cpu use against an
- * equal share, clamped to the proc's static weight. straight from plan
- * 9's reprioritize, with weight playing basepri's part -- so
- * sys.set_priority stays the capability-gated POLICY knob and the kernel
- * computes the rest, which is the split we already had.
- *
- * a proc using exactly its share lands at its weight; a hog sinks toward
- * zero; one that has been starved has cpu near zero and clamps to the
- * top. nobody is demoted by a rule.
+ * equal share, clamped to the proc's static weight. Plan 9's
+ * reprioritize, with weight playing basepri's part. A proc using its
+ * share lands at its weight, a hog sinks toward zero, and one that has
+ * been starved clamps to the top. Nobody is demoted by a rule.
  */
 static int
 reprioritize(struct kproc *p, int nrunnable)
@@ -9104,67 +8077,15 @@ reprioritize(struct kproc *p, int nrunnable)
 	return (int)(r > cap ? cap : r);
 }
 
-/* mark a proc runnable and price it, which is plan 9's ready(): priority
- * is computed HERE rather than at dispatch, so the dispatcher only reads
- * an int. that keeps reprioritize off the hot path -- it now runs once
- * per wakeup instead of once per ready proc per lap.
+/* the run queues: one pair for the machine, not one pair per cpu, so
+ * any cpu takes the next runnable proc from the same place and there is
+ * no placement decision to make at spawn. `runq` is the lap in
+ * progress, `donq` what has had a turn, and dispatch_lap swaps them.
  *
- * it also depends on updatecpu being sampling-independent, since wakeups
- * are irregular where laps were not. that is why the chunked decay above
- * had to come first.
- */
-/* the two dispatch sets. runq holds procs still to run this lap, donq
- * those that have already had their turn; they swap at the end of a lap.
- */
-
-
-/* the run queues: one pair for the machine, not one pair per cpu.
- *
- * Any cpu takes the next runnable proc from the same place, so a proc
- * is never stuck behind a busy cpu while another idles, and there is no
- * placement decision to make at spawn. That decision is the one that
- * cannot be made well: it is made before the proc has done anything,
- * and nothing revisits it.
- *
- * This is plan 9's arrangement -- port/proc.c's `Schedq runq[Nrq]` is
- * global there too -- rather than the per-cpu queues and work stealing
- * of OpenBSD's kern_sched.c. The usual argument for per-cpu queues is
- * keeping cpus off one lock on the hottest path.
- *
- * That argument was dismissed here on the grounds that the ipc lock was
- * always held longer, so this one could not contend first. Splitting
- * the ipc lock ended it: on microvm_pairs at -smp 8 this lock is 90%
- * contended against the ipc buckets' 4%. It is the ceiling now. Below
- * eight cpus it is not -- the same test is flat from one to four -- so
- * this is a real problem at one width and not yet at the others.
- *
- * What costs is the number of acquisitions, not the work under them.
- * Timing the critical sections says the lock is held for 2000 Mcycles
- * of the ~5400 a run takes, while the cpus spin for 19000 between them:
- * a section is around 44 cycles of work on one cpu and around 260 when
- * eight are passing the line about, and it is that handoff that is
- * being paid nearly six million times. Proportional backoff in the spin
- * was tried and measured nothing, which is the same finding from the
- * other side -- the waiters are not the problem, the traffic is.
- *
- * So dispatch_phase folds the requeue of the proc just run into the
- * same acquisition as the take of the next one, and reads its bound
- * there too. That took a run from 7.67M acquisitions to 5.90M and 27845
- * Mcycles of spinning to 19100, for 1.66s to 1.38s of wall clock. What
- * is left is about seven acquisitions per round trip: one per dispatch,
- * one per make_ready, one per proc_block, and the lap boundary.
- *
- * Splitting the lock is the next step and there are two shapes for it.
- * plan 9's is to lock each priority queue separately rather than the
- * whole set, which does nothing for a workload whose procs all sit in
- * one bucket -- this one. The other is per-cpu queues, which is what
- * made the ipc side cheap, and which is exactly what the top of this
- * comment gives up on purpose.
- *
- * `runq` is the lap in progress, `donq` what has already had a turn,
- * and dispatch_lap swaps them. schedlock guards both, and also every
- * cpu's current/idle/dispatching -- readers of those are always
- * deciding something about these queues at the same time.
+ * schedlock guards both, and every cpu's current/idle/dispatching with
+ * them -- a reader of those is always deciding something about these
+ * queues at the same time. It is the contention ceiling above a few
+ * cpus, and docs/scheduling.md has the measurements and the two ways out.
  */
 static struct lock schedlock = LOCK_INIT;
 static struct rqset schedq[2];
@@ -9292,6 +8213,12 @@ proc_unqueue(struct kproc *p)
 	unlock(&schedlock);
 }
 
+/* mark a proc runnable and price it, which is plan 9's ready(). The
+ * priority is computed here rather than at dispatch, so the dispatcher
+ * only reads an int and reprioritize runs once per wakeup instead of
+ * once per ready proc per lap. That needs a decay independent of how
+ * often it is sampled, since wakeups are irregular where laps are not.
+ */
 static void
 make_ready(struct kproc *p)
 {
@@ -9342,23 +8269,15 @@ make_ready(struct kproc *p)
 	 */
 	struct rqset *keep = p->onq;
 
-	/* p may be running right now on another cpu, which is a case
-	 * that cannot arise on one cpu: there, the only proc running is
-	 * the one doing the sending. Enqueueing it would put it on a
-	 * bucket while that cpu's dispatch_lap still holds it, and
-	 * dispatch_lap enqueues it again when the resume returns -- one
-	 * proc on two buckets, and a run queue that no longer
-	 * terminates.
-	 *
-	 * So leave it to the cpu running it. Marking it READY is
-	 * enough: dispatch_lap requeues on exactly that, and it gives
-	 * the proc back under this same lock, so one of the two always
-	 * sees the other.
-	 *
-	 * The proc is asked rather than the cpus, for the reason in
-	 * proc_running: a scan of cpu_at() misses an AP that is
-	 * dispatching but not yet counted, and two cpus then take the
-	 * same proc.
+	/* p may be running on another cpu right now. Enqueueing it would
+	 * put it on a bucket while that cpu still holds it, and dispatch
+	 * enqueues it again when the resume returns -- one proc on two
+	 * buckets, and a run queue that no longer terminates.
+	 * So leave it to the cpu running it: marking it READY is enough,
+	 * because dispatch requeues on exactly that and gives the proc
+	 * back under this same lock, so one of the two always sees the
+	 * other. Ask the proc, not the cpus, for the reason in
+	 * proc_running.
 	 */
 	if (p->oncpu) {
 		p->status = READY;
@@ -9429,20 +8348,14 @@ count_runnable(void)
 	return runq->n + donq->n + running;
 }
 
-/* run the proc's sys.atexit handlers, LIFO, on the main state -- p->co
- * has finished, but its registry is p->L's, so the list is still here.
- * self() reads the handler state's extraspace, so the kernel api resolves
- * without help. The plain-C paths that have no lua_State to consult --
- * the disk read-gate io.open hits, see fopen_allowed -- read
- * cpu_self()->current, and this runs inside run_proc, where dispatch_lap
- * published that for the whole resume before calling it. So there is
- * nothing to set here: this used to set and clear it around the loop,
- * back when it was a bare global, and clearing it mid-resume is exactly
- * what make_ready must not see -- it would enqueue a proc dispatch_lap
- * still holds.
+/* run the proc's sys.atexit handlers, last first, on the main state:
+ * p->co has finished, but the list lives in p->L's registry.
  *
- * Errors in a handler are swallowed the way a finalizer's are, since
- * there is no longer a caller to report them to.
+ * Nothing sets cpu_self()->current here. This runs inside run_proc,
+ * which published it for the whole resume, and clearing it mid-resume
+ * is what make_ready must not see -- it would enqueue a proc that
+ * dispatch still holds. Errors are swallowed as a finalizer's are,
+ * since there is no caller left to report them to.
  */
 static void
 run_atexit(struct kproc *p)
@@ -9466,28 +8379,23 @@ run_atexit(struct kproc *p)
 	lua_pop(L, 1);		/* the handler table */
 }
 
+/* resume one READY proc, spending its whole weight. Returns 1 if it ran
+ * at all, which is what tells the caller the machine is not idle.
+ */
 static int
 run_proc(struct kproc *p)
 {
 	int ran = 0;
 
-	/* WRR: a proc with weight>1 (see sys.set_priority) gets resumed up
-	 * to that many times in a row before we move on, instead of exactly
-	 * once -- the entire "programmable scheduler" surface is this one
-	 * loop bound reading a plain int; no lua code runs inside the
-	 * decision.
+	/* a proc with weight above 1 is resumed that many times in a row
+	 * before dispatch moves on. The whole programmable-scheduler
+	 * surface is this loop bound reading an int.
 	 */
 	for (int w = 0; w < p->weight; w++) {
 		/* collect the waits left behind by whoever woke this proc,
-		 * before any lua runs. The loop only comes round again
-		 * while p is READY, and a READY proc holding waits is
-		 * exactly the woken case, so this is the right place for
-		 * it on both the first pass and the rest.
-		 *
-		 * It has to be before the resume rather than after,
-		 * because the double-block test reads the same list: a
-		 * proc that called sys.block with stale entries still
-		 * attached would be told it was already blocked.
+		 * before any lua runs. Before the resume rather than
+		 * after, because the double-block test reads the same
+		 * list: stale entries read as "already blocked".
 		 */
 		wait_reap(p);
 
@@ -9526,25 +8434,15 @@ run_proc(struct kproc *p)
 		p->cputime += platform_ticks() - t0;
 		p->resumed = 0;
 
-		/* a proc can run a full hook window (200k insns) before
-		 * yielding; drain the 16-byte fifo now so it can't overflow
-		 * between serial pumps.
-		 */
-		/* drain the 16-byte rx fifo, but on a deadline rather than
-		 * after every resume.
-		 *
-		 * the hazard is real: a proc can run a full hook window
-		 * before yielding, and a lap can carry LAPSPILL dispatches
-		 * before it reaches the top of the loop again, so pump_serial
-		 * is not a tight bound on how long the fifo goes undrained.
-		 * that is why this is here and not only up there.
-		 *
-		 * but the drain costs an inb on COM2's LSR, which is a port
-		 * i/o trap, and doing it per resume made it 74% of a
-		 * cross-proc round trip -- measured, not guessed. at 115200
-		 * baud the fifo takes ~1.39ms to fill 16 bytes, so draining
-		 * on a deadline a good margin inside that keeps the same
-		 * guarantee for two rdtsc and a compare.
+		/* drain the 16-byte rx fifo, on a deadline rather than
+		 * after every resume. A proc can run a full hook window
+		 * before yielding and a lap can carry LAPSPILL dispatches,
+		 * so the serial pump is no tight bound on how long the fifo
+		 * goes undrained -- hence a drain here as well.
+		 * The drain itself is a port i/o trap, and doing it per
+		 * resume cost most of a cross-proc round trip. A deadline
+		 * well inside the fifo's fill time keeps the guarantee for
+		 * two clock reads and a compare.
 		 */
 		unsigned long long now = platform_ticks();
 
@@ -9568,37 +8466,25 @@ run_proc(struct kproc *p)
 			proc_kill(p, 0);
 		}
 		else if (rc == LUA_ERRMEM)
-			/* lua reports OOM via a static, preallocated message
-			 * specifically so it never has to allocate to report
-			 * a failure caused by having no memory left.
-			 * luaL_traceback would break that guarantee (it
-			 * allocates to build the traceback string) and, this
-			 * proc being already at its limit, fail again -- skip
-			 * it here, same plain message as before.
-			 *
-			 * it breaks rather than dies all the same: an
-			 * out-of-memory corpse is both the one most worth
-			 * looking at and the one no traceback can describe,
-			 * and sys.stack reads it precisely because
-			 * src/debug.c allocates nothing in the target.
+			/* no traceback here: lua reports out of memory
+			 * through a preallocated message so that it never
+			 * allocates to report having no memory, and building
+			 * a traceback would break that and fail again. It
+			 * still breaks rather than dies -- such a corpse is
+			 * the one most worth reading, and sys.stack allocates
+			 * nothing in a target.
 			 */
 			proc_break(p, lua_tostring(p->co, -1));
 		else {
-			/* a coroutine that errors out of lua_resume
-			 * deliberately does NOT unwind its stack -- that's
-			 * what lets luaL_traceback walk it right here, same
-			 * trick xpcall's message handler relies on, just done
-			 * from the C side after resume already returned
-			 * instead of during unwinding.
-			 *
-			 * error object is on the stack; read it before the
+			/* a coroutine that errors out of lua_resume does not
+			 * unwind its stack, which is what lets the traceback
+			 * be walked here, after resume returned. The error
+			 * object is on the stack: read it before the
 			 * traceback replaces the top.
-			 *
-			 * the traceback is built here as well as held in
-			 * the corpse, because it is what reaches the console
-			 * log: the corpse answers a question someone thought
-			 * to ask, the log answers the one nobody was there
-			 * for.
+			 * Built here as well as held in the corpse, because
+			 * this is what reaches the log -- the corpse answers
+			 * a question someone thought to ask, the log answers
+			 * the one nobody was there for.
 			 */
 			const char *errmsg = lua_tostring(p->co, -1);
 
@@ -9610,28 +8496,18 @@ run_proc(struct kproc *p)
 	return ran;
 }
 
-/* two-level poll backoff for com2 (no EFI event backs raw uart rx, see
- * docs/uefi-notes.md): a faster period while bytes are actively
- * arriving, a slower one after a run of empty polls, snapping back the
- * instant a byte shows up. bounds the worst-case "first byte after
- * idle" latency to one slow period while cutting wakeups the rest of
- * the time.
- *
- * these numbers are measured, not requested. SetTimer has a hard floor
- * at the platform's timer-interrupt period -- 10ms under OVMF (100Hz)
- * -- so anything below that is silently rounded up to it, while
- * anything above is honoured accurately (15ms measured 14.975ms). this
- * code used to ask for 1ms and comment "~1ms latency"; it was getting
- * 9.98ms and had been all along. ask for what we can actually have.
- *
- * consequence worth knowing: the fast/slow split is a 1.5x reduction in
- * wakeups (10ms -> 15ms), not the 15x the old constants implied. going
- * slower is possible and cheap, but the slow period IS the
- * first-byte-after-idle latency for interactive 9p over com2, so it is
- * a latency/wakeup trade rather than free.
+/* two-level poll backoff for com2, which no firmware event backs: a
+ * faster period while bytes arrive, a slower one after a run of empty
+ * polls, snapping back the instant a byte shows up.
+ * These are measured, not requested. The firmware timer has a hard
+ * floor at its own interrupt period, so anything below is silently
+ * rounded up while anything above is honored accurately -- see
+ * docs/uefi-notes.md. The slow period is the first-byte-after-idle
+ * latency for interactive 9p over com2, so going slower is a latency
+ * trade rather than free.
  */
 #define TICK_FAST_100NS  100000		/* 10ms: the OVMF floor, measured */
-#define TICK_SLOW_100NS  150000		/* 15ms, honoured accurately */
+#define TICK_SLOW_100NS  150000		/* 15ms, honored accurately */
 #define TICK_IDLE_THRESHOLD 25		/* consecutive empty polls before backing off */
 
 /* consecutive laps with nothing dispatched before the heap is swept.
@@ -9646,29 +8522,15 @@ run_proc(struct kproc *p)
 #define WATCHDOG_SECS    60
 #define WATCHDOG_PET_MS  15000
 
-/* one lap of dispatch on one cpu: both phases over its own queues,
- * then the drain and the swap. Every cpu that schedules runs this and
- * nothing else -- what the boot processor does around it (the device
- * pumps, the timers, the firmware tick) is machine-wide work that an
- * AP must not touch, not part of scheduling.
- *
- * Returns whether anything ran, which is what the caller's idle
- * decision is made on.
- */
 /* one phase of a lap: take procs by `take` until the bound runs out or
- * the queue is empty, running each one.
+ * the queue is empty, running each one. Returns whether anything ran.
  *
- * Both phases are this loop; they differ in how they choose (priority
- * or not) and in what bounds them. The bound is read at the first
- * acquisition rather than in one of its own, and the requeue of the
- * proc just run happens in the same acquisition as the take of the
- * next one -- so a phase costs one acquisition per proc plus one to
- * find the queue empty, rather than two per proc plus two of its own.
- * That halving is the point: at -smp 8 this lock is contended on nine
- * acquisitions in ten and it is the acquisitions, not the work done
- * under them, that cost. See the note over schedlock.
- *
- * Returns whether anything ran.
+ * Both phases are this loop, differing in how they choose and in what
+ * bounds them. The bound is read at the first acquisition rather than
+ * in one of its own, and the requeue of the proc just run shares the
+ * acquisition that takes the next -- so a phase costs one acquisition
+ * per proc rather than two. It is the acquisitions, not the work under
+ * them, that cost; see the note over schedlock.
  */
 static int
 dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
@@ -9728,19 +8590,15 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 		 */
 		if (run_proc(p))
 			ran = 1;
-		/* the collector's safe point, and the only one.
+		/* the collector's safe point, and the only one. Here
+		 * rather than inside run_proc because nothing is held
+		 * here, and no C local holds anything reachable only from
+		 * lua -- run_proc's error paths carry lua strings while
+		 * they build a traceback.
 		 *
-		 * Here rather than inside run_proc because here nothing
-		 * is held -- no bucket, no schedlock -- and no c local
-		 * holds anything reachable only from lua. run_proc's
-		 * error paths carry lua_tostring results while they
-		 * build a traceback, which is exactly what a collection
-		 * must not run underneath.
-		 *
-		 * After the resume rather than before it, because a
-		 * proc that blocks and is never woken would not reach a
-		 * point before its next resume, and its garbage would
-		 * sit for as long as it stayed parked.
+		 * After the resume, not before: a proc that blocks and is
+		 * never woken reaches no point before its next resume, and
+		 * its garbage would sit for as long as it stayed parked.
 		 */
 		gc_step(p, p->L, 0);
 		prev = p;
@@ -9748,6 +8606,13 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 	return ran;
 }
 
+/* one lap of dispatch on one cpu: both phases, then the drain and the
+ * swap. Every cpu that schedules runs this and nothing else. What the
+ * boot processor does around it -- the device pumps, the timers, the
+ * firmware tick -- is machine-wide work an AP must not touch, rather
+ * than part of scheduling. Returns whether anything ran, which is what
+ * the caller's idle decision rests on.
+ */
 static int
 dispatch_lap(struct cpu *me)
 {
@@ -9759,18 +8624,13 @@ dispatch_lap(struct cpu *me)
 	if (dispatch_phase(me, rq_take_high, 0))
 		ran = 1;
 
-	/* phase two is bounded for the same reason phase one is, and
-	 * it is the bound that makes the lap terminate at all. a proc
-	 * woken mid-lap joins the current runq (see make_ready), so
-	 * two procs feeding each other messages hand phase two a fresh
-	 * proc every time it takes one. an unbounded drain never
-	 * reaches the top of the loop again, and expire_timers,
-	 * pump_eth and pump_serial all live there -- one busy pair
-	 * stops every timer on the machine, in every proc, whether or
-	 * not it has anything to do with the pair.
-	 *
-	 * the floor is what keeps the bound from being expensive: see
-	 * LAPSPILL.
+	/* the bound is what makes the lap terminate at all: a proc woken
+	 * mid-lap joins the current runq, so two procs feeding each
+	 * other hand this phase a fresh proc every time it takes one. An
+	 * unbounded drain never reaches the top of the loop again, where
+	 * the timers and the device pumps live, and one busy pair would
+	 * stop every timer on the machine. LAPSPILL is the floor that
+	 * keeps the bound from being expensive.
 	 */
 	if (dispatch_phase(me, rq_take_any, LAPSPILL))
 		ran = 1;
@@ -9783,20 +8643,10 @@ dispatch_lap(struct cpu *me)
 	 * cpu cannot swap on its own schedule without handing the others
 	 * procs that already had a turn.
 	 *
-	 * A first version counted the cpus inside a lap and let the last
-	 * one out swap. It livelocked, and the measurement is why it was
-	 * caught: laps went from 60 at -smp 1 to ~200000 each at -smp 4.
-	 * Cpus finishing early re-enter immediately, so "all of them are
-	 * out at once" almost never held, the swap kept being deferred,
-	 * and every cpu churned empty laps over a runq whose contents
-	 * were all sitting in donq.
-	 *
-	 * What still has to be true is that donq drains: a proc there
-	 * runs again only after a swap. runq shrinks on every take, and
-	 * the only thing that refills it is a mid-lap wakeup -- so two
-	 * procs feeding each other can hold the lap open, which is the
-	 * same case phase two's bound exists for, and the bound is what
-	 * returns this cpu to kernel_run either way.
+	 * Counting the cpus inside a lap and letting the last one out
+	 * swap livelocks instead -- cpus finishing early re-enter at
+	 * once, so they are never all out together, and every cpu churns
+	 * empty laps over a runq whose procs all sit in donq.
 	 */
 	lock(&schedlock);
 	if (runq->n == 0 && donq->n > 0) {
@@ -9810,20 +8660,15 @@ dispatch_lap(struct cpu *me)
 	return ran;
 }
 
-/* what an application processor runs, and the whole of it.
+/* what an application processor runs, and the whole of it. The boot
+ * processor's loop is the same two phases wrapped in machine-wide work
+ * -- device pumps, timers, the firmware tick -- and none of that is an
+ * AP's business. Under efi it could not be: TPL is one cooperative lock
+ * and an AP calling firmware is undefined, so this inherits that
+ * division rather than inventing one.
  *
- * The boot processor's loop is the same two phases wrapped in
- * machine-wide work: the device pumps, expire_timers, the firmware
- * tick, the boot payload. None of that is an AP's business. On
- * -Dplatform=efi it could not be even if it were wanted -- TPL is one
- * big cooperative lock (docs/uefi-notes.md) and an AP calling firmware
- * is undefined -- and this platform inherits that division rather than
- * inventing one.
- *
- * The idle is a real sleep, ended by the reschedule ipi that make_ready
- * sends when it puts work on this cpu's queue. It is not a new "wait
- * for the next thing" primitive: it is the same shape efi_shim.c's
- * wait already has, given the one wakeup source an AP has.
+ * The idle is a real sleep, ended by the reschedule ipi make_ready
+ * sends when it puts work on the queue.
  */
 void
 kernel_run_ap(void)
@@ -9843,21 +8688,15 @@ kernel_run_ap(void)
 			continue;
 		}
 
-		/* nothing to run. Publish that under the lock, because
-		 * make_ready reads it under the same lock to decide
-		 * whether to send the ipi -- that is what makes it
-		 * impossible to sleep just after someone decided we did
-		 * not need waking.
-		 *
-		 * The lock settles who decides; it does not close the
-		 * window. This cpu dispatches with interrupts on, so an
-		 * ipi sent the instant after the lock is dropped would be
-		 * taken here as an ordinary interrupt, handled, and lost
-		 * -- and the sleep below would then never end, with work
-		 * already sitting on this queue. So interrupts go off
-		 * before the queue is looked at and stay off into
-		 * platform_cpu_idle(), which re-enables them as it goes
-		 * to sleep.
+		/* nothing to run. Publish that under the lock, which is
+		 * where make_ready reads it to decide whether to send the
+		 * ipi, so this cannot sleep just after someone decided it
+		 * did not need waking. The lock settles who decides; it
+		 * does not close the window. An ipi sent the instant after
+		 * the lock drops would be taken as an ordinary interrupt
+		 * and lost, and the sleep would never end with work
+		 * already queued. So interrupts go off before the queue is
+		 * looked at, and stay off into platform_cpu_idle.
 		 */
 		platform_intr_off();
 		lock(&schedlock);
@@ -9914,27 +8753,15 @@ kernel_run(void)
 
 		cpu_self()->nlaps++;
 
-		/* nothing may hold the ipc lock across the top of a lap:
-		 * every acquisition is inside one call and releases
-		 * before returning to here. This catches the release
-		 * that a lua error longjmped past, which is the failure
-		 * mode the lua-facing acquisitions have and which no
-		 * amount of reading finds reliably.
-		 *
-		 * It asks whether this cpu holds it, not whether anyone
-		 * does. Another cpu holding it here is the ordinary case,
-		 * and asking lock.h's holding() reported that as a leak
-		 * -- a panic that arrives at random on a machine that is
-		 * working correctly.
-		 *
-		 * Any bucket, never every one. A leak is a single missed
-		 * release, so it is a single bucket left held. Demanding
-		 * all eight asks whether the cpu is inside a wide region,
-		 * which answers no for exactly the case this exists to
-		 * catch -- and the recursion comment above tells a reader
-		 * to trust this check over the tests, so it has to be the
-		 * question that finds a leak rather than the one that
-		 * looks similar.
+		/* nothing may hold the ipc lock across the top of a lap.
+		 * This catches the release a lua error jumped past, which
+		 * is the failure mode the lua-facing acquisitions have and
+		 * which no amount of reading finds reliably.
+		 * This cpu, not any cpu: another holding it here is
+		 * ordinary. Any bucket, never every one: a leak is a
+		 * single missed release, so demanding all eight asks
+		 * whether this cpu is inside a wide region, which answers
+		 * no for exactly the case this exists to catch.
 		 */
 		if (ipcheld_any())
 			platform_abort("ipclock held across a lap");
@@ -9978,45 +8805,15 @@ kernel_run(void)
 				tick_slow = 1;
 			}
 		}
-		/* dispatch in two phases, and the split is the whole design.
-		 *
-		 * phase 1 orders by priority: highest first, so an
-		 * interactive proc answers before a hog gets another turn.
-		 * phase 2 is a plain slot scan that ignores priority
-		 * entirely and picks up whatever phase 1 did not run --
-		 * including procs woken DURING phase 1.
-		 *
-		 * phase 2 is the starvation guarantee, and it is deliberately
-		 * independent of the priority function. every proc READY when
-		 * the lap began runs exactly once in it, whatever
-		 * reprioritize() computes, and one woken during the lap runs
-		 * in it or in the next. a policy that is buggy, hostile or
-		 * merely untuned can cost latency; it cannot wedge the
-		 * machine. that matters because policy is exactly the part we
-		 * expect to get wrong -- see AGENTS.md.
-		 *
-		 * plan 9 cannot do this: runproc() scans runq[] from the top
-		 * and takes the first thing it finds, with no aging, so a
-		 * high-basepri proc starves a low one indefinitely (which
-		 * PriEdf > PriKproc > PriNormal makes deliberate). it has
-		 * unbounded procs, so an exhaustive sweep would be O(nproc)
-		 * per decision. we pay nothing for the guarantee because a
-		 * lap is bounded by what was runnable when it started, not
-		 * by how many procs exist -- see the budget below.
-		 */
-		/* phase one takes the highest priority first, so an
-		 * interactive proc answers before a hog gets another turn.
-		 * it is bounded by how many were waiting when the lap
-		 * started, so it cannot spin on procs it keeps waking.
-		 *
-		 * phase two then takes whatever is left, priority not
-		 * consulted -- including anything woken during phase one --
-		 * and is bounded too, by how many were waiting when it
-		 * started or by LAPSPILL, whichever is larger.
-		 *
-		 * "already had its turn" is membership in donq rather than a
-		 * per-lap marker, so nothing here is sized against MAXPROCS
-		 * and nothing scans.
+		/* two phases, and the split is the whole design. Phase one
+		 * takes the highest priority first, so an interactive proc
+		 * answers before a hog gets another turn. Phase two takes
+		 * whatever is left, priority never consulted, including
+		 * anything woken during phase one. Phase two is the
+		 * starvation guarantee, deliberately independent of the
+		 * priority function: a policy that is buggy or hostile can
+		 * cost latency, but cannot wedge the machine. Both phases
+		 * are bounded, and "had its turn" is membership in donq.
 		 */
 		ran = dispatch_lap(me);
 
@@ -10036,15 +8833,11 @@ kernel_run(void)
 
 		if (!ran) {
 			/* everyone blocked: sleep until a key, a frame, or
-			 * the tick. without the wire in here a frame waits
-			 * for the next tick to be noticed, because pump_eth
-			 * only runs at the top of a lap and nothing else
-			 * ends the sleep.
-			 *
-			 * ethwait may be 0 -- no card, or a driver that
-			 * publishes no event -- and then the tick is the
-			 * bound again, which is the behaviour this replaces
-			 * rather than a failure.
+			 * the tick. Without the wire here a frame waits for
+			 * the next tick, because the eth pump runs only at
+			 * the top of a lap. ethwait may be 0, for no card or
+			 * a driver publishing no event, and then the tick is
+			 * the bound again.
 			 */
 			cpu_self()->nidle++;
 			if (tick) {

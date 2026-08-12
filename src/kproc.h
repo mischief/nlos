@@ -3,7 +3,7 @@
 
 /* the kernel's internal types: procs, ports, rights, waits. kernel.h is
  * the public surface, for platform code and stdio; this is for the
- * kernel's own modules. see docs/ipc.md and docs/proc.md.
+ * kernel's own modules. see docs/ipc.md, docs/proc.md and docs/locking.md.
  */
 
 #include <stdatomic.h>
@@ -198,7 +198,7 @@ struct kproc {
 
 	/* some port has claimed the right to wake this proc. several cpus
 	 * may wake one alt at once, each under a different bucket; the
-	 * winner takes this 0 to 1. cleared by wait_reap. see docs/ipc.md.
+	 * winner takes this 0 to 1. cleared by wait_reap. see docs/locking.md.
 	 */
 	atomic_int woken;
 
