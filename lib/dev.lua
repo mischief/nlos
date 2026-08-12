@@ -30,7 +30,7 @@
 --
 --   attach()              -> h, err        root handle
 --   walk(h, name)         -> h, err        one element; "." and ".." legal
---   stat(h)               -> st, err       {name=, size=, dir=}
+--   stat(h)               -> st, err       {name=, size=, dir=, mtime=}
 --   open(h, mode)         -> h, err        mode "r" | "w" | "rw"
 --   create(h, name, mode) -> h, err        in directory h; returns it OPEN
 --   read(h, off, n)       -> data, err     "" means end of file

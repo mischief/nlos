@@ -162,7 +162,8 @@ function M.new(ns, root)
 		local st = h.wc and h.wc:stat() or
 		    must(ns:stat(nspath(h.path)))
 
-		return { name = basename(h.path), size = st.size, dir = st.dir }
+		return { name = basename(h.path), size = st.size, dir = st.dir,
+		    mtime = st.mtime }
 	end
 
 	function B.open(h, mode)
@@ -226,13 +227,16 @@ function M.new(ns, root)
 	end
 
 	function B.readdir(h)
+		-- what the backend below returned is already the shape this
+		-- one answers in, and NS:readdir built the list for us alone.
+		-- Copying it entry by entry only spends the machine's memory
+		-- to arrive at the same answer.
 		local ents = must(ns:readdir(nspath(h.path)))
-		local out = {}
+
 		for _, e in ipairs(ents) do
-			out[#out + 1] = { name = e.name, size = e.size or 0,
-			    dir = e.dir }
+			if e.size == nil then e.size = 0 end
 		end
-		return out
+		return ents
 	end
 
 	function B.clunk(h)

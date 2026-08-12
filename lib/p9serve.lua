@@ -59,7 +59,7 @@ function M.responder(backend)
 		return p9.packstat({
 			qid = qidof(path, st),
 			mode = st.dir and DIRMODE or FILEMODE,
-			atime = 0, mtime = 0,
+			atime = st.mtime or 0, mtime = st.mtime or 0,
 			length = st.dir and 0 or (st.size or 0),
 			name = st.name,
 			uid = "glenda", gid = "glenda", muid = "glenda",

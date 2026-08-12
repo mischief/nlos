@@ -224,14 +224,37 @@ function M.packtime(t)
   return ((s // 3600) << 11) | ((s % 3600 // 60) << 5) | ((s % 60) // 2)
 end
 
+-- Remembered by the two words it converts.
+--
+-- A directory listing converts one of these per entry, and the files in
+-- a directory are usually written together -- an image built in one
+-- pass gives every file the same stamp -- so the second entry onwards
+-- is a table lookup. The key is the pair packed into one integer, since
+-- a date without its time is not an answer.
+--
+-- Cleared wholesale rather than evicted: this is a pure function of its
+-- key, so losing the table costs recomputation and nothing else.
+local dtcache, ndtcache = {}, 0
+
 function M.unpackdatetime(date, time)
   if date == 0 then return 0 end
 
+  local key = (date << 16) | time
+  local hit = dtcache[key]
+
+  if hit then return hit end
+
   local days = daysfromcivil(1980 + ((date >> 9) & 0x7F),
       (date >> 5) & 0x0F, date & 0x1F)
-
-  return days * 86400 + ((time >> 11) & 0x1F) * 3600 +
+  local v = days * 86400 + ((time >> 11) & 0x1F) * 3600 +
       ((time >> 5) & 0x3F) * 60 + (time & 0x1F) * 2
+
+  if ndtcache >= 512 then
+    dtcache, ndtcache = {}, 0
+  end
+  dtcache[key] = v
+  ndtcache = ndtcache + 1
+  return v
 end
 
 --------------------------------------------------------------------------

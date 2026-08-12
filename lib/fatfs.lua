@@ -95,6 +95,7 @@ function M.new(fs)
 	-- the root is shadowed by it; a served volume reserves the name.
 	local CTL = "ctl"
 
+
 	local function isctl(h)
 		return h.ctl == true
 	end
@@ -102,6 +103,7 @@ function M.new(fs)
 	local function h_ctl()
 		return { ctl = true }
 	end
+
 
 	function B.attach()
 		return h_of("/")
@@ -157,6 +159,7 @@ function M.new(fs)
 			name = basename(h.path),
 			size = ent.size,
 			dir = isdir(ent),
+			mtime = ent.mtime,
 		}
 	end
 
@@ -287,13 +290,20 @@ function M.new(fs)
 		if h.path == "/" then
 			out[#out + 1] = { name = CTL, size = 0, dir = false }
 		end
-		for _, e in ipairs(fail(fs:ls(h.path))) do
-			out[#out + 1] = {
-				name = e.name,
-				size = e.size,
-				dir = (e.attr & dat.Adir) ~= 0,
-			}
-		end
+
+		-- the entry is already in hand, so scan the directory it names
+		-- rather than walking the path to it again, and shape each
+		-- entry once instead of building fat's and then copying it.
+		fs:scandir(fs:dirent(ent), function(e)
+			if e.name ~= "." and e.name ~= ".." then
+				out[#out + 1] = {
+					name = e.name,
+					size = e.size,
+					dir = (e.attr & dat.Adir) ~= 0,
+					mtime = e.mtime,
+				}
+			end
+		end)
 		return out
 	end
 
