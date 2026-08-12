@@ -1293,10 +1293,23 @@ test('arena', arena_test, protocol: 'tap', timeout: 120)
 host_arch = build_machine.cpu_family()
 if host_arch in ['x86_64', 'aarch64', 'riscv64']
   thread_dep = dependency('threads', native: true)
+
+  # NCPU only has to exceed 1 to select the ticket lock; the thread count
+  # is separate, and belongs to the host rather than to that constant.
+  # Oversubscribing a spinlock does not find more races, it just spins:
+  # on a four-core machine eight threads cost minutes of cpu and time the
+  # test out. Two is the floor, below which there is nothing to exclude.
+  nproc = run_command('nproc', check: false)
+  if nproc.returncode() != 0
+    nproc = run_command('sysctl', '-n', 'hw.ncpu', check: false)
+  endif
+  ncpu = nproc.returncode() == 0 ? nproc.stdout().strip().to_int() : 4
+  nthread = ncpu > 2 ? ncpu : 2
+
   lock_test = executable('lock_test',
     ['test/lock_test.c'],
     include_directories: include_directories('src', 'src' / host_arch),
-    c_args: ['-DNCPU=8'],
+    c_args: ['-DNCPU=8', '-DNTHREAD=@0@'.format(nthread)],
     dependencies: thread_dep,
     native: true,
   )
@@ -1322,7 +1335,8 @@ if host_arch in ['x86_64', 'aarch64', 'riscv64']
   #
   # The test is skipped, not failed, where libtsan is absent. It is a
   # toolchain component, not a source dependency.
-  tsan_args = ['-DNCPU=8', '-DNITER=2000', '-fsanitize=thread', '-g']
+  tsan_args = ['-DNCPU=8', '-DNTHREAD=@0@'.format(nthread), '-DNITER=2000',
+    '-fsanitize=thread', '-g']
   if cc.has_link_argument('-fsanitize=thread')
     lock_test_tsan = executable('lock_test_tsan',
       ['test/lock_test.c'],

@@ -49,7 +49,14 @@ diag(const char *fmt, ...)
 	fflush(stdout);
 }
 
+/* more threads than the host has cpus is not a stronger test, it is a
+ * different one: a ticket lock hands off in fifo order, so a descheduled
+ * holder of the next ticket parks every other thread in machine_relax()
+ * for a timeslice. The build sets this to the host's cpu count.
+ */
+#ifndef NTHREAD
 #define NTHREAD	8
+#endif
 #ifndef NITER
 #define NITER	20000
 #endif
