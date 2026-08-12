@@ -36,7 +36,6 @@ local M = {}
 local BOOT = [[
 local a = ...
 local stdout = require("stdout")
-local log = require("log")
 
 if a.ns then
 	assert(require("ns").adopt(a.ns))
@@ -47,7 +46,6 @@ end
 -- physical console instead.
 stdout.set(a.out and a.out.__right or nil,
     a.err and a.err.__right or nil)
-log.set(a.log and a.log.__right or nil)
 return assert(load(a.src, a.name))(a.arg)
 ]]
 
@@ -63,8 +61,8 @@ return assert(load(a.src, a.name))(a.arg)
 --         "genuinely nowhere". see lib/stdout.lua on why there is no
 --         fallback to the raw console.
 --   err   a separate port for io.stderr; defaults to `out`.
---   log   a port for stamped diagnostics (lib/log.lua), inherited like
---         `out`. `log = false` means nowhere.
+--         diagnostics are not here: sys.log goes straight to the
+--         kernel's ring, so there is no port to inherit or withhold.
 --   arg   the caller's own value, delivered to the chunk as `...`.
 function M.spawn(src, opts)
 	opts = opts or {}
@@ -80,12 +78,6 @@ function M.spawn(src, opts)
 		out = require("stdout").out
 	end
 
-	local logp = opts.log
-
-	if logp == nil then
-		logp = require("log").port
-	end
-
 	return sys.spawn(BOOT, {
 		name = name,
 		reductions = opts.reductions,
@@ -98,7 +90,6 @@ function M.spawn(src, opts)
 			arg = opts.arg,
 			out = out and { __right = out } or nil,
 			err = opts.err and { __right = opts.err } or nil,
-			log = logp and { __right = logp } or nil,
 		},
 	})
 end

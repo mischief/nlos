@@ -41,13 +41,10 @@ end
 -- console, which is what "one owner per resource" asks for.
 require("stdout").set(caps_of.cons)
 
--- diagnostics are a different stream from output: stamped and tagged,
--- sharing kernel.c klog()'s format so the boot transcript reads as one
--- thing. see lib/log.lua.
-local log = require("log")
-
-log.set(caps_of.cons, "init")
-log.log("entropy: %s", rng and "los.platform.rng" or
+-- diagnostics are a different stream from output: sys.log lands in the
+-- kernel's ring, stamped and tagged with this proc's name, alongside
+-- what the kernel writes there itself.
+sys.log("entropy: %s", rng and "los.platform.rng" or
     ("none (" .. tostring(rng == nil and ok_rng) .. ")"))
 local rootns = nsmod.new()
 
@@ -79,7 +76,7 @@ do
 		names[#names + 1] = k
 	end
 	table.sort(names)
-	log.log("granted: %s", table.concat(names, " "))
+	sys.log("granted: %s", table.concat(names, " "))
 end
 
 print(("%s on %s (fw rev 0x%x)"):format(_VERSION, efi.firmware,
@@ -180,7 +177,7 @@ if caps_of.blk then
 		rootns:mount("/n/gefs", require("mnt").new(g), "mnt",
 		    { port = { __right = g } })
 	end)
-	log.log(gefs_mounted and "gefs mounted at /n/gefs" or
+	sys.log(gefs_mounted and "gefs mounted at /n/gefs" or
 	    "gefs: no volume mounted this boot")
 end
 
@@ -211,7 +208,7 @@ if gefs_mounted and caps_of.tcp then
 
 	sys.send(xh, { net = { __right = caps_of.tcp },
 	    root = "/n/gefs", port = 564 })
-	log.log("gefs exported over 9p on tcp/564")
+	sys.log("gefs exported over 9p on tcp/564")
 end
 
 -- and the whole namespace over tcp/7777: the same exportfs, rooted at "/"
@@ -225,7 +222,7 @@ if has_tcp then
 
 	sys.send(wh, { net = { __right = caps_of.tcp },
 	    root = "/", port = 7777 })
-	print("9p server listening on tcp/7777 (mount me!)")
+	sys.log("9p server listening on tcp/7777")
 end
 
 -- dns server proc: resolves hostnames via lib/dns.lua, riding on the
@@ -237,7 +234,7 @@ local has_dns = caps_of.ip and
     pcall(sys.send, dnssrv, { ip = { __right = caps_of.ip } })
 
 if has_dns then
-	print("dns resolver ready")
+	sys.log("dns resolver ready")
 end
 print("")
 
@@ -272,7 +269,7 @@ do
 	if type(roesp) == "number" then
 		grants.espro = roesp
 	else
-		log.log("svc: no read-only esp right (%s)", tostring(roesp))
+		sys.log("svc: no read-only esp right (%s)", tostring(roesp))
 	end
 	-- fw_cfg WINS over the disk. a host can therefore configure what
 	-- this machine runs -- and hand it the service source too, under
@@ -310,7 +307,7 @@ do
 
 				return inj or rootns:readfile(p)
 			end,
-			log = print,
+			log = sys.log,
 			-- entropy for services that want it. absent on a
 			-- machine whose firmware publishes no RNG, which
 			-- makes a service that needs one fail loudly at its
@@ -319,8 +316,8 @@ do
 		})
 	elseif why and not why:match("^no ") then
 		-- a missing config is a machine with no services, which is
-		-- fine. a config that failed to LOAD is a mistake worth saying.
-		print("svc: " .. tostring(why))
+		-- fine. a config that failed to load is a mistake worth saying.
+		sys.log("svc: %s", tostring(why))
 	end
 end
 

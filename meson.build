@@ -724,7 +724,6 @@ lua_payload = files(
   'lib/http.lua',
   'task/idle.lua',
   'lib/json.lua',
-  'lib/log.lua',
   'lib/mcp.lua',
   'lib/mnt.lua',
   'lib/ninep.lua',
@@ -746,6 +745,7 @@ lua_payload = files(
   'lib/srvc.lua',
   'task/srvd.lua',
   'lib/srvfs.lua',
+  'bin/dmesg.lua',
   'lib/tap.lua',
   'lib/webterm.lua',
   'task/wire.lua',
@@ -870,7 +870,8 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
-              'clock', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep', 'dbgread', 'dbgcap', 'dbglib', 'dbghole']
+              'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
+              'dbgread', 'dbgcap', 'dbglib', 'dbghole']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

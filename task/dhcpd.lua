@@ -330,12 +330,12 @@ end
 
 local function install(l, how)
 	if not apply(l) then
-		print("dhcp: could not install " .. tostring(l.ip))
+		sys.log("could not install " .. tostring(l.ip))
 		return false
 	end
 	lease = l
 	got_at = sys.uptime_ms()
-	print("dhcp: " .. how .. " " .. l.ip .. "/" .. tostring(l.mask) ..
+	sys.log(how .. " " .. l.ip .. "/" .. tostring(l.mask) ..
 	    " gw " .. tostring(l.router) ..
 	    (l.dns and l.dns[1] and (" dns " .. l.dns[1]) or "") ..
 	    " for " .. tostring(l.lease_time) .. "s")
@@ -369,8 +369,7 @@ local function maintain()
 			local l, err = dhcp.acquire(udp, udph, { mac = mac })
 
 			if not (l and install(l, "got")) then
-				print("dhcp: " ..
-				    tostring(err or "install failed") ..
+				sys.log(tostring(err or "install failed") ..
 				    " -- retrying")
 				wait(CHUNK_S)
 			end
@@ -386,7 +385,7 @@ local function maintain()
 			else
 				-- half the lease is still left to get a new
 				-- one from scratch
-				print("dhcp: renew failed (" ..
+				sys.log("renew failed (" ..
 				    tostring(err) .. "), reacquiring")
 				lease = nil
 			end
@@ -395,7 +394,7 @@ local function maintain()
 end
 
 if not mac then
-	print("dhcp: no hardware address, serving an unbound /net")
+	sys.log("no hardware address, serving an unbound /net")
 else
 	thread.spawn(maintain)
 end

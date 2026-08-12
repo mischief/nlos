@@ -1514,23 +1514,70 @@ kputs(const char *s)
 	console_write(s, strlen(s));
 }
 
+/* the transcript, in the kernel because the earliest producers are here
+ * and because a task can die. A cursor is logseq -- bytes ever written,
+ * not a ring offset -- so a reader that fell behind is told what it lost.
+ */
+#define LOGRING	(32 * 1024)
+#define LOGLINE	1024		/* one line, truncated as syslog truncates */
+#define LOGCHUNK 2048		/* the most one sys.dmesg call copies */
+
+static char logring[LOGRING];
+static unsigned long long logseq;	/* bytes ever written */
+static unsigned long long loglost;	/* bytes overwritten unread */
+static struct lock loglock = LOCK_INIT;
+
+static unsigned long long
+logoldest(void)
+{
+	return logseq > LOGRING ? logseq - LOGRING : 0;
+}
+
+/* Nothing in here may log: the gc error path calls kernel_log, and a
+ * second entry with the lock held would sit on itself forever.
+ */
+static void
+logput(const char *s, size_t n)
+{
+	if (n == 0)
+		return;
+	if (n > LOGRING) {		/* LOGLINE bounds every caller */
+		s += n - LOGRING;
+		n = LOGRING;
+	}
+	lock(&loglock);
+
+	unsigned long long before = logoldest();
+	size_t w = (size_t)(logseq % LOGRING);
+	size_t first = LOGRING - w < n ? LOGRING - w : n;
+
+	memcpy(logring + w, s, first);
+	if (first < n)
+		memcpy(logring, s + first, n - first);
+	logseq += n;
+	loglost += logoldest() - before;
+	unlock(&loglock);
+}
+
 /* one stamped diagnostic line, terminated here so callers cannot forget.
  *
  * the format is shared with lib/log.lua: two producers, one transcript.
- * the stamp is taken when the line is EMITTED, which matters because the
- * lua side reaches the console through a port and is therefore delivered
- * later than this synchronous path -- so display order and real order
- * differ, and only the stamps recover it.
+ * the stamp is taken when the line is emitted, which matters because a
+ * proc reaching the console through a port is delivered later than this
+ * synchronous path -- so display order and real order differ, and only
+ * the stamps recover it.
  */
 void
 kernel_log(const char *s)
 {
 	unsigned long long ms = uptime_ms();
 	char buf[320];
-
-	snprintf(buf, sizeof buf, "[%5llu.%03llu] %s\n", ms / 1000,
+	int n = snprintf(buf, sizeof buf, "[%5llu.%03llu] %s\n", ms / 1000,
 	    ms % 1000, s);
+
 	kputs(buf);
+	logput(buf, n < 0 ? 0 : (size_t)n >= sizeof buf ? sizeof buf - 1 :
+	    (size_t)n);
 }
 
 /* ---- ports and rights ---- */
@@ -7419,6 +7466,124 @@ api_uptime_ms(lua_State *L)
 	return 1;
 }
 
+/* the real string.format, captured at proc_new before the chunk has run.
+ * Its address is the registry key. Looking the function up at call time
+ * would find whatever the proc last put there.
+ */
+static const char fmtkey = 0;
+
+/* sys.log(fmt, ...) -- a line in the transcript. Ambient, and the tag
+ * comes from the kernel, so no proc can lie about who wrote one. The
+ * format is protected: killing the reporting proc over bad data is no
+ * answer to it. */
+static int
+api_log(lua_State *L)
+{
+	struct kproc *p = self(L);
+	const char *s = luaL_checkstring(L, 1);
+	unsigned long long ms = uptime_ms();
+	char buf[LOGLINE];
+
+	int n = lua_gettop(L);
+
+	if (n > 1) {
+		/* copies to call with, so the arguments stay where they
+		 * are: index 1 is what anchors `s` on the failure path,
+		 * where the call has eaten everything it was passed.
+		 */
+		if (!lua_checkstack(L, n + 2))
+			return 0;
+		lua_rawgetp(L, LUA_REGISTRYINDEX, &fmtkey);
+		for (int i = 1; i <= n; i++)
+			lua_pushvalue(L, i);
+		if (lua_pcall(L, n, 1, 0) == LUA_OK)
+			s = lua_tostring(L, -1);
+		else
+			lua_pop(L, 1);	/* the format itself, then */
+	}
+
+	int wrote = snprintf(buf, sizeof buf, "[%5llu.%03llu] %s: %s\n",
+	    ms / 1000, ms % 1000, p->name[0] ? p->name : "?", s);
+
+	if (wrote < 0)
+		return 0;
+
+	size_t len = (size_t)wrote >= sizeof buf ? sizeof buf - 1 :
+	    (size_t)wrote;
+
+	/* a truncated line still ends one, or the next runs into it */
+	if (buf[len - 1] != '\n')
+		buf[len - 1] = '\n';
+	kputs(buf);
+	logput(buf, len);
+	return 0;
+}
+
+/* sys.dmesg(from, max) -> data, next, dropped. One call copies at most
+ * LOGCHUNK and a reader loops on the cursor it is handed, which bounds
+ * the work done under the lock. */
+static int
+api_dmesg(lua_State *L)
+{
+	lua_Integer from = luaL_optinteger(L, 1, -1);
+	lua_Integer max = luaL_optinteger(L, 2, LOGCHUNK);
+	char buf[LOGCHUNK];
+	unsigned long long start, dropped = 0;
+	size_t n;
+
+	if (max <= 0 || max > LOGCHUNK)
+		max = LOGCHUNK;
+
+	lock(&loglock);
+
+	unsigned long long oldest = logoldest();
+
+	if (from < 0 || (unsigned long long)from < oldest) {
+		if (from >= 0)
+			dropped = oldest - (unsigned long long)from;
+		start = oldest;
+	} else if ((unsigned long long)from > logseq) {
+		start = logseq;
+	} else {
+		start = (unsigned long long)from;
+	}
+
+	n = (size_t)(logseq - start);
+	if (n > (size_t)max)
+		n = (size_t)max;
+	if (n) {
+		size_t o = (size_t)(start % LOGRING);
+		size_t first = LOGRING - o < n ? LOGRING - o : n;
+
+		memcpy(buf, logring + o, first);
+		if (first < n)
+			memcpy(buf + first, logring, n - first);
+	}
+	unlock(&loglock);
+
+	lua_pushlstring(L, buf, n);
+	lua_pushinteger(L, (lua_Integer)(start + n));
+	lua_pushinteger(L, (lua_Integer)dropped);
+	return 3;
+}
+
+/* sys.loginfo() -> seq, size, oldest, dropped */
+static int
+api_loginfo(lua_State *L)
+{
+	lock(&loglock);
+
+	unsigned long long seq = logseq, oldest = logoldest(), lost = loglost;
+
+	unlock(&loglock);
+
+	lua_pushinteger(L, (lua_Integer)seq);
+	lua_pushinteger(L, LOGRING);
+	lua_pushinteger(L, (lua_Integer)oldest);
+	lua_pushinteger(L, (lua_Integer)lost);
+	return 4;
+}
+
 /* registry key for a proc's atexit list -- its address is the key, so it
  * cannot collide with a lua string key. Shared across a state's threads,
  * since the registry is per global state.
@@ -7492,6 +7657,9 @@ static const luaL_Reg kapi[] = {
 	{ "pidstat", api_pidstat },
 	{ "ticks", api_ticks },
 	{ "uptime_ms", api_uptime_ms },
+	{ "log", api_log },
+	{ "dmesg", api_dmesg },
+	{ "loginfo", api_loginfo },
 	{ "time", api_time },
 	{ "settime", api_settime },
 	{ "timer", api_timer },
@@ -8566,6 +8734,14 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		snprintf(p->name, sizeof p->name, "%s", nm ? nm : "?");
 	}
 	luaL_openlibs(p->L);
+
+	/* before the chunk has run, so what sys.log formats with is the
+	 * real one whatever the proc does to string.format later.
+	 */
+	lua_getglobal(p->L, "string");
+	lua_getfield(p->L, -1, "format");
+	lua_rawsetp(p->L, LUA_REGISTRYINDEX, &fmtkey);
+	lua_pop(p->L, 1);
 
 	/* self port = right handle 0 */
 	struct kport *port = port_new();

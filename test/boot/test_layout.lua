@@ -32,7 +32,7 @@ local libs = {
 	"client.rpc", "client.tcp", "client.udp", "client.dns",
 	"client.tty", "client.power", "client.wire",
 	"chan", "dev", "dhcp", "dos", "draw", "memdraw", "espfs", "http",
-	"json", "log", "mnt", "ninep", "ns", "nsio", "p9fs", "p9tcp",
+	"json", "mnt", "ninep", "ns", "nsio", "p9fs", "p9tcp",
 	"proc", "procfs", "prog", "ps", "srv", "srvc", "srvfs", "stdout",
 	"svc", "tap", "webterm",
 	"crypto.util", "crypto.hashstate", "crypto.sha256", "crypto.sha512",
