@@ -38,6 +38,7 @@ groups.kernel = {
 	"src/serialize.c",
 	"src/timer.c",
 	"src/sched.c",
+	"src/port.c",
 	"src/thread.c",
 	"src/linit.c",
 	"src/luaheap.c",
