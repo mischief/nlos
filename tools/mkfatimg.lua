@@ -3,13 +3,11 @@
 --
 --	lua5.4 tools/mkfatimg.lua luafs.img 2M bin/=/bin
 --
--- and then, from esp32/:
---
---	esptool.py write_flash 0x310000 luafs.img
---
--- The offset and the size come from esp32/partitions.csv and are not
--- read from it: this tool makes an image of the size it is told, and
--- flashing it to the wrong offset is a mistake no check here can catch.
+-- The esp32 build calls it that way and flashes what it makes, taking
+-- both the size and the offset from esp32/partitions.csv. Neither is
+-- read here: this tool makes an image of the size it is told, and an
+-- image written to the wrong offset is a mistake no check here can
+-- catch.
 --
 -- The sector is the flash erase block, 4096 bytes, which is what makes
 -- a sector write on the board exactly one erase and one program. Pass
