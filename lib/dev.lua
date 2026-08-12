@@ -333,14 +333,14 @@ function M.readloop(iounit, one, off, n, raw)
 		end
 	end
 
+	-- one piece is the answer. Concatenating a single part copies the
+	-- whole of it to produce what it already is.
 	if #parts == 1 then
-		if raw then
+		if raw or not buf.is(parts[1]) then
 			return parts[1]
 		end
 		-- a buffer where a string was asked for
-		if buf.is(parts[1]) then
-			return parts[1]:str()
-		end
+		return parts[1]:str()
 	end
 	for i = 1, #parts do
 		if buf.is(parts[i]) then

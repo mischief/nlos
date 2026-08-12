@@ -533,6 +533,11 @@ function NS:readfile(path)
 		parts[#parts + 1] = chunk
 	end
 	f:close()
+	-- a file that fitted in one chunk is already the answer, and
+	-- concatenating one part copies the whole of it to say so
+	if #parts == 1 then
+		return parts[1]
+	end
 	return table.concat(parts)
 end
 
