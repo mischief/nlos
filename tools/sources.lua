@@ -40,6 +40,8 @@ groups.kernel = {
 	"src/sched.c",
 	"src/port.c",
 	"src/proc.c",
+	"src/sysapi.c",
+	"src/dbg.c",
 	"src/thread.c",
 	"src/linit.c",
 	"src/luaheap.c",

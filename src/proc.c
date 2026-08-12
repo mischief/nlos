@@ -1629,3 +1629,16 @@ proc_break(struct kproc *p, const char *why)
 		proc_reap(oldest);
 }
 
+
+size_t
+proc_heaps_release(void)
+{
+	size_t freed = 0;
+
+	if (shared_heap)
+		return luaheap_release(shared_heap);
+	for (int i = 0; i < prochigh; i++)
+		if (procv[i] && procv[i]->heap)
+			freed += luaheap_release(procv[i]->heap);
+	return freed;
+}

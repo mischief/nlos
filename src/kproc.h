@@ -402,6 +402,33 @@ void	port_unref(struct kport *port);
  */
 void	kputs(const char *s);
 
+/* the longest line the transcript keeps, and the writer behind
+ * kernel_log. Nothing called from here may log: a second entry with
+ * the lock held sits on itself forever.
+ */
+#define LOGLINE	1024
+void	logput(const char *s, size_t n);
+
+/* the transcript behind sys.log, read back by sys.dmesg. */
+size_t	kernel_dmesg(long long from, char *out, size_t max,
+	    unsigned long long *next, unsigned long long *dropped);
+void	kernel_loginfo(unsigned long long *seq, size_t *size,
+	    unsigned long long *oldest, unsigned long long *lost);
+
+/* the capability tokens: reserved ports that carry no message, where
+ * holding any right to one is the authorization. Null where the
+ * machine has no such device this boot.
+ */
+extern struct kport *diskport;
+extern struct kport *schedport;
+extern struct kport *clockport;
+
+/* the debug capability: a right to this debugs any proc, which is what
+ * reaches a boot service, since nothing holds a right to init's
+ * children but init.
+ */
+extern struct kport *dbgport;
+
 /* the debugger state a proc carries, freed with its lua_States, and
  * the notice its holder gets. Defined with the rest of los.dbg.
  */
