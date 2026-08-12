@@ -14,6 +14,7 @@
 -- across mounts is the whole point.
 
 local dev = require("dev")
+local chan = require("chan")
 
 local M = {}
 
@@ -165,6 +166,20 @@ function M.new(ns, root)
 	end
 
 	function B.open(h, mode)
+		-- the walk we hold IS the file, so open it where it sits.
+		-- A backend may hand back the handle it was given, which
+		-- dev.mem and espfs do for a directory: that is one handle
+		-- with two owners, so those go the long way round.
+		if h.wc then
+			local wc = h.wc
+			local ok, oh = pcall(wc.B.open, wc.h, mode)
+
+			if ok and oh ~= wc.h then
+				return dev.closable(B, { path = h.path,
+				    chan = chan.new(wc.B, wc.path, oh) })
+			end
+		end
+
 		local c, err = ns:open(nspath(h.path), mode)
 		if c then
 			return dev.closable(B, { path = h.path, chan = c })
