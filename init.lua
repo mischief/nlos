@@ -391,7 +391,6 @@ local repl_worker_src = [[
 	end
 	_G.stats = magic.stats
 	_G.ports = magic.ports
-	_G.caps = caps
 	_G.power = powerc.new(powerh)
 	local dns = dnsh and dnsc.new(dnsh) or nil
 
