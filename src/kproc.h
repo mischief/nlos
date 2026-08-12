@@ -366,6 +366,15 @@ int	ipcheld_any(void);
 	}								\
 } while (0)
 
+/* the state a per-state record belongs to: the record sits immediately
+ * before it, which is what lua_getextraspace computes in reverse.
+ */
+static inline lua_State *
+kx_state(struct kextra *kx)
+{
+	return (lua_State *)((char *)kx + LUA_EXTRASPACE);
+}
+
 /* the ipc lock, as buckets hashed on port index. enter() takes every
  * bucket ascending; enter_port() takes the one covering p, and obliges
  * the caller to touch no other port and allocate no lua memory.
@@ -387,6 +396,17 @@ int	port_push(struct kport *port, const unsigned char *data, size_t len,
  * last reference flushes the queue, which reaches other ports.
  */
 void	port_unref(struct kport *port);
+
+/* write a string to the console, unstamped. kernel_log is the stamped
+ * form, and is what a diagnostic line should use.
+ */
+void	kputs(const char *s);
+
+/* the debugger state a proc carries, freed with its lua_States, and
+ * the notice its holder gets. Defined with the rest of los.dbg.
+ */
+void	dbg_free(struct kproc *p);
+void	dbg_notify(struct kproc *p, int reason, int exited);
 
 struct right *right_slot(struct kproc *p, int h);
 struct right *right_get(struct kproc *p, lua_Integer h);

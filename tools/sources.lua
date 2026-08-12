@@ -39,6 +39,7 @@ groups.kernel = {
 	"src/timer.c",
 	"src/sched.c",
 	"src/port.c",
+	"src/proc.c",
 	"src/thread.c",
 	"src/linit.c",
 	"src/luaheap.c",
