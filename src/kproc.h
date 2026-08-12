@@ -279,6 +279,93 @@ struct kproc {
 	int priv;		/* PRIV_*; only PRIV_BOOT keeps raw file access */
 };
 
+/* proc states. see docs/proc.md */
+enum {
+	DEAD,
+	READY,
+
+	/* waiting on a port, and carries a waiter naming it. */
+	BLOCKED,
+
+	/* died of an error, held so something can read it. holds no
+	 * rights, but the lua_State still stands, so every frame at the
+	 * moment of death is there.
+	 */
+	BROKE,
+
+	/* made but never run. waits on its creator rather than on a port,
+	 * so nothing but its creator can make it runnable.
+	 */
+	HATCHING,
+
+	/* a debugger holds it: on no queue, resumed by dbg.cont. not
+	 * kproc.frozen, which keeps the proc queued.
+	 */
+	STOPPED,
+};
+
+/* device capabilities, one per class of hardware a proc may reach. */
+enum {
+	PRIV_NONE,
+
+	/* proc 0 and nothing else. not a device capability: it means raw
+	 * ESP access reaches this proc, which is what lets it build the
+	 * root namespace every other proc inherits.
+	 */
+	PRIV_BOOT,
+
+	PRIV_ESP,
+	PRIV_CONS,
+	PRIV_WIRE,
+	PRIV_POWER,
+	PRIV_P9,
+	PRIV_ETH,
+	PRIV_FB,
+	PRIV_BLK,
+	PRIV_FLASH,
+};
+
+/* does this cpu hold a given bucket, every bucket, or any bucket at
+ * all. Not lock.h's holding(), which answers for the machine: under smp
+ * another cpu holding a bucket is ordinary and says nothing about
+ * whether this one may touch the ports under it.
+ */
+int	ipcheld_one_port(struct kport *p);
+int	ipcheld(void);
+int	ipcheld_any(void);
+
+/* what the inner helpers assert, after OpenBSD's MUTEX_ASSERT_LOCKED.
+ * Live on every platform: the owner is recorded even where NCPU is 1.
+ * Reach for IPC_ASSERT_PORT in a helper that touches one named port --
+ * it is the weaker demand, and marks a caller the buckets can narrow.
+ */
+#define IPC_ASSERT_LOCKED() do {					\
+	if (!ipcheld()) {						\
+		char b_[96];						\
+		snprintf(b_, sizeof b_, "ipclock not held: s",		\
+		    __func__);						\
+		platform_abort(b_);					\
+	}								\
+} while (0)
+
+#define IPC_ASSERT_PORT(p) do {						\
+	if (!ipcheld_one_port(p)) {				\
+		char b_[96];						\
+		snprintf(b_, sizeof b_, "ipclock not held: s port d",	\
+		    __func__, (int)(p)->idx);				\
+		platform_abort(b_);					\
+	}								\
+} while (0)
+
+#define IPC_ASSERT_ANY() do {						\
+	if (!ipcheld_any()) {						\
+		char b_[96];						\
+		snprintf(b_, sizeof b_, "no ipclock bucket held: s",	\
+		    __func__);						\
+		platform_abort(b_);					\
+	}								\
+} while (0)
+
 /* the ipc lock, as buckets hashed on port index. enter() takes every
  * bucket ascending; enter_port() takes the one covering p, and obliges
  * the caller to touch no other port and allocate no lua memory.
