@@ -269,6 +269,187 @@ From the tcp task, per data segment:
     close       0.52    reply rights
     timer       0.03    was 2 per message before it was fixed
 
+## Stopping: `los.dbg`
+
+Tracing and stacks answer where a proc is and how it got there. The
+debugger answers a third question — *stop here and show me this value*
+— and it cannot live inside the proc it debugs: `kernel_strip_debug`
+takes `debug.sethook` away from every non-boot proc, and
+`kernel_confine_load` forces text-only chunks. So it is kernel-side C
+plus a client proc, and cross-VM by construction: client, kernel,
+target.
+
+`los.dbg` is a module of its own rather than more `kapi[]` entries, so
+its calls are not counted by `sys.syscalls`.
+
+### Authority
+
+Two rights, either sufficient, on every call that acts on a proc or
+reports its data:
+
+- a right to the target's self port — what `sys.spawn` returned to its
+  parent. The same right `sys.kill` and `sys.set_trace` take.
+- a right to `dbgport`, a kernel-held capability minted beside
+  `clockport` and granted to proc 0 as `dbg`. It authorizes debugging
+  **anything**, which is what makes a boot service reachable: nothing
+  holds a right to init's children but init. `init.lua` hands it to the
+  serial console and to `dos`, and nowhere else.
+
+Reads that report only structure — `status`, `coros`, `frames`,
+`breaks` — stay ambient, the line `sys.stack` already draws. Locals and
+values are the target's *data* and are on the acting side of it.
+
+### What the dbg right is worth, and what contains it
+
+It is the most powerful object on the machine: total read and control
+of any proc — stop, step, breakpoints, locals, upvalues, values. So its
+containment is the whole of its security, and there is not much of it:
+
+- **It can be re-sent.** Rights are copied, not moved, so any holder can
+  hand a copy to anyone. Nothing in the kernel tracks where it went.
+- **It cannot be revoked.** A right ends when its holder closes it or
+  dies; there is no call that reaches into another proc and takes one
+  away. Granting it is therefore permanent for the life of the holder.
+- **It is granted in exactly two places**, both in `init.lua`: the
+  serial console's repl worker, and `dos` when the repl starts it. A
+  public session — sshd, webterm — is given none, the same rule
+  `power` follows.
+
+The one containment that is structural: **`dbg run PROG` needs no
+capability at all**, because spawning the target *is* the right to it.
+A tool that debugs what it launches never has to be given this.
+
+Being reachable from a confined proc is deliberate — the repl worker is
+`PRIV_NONE` — and it is why `push_desc` reports light userdata without
+an address. A `los.sys` closure holds the kernel's own `lua_CFunction`
+in its first upvalue, and reading another proc's upvalues reaches those
+closures; `dbd1474` closed that leak from the inside, and the debugger
+must not reopen it from the outside. `test/boot/test_dbghole.lua` walks
+a proc parked inside a syscall and asserts the pointer does not come
+back.
+
+### How a proc stops, and stays stopped
+
+The preemption walk-out is the whole mechanism; the debugger adds no
+second one.
+
+A line hook fires in some state `L`, possibly nested inside a
+`lib/thread` scheduler. `dbg_line` matches a breakpoint and does what
+preemption does: arm `p->co` at a count of one, mark `kextra.preempted`,
+yield. **`L` is now suspended exactly at the breakpoint line with every
+frame standing** — nothing unwound, which is the same property that
+makes a `BROKE` corpse readable. The yield reaches `L`'s resumer, and
+both resumers defer their re-resume behind a yield to the kernel:
+`resume_one` stashes the thread in `s->inplace`, `kernel_cowrap_resume`
+yields outward. So if the kernel never resumes `p->co`, no instruction
+of the target runs.
+
+The stop is therefore **two-phase**, and the commit point is the kernel
+boundary rather than the hook:
+
+- in the hook: record where, set `pending`, walk out. Advisory.
+- in `run_proc`, after `lua_resume` returns `LUA_YIELD`: observe
+  `pending`, set `STOPPED`. Placed before the existing `status != READY`
+  test, so the proc leaves the queue by the rule everything else uses.
+
+Phase one can be swallowed — `kernel_cowrap_resume` re-resumes a cut
+coroutine without reaching the kernel when the frame below is not
+yieldable, and `p->torture` skips the walk-out entirely. `pending`
+survives, so the bound is honest and worth knowing: **a breakpoint hit
+under a non-yieldable frame stops at the first yieldable point after
+it, not at the line.** A tortured proc cannot be attached to at all;
+the two do not compose.
+
+### `STOPPED`, not `frozen`
+
+`frozen` is the short mutual exclusion a cross-proc syscall holds.
+`STOPPED` is a long-lived parked state. Both exist and they are
+orthogonal, because `frozen` cannot do this job:
+
+- it keeps the proc on a queue, so `dispatch_phase` would shuffle a
+  proc stopped at a breakpoint between `runq` and `donq` every lap of
+  every cpu, spending the lap budget `expire_timers` and `pump_eth`
+  depend on.
+- it is a count, so a concurrent `sys.stack` reader's thaw could not be
+  told from a debugger's stop.
+- `push_wchan` switches on `status`, so a stopped proc would read
+  `ready` in `ps` — the one tool someone debugging is looking at.
+
+A proc stopped while **blocked** runs no hook at all. Its request is
+left for `make_ready`, which diverts the wake: it wakes *into* the stop
+rather than into execution. Nothing is lost — the wakers skip a
+non-`BLOCKED` proc before `make_ready` is ever reached, so the waiter
+stays linked and the message stays queued, and continuing resumes the
+block continuation, which re-polls.
+
+### Locking
+
+Every entry point uses `proc_hold`, the shape `sys.stack` established.
+That is not bookkeeping: it guarantees no cpu is inside `lua_resume` of
+the target, which is what makes `lua_sethook` on its coroutines legal
+at all, and it is the lock for `struct kdbg`. Arming a state another
+cpu is executing is a data race.
+
+Three fields escape it and all are atomic, following `kproc.woken`:
+
+| field | written by | read by |
+| --- | --- | --- |
+| `pending` | the target's own hook | `dbg_commit`, on its cpu |
+| `stopreq` | the debugger | the target's hook |
+| `notify` | whoever commits a stop | `dbg_sweep` |
+
+`notify` exists because of `docs/locking.md`: sending a message needs
+the wide ipc lock, a stop is committed while holding `schedlock` or a
+bucket, and a narrow region may never widen. So no notice goes out
+where a stop is decided. `dbg_sweep` sends them all, once per lap,
+holding nothing.
+
+The same rule shapes the orphan case. A debugger that dies leaves a
+target that cannot notice — it holds no right to its debugger and, if
+stopped, is not running. `dbg_sweep` marks it and wakes it; `dbg_settle`
+tears the state down at the top of `run_proc`, the one place a cpu
+provably owns the proc. Freeing it from the sweep would race a target
+running on another cpu.
+
+Two rules follow from that table, and both were bugs first:
+
+- **`dbg_free` runs entirely inside the wide lock.** `dbg_sweep` reads
+  `p->dbg` there, so clearing and freeing it anywhere else is a
+  use-after-free on whichever cpu is walking the proc table.
+- **`dbg_mark_orphan` tests and sets the status under one `schedlock`
+  hold, and asks again on every sweep.** A proc that commits a stop
+  between the test and the set would otherwise be marked detached and
+  never woken — the exact stranding the orphan path exists to prevent.
+
+`test/boot/microvm_dbg.lua` is the judge: a spinner on one cpu, stopped
+and continued a few hundred times from another, then two hundred
+attach/detach cycles against it while it runs. It runs at `-smp 2` and
+`-smp 4`.
+
+### Reading values
+
+`sys.stack` reports structure and never touches a value. Reading values
+adds two hazards to `src/debug.c`'s three rules, and both are in
+`push_desc` and `hop`:
+
+- `lua_getlocal` and `lua_getupvalue` **push** onto the target, where
+  `lua_getinfo("Sln")` does not. So rule 3 stops being free: the top is
+  recorded outside the `pcall` and restored on every path, error
+  included, because building the result allocates in the *caller* and
+  the caller has a memory limit.
+- `lua_pushstring` on the target would break rule 2. Looking a string
+  key up the obvious way — push the key, `lua_rawget` — interns that
+  string in the target's heap and charges its `mem_limit`, so *reading*
+  a proc could push it over its cap. String keys are found by scanning
+  with `lua_next` and comparing bytes.
+
+Nothing renders a table or a userdata: that would be `__tostring`, which
+is target code. They come back as a type and an address, with up to
+`DBGKEYS` raw keys so a caller knows what it may walk into. The walk
+itself is `dbg.get(pid, co, level, root, name, path)`, where `path` is
+literal keys — `lib/dbg.lua`'s parser accepts `a.b`, `a[2]`, `a["k"]`
+and nothing else, so there is no syntax for a call to reject.
+
 ## Which tool answers which question
 
 | question | tool |
@@ -276,6 +457,7 @@ From the tcp task, per data segment:
 | what is on the machine | `ps`, `sys.wchan` |
 | where is this proc now | `stack pid` |
 | how did it get there | `trace pid` |
+| what is this value, here | `dbg`, stopped at a breakpoint |
 | what does it run, and how often | `tracehist pid`, read by `count` |
 | what does it *cost* | `tracehist pid`, read by `cpu` |
 | where does it block | `tracehist pid`, `wall` minus `cpu` |
@@ -298,6 +480,16 @@ From the lua repl (`init.lua` wires these as globals):
     stack(pid)          every coroutine of that proc
     trace(pid)          its ring, runs of one line collapsed
     tracehist(pid)      the same ring by cost, hottest line first
+
+The debugger is a program rather than a word at the prompt, because it
+holds state between commands:
+
+    dbg run /bin/foo.lua     spawn it stopped before its first line
+    dbg 7                    attach to a proc already running
+
+`run` needs no capability — spawning the target *is* the right. A bare
+pid needs the `dbg` grant, which `init.lua` hands the console and `dos`
+inherits. `?` at the prompt lists the commands.
 
 Arming stays an explicit `sys.set_trace` rather than another magic
 word, because unlike the others it has an effect on the target.
