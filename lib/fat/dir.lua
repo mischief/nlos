@@ -190,8 +190,10 @@ function Fs:entat(d, slot)
   if b0 == dat.Eend or b0 == dat.Efree then return nil end
   local e = pack.unpackdirent(s)
 
-  local name, first = nil, slot
-  local sum = pack.chksum(e.name)
+  -- the checksum ties a long set to the short entry after it, so it is
+  -- worth nothing until a long entry actually turns up. A name that
+  -- fits 8.3 has none, and most here do.
+  local name, first, sum = nil, slot, nil
   local frags, want = {}, 1
   local i = slot - 1
   while i >= 0 do
@@ -199,6 +201,8 @@ function Fs:entat(d, slot)
     if not l or byte(l, 1) == dat.Efree or byte(l, 1) == dat.Eend then break end
     if (byte(l, 12) & dat.Along) ~= dat.Along then break end
     local ent = pack.longent(l)
+
+    if sum == nil then sum = pack.chksum(e.name) end
     if ent.ord ~= want or ent.chksum ~= sum then break end
     frags[ent.ord] = ent.frag
     first = i
