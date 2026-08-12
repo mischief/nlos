@@ -8,6 +8,7 @@ local sys = require("los.sys")
 local kdbg = require("los.dbg")
 local dbglib = require("dbg")
 local thread = require("los.thread")
+local ns = require("ns")
 
 local ctx = prog.ctx
 local out = ctx and ctx.stdout
@@ -28,12 +29,41 @@ local target, ctl, spawned
 local a = { ... }
 local argv = arg or a
 
+-- the same search the shell does, so `dbg run echo` names the program
+-- the way a user names it. Without it only the literal file path works,
+-- and /bin/echo -- which is echo.lua -- is not one.
+local function find(name)
+	local N = ctx and ctx.ns
+
+	if not N then return name end
+	if name:find("/") then
+		local p = name:sub(1, 1) == "/" and name or
+		    ns.clean((ctx.cwd or "/") .. "/" .. name)
+
+		return N:stat(p) and p or nil
+	end
+	for dir in ((ctx.env and ctx.env.PATH) or "/bin"):gmatch("[^:]+") do
+		for _, cand in ipairs({ dir .. "/" .. name .. ".lua",
+		    dir .. "/" .. name }) do
+			if N:stat(cand) then return cand end
+		end
+	end
+	return nil
+end
+
 if argv[1] == "run" then
-	local path = argv[2]
+	local name = argv[2]
 
-	if not path then die("run wants a program") end
+	if not name then die("run wants a program") end
 
-	local args = {}
+	local path = find(name)
+
+	if not path then die(name .. ": not found") end
+
+	-- argv, not the arguments alone: lib/prog shifts this by one, so
+	-- the program's own name belongs at [1]. Getting it wrong is
+	-- silent -- every argument arrives one place off.
+	local args = { name }
 
 	for i = 3, #argv do args[#args + 1] = argv[i] end
 
@@ -48,7 +78,7 @@ if argv[1] == "run" then
 	local outh = out and out.h
 
 	target, ctl, spawned = pid, h, {
-		path = path, name = path, args = args,
+		path = path, name = name, args = args,
 		env = ctx and ctx.env, cwd = ctx and ctx.cwd,
 		nsdesc = ctx and ctx.nsdesc,
 		stdout = outh and { __right = outh } or nil,
