@@ -342,7 +342,7 @@ int	ipcheld_any(void);
 #define IPC_ASSERT_LOCKED() do {					\
 	if (!ipcheld()) {						\
 		char b_[96];						\
-		snprintf(b_, sizeof b_, "ipclock not held: s",		\
+		snprintf(b_, sizeof b_, "ipclock not held: %s",		\
 		    __func__);						\
 		platform_abort(b_);					\
 	}								\
@@ -351,7 +351,7 @@ int	ipcheld_any(void);
 #define IPC_ASSERT_PORT(p) do {						\
 	if (!ipcheld_one_port(p)) {				\
 		char b_[96];						\
-		snprintf(b_, sizeof b_, "ipclock not held: s port d",	\
+		snprintf(b_, sizeof b_, "ipclock not held: %s port %d",	\
 		    __func__, (int)(p)->idx);				\
 		platform_abort(b_);					\
 	}								\
@@ -360,7 +360,7 @@ int	ipcheld_any(void);
 #define IPC_ASSERT_ANY() do {						\
 	if (!ipcheld_any()) {						\
 		char b_[96];						\
-		snprintf(b_, sizeof b_, "no ipclock bucket held: s",	\
+		snprintf(b_, sizeof b_, "no ipclock bucket held: %s",	\
 		    __func__);						\
 		platform_abort(b_);					\
 	}								\

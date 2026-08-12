@@ -128,7 +128,6 @@ set(LUAOS_PAYLOAD "${LUAOS_ROOT}/boot/esp32.lua"
 # init and runs under qemu with no partition flashed at all.
 set(EMBED_FILES
     lib/stdout.lua
-    lib/log.lua
     lib/console.lua
     lib/tap.lua
     lib/sync/once.lua
