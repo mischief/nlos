@@ -35,6 +35,7 @@ groups.kernel = {
 	"src/buf.c",
 	"src/font.c",
 	"src/kernel.c",
+	"src/serialize.c",
 	"src/thread.c",
 	"src/linit.c",
 	"src/luaheap.c",

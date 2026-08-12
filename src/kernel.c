@@ -20,6 +20,8 @@
 #include <sys/queue.h>
 
 #include "kernel.h"
+#include "kproc.h"
+#include "serialize.h"
 #include "cpu.h"
 
 #include "lua.h"
@@ -62,37 +64,10 @@
 #error "platform param.h must define MAXPORTS"
 #endif
 
-#define MAXRIGHTS	512
-#define NRIGHTS_INLINE	8
-
-/* the serializer puts a port's index in a 16-bit field (the 'R' case), so
- * a port beyond that would alias onto a live one and the receive side's
- * range check could not catch it -- the aliased value is in range. fail
- * the build rather than corrupt delivery.
- */
-_Static_assert(MAXPORTS <= 65536, "port index is 16 bits in the serializer");
 /* fallback if calibration fails; normally replaced at boot by a measured
  * value -- see calibrate_reductions().
  */
 #define REDUCTIONS	25000
-#define MAXDEPTH	16
-/* rights per message.
- *
- * A namespace shares this budget with whatever else the message
- * carries, and neither half is small. A description holds one right per
- * mounted server -- the filesystem, /net, /dev -- and a program is
- * spawned with those plus its three streams, the screen, the terminal
- * and the network.
- *
- * So the ceiling is pushed by ordinary design: every device that
- * becomes a file adds a right to every spawn message on the machine.
- * Thirty-two leaves room for that rather than for today's count, and
- * the room is cheap -- three bytes a slot, in a struct kmsg that is
- * malloc'd per in-flight message and may carry 64KB of payload, and the
- * same again on the serializer's stack.
- */
-#define MAXMSGRIGHTS	32
-#define MAXWATCH	8	/* monitors per proc */
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
 #define MAXTIMERS	128	/* outstanding one-shot timers, machine-wide */
 /* floor on phase two's dispatch bound -- see kernel_run.
@@ -225,82 +200,11 @@ enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
  * push it over, the same reason src/debug.c allocates nothing in a
  * target it is reading.
  */
-/* los.sys entries, which is what per-proc call counting is sized by.
- * Checked against the real table at registration -- see los_sys_open.
- */
-#define NSYSCALL	64
-
-#define TRACESRC	32	/* distinct source files remembered */
-#define TRACECO		16	/* coroutines distinguished, as in debug.c */
-/* entries, per proc. An entry is 16 bytes, so a full ring is 256KB, and
- * it is allocated only while a trace is armed. 4096 was too few to hold
- * one directory listing: the ring wrapped, and the histogram then
- * described the tail of the operation while looking like all of it.
+/* entries per proc, allocated only while a trace is armed. sized so one
+ * directory listing fits: a ring that wraps leaves a histogram of the
+ * tail of an operation that looks like all of it.
  */
 #define TRACEMAX	16384
-
-struct tracent {
-	int line;
-	unsigned short src;	/* index into ktrace.name */
-	unsigned short co;	/* index into ktrace.co */
-
-	/* Two clocks, from one tsc read, each as a delta from the previous
-	 * entry rather than an absolute.
-	 *
-	 * `cpu` is cycles this proc actually spent running, so deltas are
-	 * disjoint across procs and a line's own cost is what it says.
-	 * `wall` is elapsed cycles, so `wall - cpu` is how long the proc
-	 * was NOT running after that line -- the kernel, another proc, or
-	 * idle. Neither alone is enough: per-proc cycles are blind to
-	 * everything outside the proc, and wall alone cannot be summed
-	 * across procs, since two timelines covering one interval would
-	 * count it twice.
-	 *
-	 * u32 because consecutive lines are microseconds apart at most. An
-	 * absolute u32 would wrap in under a second at 4.5GHz; a delta
-	 * does not, and saturates rather than wrapping if a proc really
-	 * was away for longer.
-	 */
-	unsigned int wall;
-	unsigned int cpu;
-};
-
-struct ktrace {
-	struct tracent *ent;
-	unsigned int cap;	/* entries */
-	unsigned int n;		/* entries written, ever */
-	char name[TRACESRC][LUA_IDSIZE];
-	int nname;
-	/* the fast path: consecutive lines almost always come from the
-	 * same function, so a one-entry cache on the source pointer
-	 * turns interning into a compare. the pointer is only ever
-	 * compared, never dereferenced, because the string it names
-	 * belongs to the target and may be collected.
-	 */
-	const void *lastsrc;
-	int lastid;
-	unsigned long long lastwall;	/* tsc at the previous entry */
-	unsigned long long lastcpu;	/* running cycles at the previous entry */
-	const void *co[TRACECO];
-	int nco;
-};
-
-
-/* buffers travelling on one message. The bytes are not in the message:
- * a transfer hands the storage over, so what the message carries is the
- * pointer, and the wire holds an index into this.
- *
- * The kernel owns them from the moment a send is queued until they are
- * given to a receiver, which is what makes a dropped message, a flushed
- * queue and a dead proc all one path: free what is still here.
- */
-#define MAXMSGBUFS 4
-
-struct msgbufs {
-	void *p[MAXMSGBUFS];
-	size_t len[MAXMSGBUFS];
-	int n;
-};
 
 static void
 msgbufs_free(struct msgbufs *b)
@@ -321,361 +225,6 @@ msgbufs_bytes(const struct msgbufs *b)
 		t += b->len[i];
 	return t;
 }
-
-struct kmsg {
-	struct kmsg *next;
-	size_t len;
-	struct msgbufs bufs;	/* transferred; freed by msg_free */
-	size_t qcost;		/* what it took off MAXQUEUE */
-	/* ports referenced by in-flight rights in this message. they hold
-	 * a ref each so a port can't be freed (and its index reused) while
-	 * the only right to it sits in a queue.
-	 */
-	unsigned short refs[MAXMSGRIGHTS];
-	unsigned char refrecv[MAXMSGRIGHTS];	/* was each one a recv right? */
-	int nrefs;
-	unsigned char *data;	/* owned; freed by msg_free */
-};
-
-struct kproc;
-
-struct kport {
-	unsigned short idx;	/* its slot in portv; what the wire carries */
-	int used;
-	/* which port this slot has held, counted from 1 and never reused.
-	 *
-	 * portv slots are, so an index alone cannot say whether the port
-	 * behind it is the one you meant. anything that must name a port
-	 * across time keeps the pair -- see kproc.selfidx -- and nothing
-	 * has to be told when a port dies, which is what keeps kport free
-	 * of pointers back to procs.
-	 */
-	unsigned long long gen;
-	TAILQ_HEAD(, waiter) waiters;
-	/* rights + in-flight message refs + kernel refs, and the receive
-	 * rights among those.
-	 *
-	 * Atomic because they are the one part of a port touched with no
-	 * bucket held. serialize walks a message minting a reference on
-	 * every port it names -- arbitrary ports, so arbitrary buckets --
-	 * and it has to run outside the lock entirely, because building
-	 * the message allocates lua memory and the collector reaches
-	 * api_close from there.
-	 *
-	 * Taking a reference is safe unlocked because it cannot destroy
-	 * anything: whoever increments already holds one, so the count
-	 * was not zero and cannot reach zero underneath. Dropping one
-	 * can, so port_unref still runs under every bucket, and that is
-	 * what serializes a drop against the flush it may perform.
-	 */
-	atomic_int nrights;
-	atomic_int nrecv;
-	int dead;	/* no receive right left; sends are dropped */
-	size_t qbytes;	/* queued payload, against MAXQUEUE */
-	struct kmsg *head, *tail;
-
-	/* counters, for sys.ports(). The kernel is where a send is refused,
-	 * so it is the only place that can count refusals for every port
-	 * rather than for the one task that thought to keep its own tally.
-	 *
-	 * full and dead are separate because they are different faults: a
-	 * full queue is a reader that fell behind, a dead one is a receive
-	 * right closed while someone was still sending to it.
-	 *
-	 * qpeak rather than only qbytes because a queue is almost never
-	 * sampled at its worst moment. One that touched MAXQUEUE and
-	 * drained reads as idle, which is exactly the port worth knowing
-	 * about.
-	 */
-	unsigned long long nsent;
-	unsigned long long ndrop_full;
-	unsigned long long ndrop_dead;
-	size_t qpeak;
-
-	/* who made it and where, for finding a leak.
-	 *
-	 * A port that is never closed is a slow fault: the machine runs
-	 * out of them weeks later, and the count alone says nothing about
-	 * which of fifty call sites is the one at fault. sys.newport takes
-	 * a tag naming what the port is FOR, and the location is taken
-	 * from the caller, so sys.ports() answers "who made these" rather
-	 * than leaving arithmetic on a total.
-	 *
-	 * Inline and short rather than a pointer to a lua string: the
-	 * string would have to outlive the port and nothing guarantees
-	 * that, and a kport is malloc'd per LIVE port, so this costs
-	 * 48 bytes times what is open rather than times MAXPORTS.
-	 */
-	char tag[16];
-	char where[32];
-};
-
-struct right {
-	struct kport *port;
-	int recv;
-	int used;
-};
-
-/* what the kernel granted a proc at spawn, by NAME. handle numbers are
- * whatever right_new's first-free search picked and are not an abi --
- * lua reads this mapping through sys.granted() instead of hardcoding a
- * constant. a capability that doesn't exist this boot is simply an
- * absent key, which is both cheaper and safer than probing with a send
- * (a successful send transfers the right for real, so a probe that
- * "just checks" hands the capability to whoever it was aimed at).
- */
-struct grant {
-	const char *name;
-	int handle;
-	SLIST_ENTRY(grant) e;	/* on proc->grants; walked whole */
-};
-
-/* a proc waiting on a port. one record per (proc, port) pair, because a
- * proc in an alt waits on several at once -- so the port's list and the
- * proc's list both need their own linkage.
- *
- * the pool is fixed and shared: the cost is proportional to how many
- * waits are outstanding, not to MAXPROCS, which is the difference that
- * matters. an inline array per proc would cost one slot per port a
- * proc could possibly wait on, times MAXPROCS,
- * whether anything is blocked or not.
- */
-struct kproc;
-
-struct waiter {
-	struct kproc *p;
-	struct kport *port;
-	int send;			/* waiting for room, not for a message */
-	/* still linked on port->waiters. A waker unlinks the entry it
-	 * woke on and clears this, under that port's bucket; the entries
-	 * the proc holds on other ports stay linked, and collecting them
-	 * is the proc's own job. See wait_reap.
-	 */
-	int onport;
-	TAILQ_ENTRY(waiter) pq;		/* on port->waiters */
-	SLIST_ENTRY(waiter) pw;		/* on proc->waiters; walked whole */
-};
-
-struct kproc {
-	int status;
-	int id;			/* unique forever; slots are reused, ids not */
-	lua_State *L;		/* owning state */
-	lua_State *co;		/* thread the chunk runs on */
-	/* the port behind handle 0, and the capability to control this
-	 * proc: sys.kill and sys.reap ask whether the caller holds a right
-	 * to it. sys.spawn hands the parent one, so a supervisor may stop
-	 * what it started and a proc that merely guessed a pid may not.
-	 *
-	 * named by (slot, generation) rather than by pointer, and read
-	 * through proc_selfport. no reference is taken and none is needed:
-	 * the right being tested for is itself a reference, so the port
-	 * cannot be freed while any answer but "no" is possible. what the
-	 * generation settles is the case after that -- a corpse whose last
-	 * right went away, whose portv slot has since been handed to a
-	 * different port.
-	 *
-	 * the direction matters. a pointer the other way, from the port to
-	 * the proc, would have to be cleared when a proc slot is recycled
-	 * -- and a proc slot is recycled in place, so nothing would fault
-	 * to say it had not been. this way nothing has to be told anything.
-	 * 0 means none.
-	 */
-	unsigned short selfidx;
-	unsigned long long selfgen;
-	SLIST_HEAD(, waiter) waiters;	/* ports this proc is blocked on */
-	/* almost every block waits on exactly one port, so the first record
-	 * is inline and costs no allocation on what is the hot path for
-	 * IPC. an alt over several ports takes the rest from the heap.
-	 */
-	struct waiter w0;
-	int w0used;
-	TAILQ_ENTRY(kproc) rqe;		/* on one of the dispatch sets */
-	struct rqset *onq;		/* which, or null */
-	/* blocked waiting for ROOM on this port, the send-side mirror of
-	 * `waiting`. separate field rather than a flag on `waiting` so
-	 * wake_receivers and wake_senders cannot wake each other's procs:
-	 * a reader waiting for data and a writer waiting for space are
-	 * woken by opposite events on the same port.
-	 */
-	/* handles index this: the first NRIGHTS_INLINE live in the proc, the
-	 * rest in an array allocated only if a proc ever needs one. most
-	 * hold a handful -- a driver task two, an ordinary proc one to three
-	 * -- while a shell running a pipeline reaches thirty, so the inline
-	 * part covers the numerous case and the busy case pays for itself.
-	 * sys.stats().rightshigh reports the high water if this needs
-	 * revisiting.
-	 */
-	struct right rights[NRIGHTS_INLINE];
-	struct right *xrights;		/* MAXRIGHTS - NRIGHTS_INLINE, or null */
-	int rhint;			/* lowest slot that might be free */
-	int rhigh;			/* one past the highest slot ever used */
-	int bufdenied;			/* the last -2 was a buffer, not a right */
-	TAILQ_HEAD(, kextra) coros;	/* every lua_State of this proc */
-	int hookforced;			/* 0 none, 1 p->co armed, 2 all armed */
-	int torture;			/* yield between EVERY instruction */
-
-	/* held still so another proc can read it. Nonzero means dispatch
-	 * must not resume this proc: it is counted rather than a flag
-	 * because two readers may look at one target at once, and the
-	 * second must not thaw it under the first.
-	 *
-	 * Guarded by schedlock, like `current` -- freezing is deciding
-	 * something about the run queues, and is done holding the same
-	 * lock that publishes who is running.
-	 */
-	int frozen;
-
-	/* some port has claimed the right to wake this proc.
-	 *
-	 * A proc in an alt waits on several ports at once, so several
-	 * cpus can decide to wake it at the same moment, each holding a
-	 * different bucket and neither covering the other. This is what
-	 * settles it: the winner is whoever takes the flag from 0 to 1,
-	 * and a loser leaves the proc alone entirely. Go's runtime does
-	 * exactly this with g.selectDone, for exactly this reason.
-	 *
-	 * Cleared by wait_reap, which runs on the proc's own cpu before
-	 * it is resumed -- so it is 0 for the whole time the proc is
-	 * running, and there is nothing to claim until it blocks again.
-	 */
-	atomic_int woken;
-
-	/* which cpu has this proc in hand, plus one, or zero for none.
-	 *
-	 * One proc is one thread of control, and every invariant in this
-	 * kernel rests on it: a per-proc lua heap needs no lock, a virtio
-	 * queue needs no lock, and a coroutine cannot be resumed twice.
-	 * Two cpus dispatching one proc breaks all three at once, and it
-	 * does not report itself -- it arrives later as a page fault on a
-	 * pointer that was fine, or as lua refusing to resume.
-	 *
-	 * So it is checked rather than argued. Written under schedlock at
-	 * both ends, which is where a proc is taken and given back.
-	 */
-	unsigned oncpu;
-
-	int watchers[MAXWATCH];	/* pids to notify when this proc dies */
-	/* did each watcher hold a right to this proc when it asked?
-	 *
-	 * decided at sys.monitor rather than at death, because the two
-	 * differ for the ordinary supervisor: it spawns, monitors, sends
-	 * the child its work and closes the spawn right -- having nothing
-	 * more to say -- and is still the proc that should hear how the
-	 * child ended. asking at death would answer no for exactly that
-	 * shape (test/boot/test_prog.lua), and holding the right open
-	 * merely to be told would keep sys.hungup from ever firing.
-	 */
-	unsigned char wpriv[MAXWATCH];
-	int nwatch;
-	struct luaheap *heap;	/* this proc's lua heap; see kalloc */
-	/* which cpu dispatches this proc. Not p->cpu, which is taken and
-	 * means a percentage. A proc's queues live on its home cpu, so
-	 * this is what make_ready enqueues against -- from whichever cpu
-	 * happens to be sending, which is the only cross-cpu operation
-	 * the scheduler has.
-	 */
-	unsigned home;
-	int reductions;		/* instruction budget per slice */
-	/* args waiting on co's stack for the FIRST resume only: sys.spawn's
-	 * `arg`, already deserialized into this proc, which the chunk
-	 * receives as `...`. zeroed after that resume so the weight loop's
-	 * later resumes pass nothing.
-	 */
-	int nargs;
-	size_t mem_used;	/* live bytes in this proc's lua heap, plus its
-				 * pooled buffer bytes -- see kbuf_charge */
-	size_t buf_used;	/* the pooled half of mem_used, on its own */
-	size_t buf_debt;	/* pooled bytes since the last collector step */
-	size_t mem_peak;
-	size_t mem_limit;	/* 0 = unlimited */
-	/* receive rights this proc holds, against a cap inherited from its
-	 * parent the way mem_limit is.
-	 *
-	 * ports are a machine-wide table, so one proc looping on
-	 * sys.newport starves every other -- and it need not be its own
-	 * loop: lib/srv.lua mints one per session on demand, so a client
-	 * calling `session` in a loop spends the server's budget. that is
-	 * the shape a per-proc cap answers and a per-server quota cannot,
-	 * because a port carries no sender identity and a server cannot
-	 * tell whose request it is holding.
-	 *
-	 * counted as what the proc HOLDS rather than what it made, which
-	 * is unix's rule for RLIMIT_NOFILE and needs no record of who
-	 * created what. it is also the honest measure: a port nobody holds
-	 * a right to is freed, so what keeps the table full is holding,
-	 * and a right handed to another proc becomes that proc's cost.
-	 *
-	 * receive rights, because those are one per port in the ordinary
-	 * case where send rights are not -- a reply port is one receive
-	 * right and one send right to the same port. a proc that contrives
-	 * to hold two receive rights to one port is counted twice, which
-	 * errs toward the limit rather than past it.
-	 *
-	 * handle 0 counts, exactly as fds 0-2 count against RLIMIT_NOFILE.
-	 */
-	int nports;
-	int nports_peak;
-	int port_limit;		/* 0 = unlimited */
-	/* bytes lua has asked for since this proc's collector last ran.
-	 * The collector is stopped, so lua's own GCdebt no longer
-	 * decides when a step happens; this is what gc_step reads
-	 * instead, both to skip a proc that has done nothing and to size
-	 * the step. See gc_step for which collector actually uses the
-	 * size.
-	 *
-	 * Growth only: a free between steps means the proc is already
-	 * returning memory unaided, which is not a reason to collect.
-	 */
-	size_t gc_owed;
-	char name[32];		/* from chunkname, for ps/debugging */
-	/* scheduling feedback. cputime/reds are raw accumulators; cpu is
-	 * the decaying fair-share estimate derived from them.
-	 */
-	unsigned long long cputime;	/* tsc cycles actually spent running */
-	unsigned long long lastupdate;	/* uptime_ms at the last updatecpu */
-	unsigned long long lastcpu;	/* cputime as of that update */
-	unsigned cpu;			/* per-mille of wall time, decayed */
-	int pri;			/* computed at ready time, see make_ready */
-	unsigned long long resumed;	/* tsc at the current resume, for the hook */
-	/* how many times this proc has been given the cpu. cputime says how
-	 * long it ran, this says how often it was picked up -- and the two
-	 * answer different questions: the same milliseconds spread over
-	 * thousands of resumes is a proc round-tripping on ipc, over a
-	 * handful is one doing its work in a block.
-	 */
-	unsigned long long nresume;
-	/* named capabilities the kernel handed this proc, read by name
-	 * through sys.granted(). a list, not a fixed array: the boot payload
-	 * holds one per driver plus disk and sched -- a dozen-odd -- while
-	 * every other proc holds none, so an array sized for the former wasted
-	 * a quarter of this struct on the latter and, worse, silently dropped
-	 * grants once the driver set outgrew it (the dhcpd-missing bug).
-	 * appended at spawn, walked whole by sys.granted, freed at
-	 * proc_detach; never indexed, so a list costs nothing here.
-	 */
-	SLIST_HEAD(, grant) grants;
-	struct ktrace *trace;	/* line trace ring, or 0; see sys.set_trace */
-	struct kdbg *dbg;	/* a debugger holds it, or 0; see los.dbg */
-
-	/* how many times this proc has made each los.sys call, indexed by
-	 * position in kapi[]. See counted() for why it is a wrapper rather
-	 * than an increment in each api_ function, and sys.syscalls to read
-	 * it.
-	 *
-	 * Always on, unlike the trace ring, because it is affordable enough
-	 * to be: 38 counters is 152 bytes beside a whole lua_State, and
-	 * procv holds pointers so it is per live proc rather than per
-	 * MAXPROCS. Arming would defeat the point -- the case this exists
-	 * for was a task making two syscalls per message, which is only
-	 * obvious if it is already being counted when someone first looks.
-	 */
-	unsigned int calls[NSYSCALL];
-	unsigned int brokeseq;	/* death order, so the cap reaps the oldest */
-	int exitcode;		/* sys.setexit(); reported by notify_exit */
-	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
-	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
-	int priv;		/* PRIV_*; only PRIV_BOOT keeps raw file access */
-};
 
 /* procs live on the heap too. a dead one keeps its slot until the reaper
  * runs at the top of a lap, because dispatch reads its status right after
@@ -921,13 +470,13 @@ ipclock_leave_one(struct ipcbucket *b)
 /* the one bucket covering p. See the obligations listed over the
  * bucket array: no other port, and no lua allocation.
  */
-static void
+void
 ipclock_enter_port(struct kport *p)
 {
 	ipclock_enter_one(ipcbucket_of(p));
 }
 
-static void
+void
 ipclock_leave_port(struct kport *p)
 {
 	ipclock_leave_one(ipcbucket_of(p));
@@ -937,21 +486,21 @@ ipclock_leave_port(struct kport *p)
  * are taken in everywhere. Releasing runs the other way for no reason
  * beyond symmetry -- release order is free.
  */
-static void
+void
 ipclock_enter(void)
 {
 	for (unsigned i = 0; i < NIPCLOCK; i++)
 		ipclock_enter_one(&ipcbuckets[i]);
 }
 
-static void
+void
 ipclock_leave(void)
 {
 	for (unsigned i = NIPCLOCK; i-- > 0; )
 		ipclock_leave_one(&ipcbuckets[i]);
 }
 
-static struct kport *portv[MAXPORTS];
+struct kport *portv[MAXPORTS];
 static int porthigh;		/* one past the highest slot ever used */
 /* stamped into every port so a slot can be told from the port in it;
  * see kport.gen. 64-bit and incremented once per port, so it does not
@@ -1216,7 +765,7 @@ release_inflight(const unsigned short *refs, const unsigned char *refrecv,
 	}
 }
 static struct kport *port_new(void);
-static int right_new(struct kproc *p, struct kport *port, int recv);
+int right_new(struct kproc *p, struct kport *port, int recv);
 
 /* the eth task's wakeup, and the only device port here that is driven
  * by a real interrupt rather than by a poll.
@@ -1713,7 +1262,7 @@ static int rights_high;
  * overflow array this proc has never needed. never allocates: it is on
  * every send and receive, with a handle the caller may have made up.
  */
-static struct right *
+struct right *
 right_slot(struct kproc *p, int h)
 {
 	if (h < 0 || h >= MAXRIGHTS)
@@ -1744,7 +1293,7 @@ right_slot_grow(struct kproc *p, int h)
 	return &p->xrights[h - NRIGHTS_INLINE];
 }
 
-static int
+int
 right_new(struct kproc *p, struct kport *port, int recv)
 {
 	/* The caller needs no lock, and this is the one helper here that
@@ -1797,7 +1346,7 @@ right_new(struct kproc *p, struct kport *port, int recv)
 	return -1;
 }
 
-static void
+void
 right_drop(struct kproc *p, struct right *r)
 {
 	/* caller holds ipclock.
@@ -1852,7 +1401,7 @@ grant_named(struct kproc *p, const char *name, struct kport *port, int recv)
 	SLIST_INSERT_HEAD(&p->grants, g, e);
 }
 
-static struct right *
+struct right *
 right_get(struct kproc *p, lua_Integer h)
 {
 	struct right *r = right_slot(p, (int)h);
@@ -1860,475 +1409,6 @@ right_get(struct kproc *p, lua_Integer h)
 	if (!r || !r->used)
 		return 0;
 	return r;
-}
-
-/* ---- serializer ----
- * tags: N nil, T true, F false, I int64, D double, S u32+bytes,
- * B u32 npairs then k,v..., R u8 portindex u8 recv, M u8 bufindex
- */
-
-struct wbuf {
-	unsigned char *p;
-	size_t len, cap;
-	/* ports referenced by rights serialized into this message; each
-	 * holds a ref taken at serialize time (released on send failure,
-	 * or by msg_free once delivered/flushed)
-	 */
-	unsigned short refs[MAXMSGRIGHTS];
-	unsigned char refrecv[MAXMSGRIGHTS];
-	int nrefs;
-	/* buffers this message takes over, and the handles they came
-	 * from. The handles are emptied only once the message is queued,
-	 * so a send that fails leaves the sender holding its bytes.
-	 */
-	struct msgbufs bufs;
-	void *bufown[MAXMSGBUFS];
-};
-
-static int
-wput(struct wbuf *w, const void *src, size_t n)
-{
-	if (w->len + n > w->cap) {
-		size_t need = w->len + n;
-
-		/* the limit belongs to the message, not to the growth
-		 * policy. doubling is free to overshoot MAXMSG and get
-		 * clamped; only a message that genuinely does not fit is
-		 * refused. while every cap was a power of two the two
-		 * tests agreed, and pre-sizing from a hint is what makes
-		 * an arbitrary cap -- and an overshoot -- possible.
-		 */
-		if (need > MAXMSG)
-			return -1;
-
-		size_t ncap = w->cap ? w->cap * 2 : 256;
-
-		while (ncap < need)
-			ncap *= 2;
-		if (ncap > MAXMSG)
-			ncap = MAXMSG;
-		unsigned char *np = realloc(w->p, ncap);
-
-		if (!np)
-			return -1;
-		w->p = np;
-		w->cap = ncap;
-	}
-	memcpy(w->p + w->len, src, n);
-	w->len += n;
-	return 0;
-}
-
-static int
-wbyte(struct wbuf *w, unsigned char c)
-{
-	return wput(w, &c, 1);
-}
-
-/* pre-size a wbuf, so the common message does not grow.
- *
- * Strictly a hint: wput still grows whenever this comes up short, so
- * being wrong costs one realloc and never correctness. That is what
- * lets it skip serialize's type dispatch entirely -- it does not have
- * to agree with serialize about anything, and cannot drift out of sync
- * with it -- and look only for the thing that actually makes a message
- * big, which is a string.
- *
- * One level deep on purpose. The shape this is for is a table wrapping
- * one payload, which is every mnt reply; a nested table contributes a
- * guess and grows from there if it was wrong.
- *
- * lua_tolstring only where the type is already string: on a key it
- * would convert a number in place, and lua_next does not survive that.
- */
-static size_t
-sizehint(lua_State *L, int idx)
-{
-	size_t total = 16, n;
-
-	idx = lua_absindex(L, idx);
-	if (lua_type(L, idx) == LUA_TSTRING) {
-		lua_tolstring(L, idx, &n);
-		return n + 16;
-	}
-	if (lua_type(L, idx) != LUA_TTABLE)
-		return 0;
-
-	lua_pushnil(L);
-	while (lua_next(L, idx)) {
-		if (lua_type(L, -1) == LUA_TSTRING) {
-			lua_tolstring(L, -1, &n);
-			total += n + 8;
-		} else
-			total += 16;
-		if (lua_type(L, -2) == LUA_TSTRING) {
-			lua_tolstring(L, -2, &n);
-			total += n + 8;
-		} else
-			total += 16;
-		lua_pop(L, 1);
-	}
-	return total;
-}
-
-/* take the hint. Failure is not reported because there is nothing to
- * report: the buffer is simply not pre-sized and wput does what it
- * always did.
- */
-static void
-wreserve(struct wbuf *w, size_t n)
-{
-	if (n < 256 || n > MAXMSG || w->cap >= n)
-		return;
-
-	unsigned char *p = realloc(w->p, n);
-
-	if (p) {
-		w->p = p;
-		w->cap = n;
-	}
-}
-
-static int
-serialize(lua_State *L, int idx, struct wbuf *w, struct kproc *sender,
-    int depth)
-{
-	if (depth > MAXDEPTH)
-		return -1;
-	idx = lua_absindex(L, idx);
-
-	switch (lua_type(L, idx)) {
-	case LUA_TNIL:
-		return wbyte(w, 'N');
-	case LUA_TBOOLEAN:
-		return wbyte(w, lua_toboolean(L, idx) ? 'T' : 'F');
-	case LUA_TNUMBER:
-		if (lua_isinteger(L, idx)) {
-			lua_Integer v = lua_tointeger(L, idx);
-
-			if (wbyte(w, 'I'))
-				return -1;
-			return wput(w, &v, sizeof v);
-		} else {
-			lua_Number v = lua_tonumber(L, idx);
-
-			if (wbyte(w, 'D'))
-				return -1;
-			return wput(w, &v, sizeof v);
-		}
-	case LUA_TSTRING: {
-		size_t n;
-		const char *s = lua_tolstring(L, idx, &n);
-		unsigned int len = n;
-
-		if (wbyte(w, 'S') || wput(w, &len, sizeof len))
-			return -1;
-		return wput(w, s, n);
-	}
-	case LUA_TTABLE: {
-		/* {__right = handle} copies a right: the sender's handle
-		 * stays live and still counts against MAXRIGHTS, so a
-		 * caller minting one per request must close it. That is
-		 * what src/thread.c's rpc does.
-		 *
-		 * A __right that is not an integer handle is a mistake, and
-		 * is refused rather than shipped as data -- which would
-		 * quietly drop the capability it meant to send.
-		 */
-		lua_getfield(L, idx, "__right");
-		if (!lua_isnil(L, -1)) {
-			if (!lua_isinteger(L, -1)) {
-				lua_pop(L, 1);
-				return -1;
-			}
-			struct right *r = right_get(sender,
-			    lua_tointeger(L, -1));
-
-			lua_pop(L, 1);
-			if (!r || w->nrefs >= MAXMSGRIGHTS)
-				return -1;
-			unsigned short pi = r->port->idx;
-
-			if (wbyte(w, 'R') || wput(w, &pi, sizeof pi))
-				return -1;
-			if (wbyte(w, (unsigned char)r->recv))
-				return -1;
-			/* in-flight refs keep the port alive in the queue --
-			 * and a receive right in flight must count toward
-			 * nrecv straight away. it does not exist in the
-			 * receiver yet, so without this the sender closing
-			 * its own copy drops nrecv to zero, marks the port
-			 * dead and FLUSHES the queue, while a perfectly good
-			 * receive right is still on its way to its owner.
-			 */
-			w->refrecv[w->nrefs] = (unsigned char)r->recv;
-			w->refs[w->nrefs++] = pi;
-			r->port->nrights++;
-			if (r->recv)
-				r->port->nrecv++;
-			return 0;
-		}
-		lua_pop(L, 1);
-
-		/* {__buf = b} gives the bytes away. Unlike a right, which
-		 * is copied, the sender is left holding an empty handle
-		 * and every use of it raises -- so a mistake shows at the
-		 * line that made it, not as two procs writing over one
-		 * another.
-		 *
-		 * What may travel is decided by luabuf_borrow: storage its
-		 * holder alone owns. Anything else is refused here rather
-		 * than copied, because a send that silently copied would
-		 * hide the cost this exists to remove.
-		 */
-		lua_getfield(L, idx, "__buf");
-		if (!lua_isnil(L, -1)) {
-			size_t n;
-			void *handle;
-			const char *s = luabuf_borrow(L, -1, &n, &handle);
-
-			if (!s || w->bufs.n >= MAXMSGBUFS) {
-				lua_pop(L, 1);
-				return -1;
-			}
-			int i = w->bufs.n;
-
-			if (wbyte(w, 'M') || wbyte(w, (unsigned char)i)) {
-				lua_pop(L, 1);
-				return -1;
-			}
-			w->bufs.p[i] = (void *)s;
-			w->bufs.len[i] = n;
-			w->bufown[i] = handle;
-			w->bufs.n++;
-			lua_pop(L, 1);
-			return 0;
-		}
-		lua_pop(L, 1);
-
-		unsigned int n = 0;
-		size_t countpos = w->len;
-
-		if (wbyte(w, 'B') || wput(w, &n, sizeof n))
-			return -1;
-		lua_pushnil(L);
-		while (lua_next(L, idx)) {
-			if (serialize(L, -2, w, sender, depth + 1) ||
-			    serialize(L, -1, w, sender, depth + 1)) {
-				lua_pop(L, 2);
-				return -1;
-			}
-			lua_pop(L, 1);
-			n++;
-		}
-		memcpy(w->p + countpos + 1, &n, sizeof n);
-		return 0;
-	}
-	case LUA_TUSERDATA: {
-		/* a bare los.buf travels as its bytes and arrives as a
-		 * string, so a sender never has to cut one first. The copy
-		 * is still here; {__buf = b} is how to hand the bytes over
-		 * instead, and it is the only form that empties the
-		 * sender's handle.
-		 */
-		size_t n;
-		const char *s = luabuf_bytes(L, idx, &n);
-		unsigned int len;
-
-		if (!s)
-			return -1;
-		len = (unsigned int)n;
-		if (wbyte(w, 'S') || wput(w, &len, sizeof len))
-			return -1;
-		return wput(w, s, n);
-	}
-	default:
-		return -1;	/* functions, other userdata: no travel */
-	}
-}
-
-/* the handles deserialize has minted into the receiver so far.
- *
- * a message is refused as a whole or not at all, and a walk can fail
- * after it has already installed rights -- a table of four rights whose
- * fifth field is corrupt, or a receiver whose table filled up partway.
- * those handles were never pushed to lua, so the receiver cannot name
- * them to close them and they are lost for the life of the proc. a
- * sender controls both the count and the timing, so it is also how a
- * client exhausts a server's rights table from outside.
- *
- * MAXMSGRIGHTS bounds it because serialize refuses to write more than
- * that into one message.
- */
-struct minted {
-	int h[MAXMSGRIGHTS];
-	int n;
-};
-
-/* give back what a failed walk installed. */
-static void
-minted_undo(struct kproc *p, struct minted *mt)
-{
-	if (mt->n == 0)
-		return;
-
-	ipclock_enter();
-	for (int i = 0; i < mt->n; i++) {
-		struct right *r = right_slot(p, mt->h[i]);
-
-		if (r && r->used)
-			right_drop(p, r);
-		if (mt->h[i] < p->rhint)
-			p->rhint = mt->h[i];
-	}
-	ipclock_leave();
-	mt->n = 0;
-}
-
-static int
-deserialize(lua_State *L, const unsigned char *p, size_t len, size_t *off,
-    struct msgbufs *bufs, struct kproc *receiver, int depth,
-    struct minted *mt)
-{
-	if (depth > MAXDEPTH)
-		return -1;
-	if (*off >= len)
-		return -1;
-	unsigned char tag = p[(*off)++];
-
-	switch (tag) {
-	case 'N':
-		lua_pushnil(L);
-		return 0;
-	case 'T':
-		lua_pushboolean(L, 1);
-		return 0;
-	case 'F':
-		lua_pushboolean(L, 0);
-		return 0;
-	case 'I': {
-		lua_Integer v;
-
-		if (*off + sizeof v > len)
-			return -1;
-		memcpy(&v, p + *off, sizeof v);
-		*off += sizeof v;
-		lua_pushinteger(L, v);
-		return 0;
-	}
-	case 'D': {
-		lua_Number v;
-
-		if (*off + sizeof v > len)
-			return -1;
-		memcpy(&v, p + *off, sizeof v);
-		*off += sizeof v;
-		lua_pushnumber(L, v);
-		return 0;
-	}
-	case 'S': {
-		unsigned int n;
-
-		if (*off + sizeof n > len)
-			return -1;
-		memcpy(&n, p + *off, sizeof n);
-		*off += sizeof n;
-		if (*off + n > len)
-			return -1;
-		lua_pushlstring(L, (const char *)p + *off, n);
-		*off += n;
-		return 0;
-	}
-	case 'B': {
-		unsigned int n;
-
-		if (*off + sizeof n > len)
-			return -1;
-		memcpy(&n, p + *off, sizeof n);
-		*off += sizeof n;
-		/* each pair is >= 2 bytes (two tags); reject a count that
-		 * can't fit in what's left so a corrupt n can't drive a
-		 * huge lua_createtable preallocation.
-		 */
-		if (n > (len - *off) / 2)
-			return -1;
-		lua_createtable(L, 0, n);
-		for (unsigned int i = 0; i < n; i++) {
-			int rc = deserialize(L, p, len, off, bufs, receiver,
-			    depth + 1, mt);
-
-			if (rc == 0)
-				rc = deserialize(L, p, len, off, bufs, receiver,
-				    depth + 1, mt);
-			/* keep the reason: a nested right that could not
-			 * be made is still a resource failure.
-			 */
-			if (rc)
-				return rc;
-			lua_settable(L, -3);
-		}
-		return 0;
-	}
-	case 'M': {
-		/* a transferred buffer: the bytes are the kernel's, and
-		 * this is where they become the receiver's. Taking one
-		 * clears the slot, so whatever is left when the message is
-		 * disposed of is what nobody received.
-		 */
-		if (*off >= len)
-			return -1;
-		int i = p[(*off)++];
-
-		if (!bufs || i >= bufs->n || !bufs->p[i])
-			return -1;
-		if (!luabuf_give(L, bufs->p[i], bufs->len[i])) {
-			/* a local limit, like a full rights table, and
-			 * reported the same way. The flag is what lets
-			 * popfail name which limit it was.
-			 */
-			receiver->bufdenied = 1;
-			return -2;
-		}
-		bufs->p[i] = 0;
-		return 0;
-	}
-	case 'R': {
-		if (*off + 3 > len)
-			return -1;
-		unsigned short pi;
-
-		if (*off + sizeof pi > len)
-			return -1;
-		memcpy(&pi, p + *off, sizeof pi);
-		*off += sizeof pi;
-
-		unsigned char recv = p[(*off)++];
-
-		if (pi >= MAXPORTS || !portv[pi])
-			return -1;
-
-		int h = right_new(receiver, portv[pi], recv);
-
-		/* a full rights table is a local limit, not bad bytes */
-		if (h < 0)
-			return -2;	/* out of rights, not bad bytes */
-		/* recorded before the table is built, because building it
-		 * allocates and a failure there must give this back too.
-		 * the bound cannot be exceeded -- serialize refuses to
-		 * write more than MAXMSGRIGHTS -- but a message is bytes,
-		 * so it is checked rather than trusted.
-		 */
-		if (mt->n >= MAXMSGRIGHTS)
-			return -1;
-		mt->h[mt->n++] = h;
-		lua_createtable(L, 0, 1);
-		lua_pushinteger(L, h);
-		lua_setfield(L, -2, "__right");
-		return 0;
-	}
-	default:
-		return -1;
-	}
 }
 
 /* ---- message delivery ---- */
@@ -9039,12 +8119,10 @@ proc_launch(struct kproc *p)
  * told about and sys.reap it when done. one flag on a message that was
  * already being sent, rather than a second notification mechanism.
  */
-static void
-/* caller holds ipclock: reached from proc_detach, which has it, and
- * from the noproc path above, which takes it. Locking here as well is
- * what hung every test that tears a proc down with a watcher
- * attached -- which is every test, at poweroff.
+/* caller holds ipclock: proc_detach has it, the noproc path takes it.
+ * locking here as well hangs any teardown with a watcher attached.
  */
+static void
 notify_exit(struct kproc *watcher, int pid, const char *reason, int status,
     const char *exitmsg, int broke, int priv)
 {
