@@ -46,8 +46,10 @@ void kernel_stdout(const char *s, size_t n);
  * matters because the walk runs inside a debug hook and may run while
  * the proc is at its memory limit -- the same constraint src/debug.c is
  * built around. and a registry table is reachable through
- * debug.getregistry, which non-boot procs keep, so a proc could clear
- * the mechanism meant to contain it.
+ * debug.getregistry: kernel_strip_debug takes that away from a non-boot
+ * proc, but the extra space stays out of reach of the whole debug
+ * library, boot included, so the mechanism meant to contain a proc is
+ * not something the proc can name.
  */
 
 #include <sys/queue.h>

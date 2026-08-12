@@ -61,6 +61,11 @@ void	kernel_strip_io(struct lua_State *L);
  * leaves it there. Same contract, same reason, same re-strip hazard.
  */
 void	kernel_strip_debug(struct lua_State *L);
+/* kernel_confine_load replaces the proc's global load with one that
+ * forces text-only chunks, and removes string.dump. It reads globals
+ * itself and leaves the stack as it found it.
+ */
+void	kernel_confine_load(struct lua_State *L);
 /* kernel_wrap_coroutine expects the coroutine table on top of the stack
  * and replaces wrap with one that is transparent to preemption.
  */

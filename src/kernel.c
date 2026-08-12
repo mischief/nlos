@@ -2602,38 +2602,67 @@ kernel_strip_io(lua_State *L)
 	}
 }
 
-/* debug.sethook is a preemption escape, and the only member of the debug
- * library that is one.
- *
- * The kernel's instruction budget is a count hook armed once, in
- * proc_new -- it is never re-armed on resume. So debug.sethook(), with
- * no arguments, clears it on the running coroutine and the proc can then
- * spin forever with nothing left to interrupt it.
- *
- * Coroutines are not a way in: lua_newthread copies hook, mask and count
- * from its parent, so a bare coroutine.create() spinner is preempted and
- * contained. Checked, not assumed -- debug.gethook() on a fresh
- * coroutine reports the same external hook and the same count. That is not a
- * contained failure, it is the machine: measured, a proc doing
- * `debug.sethook() while true do end` takes the console, the network and
- * every other proc down with it.
- *
- * The rest of the library stays, and deliberately. debug.traceback is
- * what init.lua's repl reports errors with, and it is the only way to
- * see inside a parked lib/thread coroutine -- sys.stack walks the proc's
- * main coroutine and cannot descend into one. Removing the diagnostics
- * to close a hole in the scheduler would be a bad trade. Everything else
- * in debug (setlocal, setupvalue, setmetatable, getregistry) reaches
- * only the proc's own lua_State, which is the blast radius a proc
- * already has; this repo's threat model is buggy lua, not hostile users.
- */
+/* Strip debug members a confined proc turns outward: sethook (the
+ * preemption hook), and on a los.sys C closure getupvalue/setupvalue
+ * (kernel-pointer leak, syscall redirect, right forge). traceback and
+ * getinfo stay, read-only; boot keeps the whole library. */
 void
 kernel_strip_debug(lua_State *L)
 {
+	static const char *const gone[] = {
+		"sethook", "getupvalue", "setupvalue", "upvalueid",
+		"upvaluejoin", "setlocal", "setmetatable", "getregistry",
+		"getuservalue", "setuservalue", NULL
+	};
+
 	if (!lua_istable(L, -1))
 		return;
-	lua_pushnil(L);
-	lua_setfield(L, -2, "sethook");
+	for (int i = 0; gone[i]; i++) {
+		lua_pushnil(L);
+		lua_setfield(L, -2, gone[i]);
+	}
+}
+
+/* load() with the binary door shut: mode forced to "t", so a bytecode
+ * chunk is rejected by checkmode instead of reaching the unverified
+ * luaU_undump against the kernel heap. Original load is upvalue 1. */
+static int
+confined_load(lua_State *L)
+{
+	if (lua_gettop(L) < 3)
+		lua_settop(L, 3);	/* pad chunk, name, mode; keep env */
+	lua_pushliteral(L, "t");
+	lua_replace(L, 3);		/* text only, dropping any 'b' */
+
+	int n = lua_gettop(L);
+
+	lua_pushvalue(L, lua_upvalueindex(1));
+	lua_insert(L, 1);
+	lua_call(L, n, LUA_MULTRET);
+	return lua_gettop(L);
+}
+
+/* wrap load() and drop string.dump in a non-boot proc. Same door as
+ * loadfile/dofile, which proc_new removes outright: a chunk off the
+ * disk and a chunk of bytecode are the one hole wearing two names.
+ */
+void
+kernel_confine_load(lua_State *L)
+{
+	lua_getglobal(L, "load");
+	if (lua_isfunction(L, -1)) {
+		lua_pushcclosure(L, confined_load, 1);
+		lua_setglobal(L, "load");
+	} else {
+		lua_pop(L, 1);
+	}
+
+	lua_getglobal(L, "string");
+	if (lua_istable(L, -1)) {
+		lua_pushnil(L);
+		lua_setfield(L, -2, "dump");
+	}
+	lua_pop(L, 1);
 }
 
 int
@@ -6261,8 +6290,13 @@ counted(lua_State *L)
 	lua_CFunction f = (lua_CFunction)lua_touserdata(L,
 	    lua_upvalueindex(1));
 
-	if (p)
-		p->calls[lua_tointeger(L, lua_upvalueindex(2))]++;
+	/* Registration makes the index constant; bound it anyway as the
+	 * second lock, so strip_debug's removal of setupvalue is not the
+	 * only thing keeping it inside kproc.calls[]. */
+	lua_Integer idx = lua_tointeger(L, lua_upvalueindex(2));
+
+	if (p && idx >= 0 && idx < NSYSCALL)
+		p->calls[idx]++;
 	return f(L);
 }
 
@@ -7437,13 +7471,14 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		kernel_strip_debug(p->L);
 		lua_pop(p->L, 1);
 
-		/* both load a chunk straight off the disk, which is the same
-		 * hole wearing a different name
-		 */
+		/* loadfile/dofile off the disk, load "b" out of a string:
+		 * one hole, three names. confine_load forces text and drops
+		 * string.dump. */
 		lua_pushnil(p->L);
 		lua_setglobal(p->L, "loadfile");
 		lua_pushnil(p->L);
 		lua_setglobal(p->L, "dofile");
+		kernel_confine_load(p->L);
 	}
 
 	p->co = lua_newthread(p->L);
