@@ -18,6 +18,7 @@
 #include "kernel.h"
 #include "kproc.h"
 #include "serialize.h"
+#include "timer.h"
 #include "cpu.h"
 
 #include "lua.h"
@@ -46,7 +47,6 @@
  */
 #define REDUCTIONS	25000
 #define MAXWEIGHT	16	/* sys.set_priority clamp -- see kernel_run's WRR loop */
-#define MAXTIMERS	128	/* outstanding one-shot timers, machine-wide */
 /* floor on phase two's dispatch bound. The bound is what ends a lap at
  * all: two procs feeding each other hand phase two a fresh proc every
  * time it takes one. Sized to amortize the fixed cost between laps, not
@@ -68,14 +68,6 @@
  * this must stay well above the lap period -- see docs/scheduling.md.
  */
 #define SCHED_DECAY_MS	500
-/* wall-clock slice a proc may hold before the count hook yields it. A
- * slice costs one lap, so this decides how much of the machine goes to
- * scheduling rather than to work. A platform whose lap is expensive
- * overrides it in param.h -- see docs/scheduling.md.
- */
-#ifndef QUANTUM_MS
-#define QUANTUM_MS	2
-#endif
 /* priority resolution per unit of weight. plan 9's PriNormal is 10 and
  * its bands run 0..19; weight is our basepri, so this is what gives a
  * default-weight proc a 0..10 range to move in rather than 0..1.
@@ -392,7 +384,7 @@ static struct kport *dbgport;
 
 static int proc_has_port(struct kproc *p, struct kport *port);
 
-static int port_push(struct kport *port, const unsigned char *data,
+int port_push(struct kport *port, const unsigned char *data,
     size_t len, const unsigned short *refs, int nrefs);
 struct msgbufs;
 static int port_push_owned(struct kport *port, unsigned char *data,
@@ -410,7 +402,7 @@ extern unsigned long long platform_ticks(void);
  */
 extern void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total);
-static void port_unref(struct kport *port);
+void port_unref(struct kport *port);
 /* bumped whenever a port loses a reference, which is the only way
  * sys.hungup's answer can change. see api_hangups.
  */
@@ -502,41 +494,7 @@ static int have_flash;
 static int have_wire;
 static int have_esp;
 
-/* cycles per millisecond, measured once at boot. platform_ticks() is a
- * raw hardware counter -- a tick count, not a time -- and its rate is
- * whatever this machine runs it at, anywhere from a GHz TSC to the
- * 62.5MHz arm virtual counter, so every duration in the system was
- * denominated in uncalibrated ticks before this existed. one 100ms
- * Stall is enough: measured stability across boots is ~4 ppm. assumes
- * a constant-rate counter, which both architectures guarantee.
- * see docs/uefi-notes.md.
- */
-static unsigned long long cyc_per_ms;
-
-/* the tsc value calibrate_clock() saw, so uptime_ms is milliseconds
- * since boot rather than since the cpu started counting. the tsc is
- * 64-bit and does not wrap on any relevant timescale -- 2^64 cycles is
- * ~195 years at 3GHz -- so this is a plain subtraction with nothing to
- * guard against. (the 24-bit ACPI PM timer, which wraps every 4.7s, is a
- * different counter and not this one.)
- */
-static unsigned long long boot_tsc;
-
-/* until calibrate_clock() runs there is no rate to divide by. anything
- * logged before then is stamped 0 rather than dividing by zero.
- */
-static int clock_ready;
-
-/* how long the rx fifo may go undrained inside the dispatch loop. 16
- * bytes at 115200 baud is ~1.39ms; a quarter of that leaves margin for a
- * proc that overruns its slice without making the check itself frequent.
- */
-#define UART_DRAIN_MS 1
-static unsigned long long uart_drain_cycles = 1;
 static unsigned long long last_uart_drain;
-
-/* QUANTUM_MS in cycles, set once cyc_per_ms is known */
-static unsigned long long quantum_cycles;
 
 /* how often the preempt hook samples the clock, in lua VM instructions.
  * The hook yields on elapsed time, so this is a sampling rate rather
@@ -595,123 +553,6 @@ calibrate_reductions(void)
 	default_reductions = (int)target;
 }
 
-/* the clock half of calibration, separate so it can run first: until it
- * has, there is no clock to stamp a log line with. The epoch is taken
- * before the stall, so calibration counts as real boot time rather than
- * vanishing from anyone's boot latency measurement.
- */
-void
-kernel_clock_init(void)
-{
-	boot_tsc = platform_ticks();
-
-	unsigned long long t0 = boot_tsc;
-
-	BS->Stall(100000);	/* 100ms */
-
-	unsigned long long dt = platform_ticks() - t0;
-
-	cyc_per_ms = dt / 100;
-	if (cyc_per_ms == 0)
-		cyc_per_ms = 1;	/* refuse to divide by zero later */
-	quantum_cycles = cyc_per_ms * QUANTUM_MS;
-	uart_drain_cycles = cyc_per_ms * UART_DRAIN_MS / 4;
-	if (uart_drain_cycles == 0)
-		uart_drain_cycles = 1;
-	clock_ready = 1;
-}
-
-unsigned long long
-kernel_cyc_per_ms(void)
-{
-	return cyc_per_ms;
-}
-
-/* milliseconds since calibrate_clock(). the one time base timers and
- * timeouts are denominated in.
- */
-static unsigned long long
-uptime_ms(void)
-{
-	if (!clock_ready)
-		return 0;
-	return (platform_ticks() - boot_tsc) / cyc_per_ms;
-}
-
-/* The wall clock: unix seconds at boot, all a machine with no battery
- * keeps. Unset reads as nil, not 1970. Locked because a 64-bit store
- * is not atomic on every target, and a torn read is another century.
- */
-static struct lock timelock = LOCK_INIT;
-static long long wall_base_s = -1;	/* unix seconds at boot, or -1 */
-
-/* unix seconds, or 0 when the clock has never been set. */
-long long
-kernel_walltime(void)
-{
-	long long base, up = (long long)uptime_ms() / 1000;
-
-	lock(&timelock);
-	base = wall_base_s;
-	unlock(&timelock);
-	return base < 0 ? 0 : base + up;
-}
-
-
-/* one-shot timers. sys.timer(ms) mints a port, hands the caller its
- * receive right, and records a deadline here; expire_timers pushes one
- * message when the deadline passes and lets the port go. A timer is a
- * port so that recv-with-timeout falls out of thread.alt with no new
- * api, as thread.alt({{port = reply}, {port = sys.timer(500)}}).
- *
- * A flat unsorted array, scanned once per lap. Resolution is the
- * scheduler tick, so a timer fires up to one tick late and never early.
- */
-struct ktimer {
-	struct kport *port;		/* 0 = free slot */
-	unsigned long long due_ms;
-};
-
-static struct ktimer timers[MAXTIMERS];
-
-/* release slots whose port died -- the waiter closed its right or the
- * proc holding it exited. split out of expire_timers so a caller that
- * finds the table full can reclaim these without also delivering due
- * timers, which is the reactor's job and not a syscall's business.
- */
-static void
-reap_dead_timers(void)
-{
-	/* caller holds ipclock: expire_timers already has it, api_timer
-	 * must take it.
-	 */
-	for (int i = 0; i < MAXTIMERS; i++)
-		if (timers[i].port && timers[i].port->dead) {
-			port_unref(timers[i].port);
-			timers[i].port = 0;
-		}
-}
-
-static void
-expire_timers(void)
-{
-	ipclock_enter();
-	unsigned long long now = uptime_ms();
-
-	reap_dead_timers();	/* cancelled ones, before looking at deadlines */
-	for (int i = 0; i < MAXTIMERS; i++) {
-		struct ktimer *t = &timers[i];
-
-		if (!t->port)
-			continue;
-		if (now >= t->due_ms) {
-			port_push(t->port, (const unsigned char *)"T", 1, 0, 0);
-			port_unref(t->port);
-			t->port = 0;
-		}
-	}
-	ipclock_leave();
-}
 
 static struct kproc *
 find_proc(int pid)
@@ -853,7 +694,7 @@ proc_selfport(struct kproc *p)
 	return port;
 }
 
-static void port_unref(struct kport *port);
+void port_unref(struct kport *port);
 
 /* free one message: the in-flight right refs it carries, and any
  * transferred buffer nobody took.
@@ -888,7 +729,7 @@ port_flush(struct kport *port)
  * can ever take those messages. flushing may recursively unref other
  * ports whose only rights were in the flushed messages.
  */
-static void
+void
 port_unref(struct kport *port)
 {
 	/* caller holds ipclock.
@@ -1311,7 +1152,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
  * literal -- the device pumps and the timer tick. they push a handful of
  * bytes, so the copy is not worth avoiding.
  */
-static int
+int
 port_push(struct kport *port, const unsigned char *data, size_t len,
     const unsigned short *refs, int nrefs)
 {
@@ -3320,7 +3161,7 @@ api_stats(lua_State *L)
 	 * -- sub-nanosecond -- and still report real units. uptime_ms has
 	 * 1ms granularity, which is useless over a 20ms measurement.
 	 */
-	lua_pushinteger(L, (lua_Integer)cyc_per_ms);
+	lua_pushinteger(L, (lua_Integer)kernel_cyc_per_ms());
 	lua_setfield(L, -2, "cycles_per_ms");
 	lua_pushinteger(L, default_reductions);
 	lua_setfield(L, -2, "reductions");
@@ -5629,33 +5470,12 @@ api_timer(lua_State *L)
 	if (ms < 0)
 		ms = 0;
 
-	int slot = -1;
-
 	/* everything from here down is shared -- the timer table, the
 	 * port table, this proc's rights -- and nothing in it raises:
 	 * the failure paths all return 0 to lua rather than erroring.
 	 * So one region covers the whole of it.
 	 */
 	ipclock_enter();
-	for (int tries = 0; tries < 2 && slot < 0; tries++) {
-		for (int i = 0; i < MAXTIMERS; i++)
-			if (!timers[i].port) {
-				slot = i;
-				break;
-			}
-		/* full: a cancelled timer's slot is held until something
-		 * notices its port died, and the caller cannot be asked to
-		 * yield first -- thread.sleep() would need a timer of its
-		 * own to do that, which is exactly what it cannot get.
-		 * reclaim them here instead.
-		 */
-		if (slot < 0 && tries == 0)
-			reap_dead_timers();
-	}
-	if (slot < 0) {
-		ipclock_leave();
-		return 0;
-	}
 
 	/* capped like sys.newport: a timer is a port, and a loop asking
 	 * for timers spends the table just as fast.
@@ -5674,9 +5494,11 @@ api_timer(lua_State *L)
 		ipclock_leave();
 		return 0;
 	}
-	port->nrights++;	/* the timer table's own ref */
-	timers[slot].port = port;
-	timers[slot].due_ms = uptime_ms() + (unsigned long long)ms;
+	if (timer_arm(port, (unsigned long long)ms) < 0) {
+		right_drop(p, right_slot(p, h));
+		ipclock_leave();
+		return 0;
+	}
 	ipclock_leave();
 	lua_pushinteger(L, h);
 	return 1;
@@ -5758,9 +5580,7 @@ api_settime(lua_State *L)
 	if (t <= 0)
 		return luaL_error(L, "settime: not a unix time");
 
-	lock(&timelock);
-	wall_base_s = (long long)t - (long long)(uptime_ms() / 1000);
-	unlock(&timelock);
+	kernel_settime((long long)t);
 	lua_pushinteger(L, t);
 	return 1;
 }
@@ -8042,7 +7862,7 @@ updatecpu(struct kproc *p)
 	 * truncation is a systematic undercount at lap scale, where the
 	 * interval is a handful of milliseconds.
 	 */
-	unsigned long long denom = n * (cyc_per_ms ? cyc_per_ms : 1);
+	unsigned long long denom = n * (kernel_cyc_per_ms() ? kernel_cyc_per_ms() : 1);
 	unsigned frac = denom ? (unsigned)((used * 1000) / denom) : 0;
 
 	if (frac > 1000)

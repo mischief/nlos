@@ -290,6 +290,17 @@ void	ipclock_leave_port(struct kport *p);
 
 extern struct kport *portv[MAXPORTS];
 
+/* queue a message on a port, copying `data`. refs/nrefs are in-flight
+ * right refs and may be null. Caller holds the bucket covering `port`.
+ */
+int	port_push(struct kport *port, const unsigned char *data, size_t len,
+	    const unsigned short *refs, int nrefs);
+
+/* drop one reference; the last one frees the port. Wide: dropping the
+ * last reference flushes the queue, which reaches other ports.
+ */
+void	port_unref(struct kport *port);
+
 struct right *right_slot(struct kproc *p, int h);
 struct right *right_get(struct kproc *p, lua_Integer h);
 int	right_new(struct kproc *p, struct kport *port, int recv);
