@@ -155,7 +155,10 @@ function ops.read(S, m)
 	if type(n) == "number" and n > dev.IOUNIT then
 		n = dev.IOUNIT
 	end
-	local d = S.B.read(S.get(m.fid), m.off, n)
+	-- readbuf where the backend has one: it answers with bytes it owns,
+	-- which the transfer below hands over instead of copying.
+	local rd = S.B.readbuf or S.B.read
+	local d = rd(S.get(m.fid), m.off, n)
 
 	-- a backend that answered with bytes of its own hands them over
 	-- rather than having them copied into the reply. A buffer it may

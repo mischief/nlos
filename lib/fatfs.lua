@@ -14,6 +14,7 @@
 -- error to its caller.
 
 local dev = require("dev")
+local buf = require("los.buf")
 local fat = require("fat")
 local dat = fat.dat
 
@@ -208,7 +209,17 @@ function M.new(fs)
 		return dev.closable(B, h_of(cp))
 	end
 
+	-- read answers with a string, as dev says it does. readbuf is the
+	-- optional form lib/mnt.lua also offers: bytes of our own, which
+	-- lib/srv.lua hands to the client instead of copying them into the
+	-- reply.
 	function B.read(h, off, n)
+		local d = B.readbuf(h, off, n)
+
+		return buf.is(d) and d:str() or d
+	end
+
+	function B.readbuf(h, off, n)
 		if isctl(h) then
 			return ""	-- reading ctl says nothing; writing it does
 		end
@@ -221,7 +232,10 @@ function M.new(fs)
 		if off < 0 or n < 0 then
 			dev.error(dev.Ebadarg)
 		end
-		return fail(fs:read(ent, off, n))
+		-- bytes of our own, which lib/srv.lua hands to the client
+		-- rather than copying into the reply. A caller wanting a
+		-- string gets one from the buffer.
+		return fail(fs:readbuf(ent, off, n))
 	end
 
 	-- The length lives in the directory entry, and fs:write only grows

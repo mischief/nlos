@@ -13,6 +13,7 @@
 local dat = require "fat.dat"
 local pack = require "fat.pack"
 local Fs = require "fat.obj"
+local buf = require "los.buf"
 
 local M = {}
 
@@ -123,16 +124,19 @@ end
 --------------------------------------------------------------------------
 -- reading
 
--- Read count bytes from an entry at an offset. Short reads mean the end
--- of the file and nothing else: a hole is not a thing FAT has, since a
--- cluster is either allocated and holds bytes or the file stops.
-function Fs:read(ent, off, count)
+-- Read count bytes from an entry at an offset, as bytes of our own.
+-- A fresh buffer rather than a view onto the cache: srv hands a movable
+-- one to the client instead of copying it, and a view is not ours to
+-- give. A short read means the end of the file; FAT has no holes.
+function Fs:readbuf(ent, off, count)
   if (ent.attr & dat.Adir) ~= 0 then return nil, "is a directory" end
+  -- a string, since a buffer of no bytes is not a thing los.buf makes
   if off >= ent.size then return "" end
   if off + count > ent.size then count = ent.size - off end
 
   local csz = self:clustersz()
-  local out = {}
+  local out = buf.new(count)
+  local at = 1
   local c = self:clusat(ent.clus, off // csz)
   local within = off % csz
   local left = count
@@ -140,9 +144,8 @@ function Fs:read(ent, off, count)
     if not c then break end        -- the chain is shorter than the size
     local n = csz - within
     if n > left then n = left end
-    -- Cut each sector out of the cache where it already sits.
-    -- Staging the run in one buffer first would allocate it and copy
-    -- every sector twice, to hand the same bytes to the same concat.
+    -- straight from the cached sector into the answer, so the bytes
+    -- are copied once and never become a string on the way
     local base = self:clusterlba(c)
     local s0 = within // self.secsz
     local s1 = (within + n - 1) // self.secsz
@@ -152,14 +155,34 @@ function Fs:read(ent, off, count)
       local to = s == s1 and (within + n - 1) - s * self.secsz or
           self.secsz - 1
 
-      out[#out + 1] = self:rdsec(base + s):sub(from + 1, to + 1)
+      out:copy(at, self:rdsec(base + s), from + 1, to + 1)
+      at = at + (to - from + 1)
     end
     left = left - n
     within = 0
     c = self:fatget(c)
     if not self:validclus(c) then c = nil end
   end
-  return table.concat(out)
+
+  -- the chain ran out early, so the answer is shorter than asked for
+  local got = at - 1
+
+  if got == 0 then return "" end
+  if got < count then
+    local short = buf.new(got)
+
+    short:copy(1, out, 1, got)
+    return short
+  end
+  return out
+end
+
+-- the same bytes as a string, for a caller that wants one
+function Fs:read(ent, off, count)
+  local b, err = self:readbuf(ent, off, count)
+
+  if b == nil then return nil, err end
+  return buf.is(b) and b:str() or b
 end
 
 function Fs:readfile(path)
