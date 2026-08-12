@@ -870,7 +870,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'layout', 'strictglobals', 'bufout', 'bufmove', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
-              'clock']
+              'clock', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep', 'dbgread', 'dbgcap', 'dbglib', 'dbghole']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
@@ -1106,6 +1106,7 @@ microvm_smp_tests = [
   ['bigmsg', []],
   ['sample', []],
   ['spawnrace', []],
+  ['dbg', []],
 ]
 
 foreach n : ['2', '4']
