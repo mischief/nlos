@@ -137,8 +137,11 @@ turning tracing off measures 1.00x again.
 
 The ring is C memory, not the proc's: charging it to `mem_limit` would
 mean the act of debugging a proc near its cap could push it over.
-Bounds are `TRACEMAX` 4096 entries, `TRACESRC` 32 distinct source
-files, `TRACECO` 16 coroutines told apart.
+Bounds are `TRACEMAX` 16384 entries, `TRACESRC` 32 distinct source
+files, `TRACECO` 16 coroutines told apart. Ask for the size you need
+and check what you got: a ring smaller than the operation wraps, and
+the histogram then describes its tail while reading as though it
+covered all of it.
 
 ### Two clocks, and why not one
 
