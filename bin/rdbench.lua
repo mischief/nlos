@@ -92,3 +92,31 @@ if sright then
 	end
 	sys.send(sright, "quit")
 end
+
+-- and the other half of the union. / is the embedded image with the
+-- flash mounted over it, so every readdir reads BOTH and merges them.
+-- This one needs no message: the image is ambient, so the backend can
+-- be built here and asked directly.
+local okr, romfs = pcall(require, "romfs")
+
+if okr then
+	local RB = romfs.new()
+	local rh = RB.walk(RB.attach(), "lib")
+
+	if rh then
+		local ents = RB.readdir(rh)
+		local t = timeit(function() RB.readdir(rh) end)
+
+		print("")
+		print(string.format("romfs /lib in-proc: %d ents, %.2fms, %.3fms/ent",
+		    #ents, ms(t), ms(t) / #ents))
+
+		local rom = require("los.rom")
+		local n = #rom.list()
+		local t2 = timeit(function() rom.size("/lib/ns.lua") end)
+
+		print(string.format("rom.size one call:  %d files in the image, %.3fms",
+		    n, ms(t2)))
+	end
+end
+

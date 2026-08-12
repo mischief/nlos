@@ -15,6 +15,7 @@ local unistd = require("posix.unistd")
 local N = assert(prog.ns(), "rdprof: no namespace")
 local path = (arg and arg[1]) or "/lib"
 local rounds = tonumber(arg and arg[2]) or 5
+local ring = tonumber(arg and arg[3]) or 20000
 
 local who
 for _, pid in ipairs(sys.procs()) do
@@ -26,7 +27,7 @@ if not who then
 	return
 end
 
-local armed, aerr = pcall(sys.set_trace, who, 20000)
+local armed, aerr = pcall(sys.set_trace, who, ring)
 
 if not armed then
 	print("rdprof: cannot trace pid " .. who .. ": " .. tostring(aerr))
@@ -36,7 +37,25 @@ end
 for _ = 1, rounds do N:readdir(path) end
 
 -- read the ring before disarming: turning the trace off frees it
-local ok, out = pcall(ps.tracehist, who, 24)
+local ok, out = pcall(ps.tracehist, who, 12)
+local h = sys.tracehist(who)
 
 pcall(sys.set_trace, who, 0)
 unistd.write(1, (ok and out or tostring(out)) .. "\n")
+
+-- and by count, which is a different question: the top of the cost
+-- list held barely a thousand line events out of a ring of hundreds of
+-- thousands, so something cheap is running very often.
+local n, cyc = 0, sys.stats().cycles_per_ms
+
+for _, r in ipairs(h) do n = n + r.count end
+table.sort(h, function(a, b) return a.count > b.count end)
+
+print(string.format("%d line events over %d lines", n, #h))
+print(string.format("%10s %10s  %s", "count", "cpu_us", "where"))
+for i = 1, math.min(14, #h) do
+	local r = h[i]
+
+	print(string.format("%10d %10.0f  %s:%d", r.count,
+	    r.cpu * 1000 // cyc, r.source, r.line))
+end

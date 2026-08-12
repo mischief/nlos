@@ -227,7 +227,12 @@ enum { PRIV_NONE, PRIV_BOOT, PRIV_ESP, PRIV_CONS, PRIV_WIRE, PRIV_POWER,
 
 #define TRACESRC	32	/* distinct source files remembered */
 #define TRACECO		16	/* coroutines distinguished, as in debug.c */
-#define TRACEMAX	4096	/* entries, per proc */
+/* entries, per proc. An entry is 16 bytes, so a full ring is 256KB, and
+ * it is allocated only while a trace is armed. 4096 was too few to hold
+ * one directory listing: the ring wrapped, and the histogram then
+ * described the tail of the operation while looking like all of it.
+ */
+#define TRACEMAX	16384
 
 struct tracent {
 	int line;
