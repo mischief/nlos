@@ -4,18 +4,20 @@
 -- which /etc/services.lua grants this and nothing else -- so no proc
 -- above it has to be in the path, and none below it can move the clock.
 
--- The server comes from the lease, asked of dhcpd rather than read
--- from /net, so this needs no namespace. Where the lease names none,
+-- The server comes from the lease, read as /net/ntp -- the same file
+-- bin/date.lua reads, and the same way. dhcpd serves the lease as
+-- files and answers no messages of its own, so a task holding its port
+-- and asking it questions gets nothing. Where the lease names none,
 -- the pool.
 
 local sys = require("los.sys")
 local thread = require("los.thread")
 local udpc = require("client.udp")
+local ns = require("ns")
 local ntp = require("ntp")
 
 local a = ...
 local udph = a.ip and a.ip.__right
-local dhcpd = a.dhcpd and a.dhcpd.__right
 
 -- a.time is never called. Holding the right is the authorization, and
 -- sys.settime looks for it in this proc's rights table.
@@ -42,15 +44,13 @@ end
 -- is only reachable once dns is up -- which is why the lease is tried
 -- first even when both would work.
 local function server()
-	if dhcpd then
-		local r = thread.rpc(dhcpd, { op = "get", name = "ntp" })
-		local first = type(r) == "table" and r.data and
-		    r.data:match("^%s*([%d%.]+)")
-		local q = first and quad(first)
+	local N = ns.current()
+	local txt = N and N:readfile("/net/ntp")
+	local first = txt and txt:match("^%s*([%d%.]+)")
+	local q = first and quad(first)
 
-		if q then
-			return q
-		end
+	if q then
+		return q
 	end
 
 	local dnsh = a.dns and a.dns.__right
