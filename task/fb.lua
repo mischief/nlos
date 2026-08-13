@@ -356,9 +356,11 @@ end
 --
 -- x or y absent leaves that coordinate alone; `on` absent leaves the
 -- visibility alone, so a move is {op="cursor", x=, y=}.
+-- one value, and deliberately: the dispatch reads a second return as a
+-- right to close, so a reason returned here is closed as one.
 function ops.cursor(m)
 	if not platform.cursor then
-		return nil, "no cursor on this screen"
+		return nil
 	end
 	return platform.cursor(m.x, m.y, m.on)
 end
@@ -428,7 +430,11 @@ while true do
 			-- the session's own send right, surplus once the
 			-- reply has carried a copy to the client: holding it
 			-- would keep sys.hungup false for ever.
-			if ok and tmp then
+			-- a handle, or nothing. Checked rather than trusted:
+			-- an op that returns a reason as its second value
+			-- would otherwise have it closed as a right, and
+			-- take this proc -- the whole screen -- down with it.
+			if ok and type(tmp) == "number" then
 				sys.close(tmp)
 			end
 		end

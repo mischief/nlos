@@ -605,6 +605,17 @@ lua_payload = files(
   'bin/seq.lua',
   'bin/smiley.lua',
   'bin/clock.lua',
+  # the window system. Not started here -- platform_have_ptr is 0 on
+  # efi, so no machine boots into it -- but present so a test can hand
+  # dio ports of its own and drive the tray under qemu. Injecting a
+  # touch needs nothing special: the pointer is a port, and a synthetic
+  # record is an ordinary send to it.
+  'task/dio.lua',
+  'etc/dio.lua',
+  'lib/mouse.lua',
+  'task/fbterm.lua',
+  'lib/fbsh.lua',
+  'bin/scribble.lua',
   # vi, and its ed/ engine and terminal (lib/ed/*). a full-screen program
   # over the tty capability -- see lib/prog.lua and lib/caps.lua.
   'bin/vi.lua',
@@ -867,7 +878,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill',
               'replyright', 'rightsundo', 'procpriv', 'portlimit', 'trace',
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
-              'layout', 'strictglobals', 'bufout', 'bufmove', 'serialize', 'mntshare', 'althup', 'ninepc',
+              'layout', 'strictglobals', 'bufout', 'bufmove', 'serialize', 'mntshare', 'althup', 'dio', 'ninepc',
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
