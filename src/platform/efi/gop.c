@@ -384,37 +384,23 @@ l_scroll(lua_State *L)
 
 /* ---- the pointer, drawn in software ----
  *
- * The panel's is the display controller's; this screen has none, so the
- * arrow is composited here: save what is under it, draw over the copy,
- * put the saved pixels back before moving.
+ * The panel's is the display controller's; this screen has none, so it
+ * is composited here: save what is under it, draw over the copy, put
+ * the saved pixels back before moving.
  */
-#define CURW 8
-#define CURH 12
-
-/* 1 is the body, 2 its outline. An arrow with no outline vanishes over
- * anything pale, which on a tray is most of it.
+/* a crosshair, as the panel draws: the arms cross on the hotspot, so
+ * the point is visible rather than covered by the cursor's own body.
  */
-static const unsigned char curbits[CURH][CURW] = {
-	{ 2,0,0,0,0,0,0,0 },
-	{ 2,2,0,0,0,0,0,0 },
-	{ 2,1,2,0,0,0,0,0 },
-	{ 2,1,1,2,0,0,0,0 },
-	{ 2,1,1,1,2,0,0,0 },
-	{ 2,1,1,1,1,2,0,0 },
-	{ 2,1,1,1,1,1,2,0 },
-	{ 2,1,1,1,1,1,1,2 },
-	{ 2,1,1,1,2,2,2,2 },
-	{ 2,1,2,1,1,2,0,0 },
-	{ 2,2,0,2,1,1,2,0 },
-	{ 0,0,0,0,2,2,2,0 },
-};
+#define CURSOR_R	5
+#define CURSOR_SIDE	(2 * CURSOR_R + 1)
+#define CURSOR_INK	0x0000ff00	/* green, over dark text */
 
-static UINT32 curunder[CURW * CURH];
+static UINT32 curunder[CURSOR_SIDE * CURSOR_SIDE];
 
-/* the size actually saved: a cursor at the edge is clipped, and Blt
- * refuses a rectangle that leaves the screen.
+/* the rectangle actually saved. A cursor at an edge is clipped, and
+ * Blt refuses one that leaves the screen.
  */
-static int curw, curh;
+static int curox, curoy, curw, curh;
 
 static void
 cursor_hide(EFI_GRAPHICS_OUTPUT_PROTOCOL *g)
@@ -422,7 +408,7 @@ cursor_hide(EFI_GRAPHICS_OUTPUT_PROTOCOL *g)
 	if (!curshown)
 		return;
 	g->Blt(g, (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)curunder,
-	    EfiBltBufferToVideo, 0, 0, (UINTN)curx, (UINTN)cury,
+	    EfiBltBufferToVideo, 0, 0, (UINTN)curox, (UINTN)curoy,
 	    (UINTN)curw, (UINTN)curh, 0);
 	curshown = 0;
 }
@@ -430,37 +416,39 @@ cursor_hide(EFI_GRAPHICS_OUTPUT_PROTOCOL *g)
 static void
 cursor_show(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, int x, int y)
 {
-	UINT32 img[CURW * CURH];
+	UINT32 img[CURSOR_SIDE * CURSOR_SIDE];
 	UINTN sw = g->Mode->Info->HorizontalResolution;
 	UINTN sh = g->Mode->Info->VerticalResolution;
-	int i, j;
+	int i, j, x1, y1;
 
 	if (x < 0 || y < 0 || (UINTN)x >= sw || (UINTN)y >= sh)
 		return;
 
-	curw = ((UINTN)(x + CURW) > sw) ? (int)(sw - (UINTN)x) : CURW;
-	curh = ((UINTN)(y + CURH) > sh) ? (int)(sh - (UINTN)y) : CURH;
+	curox = x - CURSOR_R < 0 ? 0 : x - CURSOR_R;
+	curoy = y - CURSOR_R < 0 ? 0 : y - CURSOR_R;
+	x1 = (UINTN)(x + CURSOR_R + 1) > sw ? (int)sw : x + CURSOR_R + 1;
+	y1 = (UINTN)(y + CURSOR_R + 1) > sh ? (int)sh : y + CURSOR_R + 1;
+	curw = x1 - curox;
+	curh = y1 - curoy;
 	if (curw <= 0 || curh <= 0)
 		return;
 
 	if (g->Blt(g, (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)curunder,
-	    EfiBltVideoToBltBuffer, (UINTN)x, (UINTN)y, 0, 0,
+	    EfiBltVideoToBltBuffer, (UINTN)curox, (UINTN)curoy, 0, 0,
 	    (UINTN)curw, (UINTN)curh, 0) != EFI_SUCCESS)
 		return;
 
 	for (j = 0; j < curh; j++)
-		for (i = 0; i < curw; i++) {
-			unsigned char b = curbits[j][i];
-
-			img[j * curw + i] = b == 1 ? 0x00ffffff :
-			    b == 2 ? 0x00000000 : curunder[j * curw + i];
-		}
+		for (i = 0; i < curw; i++)
+			img[j * curw + i] =
+			    (curoy + j == y || curox + i == x) ?
+			    CURSOR_INK : curunder[j * curw + i];
 
 	curx = x;
 	cury = y;
 	curshown = 1;
 	g->Blt(g, (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)img, EfiBltBufferToVideo,
-	    0, 0, (UINTN)x, (UINTN)y, (UINTN)curw, (UINTN)curh, 0);
+	    0, 0, (UINTN)curox, (UINTN)curoy, (UINTN)curw, (UINTN)curh, 0);
 }
 
 /* fb.cursor(x, y, on): move, show or hide. An absent coordinate leaves

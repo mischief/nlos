@@ -17,6 +17,7 @@ local fb = prog.screen()
 local tty = prog.tty()
 local ctx = prog.ctx
 local ptr = ctx and ctx.ptr
+local rand = prog.rand()
 
 local function die(s)
 	io.stderr:write("dio: " .. s .. "\n")
@@ -60,6 +61,14 @@ local pid, ctl = proc.spawn(src, {
 		-- with {op="write"}, which is what a stream takes, and
 		-- without one its failures go nowhere.
 		cons = ctx.stderr and { __right = ctx.stderr.h } or nil,
+		-- what this program was lent, lent onward: dio hands it to
+		-- each terminal it starts, so a shell on the glass reaches
+		-- the same stack as the shell that typed "dio".
+		tcp = ctx.net and { __right = ctx.net } or nil,
+		ip = ctx.udp and { __right = ctx.udp } or nil,
+		dns = ctx.dns and { __right = ctx.dns } or nil,
+		power = ctx.power and { __right = ctx.power } or nil,
+		seed = rand and rand(32) or nil,
 	},
 })
 

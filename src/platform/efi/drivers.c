@@ -396,7 +396,10 @@ outb(unsigned short port, unsigned char v)
 static int ps2ok;
 static int ps2x, ps2y;		/* where we have accumulated to */
 static int ps2mid;		/* and whether that has a starting point */
-static unsigned char ps2pkt[3];
+static int ps2wheel;		/* four bytes a packet, not three */
+static int ps2wq;		/* wheel clicks owed, signed: negative is up */
+static int ps2b;		/* buttons, as last reported */
+static unsigned char ps2pkt[4];
 static int ps2n;
 
 /* bounded, because a controller that never clears the flag would hang
@@ -454,6 +457,16 @@ ps2_init(void)
 
 	if (!ps2aux(0xf6))		/* defaults */
 		return 0;
+
+	/* the knock that asks for a wheel: three sample rates in this
+	 * order, after which a mouse that has one answers 3 to 0xf2 and
+	 * sends four bytes a packet instead of three.
+	 */
+	if (ps2aux(0xf3) && ps2aux(200) && ps2aux(0xf3) && ps2aux(100) &&
+	    ps2aux(0xf3) && ps2aux(80) && ps2aux(0xf2) &&
+	    ps2wait(ST_OUTFULL, 1))
+		ps2wheel = inb(I8042_DATA) == 3;
+
 	if (!ps2aux(0xf4))		/* and report */
 		return 0;
 	return 1;
@@ -468,7 +481,7 @@ static int
 ps2_read(int *x, int *y, int *buttons)
 {
 	UINTN w = 0, h = 0;
-	int dx, dy, got = 0;
+	int dx, dy, b, got = 0;
 
 	efi_fb_size(&w, &h);
 	if (w == 0 || h == 0)
@@ -482,7 +495,7 @@ ps2_read(int *x, int *y, int *buttons)
 	while ((inb(I8042_STATUS) & (ST_OUTFULL | ST_AUX)) ==
 	    (ST_OUTFULL | ST_AUX)) {
 		ps2pkt[ps2n++] = inb(I8042_DATA);
-		if (ps2n < 3)
+		if (ps2n < (ps2wheel ? 4 : 3))
 			continue;
 		ps2n = 0;
 
@@ -503,9 +516,22 @@ ps2_read(int *x, int *y, int *buttons)
 		ps2x += dx;
 		ps2y -= dy;		/* the mouse counts up, screens down */
 		got = 1;
+
+		if (ps2wheel && (signed char)ps2pkt[3] != 0)
+			ps2wq += (signed char)ps2pkt[3];
+
+		/* a change of button ends the drain, so a press and the
+		 * release behind it are two samples. Merged, a click that
+		 * lands between two reads is a click nobody saw.
+		 */
+		b = (ps2pkt[0] & 1) ? 1 : ((ps2pkt[0] & 2) ? 4 : 0);
+		if (b != ps2b) {
+			ps2b = b;
+			break;
+		}
 	}
 
-	if (!got)
+	if (!got && ps2wq == 0)
 		return 0;
 
 	if (ps2x < 0)
@@ -519,7 +545,15 @@ ps2_read(int *x, int *y, int *buttons)
 
 	*x = ps2x;
 	*y = ps2y;
-	*buttons = (ps2pkt[0] & 1) ? 1 : ((ps2pkt[0] & 2) ? 4 : 0);
+	*buttons = ps2b;
+
+	/* one click a read, because a wheel event is its own event to a
+	 * reader and clicks must not merge. Away from the hand is up.
+	 */
+	if (ps2wq != 0) {
+		*buttons |= ps2wq < 0 ? 8 : 16;
+		ps2wq += ps2wq < 0 ? 1 : -1;
+	}
 	return 1;
 }
 
