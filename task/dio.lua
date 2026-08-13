@@ -590,8 +590,14 @@ local function tellwin(a, state)
 	if state ~= "redraw" and state == a.wstate then
 		return
 	end
-	a.wstate = state
-	sys.send(a.evsend, { t = "win", state = state })
+	-- recorded only if it went. A drop leaves the app believing what
+	-- it last heard, and this believing the same, so the next change
+	-- is sent rather than suppressed as one it already knows -- which
+	-- would leave an app that missed a "visible" blank until the one
+	-- after that.
+	if sys.send(a.evsend, { t = "win", state = state }) then
+		a.wstate = state
+	end
 end
 
 -- a name for this instance, unique among the ones running: the second
