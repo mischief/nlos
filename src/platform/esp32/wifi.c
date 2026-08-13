@@ -64,6 +64,11 @@ static int up;
 static int state;
 static int lastreason;
 static char lastssid[33];
+/* set from the driver's event task, read from the kernel's: one flag
+ * written on one side and cleared on the other, so no lock.
+ */
+static volatile int scandone;
+static int scanning;
 
 /* the radio's own task calls this. Copy and return: the buffer belongs
  * to the driver, and holding it would starve the receive path.
@@ -112,6 +117,9 @@ onwifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 		 * that there is no interface to register it on.
 		 */
 		esp_wifi_internal_reg_rxcb(WIFI_IF_STA, rxframe);
+		break;
+	case WIFI_EVENT_SCAN_DONE:
+		scandone = 1;
 		break;
 	case WIFI_EVENT_STA_DISCONNECTED: {
 		wifi_event_sta_disconnected_t *d = data;
@@ -251,6 +259,74 @@ esp_wifi_connect_to(const char *ssid, const char *psk)
 		return -1;
 	}
 	return 0;
+}
+
+int
+esp_wifi_scan_begin(void)
+{
+	wifi_scan_config_t cfg;
+
+	if (!up && esp_wifi_bringup() != 0)
+		return -1;
+	if (scanning)
+		return 0;	/* one is already running; take collects it */
+
+	memset(&cfg, 0, sizeof cfg);
+	cfg.show_hidden = false;
+	/* active, and the driver's own dwell: a hidden network needs a
+	 * probe anyway, and the defaults are tuned for this radio.
+	 */
+	cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+
+	scandone = 0;
+	if (esp_wifi_scan_start(&cfg, false) != ESP_OK)
+		return -1;
+	scanning = 1;
+	return 0;
+}
+
+int
+esp_wifi_scan_take(struct esp_wifi_ap *out, int max)
+{
+	uint16_t n;
+	wifi_ap_record_t *recs;
+	int got = 0;
+
+	if (!scanning || !scandone)
+		return -1;
+
+	/* cleared before the records are read, not after: a failure below
+	 * still ends this scan, or begin would refuse to start another.
+	 */
+	scanning = 0;
+	scandone = 0;
+
+	if (esp_wifi_scan_get_ap_num(&n) != ESP_OK || n == 0)
+		return 0;
+	if (n > max)
+		n = max;
+
+	recs = calloc(n, sizeof *recs);
+	if (recs == NULL) {
+		/* the driver holds the list until it is read; drop it so
+		 * the memory is not pinned until the next scan.
+		 */
+		esp_wifi_clear_ap_list();
+		return 0;
+	}
+	if (esp_wifi_scan_get_ap_records(&n, recs) == ESP_OK) {
+		for (int i = 0; i < n; i++) {
+			snprintf(out[got].ssid, sizeof out[got].ssid, "%s",
+			    (const char *)recs[i].ssid);
+			out[got].rssi = recs[i].rssi;
+			out[got].open =
+			    recs[i].authmode == WIFI_AUTH_OPEN;
+			out[got].channel = recs[i].primary;
+			got++;
+		}
+	}
+	free(recs);
+	return got;
 }
 
 int

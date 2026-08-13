@@ -40,6 +40,24 @@ int esp_wifi_connect_to(const char *ssid, const char *psk);
 
 int esp_wifi_disconnect_from(void);
 
+/* what one scan reports about one network. */
+struct esp_wifi_ap {
+	char ssid[33];
+	int rssi;
+	int open;		/* no passphrase needed */
+	int channel;
+};
+
+/* Start a scan, and collect one that has finished. Split because a scan
+ * takes seconds and this kernel is cooperative: a blocking one stalls
+ * every proc, not just the caller. begin returns 0 once the radio is
+ * looking; take returns -1 until the driver is done, then fills up to
+ * `max` records and returns how many. Scanning while associated costs
+ * the link a few hundred milliseconds.
+ */
+int esp_wifi_scan_begin(void);
+int esp_wifi_scan_take(struct esp_wifi_ap *out, int max);
+
 /* 0 idle, 1 associating, 2 associated, 3 failed. reason is the driver's
  * disconnect reason on 3, and ssid the network named in the last
  * attempt; either may be NULL.

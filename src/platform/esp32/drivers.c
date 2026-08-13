@@ -507,10 +507,50 @@ wifi_status(lua_State *L)
 	return 1;
 }
 
+/* scan_begin starts one; scan_take returns nil while it is still
+ * running, so a caller polls instead of blocking the machine.
+ */
+static int
+wifi_scan_begin(lua_State *L)
+{
+	lua_pushboolean(L, esp_wifi_scan_begin() == 0);
+	return 1;
+}
+
+#define WIFI_MAXAP 24
+
+static int
+wifi_scan_take(lua_State *L)
+{
+	struct esp_wifi_ap ap[WIFI_MAXAP];
+	int n = esp_wifi_scan_take(ap, WIFI_MAXAP);
+
+	if (n < 0) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_createtable(L, n, 0);
+	for (int i = 0; i < n; i++) {
+		lua_createtable(L, 0, 4);
+		lua_pushstring(L, ap[i].ssid);
+		lua_setfield(L, -2, "ssid");
+		lua_pushinteger(L, ap[i].rssi);
+		lua_setfield(L, -2, "rssi");
+		lua_pushboolean(L, ap[i].open);
+		lua_setfield(L, -2, "open");
+		lua_pushinteger(L, ap[i].channel);
+		lua_setfield(L, -2, "channel");
+		lua_rawseti(L, -2, i + 1);
+	}
+	return 1;
+}
+
 static const luaL_Reg wifilib[] = {
 	{ "connect", wifi_connect },
 	{ "disconnect", wifi_disconnect },
 	{ "status", wifi_status },
+	{ "scan_begin", wifi_scan_begin },
+	{ "scan_take", wifi_scan_take },
 	{ NULL, NULL },
 };
 

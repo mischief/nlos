@@ -179,6 +179,14 @@ while true do
 			reply(m, { ok = wifi.connect(m.ssid, m.psk) })
 		elseif m.how == "disconnect" then
 			reply(m, { ok = wifi.disconnect() })
+		-- a scan is seconds long, so it is started and collected
+		-- separately: this proc pumps frames and must not sit in
+		-- the radio waiting for one to finish.
+		elseif m.how == "scan_begin" then
+			reply(m, { ok = wifi.scan_begin ~= nil and
+			    wifi.scan_begin() or false })
+		elseif m.how == "scan_take" then
+			reply(m, { aps = wifi.scan_take and wifi.scan_take() })
 		else
 			reply(m, { ok = wifi.status() })
 		end

@@ -18,6 +18,14 @@ return {
 	-- panel's programs name this one.
 	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },
 
+	-- the radio's control plane as /net/wifi, so a program can pick a
+	-- network without being handed the NIC. Before the panel, because
+	-- `mount` is inherited by what starts after it and the panel's
+	-- programs are what read it. A machine whose interface has nothing
+	-- to associate serves nothing and the mount does not appear.
+	{ path = "/task/wifisrv.lua", caps = { "eth" }, ns = false,
+	  mount = "/net/wifi" },
+
 	-- the panel, the keyboard and the pointer, as the machine's own
 	-- interface: a tray of apps, one of them a terminal, which starts
 	-- at boot so the board still comes up at a prompt.

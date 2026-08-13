@@ -320,6 +320,22 @@ local function services()
 			return rootns:readfile(p)
 		end,
 		log = print,
+		-- where a service that serves a filesystem belongs. The
+		-- description that comes back is what later services are
+		-- spawned with, so one of them can be a filesystem the
+		-- next one reads.
+		mount = function(prefix, h)
+			local ok, err = pcall(function()
+				assert(rootns:mount(prefix,
+				    require("mnt").new(h), "mnt",
+				    { port = { __right = h } }))
+			end)
+
+			if not ok then
+				return nil, err
+			end
+			return rootns:describe()
+		end,
 		-- entropy for services that want it, as data rather than
 		-- as a right: this proc holds los.platform.rng and hands
 		-- each service its own 32 bytes to expand. init.lua does

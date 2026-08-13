@@ -167,6 +167,24 @@ function M.start(list, opts)
 				opts.granted[e.capname or name] = h
 				log("svc: " .. name .. " started as pid " ..
 				    pid)
+
+				-- a service that serves a filesystem says
+				-- where it belongs, and everything started
+				-- after it inherits the mount. Same rule as
+				-- the capability above: order in the file
+				-- is the dependency.
+				if e.mount and opts.mount then
+					local nsd, merr =
+					    opts.mount(e.mount, h)
+
+					if nsd then
+						opts.ns = nsd
+					else
+						log("svc: " .. name .. ": " ..
+						    e.mount .. ": " ..
+						    tostring(merr))
+					end
+				end
 			else
 				log("svc: " .. name .. ": spawn failed")
 				skipped[#skipped + 1] = name
