@@ -29,6 +29,8 @@ if not fb then
 	os.exit(1)
 end
 
+local mousemod = require("mouse")
+local ptr = prog.ctx and prog.ctx.ptr
 local mouse = prog.mouse()
 
 if not mouse then
@@ -42,7 +44,12 @@ local W, H = mode.w, mode.h
 -- two answers, and they are deliberately different:
 --	x, y, b   an event
 --	nil, why  the pointer is gone, and so are we
-local function event()
+--
+-- Under a window the same port carries its state, and a redraw is
+-- answered here: this is what the program waits in.
+local event
+
+local function pointerevent()
 	local x, y, b, why = mouse.read()
 
 	if not x then
@@ -161,37 +168,51 @@ local CORNER = 28
 
 local lastx, lasty, drawing = nil, nil, false
 
--- Two things are read at once -- the pointer and the window -- so each
--- gets a thread and the main body drives them. os.exit stays out of
--- both: it unwinds through prog's runner, and a thread that raises it
--- is a fault printed to the console instead of a program leaving.
+-- The pointer and the window arrive on one port, so this is one loop
+-- and no threads.
 --
 -- A run of unreadable records is a broken pointer rather than a stray
--- one, and drawing nothing while reading it forever is no better than
--- leaving. So: report the first, count them, and give up with a reason.
+-- one, and reading it forever while drawing nothing is no better than
+-- leaving. Report the first, count them, give up with a reason.
 local BADMAX = 8
 local bad = 0
 
 local thread = require("los.thread")
 local ev = prog.events()
+-- answered onto the event port where there is one; off a window system
+-- the reader makes its own and this is the only thing to wait on.
+local point = ev and mousemod.onport(ptr, ev) or nil
 
-if ev then
-	thread.spawn(function()
+-- off a window system there is no shared port, so the pull reader is
+-- still the way to read a pointer.
+if not point then
+	event = pointerevent
+else
+	point.arm()
+	event = function()
 		while true do
 			local m, why = thread.await(ev)
 
 			if why then
-				break
+				return nil, "window gone"
 			end
-			if type(m) == "table" and m.t == "win" and
-			    m.state == "redraw" then
-				replay()
+			if type(m) ~= "table" then
+				-- keys, which this program was lent none of
+			elseif m.t == "win" then
+				if m.state == "redraw" then
+					replay()
+				end
+			elseif m.t == "ptr" then
+				if not point.took(m) then
+					return nil, "pointer hung up"
+				end
+				point.arm()
+				return m.x, m.y, m.b
 			end
 		end
-	end)
+	end
 end
 
-thread.spawn(function()
 while true do
 	local x, y, b = event()
 
@@ -247,9 +268,5 @@ while true do
 
 	::continue::
 end
-end)
-
-thread.run()
-
 
 fb.fill(memdraw.rect(0, 0, W, H), 0x000000)

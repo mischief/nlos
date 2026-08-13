@@ -48,7 +48,8 @@
 -- program can see or name it.
 
 local sys = require("los.sys")
-local thread = require("los.thread")
+-- los.thread is required where it is used, not here: see
+-- docs/scheduling.md on what a program pays for it.
 local ns = require("ns")
 
 local M = {}
@@ -107,7 +108,7 @@ function PipeStream:write(data)
 		if why ~= "full" then
 			return 0
 		end
-		thread.parksend(self.h)
+		require("los.thread").parksend(self.h)
 	end
 end
 
@@ -117,7 +118,7 @@ function PipeStream:read(_)
 	-- until something arrives OR a right is dropped, since port_unref
 	-- wakes receivers precisely so the hangup gets re-tested after a
 	-- writer exits.
-	local m, why = thread.await(self.h)
+	local m, why = require("los.thread").await(self.h)
 
 	-- eof is "" rather than nil because a Stream's read returns a
 	-- string, and it is read from `why` rather than from m being nil
@@ -156,7 +157,7 @@ function PortStream:read(_)
 		self.replyright = sys.sendright(self.replyport)
 	end
 	sys.send(self.h, { op = "read", reply = { __right = self.replyright } })
-	local r = thread.recv(self.replyport)
+	local r = require("los.thread").recv(self.replyport)
 
 	-- nil means the far end is done; the ABI says "" is eof so that a
 	-- program's `while data ~= ""` loop terminates rather than erroring
@@ -667,7 +668,9 @@ end
 -- ABI message, turn rights into streams and a description into a
 -- namespace, then run.
 function M.main()
-	local ctx = thread.recv(sys.SELF)
+	-- altrecv, not thread.recv: every program does this one receive,
+	-- and it must not be what loads the thread module.
+	local _, ctx = sys.altrecv({ sys.SELF })
 
 	-- stdinpull is a TOP-LEVEL field, not one inside stdin: a table
 	-- carrying __right serializes to the right alone and drops its

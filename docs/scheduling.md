@@ -28,6 +28,15 @@ The kernel owns procs; `thread.run` owns threads. Neither knows how the
 other decides. A proc that never calls `require("los.thread")` has no
 second level at all — its chunk runs directly in `p->co`.
 
+Not having it is worth about 4KB, measured on esp32 as two parked procs
+differing only in the require. So `lib/prog.lua` requires it where it
+is used rather than at the top, and takes its one unavoidable receive —
+the ABI message — with `sys.altrecv`, which needs no scheduler. A
+program that neither spawns a thread nor blocks on a stream never opens
+the module. `sys.altrecv` is legal there because `M.main` runs at the
+top of the proc, which is the one place `nopark` is satisfied by
+construction rather than by care.
+
 `p->L` is the proc's `lua_State`; `p->co` is a thread of it, created in
 `proc_new`, and is what the kernel resumes. Every other coroutine of
 the proc is created by Lua.
