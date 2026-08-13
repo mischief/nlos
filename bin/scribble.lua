@@ -247,6 +247,15 @@ local function draw1()
 				lastx, lasty, drawing = x, y, true
 			end
 		else
+			-- the release says where the finger was when it
+			-- lifted, and motion coalesces: on a quick stroke
+			-- most of the distance is in this record. Finishing
+			-- the line here is the difference between the
+			-- stroke drawn and the stroke made.
+			if drawing and lastx then
+				line(lastx, lasty, x, y, palette[pen])
+				remember(lastx, lasty, x, y, palette[pen])
+			end
 			drawing = false
 			lastx, lasty = nil, nil
 		end

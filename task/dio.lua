@@ -996,8 +996,31 @@ thread.spawn(function()
 	local down = false
 	local bad = 0
 
+	-- how long to wait before offering a full app's port its records
+	-- again. Only reached when an app is behind, so an idle machine
+	-- still parks on the pointer and nothing else.
+	local RETRYMS = 20
+
 	while true do
-		local rec = thread.recv(ptr)
+		local a = front and apps[front]
+		local waiting = a and a.mouse and a.mouse.pending() > 0
+		local rec
+
+		-- A record the app's port would not take waits in its
+		-- queue, and the next post is what offers it again. If the
+		-- pointer then goes still there is no next post, and the
+		-- last thing said -- a release, most of the time -- would
+		-- sit there. So wake and offer it rather than park.
+		if waiting then
+			rec = thread.recvtimeout(ptr, RETRYMS)
+			if rec == nil then
+				a.mouse.retry()
+				goto continue
+			end
+		else
+			rec = thread.recv(ptr)
+		end
+
 		local x, y, b = mouse.parse(rec)
 
 		-- the cursor, before the record is routed: it belongs to
@@ -1133,6 +1156,8 @@ thread.spawn(function()
 			end
 			down = pressed
 		end
+
+		::continue::
 	end
 end)
 
