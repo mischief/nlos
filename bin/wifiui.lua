@@ -12,7 +12,9 @@
 -- lacks that mount cannot run it.
 
 local prog = require("prog")
+local sys = require("los.sys")
 local thread = require("los.thread")
+local mouse = require("mouse")
 local font = require("los.font")
 
 local N = prog.ns()
@@ -39,6 +41,9 @@ local FW, FH = 6, 12		-- los.font's cell
 local ROWH = FH + 4
 local TOP = ROWH * 2
 local rows = math.floor((H - TOP - ROWH * 2) / ROWH)
+-- what fits across, in glyphs. The window is what dio left of the
+-- screen, not the screen, so this is not a constant.
+local COLS = W // FW
 
 -- ---- drawing ----
 
@@ -54,8 +59,16 @@ local function text(x, y, s, fg, bg)
 	if s == "" then
 		return
 	end
-	if #s > 256 then
-		s = s:sub(1, 256)
+	-- clipped to what is left of the window from x. los.font renders
+	-- whatever it is given and fb.load puts it where it is told, so a
+	-- long line runs off the edge rather than stopping at it.
+	local room = (W - x) // FW
+
+	if room < 1 then
+		return
+	end
+	if #s > room then
+		s = s:sub(1, room)
 	end
 
 	local px, w, h = font.render(s, fg or FG, bg or BG, true, FMT)
@@ -132,6 +145,33 @@ local function key()
 		return tty.getch()
 	end
 	return thread.recv(kbd)
+end
+
+-- ---- the pointer ----
+--
+-- lib/mouse's reader makes a port per read, which cannot be waited on
+-- beside the keyboard. The protocol underneath it can: a request parks
+-- its reply right in the server until an event arrives, so one port of
+-- our own, re-armed after each answer, is a port thread.alt can hold.
+local ptr = ctx and ctx.ptr
+local mport, mseq
+
+if ptr then
+	mport = sys.newport("wifiui.ptr")
+	mseq = -1
+end
+
+local function rearm()
+	if not mport then
+		return
+	end
+
+	local sr = sys.sendright(mport)
+
+	-- our own copy goes after the send: a right is copied by being
+	-- sent, and keeping ours would leak one per event.
+	sys.send(ptr, { seen = mseq, reply = { __right = sr } })
+	sys.close(sr)
 end
 
 -- ---- the screen ----
@@ -250,60 +290,142 @@ local function bye()
 	fb.sync()
 end
 
-paint()
-aps = scan()
-msg = #aps .. " networks -- enter to join, r to rescan, q to quit"
-paint()
+-- the one the selection is on, joined
+local function activate()
+	local ap = aps[sel]
 
-while true do
-	local k = key()
+	if not ap then
+		return
+	end
 
+	local psk = nil
+
+	if not ap.open then
+		psk = askpsk(ap.ssid)
+		if psk == nil then
+			return
+		end
+	end
+	msg = "joining " .. ap.ssid
+	paint()
+
+	local ok, err = join(ap.ssid, psk)
+
+	if not ok then
+		msg = "join: " .. tostring(err)
+		return
+	end
+	for _ = 1, 20 do
+		local st = status()
+
+		if st.state == "joined" then
+			msg = "joined " .. st.ssid
+			return
+		elseif st.state == "failed" then
+			msg = "failed (reason " .. st.reason .. ")"
+			return
+		end
+		thread.sleep(250)
+	end
+	msg = "still joining"
+end
+
+local function rescan()
+	msg = "scanning..."
+	paint()
+	aps, sel, top = scan(), 1, 1
+	msg = #aps .. " networks  enter join  r scan  q quit"
+end
+
+-- a key, wherever it came from. true to carry on.
+local function onkey(k)
 	if k == nil or k == "q" or k == "\3" then
-		break
+		return false
 	elseif k == "r" then
-		msg = "scanning..."
-		paint()
-		aps, sel, top = scan(), 1, 1
-		msg = #aps .. " networks"
+		rescan()
 	elseif k == "k" or k == "\27[A" then
 		sel = math.max(1, sel - 1)
 	elseif k == "j" or k == "\27[B" then
 		sel = math.min(#aps, sel + 1)
 	elseif k == "\r" or k == "\n" then
-		local ap = aps[sel]
+		activate()
+	end
+	return true
+end
 
-		if ap then
-			local psk = nil
+-- a touch or the ball. A tap picks the row under the finger; a tap on
+-- the row already picked joins it, which is the two-step every touch
+-- list wants -- the first tells you what you are about to do.
+local down = false
 
-			if not ap.open then
-				psk = askpsk(ap.ssid)
+local function onpoint(x, y, b)
+	if (b & mouse.WHEELUP) ~= 0 then
+		sel = math.max(1, sel - 1)
+		return
+	end
+	if (b & mouse.WHEELDOWN) ~= 0 then
+		sel = math.min(math.max(#aps, 1), sel + 1)
+		return
+	end
+
+	local pressed = (b & 1) ~= 0
+
+	if pressed == down then
+		return		-- a drag, or the same state reported again
+	end
+	down = pressed
+	if not pressed then
+		return		-- act on the press, not the release
+	end
+
+	local row = (y - TOP + 2) // ROWH
+
+	if row < 0 or row >= rows then
+		return
+	end
+
+	local hit = top + row
+
+	if not aps[hit] then
+		return
+	end
+	if hit == sel then
+		activate()
+	else
+		sel = hit
+	end
+end
+
+paint()
+aps = scan()
+msg = #aps .. " networks  enter join  r scan  q quit"
+paint()
+rearm()
+
+while true do
+	if mport and kbd then
+		-- both, without a thread apiece: the keyboard is a port
+		-- under dio and the pointer's reply lands on one of ours.
+		-- A tty cannot join them -- getch is a call, not a port --
+		-- so a shell-started run is keys alone.
+		local which, m = thread.alt({
+			{ port = kbd },
+			{ port = mport },
+		})
+
+		if which == 1 then
+			if not onkey(m) then
+				break
 			end
-			if psk ~= nil or ap.open then
-				msg = "joining " .. ap.ssid .. "..."
-				paint()
-
-				local ok, err = join(ap.ssid, psk)
-
-				if not ok then
-					msg = "join: " .. tostring(err)
-				else
-					msg = "joining..."
-					for _ = 1, 20 do
-						local st = status()
-
-						if st.state == "joined" then
-							msg = "joined " .. st.ssid
-							break
-						elseif st.state == "failed" then
-							msg = "failed (reason " ..
-							    st.reason .. ")"
-							break
-						end
-						require("los.thread").sleep(250)
-					end
-				end
-			end
+		elseif type(m) == "table" and not m.gone then
+			mseq = m.seq
+			onpoint(m.x or 0, m.y or 0, m.b or 0)
+			rearm()
+		else
+			break	-- the pointer hung up, and so do we
 		end
+	elseif not onkey(key()) then
+		break
 	end
 	paint()
 end
