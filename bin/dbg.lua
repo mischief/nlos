@@ -67,9 +67,11 @@ if argv[1] == "run" then
 
 	for i = 3, #argv do args[#args + 1] = argv[i] end
 
+	-- the name as typed, which is what the shell spawns under and what
+	-- the chunk is loaded as -- so the proc, the frames and `b NAME:LINE`
+	-- all say the same word.
 	local pid, h = require("proc").spawn('require("prog").main()',
-	    { name = path:match("([^/]+)$") or path,
-	      ns = ctx and ctx.nsdesc })
+	    { name = name, ns = ctx and ctx.nsdesc })
 
 	if not pid then die("cannot spawn " .. path) end
 	-- the ABI message the target is already blocked waiting for. Our
@@ -86,8 +88,8 @@ if argv[1] == "run" then
 	}
 	-- the target is parked in prog.main's first recv, before its own
 	-- first line, so breakpoints can be set before anything runs.
-	say(("dbg: %s is proc %d, stopped before its first line"):format(
-	    path, pid))
+	say(("dbg: %s is proc %d, stopped before its first line -- break " ..
+	    "in it with `b %s:LINE`"):format(path, pid, name))
 elseif tonumber(argv[1]) then
 	target = tonumber(argv[1])
 	if not ctx or not ctx.dbg then
