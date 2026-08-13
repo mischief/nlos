@@ -153,7 +153,7 @@ local point = (ptr and ev) and mouse.onport(ptr, ev) or nil
 -- underneath it.
 local onwin
 
--- the next KEYSTROKE, whatever else arrives first. The window and the
+-- the next keystroke, whatever else arrives first. The window and the
 -- pointer share this port, so a reader after a key has to take them off
 -- it rather than mistake one for input -- and keep the pointer armed,
 -- or its credit stalls until this returns.

@@ -45,11 +45,6 @@ local img = arg[1]
 -- onto stdio and suppresses the display device wiring. so the two cases
 -- differ by one flag each rather than sharing one string.
 local graphics = "-nographic"
--- a tablet, and only with a window. It is what the firmware publishes
--- an absolute pointer for, and that is what the machine looks for to
--- decide it has a pointer at all -- so the window system starts here
--- and stays absent from a headless run, where nothing could click it.
-local pointer = ""
 
 if arg[2] or os.getenv("LUAOS_DISPLAY") then
 	local disp, why = arch.display(arg[2])
@@ -59,7 +54,6 @@ if arg[2] or os.getenv("LUAOS_DISPLAY") then
 		os.exit(1)
 	end
 	graphics = disp
-	pointer = "-device qemu-xhci -device usb-tablet"
 end
 
 local function envor(name, fallback)
@@ -81,7 +75,10 @@ if not io.open("OVMF_VARS.fd", "rb") then
 end
 
 local cmd = table.concat({
-	arch.QEMU, graphics, pointer, arch.MACHINE, arch.VIDEO, arch.RNG,
+	arch.QEMU, graphics, arch.MACHINE, arch.VIDEO, arch.RNG,
+	-- anything else this run wants: a monitor socket to drive it from,
+	-- another device to test against.
+	envor("LUAOS_QEMU_EXTRA", ""),
 	"-snapshot",
 	"-netdev user,id=n0,hostfwd=tcp::" .. p9port .. "-:7777" ..
 	    ",hostfwd=tcp::" .. sshport .. "-:2222" ..

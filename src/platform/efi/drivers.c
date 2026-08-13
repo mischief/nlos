@@ -1,9 +1,7 @@
-/* raw device/platform primitives: console-write, wire-write, and
- * platform power (reset/stall). three separate modules, each
- * registered in package.preload ONLY for its one owning task (see
- * kernel.c's spawn_cons/spawn_wire/spawn_power) -- no other proc's
- * require() can ever see any of these keys. every other proc holds,
- * at most, a send-right to the owning task's mailbox.
+/* raw device and platform primitives: console write, wire write, and
+ * power. Each is a separate module, preloaded for its one owning task
+ * alone, so no other proc can require any of these keys. Every other
+ * proc holds at most a send right to the owning task's mailbox.
  */
 
 #include "efi.h"
@@ -15,6 +13,7 @@
 #include "snp.h"
 #include "blk.h"
 #include "buf.h"
+#include "kernel.h"
 #include "platform.h"
 
 extern void console_write(const char *s, unsigned long n);
@@ -366,8 +365,167 @@ platform_kbd_read(void)
 	return -1;
 }
 
-/* qemu publishes this for -device usb-tablet and nothing else, so the
- * device decides whether the window system starts.
+/* the i8042's mouse, read here rather than through the firmware. The
+ * tablet's absolute protocol is nicer but nothing arrives on it: qemu
+ * sends pointer input to the PS/2 mouse, and the firmware's usb driver
+ * is not serviced while this kernel runs.
+ */
+#define I8042_DATA	0x60
+#define I8042_STATUS	0x64
+#define I8042_CMD	0x64
+
+#define ST_OUTFULL	0x01	/* something to read on 0x60 */
+#define ST_INFULL	0x02	/* the controller has not taken ours yet */
+#define ST_AUX		0x20	/* and it came from the mouse, not the keys */
+
+static inline unsigned char
+inb(unsigned short port)
+{
+	unsigned char v;
+
+	__asm__ volatile ("inb %1, %0" : "=a" (v) : "Nd" (port));
+	return v;
+}
+
+static inline void
+outb(unsigned short port, unsigned char v)
+{
+	__asm__ volatile ("outb %0, %1" : : "a" (v), "Nd" (port));
+}
+
+static int ps2ok;
+static int ps2x, ps2y;		/* where we have accumulated to */
+static int ps2mid;		/* and whether that has a starting point */
+static unsigned char ps2pkt[3];
+static int ps2n;
+
+/* bounded, because a controller that never clears the flag would hang
+ * the machine here and this runs inside the kernel's own loop.
+ */
+static int
+ps2wait(unsigned char bit, int want)
+{
+	for (int i = 0; i < 100000; i++)
+		if (!!(inb(I8042_STATUS) & bit) == want)
+			return 1;
+	return 0;
+}
+
+static int
+ps2cmd(unsigned char c)
+{
+	if (!ps2wait(ST_INFULL, 0))
+		return 0;
+	outb(I8042_CMD, c);
+	return 1;
+}
+
+/* a byte to the mouse rather than to the controller, which is what the
+ * 0xd4 prefix means. The ack is read so it is not mistaken for motion.
+ */
+static int
+ps2aux(unsigned char c)
+{
+	if (!ps2cmd(0xd4))
+		return 0;
+	if (!ps2wait(ST_INFULL, 0))
+		return 0;
+	outb(I8042_DATA, c);
+	if (!ps2wait(ST_OUTFULL, 1))
+		return 0;
+	return inb(I8042_DATA) == 0xfa;
+}
+
+static int
+ps2_init(void)
+{
+	unsigned char cfg;
+
+	ps2cmd(0xa8);			/* the mouse port on */
+
+	if (!ps2cmd(0x20) || !ps2wait(ST_OUTFULL, 1))
+		return 0;
+	cfg = inb(I8042_DATA);
+	cfg |= 0x02;			/* its interrupt, which qemu wants */
+	cfg &= (unsigned char)~0x20;	/* and the port not disabled */
+	if (!ps2cmd(0x60) || !ps2wait(ST_INFULL, 0))
+		return 0;
+	outb(I8042_DATA, cfg);
+
+	if (!ps2aux(0xf6))		/* defaults */
+		return 0;
+	if (!ps2aux(0xf4))		/* and report */
+		return 0;
+	return 1;
+}
+
+/* A byte is taken only when the status says the mouse sent it: the
+ * other source is the keyboard, which the firmware is still reading.
+ * The device reports movement rather than position, so the position is
+ * accumulated here and clamped to the screen.
+ */
+static int
+ps2_read(int *x, int *y, int *buttons)
+{
+	UINTN w = 0, h = 0;
+	int dx, dy, got = 0;
+
+	efi_fb_size(&w, &h);
+	if (w == 0 || h == 0)
+		return 0;
+	if (!ps2mid) {
+		ps2x = (int)(w / 2);
+		ps2y = (int)(h / 2);
+		ps2mid = 1;
+	}
+
+	while ((inb(I8042_STATUS) & (ST_OUTFULL | ST_AUX)) ==
+	    (ST_OUTFULL | ST_AUX)) {
+		ps2pkt[ps2n++] = inb(I8042_DATA);
+		if (ps2n < 3)
+			continue;
+		ps2n = 0;
+
+		/* bit 3 is always set in a first byte; without it the
+		 * stream is out of step and the packet is dropped rather
+		 * than believed.
+		 */
+		if (!(ps2pkt[0] & 0x08))
+			continue;
+
+		dx = ps2pkt[1];
+		dy = ps2pkt[2];
+		if (ps2pkt[0] & 0x10)
+			dx -= 256;
+		if (ps2pkt[0] & 0x20)
+			dy -= 256;
+
+		ps2x += dx;
+		ps2y -= dy;		/* the mouse counts up, screens down */
+		got = 1;
+	}
+
+	if (!got)
+		return 0;
+
+	if (ps2x < 0)
+		ps2x = 0;
+	if (ps2y < 0)
+		ps2y = 0;
+	if ((UINTN)ps2x >= w)
+		ps2x = (int)w - 1;
+	if ((UINTN)ps2y >= h)
+		ps2y = (int)h - 1;
+
+	*x = ps2x;
+	*y = ps2y;
+	*buttons = (ps2pkt[0] & 1) ? 1 : ((ps2pkt[0] & 2) ? 4 : 0);
+	return 1;
+}
+
+/* absolute position from the firmware, for a machine with a touch panel
+ * or a tablet. It is the fallback: qemu leaves it EFI_NOT_READY forever
+ * and drives the PS/2 mouse instead.
  */
 static EFI_GUID abs_ptr_guid =
     { 0x8d59d32b, 0xc655, 0x4ae9,
@@ -380,6 +538,14 @@ platform_have_ptr(void)
 {
 	EFI_HANDLE *handles = 0;
 	UINTN count = 0;
+
+	if (ps2ok)
+		return 1;
+	/* the screen is not up yet, so the first read picks the middle */
+	if (ps2_init()) {
+		ps2ok = 1;
+		return 1;
+	}
 
 	if (absptr)
 		return 1;
@@ -408,6 +574,9 @@ platform_ptr_read(int *x, int *y, int *buttons)
 	EFI_ABSOLUTE_POINTER_MODE *md;
 	UINTN w = 0, h = 0;
 	UINT64 rx, ry;
+
+	if (ps2ok)
+		return ps2_read(x, y, buttons);
 
 	if (!absptr || absptr->GetState(absptr, &st) != EFI_SUCCESS)
 		return 0;

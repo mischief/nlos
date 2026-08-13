@@ -1144,6 +1144,18 @@ api_procname(lua_State *L)
 {
 	struct kproc *p = self(L);
 
+	/* a string renames this proc and answers what it was called
+	 * before; a number asks after another one. Renaming is a proc
+	 * saying what it is, not a claim about authority -- nothing is
+	 * decided by a name, and a right is what may_control looks at.
+	 */
+	if (lua_type(L, 1) == LUA_TSTRING) {
+		const char *s = lua_tostring(L, 1);
+
+		lua_pushstring(L, p->name);
+		snprintf(p->name, sizeof p->name, "%s", s);
+		return 1;
+	}
 	if (!lua_isnoneornil(L, 1)) {
 		p = find_proc((int)luaL_checkinteger(L, 1));
 		if (!p)

@@ -3,7 +3,9 @@
 --	> dio		escape leaves
 --
 -- task/dio.lua wants a keyboard port; a program holds a console. This
--- reads the one into the other, and is not a second window system.
+-- reads the one into the other, and is not a second window system --
+-- so it stops calling itself dio, and the window system keeps the name
+-- it has on a machine that starts one for itself.
 
 local prog = require("prog")
 local sys = require("los.sys")
@@ -40,6 +42,10 @@ end
 -- dio's keyboard, which this fills from the console. It is a port
 -- because that is what dio reads; the keys in it are this program's,
 -- lent for as long as it runs.
+-- dos named this proc after what was typed, which is the name the
+-- window system is about to want.
+sys.name("dio.keys")
+
 local kbd = sys.newport("dio.kbd")
 local kbdsend = sys.sendright(kbd)
 
