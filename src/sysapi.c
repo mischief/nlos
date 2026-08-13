@@ -166,6 +166,8 @@ altready(lua_State *L, struct kproc *p)
 	return 0;
 }
 
+static int altrecv_hup(lua_State *L, struct kproc *p, int n);
+
 static int
 altrecv_k(lua_State *L, int status, lua_KContext ctx)
 {
@@ -174,12 +176,19 @@ altrecv_k(lua_State *L, int status, lua_KContext ctx)
 	/* nothing for us after all -- a hangup wake, or another proc took
 	 * it. returning nothing is legal and means "go round again".
 	 */
-	int got;
+	int got, n = 0;
+	int wanthup = lua_toboolean(L, 2);
 
 	luaL_checkstack(L, 3, "altrecv");
 
+	/* outside the region, since luaL_len can raise */
+	if (wanthup)
+		n = (int)luaL_len(L, 1);
+
 	ipclock_enter();
 	got = altrecv_take(L, self(L));
+	if (!got && wanthup)
+		got = altrecv_hup(L, self(L), n);
 	ipclock_leave();
 
 	if (got < 0)
@@ -227,6 +236,36 @@ altrecv_take(lua_State *L, struct kproc *p)
 	if (rc)
 		return rc < -1 ? -2 : -1;
 	return 2;
+}
+
+/* the hangup half of altrecv, inside the take's region: asked
+ * separately it is two syscalls with a gap, and a sender can answer and
+ * close in it. Only where the caller asked -- sole_holder walks this
+ * proc's rights per port, and thread.run parks here every round with
+ * every waiting port. n comes from outside: luaL_len can raise.
+ */
+static int
+altrecv_hup(lua_State *L, struct kproc *p, int n)
+{
+	for (int i = 1; i <= n; i++) {
+		struct right *r;
+
+		lua_rawgeti(L, 1, i);
+		r = right_get(p, (int)lua_tointeger(L, -1));
+		lua_pop(L, 1);
+		/* a port with something queued is not finished, however
+		 * few rights are left: the take above just found nothing
+		 * on it, so this is only about who can still send.
+		 */
+		if (r && r->recv && !r->port->head &&
+		    sole_holder(p, r->port)) {
+			lua_pushnil(L);
+			lua_pushliteral(L, "hungup");
+			lua_pushinteger(L, i);
+			return 3;
+		}
+	}
+	return 0;
 }
 
 /* block until any entry of a port set is ready.
@@ -362,6 +401,12 @@ api_altrecv(lua_State *L)
 	if (n < 1)
 		return luaL_error(L, "altrecv: need at least one port");
 
+	/* sys.altrecv(set [, wanthup]) -> i, msg | nil, "hungup", i |
+	 * nothing. A message may itself be nil, so the reason and not the
+	 * message is what a caller tests.
+	 */
+	int wanthup = lua_toboolean(L, 2);
+
 	luaL_checkstack(L, 3, "altrecv");	/* raises; before the region */
 
 	/* the take and the wait-set build are one region. altrecv_take's
@@ -374,6 +419,13 @@ api_altrecv(lua_State *L)
 	ipclock_enter();
 
 	int got = altrecv_take(L, p);
+
+	/* before parking, not only after a wake: a caller that arrives
+	 * once the last sender has gone would otherwise wait for a wake
+	 * that has already happened.
+	 */
+	if (!got && wanthup)
+		got = altrecv_hup(L, p, n);
 
 	if (got) {
 		ipclock_leave();
