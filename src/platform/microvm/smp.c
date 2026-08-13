@@ -24,6 +24,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "microvm.h"
@@ -31,6 +32,7 @@
 #include "smp.h"
 #include "cpu.h"
 #include "kernel.h"
+#include "kproc.h"
 #include "machine.h"
 
 /* the boot stack in boot.S is 64K, and an AP does the same work on
@@ -169,7 +171,7 @@ startap(unsigned idx, unsigned apicid)
 
 	for (int i = 0; i < 1000; i++) {
 		if (atomic_load_explicit(&online, memory_order_acquire) == idx)
-			return 0;
+			return i;
 		platform_stall_us(1000);
 	}
 	return -1;
@@ -220,9 +222,22 @@ smp_start_aps(void)
 	    (size_t)(smp_tramp_end - smp_tramp_start));
 
 	for (unsigned i = 1; i < want; i++) {
-			if (startap(i, i) == 0)
+		int ms = startap(i, i);
+
+		/* a cpu that did not arrive is the machine quietly being
+		 * smaller than it was asked to be, and everything above
+		 * then boots and behaves exactly as if it had been given
+		 * one cpu. Say so, or the only symptom is a count.
+		 */
+		if (ms < 0) {
+			char b[64];
+
+			snprintf(b, sizeof b,
+			    "smp: cpu %u did not come up in 1000ms\n", i);
+			kputs(b);
+		} else
 			ncpu++;
-		}
+	}
 }
 
 /* wake another cpu. The vector carries nothing: ending its hlt is the

@@ -489,12 +489,19 @@ end
 
 local sawplan = false
 
+-- What the guest said that was not TAP goes out as a TAP comment,
+-- which is what the efi harness already does with the kernel's own boot
+-- messages. Dropping it hid the one line that explained a failure: a
+-- test can only report what a proc can ask, and a cpu that never
+-- arrived is reported by the kernel that tried to start it.
 for _, line in ipairs(lines) do
 	if is_tap_line(line) then
 		print(line)
 		if line:match("^1%.%.") then
 			sawplan = true
 		end
+	elseif line ~= "" then
+		print("# " .. line)
 	end
 end
 
