@@ -61,6 +61,9 @@ local Console = {}
 Console.__index = Console
 
 -- opts.other is called with any message the dispatch does not recognise.
+-- opts.kbdother is called with anything on the keyboard port that is not
+-- a keystroke: under a window system that port carries window state too,
+-- and a table is not something a reader can be handed as input.
 --
 -- The console serves on the proc's own port, where the kernel also
 -- delivers sys.monitor's {exit=pid} notices. A shell sharing the proc
@@ -71,6 +74,7 @@ function M.new(backend, opts)
 		io = backend,
 		kbd = backend.keyport,
 		other = opts and opts.other,
+		kbdother = opts and opts.kbdother,
 		-- keystrokes that are not the interrupt character, put
 		-- here by the pump. readline and getch take from this
 		-- rather than from the keyboard, so every byte has been
@@ -375,6 +379,12 @@ function Console:pump()
 			-- program being killed, and a dead program never
 			-- types the line that would end it.
 			sys.send(thread.selfright(), { op = "abort" })
+		elseif type(c) == "table" then
+			-- not input: a window system shares this port with
+			-- the keys. Handed on, never typed.
+			if self.kbdother then
+				self.kbdother(c)
+			end
 		elseif c ~= nil then
 			sys.send(self.inq, c)
 		end
