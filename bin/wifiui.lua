@@ -183,43 +183,85 @@ local msg = "scanning..."
 -- here: a scan repaints while the terminal is on the glass.
 local visible = true
 
-local function paint()
-	if not visible then
+-- what the radio last said. Held rather than asked for per paint: the
+-- answer is a read through the mount, so putting it in the draw path
+-- costs a round trip to another proc for every keystroke.
+local st = { state = "unknown", ssid = "", reason = "0" }
+
+-- one row, which is all a selection move changes. Every draw here is a
+-- message, so a moved selection redraws two rows rather than the list.
+local function paintrow(k)
+	local i = k - top
+
+	if not visible or i < 0 or i >= rows then
 		return
 	end
-	clear()
-	text(8, 4, "wifi", FG)
 
-	local st = status()
-	local right = st.state == "joined" and ("on " .. st.ssid) or st.state
+	local ap = aps[k]
+	local y = TOP + i * ROWH
+	local bg = (k == sel) and SEL or BG
 
-	text(W - 8 - #right * FW, 4, right,
-	    st.state == "joined" and OK or DIM)
+	fb.fill({ x = 0, y = y - 2, w = W, h = ROWH }, bg, true)
+	if not ap then
+		return
+	end
+	text(8, y, ap.ssid, FG, bg)
+	text(W - 8 - 9 * FW, y, bars(ap.rssi), FG, bg)
+	text(W - 8 - 4 * FW, y, ap.open and "open" or " psk",
+	    ap.open and DIM or FG, bg)
+end
+
+-- keep sel on screen, and say whether that scrolled: a scroll is the
+-- one case where every row changed.
+local function follow()
+	local was = top
 
 	if sel < top then
 		top = sel
 	elseif sel >= top + rows then
 		top = sel - rows + 1
 	end
+	return top ~= was
+end
 
-	for i = 0, rows - 1 do
-		local ap = aps[top + i]
+local function paintheader()
+	local right = st.state == "joined" and ("on " .. st.ssid) or st.state
 
-		if not ap then
-			break
-		end
+	fb.fill({ x = 0, y = 0, w = W, h = TOP - 2 }, BG, true)
+	text(8, 4, "wifi", FG)
+	text(W - 8 - #right * FW, 4, right,
+	    st.state == "joined" and OK or DIM)
+end
 
-		local y = TOP + i * ROWH
-		local on = (top + i) == sel
-		local bg = on and SEL or BG
-
-		fb.fill({ x = 0, y = y - 2, w = W, h = ROWH }, bg, true)
-		text(8, y, ap.ssid:sub(1, 24), FG, bg)
-		text(W - 8 - 9 * FW, y, bars(ap.rssi), FG, bg)
-		text(W - 8 - 4 * FW, y, ap.open and "open" or " psk",
-		    ap.open and DIM or FG, bg)
-	end
+local function paintmsg()
+	fb.fill({ x = 0, y = H - ROWH - 4, w = W, h = ROWH + 4 }, BG, true)
 	text(8, H - ROWH - 2, msg, DIM)
+end
+
+local function paint()
+	if not visible then
+		return
+	end
+	follow()
+	paintheader()
+	for i = 0, rows - 1 do
+		paintrow(top + i)
+	end
+	paintmsg()
+	fb.sync()
+end
+
+-- the selection moved. Two rows, unless that scrolled the list.
+local function repoint(was)
+	if not visible then
+		return
+	end
+	if follow() then
+		paint()
+		return
+	end
+	paintrow(was)
+	paintrow(sel)
 	fb.sync()
 end
 
@@ -231,12 +273,18 @@ end
 local function askpsk(ssid)
 	local pw = ""
 
+	-- the fixed part once. Only the dots change as it is typed, and
+	-- redrawing the screen for each of them is what flickers.
+	clear()
+	text(8, 4, "join " .. ssid, FG)
+	text(8, TOP, "passphrase:", DIM)
+	text(8, H - ROWH - 2, "enter to join, esc to go back", DIM)
+	fb.sync()
+
 	while true do
-		clear()
-		text(8, 4, "join " .. ssid:sub(1, 20), FG)
-		text(8, TOP, "passphrase:", DIM)
+		fb.fill({ x = 0, y = TOP + ROWH - 2, w = W, h = ROWH }, BG,
+		    true)
 		text(8, TOP + ROWH, string.rep("*", #pw), FG)
-		text(8, H - ROWH - 2, "enter to join, esc to go back", DIM)
 		fb.sync()
 
 		local k = key()
@@ -290,6 +338,10 @@ local function bye()
 	fb.sync()
 end
 
+local function refresh()
+	st = status()
+end
+
 -- the one the selection is on, joined
 local function activate()
 	local ap = aps[sel]
@@ -313,40 +365,50 @@ local function activate()
 
 	if not ok then
 		msg = "join: " .. tostring(err)
+		paint()
 		return
 	end
 	for _ = 1, 20 do
-		local st = status()
-
+		refresh()
 		if st.state == "joined" then
 			msg = "joined " .. st.ssid
+			paint()
 			return
 		elseif st.state == "failed" then
 			msg = "failed (reason " .. st.reason .. ")"
+			paint()
 			return
 		end
 		thread.sleep(250)
 	end
 	msg = "still joining"
+	paint()
 end
 
 local function rescan()
 	msg = "scanning..."
-	paint()
+	paintmsg()
+	fb.sync()
 	aps, sel, top = scan(), 1, 1
 	msg = #aps .. " networks  enter join  r scan  q quit"
+	refresh()
+	paint()
 end
 
 -- a key, wherever it came from. true to carry on.
 local function onkey(k)
+	local was = sel
+
 	if k == nil or k == "q" or k == "\3" then
 		return false
 	elseif k == "r" then
 		rescan()
 	elseif k == "k" or k == "\27[A" then
 		sel = math.max(1, sel - 1)
+		repoint(was)
 	elseif k == "j" or k == "\27[B" then
-		sel = math.min(#aps, sel + 1)
+		sel = math.min(math.max(#aps, 1), sel + 1)
+		repoint(was)
 	elseif k == "\r" or k == "\n" then
 		activate()
 	end
@@ -359,12 +421,16 @@ end
 local down = false
 
 local function onpoint(x, y, b)
+	local was = sel
+
 	if (b & mouse.WHEELUP) ~= 0 then
 		sel = math.max(1, sel - 1)
+		repoint(was)
 		return
 	end
 	if (b & mouse.WHEELDOWN) ~= 0 then
 		sel = math.min(math.max(#aps, 1), sel + 1)
+		repoint(was)
 		return
 	end
 
@@ -393,13 +459,13 @@ local function onpoint(x, y, b)
 		activate()
 	else
 		sel = hit
+		repoint(was)
 	end
 end
 
+refresh()
 paint()
-aps = scan()
-msg = #aps .. " networks  enter join  r scan  q quit"
-paint()
+rescan()
 rearm()
 
 while true do
@@ -427,7 +493,9 @@ while true do
 	elseif not onkey(key()) then
 		break
 	end
-	paint()
+	-- no repaint here: what changed is what draws. A full one per
+	-- event is what made a roll flicker, since every rectangle is a
+	-- message and the whole window went out for a moved highlight.
 end
 
 bye()
