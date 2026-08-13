@@ -141,41 +141,43 @@ if not tty and not kbd then
 	os.exit(1)
 end
 
--- the shell-started path, where the only thing to wait on is the tty.
--- Under dio the loop below reads the port itself, since a window event
--- arrives on it too.
+-- ---- the pointer ----
+--
+-- answered onto the event port, so keys, the window and the pointer all
+-- arrive in one place and there is nothing to alt over.
+local ptr = ctx and ctx.ptr
+local point = (ptr and ev) and mouse.onport(ptr, ev) or nil
+
+-- filled in below, and named here because key() reaches it: the
+-- passphrase screen waits for a keystroke and the window may change
+-- underneath it.
+local onwin
+
+-- the next KEYSTROKE, whatever else arrives first. The window and the
+-- pointer share this port, so a reader after a key has to take them off
+-- it rather than mistake one for input -- and keep the pointer armed,
+-- or its credit stalls until this returns.
 local function key()
 	if tty then
 		return tty.getch()
 	end
-	return thread.recv(kbd)
-end
+	while true do
+		local m, why = thread.await(ev)
 
--- ---- the pointer ----
---
--- lib/mouse's reader makes a port per read, which cannot be waited on
--- beside the keyboard. The protocol underneath it can: a request parks
--- its reply right in the server until an event arrives, so one port of
--- our own, re-armed after each answer, is a port thread.alt can hold.
-local ptr = ctx and ctx.ptr
-local mport, mseq
-
-if ptr then
-	mport = sys.newport("wifiui.ptr")
-	mseq = -1
-end
-
-local function rearm()
-	if not mport then
-		return
+		if why then
+			return nil
+		end
+		if type(m) == "string" then
+			return m
+		end
+		if type(m) == "table" then
+			if m.t == "win" then
+				onwin(m.state)
+			elseif m.t == "ptr" and point and point.took(m) then
+				point.arm()
+			end
+		end
 	end
-
-	local sr = sys.sendright(mport)
-
-	-- our own copy goes after the send: a right is copied by being
-	-- sent, and keeping ours would leak one per event.
-	sys.send(ptr, { seen = mseq, reply = { __right = sr } })
-	sys.close(sr)
 end
 
 -- ---- the screen ----
@@ -315,7 +317,7 @@ end
 -- pixels, so an app that does not repaint here comes back empty. No
 -- thread for it -- the loop below is on that port already, and a run
 -- started from a shell has no window to hear about.
-local function onwin(state)
+function onwin(state)
 	if state == "redraw" or state == "visible" then
 		visible = true
 		paint()
@@ -458,33 +460,34 @@ end
 refresh()
 paint()
 rescan()
-rearm()
+if point then
+	point.arm()
+end
 
 while true do
-	if mport and kbd then
-		-- all three without a thread apiece: keys and the window
-		-- share dio's event port, and the pointer's reply lands on
-		-- one of ours. A tty cannot join them -- getch is a call,
-		-- not a port -- so a shell-started run is keys alone.
-		local which, m = thread.alt({
-			{ port = kbd },
-			{ port = mport },
-		})
+	if ev then
+		-- one port and no threads: keys, the window and the
+		-- pointer's answer all arrive here. await rather than
+		-- recv, or a dio that went away parks this forever.
+		local m, why = thread.await(ev)
 
-		if which == 1 then
-			if type(m) == "table" then
-				if m.t == "win" then
-					onwin(m.state)
-				end
-			elseif not onkey(m) then
+		if why then
+			break
+		end
+		if type(m) == "string" then
+			if not onkey(m) then
 				break
 			end
-		elseif type(m) == "table" and not m.gone then
-			mseq = m.seq
+		elseif type(m) ~= "table" then
+			-- nothing else speaks on this port
+		elseif m.t == "win" then
+			onwin(m.state)
+		elseif m.t == "ptr" then
+			if not point or not point.took(m) then
+				break	-- the pointer hung up, and so do we
+			end
 			onpoint(m.x or 0, m.y or 0, m.b or 0)
-			rearm()
-		else
-			break	-- the pointer hung up, and so do we
+			point.arm()
 		end
 	elseif not onkey(key()) then
 		break

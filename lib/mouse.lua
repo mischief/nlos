@@ -1,7 +1,11 @@
 -- mouse: the pointer as a port, on both sides of it.
 --
 --	request	{ seen = <sequence>, reply = {__right=} }
---	answer	{ seq =, x =, y =, b =, ms = }
+--	answer	{ t = "ptr", seq =, x =, y =, b =, ms = }
+--
+-- The answer is tagged because the reply right need not name a port of
+-- its own: an app in a window points it at the port its keys and window
+-- state already arrive on, and then one recv is its whole input.
 
 -- A read blocks until the pointer has done something the asker has not
 -- seen, and answers with where it is now rather than every place it has
@@ -90,12 +94,12 @@ function M.server()
 				local w = table.remove(waiters, 1)
 				local ev2 = table.remove(wheelq, 1)
 
-				sys.send(w, { seq = seq, x = ev2.x,
+				sys.send(w, { t = "ptr", seq = seq, x = ev2.x,
 				    y = ev2.y, b = ev2.b, ms = ev2.ms })
 			end
 		else
 			for _, w in ipairs(waiters) do
-				sys.send(w, { seq = seq, x = latest.x,
+				sys.send(w, { t = "ptr", seq = seq, x = latest.x,
 				    y = latest.y, b = latest.b,
 				    ms = latest.ms })
 			end
@@ -118,7 +122,7 @@ function M.server()
 			if #wheelq > 0 then
 				ev = table.remove(wheelq, 1)
 			end
-			sys.send(reply, { seq = seq, x = ev.x, y = ev.y,
+			sys.send(reply, { t = "ptr", seq = seq, x = ev.x, y = ev.y,
 			    b = ev.b, ms = ev.ms })
 			sys.close(reply)
 			return
@@ -130,7 +134,7 @@ function M.server()
 	-- fails rather than waiting for a machine that stopped answering.
 	function self.hangup()
 		for _, w in ipairs(waiters) do
-			sys.send(w, { gone = true })
+			sys.send(w, { t = "ptr", gone = true })
 			sys.close(w)
 		end
 		waiters = {}
@@ -179,6 +183,37 @@ function M.reader(handle)
 		end
 		seen = m.seq
 		return m.x, m.y, m.b, m.ms
+	end
+	return self
+end
+
+-- the same protocol, answered onto a port the caller already has, so a
+-- program whose keys arrive there needs no thread to read the pointer.
+-- The caller owns the loop; this owns the sequence.
+--
+-- arm() again after each took(): that one outstanding request is the
+-- credit that makes the server collapse motion rather than queue it.
+function M.onport(handle, ev)
+	local self = { seen = -1 }
+
+	-- our copy goes after the send: a right is copied by being sent,
+	-- and keeping this one costs a right per event.
+	function self.arm()
+		local sr = sys.sendright(ev)
+		local ok = sys.send(handle, { seen = self.seen,
+		    reply = { __right = sr } })
+
+		sys.close(sr)
+		return ok
+	end
+
+	-- record what arrived, and say whether the pointer is still there.
+	function self.took(m)
+		if type(m) ~= "table" or m.gone then
+			return false
+		end
+		self.seen = m.seq
+		return true
 	end
 	return self
 end
