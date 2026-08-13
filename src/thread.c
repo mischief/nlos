@@ -2342,6 +2342,26 @@ await_body(lua_State *L)
 		lua_pushvalue(L, 1);
 		lua_call(L, 1, 1);
 		if (lua_toboolean(L, -1)) {
+			lua_pop(L, 1);
+
+			/* look once more. The two tests above are separate
+			 * syscalls with nothing held between them, so a
+			 * server on another cpu can answer and close in the
+			 * gap, leaving a reply queued on a port this would
+			 * then call hung up. Being the sole holder means
+			 * nobody can send again, so what is there now is
+			 * all there will be.
+			 */
+			lua_settop(L, 1);
+			pushref(L, s->tryrecv);
+			lua_pushvalue(L, 1);
+			lua_call(L, 1, 2);
+			if (lua_toboolean(L, -2)) {
+				lua_remove(L, -2);
+				return 1;
+			}
+			lua_pop(L, 2);
+
 			lua_pushnil(L);
 			lua_pushliteral(L, "hungup");
 			return 2;
