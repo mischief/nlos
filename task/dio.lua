@@ -1038,20 +1038,43 @@ thread.spawn(function()
 		else
 			bad = 0
 			local pressed = (b & BUT1) ~= 0
+			local iswheel = (b & (WHEELUP | WHEELDOWN)) ~= 0
+			local by = ((b & WHEELDOWN) ~= 0) and 1 or -1
 
-			if x < TRAY then
-				if (b & (WHEELUP | WHEELDOWN)) ~= 0 then
-					-- the wheel over the tray scrolls
-					-- the list, and never starts or
-					-- stops anything: a roll is not a
-					-- press.
-					local by = ((b & WHEELDOWN) ~= 0)
-					    and 1 or -1
+			-- A wheel record carries where the pointer is, and on
+			-- a panel that is where a finger last was: nothing
+			-- hovers. Routing it by that position sends a roll to
+			-- whatever was last touched, so the ball follows the
+			-- front app instead, as the keyboard does. The tray
+			-- keeps it while its list is open, or while a finger
+			-- is on the tray.
+			if iswheel then
+				if selecting then
+					local most = #catalog - SELROWS
+					local to = seloff + by
 
+					if most < 0 then
+						most = 0
+					end
+					if to < 0 then
+						to = 0
+					elseif to > most then
+						to = most
+					end
+					if to ~= seloff then
+						seloff = to
+						drawselector()
+					end
+				elseif x < TRAY and pressed then
 					if scrollto(trayoff + by) then
 						drawlist()
 					end
-				elseif pressed and not down then
+				elseif front and apps[front] then
+					apps[front].mouse.post(x - APPX,
+					    y - APPY, b)
+				end
+			elseif x < TRAY then
+				if pressed and not down then
 					-- the press edge, not the state: a
 					-- finger held on a button must act
 					-- once, and a drag out of the tray
@@ -1107,25 +1130,8 @@ thread.spawn(function()
 			elseif selecting then
 				-- the list has the glass, so it has the
 				-- pointer too: nothing is in front to give
-				-- it to.
-				if (b & (WHEELUP | WHEELDOWN)) ~= 0 then
-					local most = #catalog - SELROWS
-					local to = seloff +
-					    (((b & WHEELDOWN) ~= 0) and 1 or -1)
-
-					if most < 0 then
-						most = 0
-					end
-					if to < 0 then
-						to = 0
-					elseif to > most then
-						to = most
-					end
-					if to ~= seloff then
-						seloff = to
-						drawselector()
-					end
-				elseif pressed and not down then
+				-- it to. Its wheel is handled above.
+				if pressed and not down then
 					local k = selectorat(x, y)
 
 					if k then
