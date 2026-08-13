@@ -686,6 +686,8 @@ function M.main()
 	ctx.fb = ctx.fb and ctx.fb.__right or nil
 	-- the pointer, if the launcher lent us one. see M.mouse below.
 	ctx.ptr = ctx.ptr and ctx.ptr.__right or nil
+	-- the window, if we are in one. see M.events below.
+	ctx.ev = ctx.ev and ctx.ev.__right or nil
 	-- the terminal, if the launcher lent us one. see M.tty below.
 	ctx.tty = ctx.tty and ctx.tty.__right or nil
 	-- the network, if the launcher lent us one. see M.net below.
@@ -826,6 +828,25 @@ function M.mouse()
 		return nil
 	end
 	return require("mouse").reader(ctx.ptr)
+end
+
+-- the event port, or nil off a window system. redraw: the pixels are
+-- gone, paint from your own state. hidden: what you draw is thrown
+-- away, so you may stop.
+--	{ t = "win", state = "redraw" | "visible" | "hidden" }
+--	"c"	a keystroke, where M.haskeys() is true
+function M.events()
+	local ctx = M.ctx
+
+	return ctx and ctx.ev or nil
+end
+
+-- whether keystrokes arrive on that port. Asked rather than discovered,
+-- since a program with no keys would otherwise wait on one forever.
+function M.haskeys()
+	local ctx = M.ctx
+
+	return (ctx and ctx.keys) == true
 end
 
 -- whether the launcher gave this program an input stream at all, which
