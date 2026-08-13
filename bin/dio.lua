@@ -1,9 +1,9 @@
--- win: hand the machine to the window system, and take it back.
+-- dio: hand the machine to the window system, and take it back.
 --
---	> win		escape leaves
+--	> dio		escape leaves
 --
--- dio wants a keyboard port; a program holds a console. This reads the
--- one into the other, and is not a second window system.
+-- task/dio.lua wants a keyboard port; a program holds a console. This
+-- reads the one into the other, and is not a second window system.
 
 local prog = require("prog")
 local sys = require("los.sys")
@@ -17,7 +17,7 @@ local ctx = prog.ctx
 local ptr = ctx and ctx.ptr
 
 local function die(s)
-	io.stderr:write("win: " .. s .. "\n")
+	io.stderr:write("dio: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -40,7 +40,7 @@ end
 -- dio's keyboard, which this fills from the console. It is a port
 -- because that is what dio reads; the keys in it are this program's,
 -- lent for as long as it runs.
-local kbd = sys.newport("win.kbd")
+local kbd = sys.newport("dio.kbd")
 local kbdsend = sys.sendright(kbd)
 
 local pid, ctl = proc.spawn(src, {
@@ -63,7 +63,7 @@ end
 
 -- said on the way in, because the screen may not be where this is
 -- typed: on a qemu run the window is elsewhere and the shell is here.
-io.stderr:write("win: the screen is the window system now; " ..
+io.stderr:write("dio: the screen is the window system now; " ..
     "escape returns to dos\n")
 
 -- raw, or the console hands over lines and a tray never sees a key

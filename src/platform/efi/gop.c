@@ -90,6 +90,18 @@ checkgop(lua_State *L)
 	return gop;
 }
 
+/* the software cursor, defined below. Every op that touches the glass
+ * lifts it first: what is saved underneath is only good until someone
+ * draws there, and a read that included it would report the pointer as
+ * part of the picture.
+ */
+static void cursor_hide(EFI_GRAPHICS_OUTPUT_PROTOCOL *g);
+static void cursor_show(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, int x, int y);
+static int curshown, curx, cury;
+
+#define CURSOR_LIFT(g)	int had_ = curshown; cursor_hide(g)
+#define CURSOR_DROP(g)	do { if (had_) cursor_show(g, curx, cury); } while (0)
+
 static const char *
 formatname(EFI_GRAPHICS_PIXEL_FORMAT f)
 {
@@ -235,9 +247,13 @@ l_fill(lua_State *L)
 	if (w == 0 || h == 0)
 		return 0;
 
+	CURSOR_LIFT(g);
 	if (g->Blt(g, &px, EfiBltVideoFill, 0, 0, (UINTN)x, (UINTN)y,
-	    (UINTN)w, (UINTN)h, 0) != EFI_SUCCESS)
+	    (UINTN)w, (UINTN)h, 0) != EFI_SUCCESS) {
+		CURSOR_DROP(g);
 		return luaL_error(L, "fill failed");
+	}
+	CURSOR_DROP(g);
 	return 0;
 }
 
@@ -283,9 +299,11 @@ l_load(lua_State *L)
 		return luaL_error(L, "out of memory for %d bytes", (int)need);
 	memcpy(buf, pix, need);
 
+	CURSOR_LIFT(g);
 	st = g->Blt(g, buf, EfiBltBufferToVideo, 0, 0, (UINTN)x, (UINTN)y,
 	    (UINTN)w, (UINTN)h, 0);
 	BS->FreePool(buf);
+	CURSOR_DROP(g);
 
 	if (st != EFI_SUCCESS)
 		return luaL_error(L, "load failed");
@@ -321,8 +339,10 @@ l_unload(lua_State *L)
 	if (BS->AllocatePool(EfiLoaderData, need, &buf) != EFI_SUCCESS)
 		return luaL_error(L, "out of memory for %d bytes", (int)need);
 
+	CURSOR_LIFT(g);
 	st = g->Blt(g, buf, EfiBltVideoToBltBuffer, (UINTN)x, (UINTN)y, 0, 0,
 	    (UINTN)w, (UINTN)h, 0);
+	CURSOR_DROP(g);
 	if (st == EFI_SUCCESS)
 		lua_pushlstring(L, buf, need);
 	BS->FreePool(buf);
@@ -362,7 +382,111 @@ l_scroll(lua_State *L)
 	return 0;
 }
 
+/* ---- the pointer, drawn in software ----
+ *
+ * The panel's is the display controller's; this screen has none, so the
+ * arrow is composited here: save what is under it, draw over the copy,
+ * put the saved pixels back before moving.
+ */
+#define CURW 8
+#define CURH 12
+
+/* 1 is the body, 2 its outline. An arrow with no outline vanishes over
+ * anything pale, which on a tray is most of it.
+ */
+static const unsigned char curbits[CURH][CURW] = {
+	{ 2,0,0,0,0,0,0,0 },
+	{ 2,2,0,0,0,0,0,0 },
+	{ 2,1,2,0,0,0,0,0 },
+	{ 2,1,1,2,0,0,0,0 },
+	{ 2,1,1,1,2,0,0,0 },
+	{ 2,1,1,1,1,2,0,0 },
+	{ 2,1,1,1,1,1,2,0 },
+	{ 2,1,1,1,1,1,1,2 },
+	{ 2,1,1,1,2,2,2,2 },
+	{ 2,1,2,1,1,2,0,0 },
+	{ 2,2,0,2,1,1,2,0 },
+	{ 0,0,0,0,2,2,2,0 },
+};
+
+static UINT32 curunder[CURW * CURH];
+
+/* the size actually saved: a cursor at the edge is clipped, and Blt
+ * refuses a rectangle that leaves the screen.
+ */
+static int curw, curh;
+
+static void
+cursor_hide(EFI_GRAPHICS_OUTPUT_PROTOCOL *g)
+{
+	if (!curshown)
+		return;
+	g->Blt(g, (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)curunder,
+	    EfiBltBufferToVideo, 0, 0, (UINTN)curx, (UINTN)cury,
+	    (UINTN)curw, (UINTN)curh, 0);
+	curshown = 0;
+}
+
+static void
+cursor_show(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, int x, int y)
+{
+	UINT32 img[CURW * CURH];
+	UINTN sw = g->Mode->Info->HorizontalResolution;
+	UINTN sh = g->Mode->Info->VerticalResolution;
+	int i, j;
+
+	if (x < 0 || y < 0 || (UINTN)x >= sw || (UINTN)y >= sh)
+		return;
+
+	curw = ((UINTN)(x + CURW) > sw) ? (int)(sw - (UINTN)x) : CURW;
+	curh = ((UINTN)(y + CURH) > sh) ? (int)(sh - (UINTN)y) : CURH;
+	if (curw <= 0 || curh <= 0)
+		return;
+
+	if (g->Blt(g, (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)curunder,
+	    EfiBltVideoToBltBuffer, (UINTN)x, (UINTN)y, 0, 0,
+	    (UINTN)curw, (UINTN)curh, 0) != EFI_SUCCESS)
+		return;
+
+	for (j = 0; j < curh; j++)
+		for (i = 0; i < curw; i++) {
+			unsigned char b = curbits[j][i];
+
+			img[j * curw + i] = b == 1 ? 0x00ffffff :
+			    b == 2 ? 0x00000000 : curunder[j * curw + i];
+		}
+
+	curx = x;
+	cury = y;
+	curshown = 1;
+	g->Blt(g, (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)img, EfiBltBufferToVideo,
+	    0, 0, (UINTN)x, (UINTN)y, (UINTN)curw, (UINTN)curh, 0);
+}
+
+/* fb.cursor(x, y, on): move, show or hide. An absent coordinate leaves
+ * it where it was, which is what a bare show or hide is.
+ */
+static int
+l_cursor(lua_State *L)
+{
+	EFI_GRAPHICS_OUTPUT_PROTOCOL *g = checkgop(L);
+	int x = (int)luaL_optinteger(L, 1, curx);
+	int y = (int)luaL_optinteger(L, 2, cury);
+	int on = lua_isnoneornil(L, 3) ? curshown : lua_toboolean(L, 3);
+
+	cursor_hide(g);
+	if (on)
+		cursor_show(g, x, y);
+	else {
+		curx = x;
+		cury = y;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static const luaL_Reg fblib[] = {
+	{ "cursor", l_cursor },
 	{ "modes", l_modes },
 	{ "mode", l_mode },
 	{ "setmode", l_setmode },
