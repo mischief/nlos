@@ -397,7 +397,7 @@ local function reap()
 end
 
 while true do
-	local i, m = sys.altrecv(ports)
+	local i, m = sys.alt(ports)
 
 	if i and type(m) == "table" then
 		local space = spaces[i]

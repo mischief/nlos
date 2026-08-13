@@ -1,4 +1,4 @@
--- sys.altrecv(set, wanthup): a wait that reports a hangup itself.
+-- sys.alt(set, sends, wanthup): a wait that reports a hangup itself.
 --
 -- Asked as a second syscall, "is there a message" and "is anyone left"
 -- have a gap between them, and a server can answer and close in it --
@@ -17,7 +17,7 @@ local s = sys.sendright(p)
 
 sys.send(p, "first")
 
-local i, m = sys.altrecv({ p }, true)
+local i, m = sys.alt({ p }, nil, true)
 
 tap.is(i, 1, "a message still comes back as index and value")
 tap.is(m, "first", "with the message")
@@ -29,7 +29,7 @@ tap.is(m, "first", "with the message")
 
 sys.send(p, nil)
 
-local i2, m2, why2 = sys.altrecv({ p }, true)
+local i2, m2, why2 = sys.alt({ p }, nil, true)
 
 tap.is(i2, 1, "a nil message is a message")
 tap.is(m2, nil, "and arrives as nil")
@@ -39,11 +39,11 @@ tap.is(why2, nil, "with no reason, which is how it differs from a hangup")
 
 sys.close(s)
 
-local i3, why3, at3 = sys.altrecv({ p }, true)
+local i3, m3, why3 = sys.alt({ p }, nil, true)
 
-tap.is(i3, nil, "no index once the last sender has gone")
-tap.is(why3, "hungup", "the reason says so")
-tap.is(at3, 1, "and names which port it was")
+tap.is(i3, 1, "the index names the port that ended")
+tap.is(m3, nil, "with no message")
+tap.is(why3, "hungup", "and the reason says so")
 
 -- ---- a queued message outranks it ----
 --
@@ -57,7 +57,7 @@ local qs = sys.sendright(q)
 sys.send(q, "last words")
 sys.close(qs)
 
-local i4, m4 = sys.altrecv({ q }, true)
+local i4, m4 = sys.alt({ q }, nil, true)
 
 tap.is(m4, "last words",
     "a message queued before the hangup is delivered first")

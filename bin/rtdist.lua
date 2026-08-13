@@ -29,7 +29,7 @@ local server = [[
 
 	sys.send(back, { port = { __right = sys.sendright(p) } })
 	while true do
-		local _, m = sys.altrecv({ p })
+		local _, m = sys.alt({ p })
 
 		if type(m) ~= "table" then break end
 		local x = 0
@@ -46,7 +46,7 @@ if not pid then
 	return
 end
 
-local _, hello = sys.altrecv({ rp })
+local _, hello = sys.alt({ rp })
 local sright = type(hello) == "table" and hello.port and hello.port.__right
 
 if not sright then
@@ -76,16 +76,16 @@ do
 	print(string.format("same-proc send+take: %d us",
 	    (sys.ticks() - t0) * 1000 // CPMS // N))
 
-	-- the same again through altrecv, on a port that already holds the
+	-- the same again through alt, on a port that already holds the
 	-- message. Same call the round trip makes, same wait-set build, and
 	-- it never blocks -- so what a round trip costs above this is
 	-- blocking and being woken, and nothing else.
 	t0 = sys.ticks()
 	for _ = 1, N do
 		sys.send(p, { spin = 0 })
-		sys.altrecv({ p })
+		sys.alt({ p })
 	end
-	print(string.format("same-proc altrecv:   %d us",
+	print(string.format("same-proc alt:         %d us",
 	    (sys.ticks() - t0) * 1000 // CPMS // N))
 	sys.close(p)
 end
@@ -103,7 +103,7 @@ for _, spin in ipairs({ 0, 100, 1000, 10000, 100000 }) do
 		local t0 = sys.ticks()
 
 		sys.send(sright, { spin = spin })
-		sys.altrecv({ rp })
+		sys.alt({ rp })
 		samples[#samples + 1] = sys.ticks() - t0
 	end
 

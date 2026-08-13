@@ -28,11 +28,20 @@ enum {
 
 /* Resume points for the calls that yield. */
 enum {
-	K_ALTRECV = 1,
-	K_ALTBLOCK,
+	/* both are sys.alt; what differs is what this does with the
+	 * answer. A set of plain receives has every wake accounted for,
+	 * so nothing has to wake everyone to go looking.
+	 */
+	K_ALTMSG = 1,
+	K_ALTANY,
 	K_PARK,
 	K_YIELD,
 };
+
+/* alt_k reads its context as a count of channel marks, so the one case
+ * that is not a count needs a value no count can reach.
+ */
+#define K_ALTBARE	((lua_KContext)0x7fff0000)
 
 /* Scheduler state for one proc.
  *
@@ -49,7 +58,7 @@ struct sched {
 	int	portq;		/* port -> co, or a list of co */
 	int	pending;	/* port -> messages taken with no taker */
 	int	parkrec;	/* co -> record, weak keys */
-	int	altset;		/* port set for altblock */
+	int	altset;		/* port set for alt */
 	int	altsends;	/* parallel size array */
 	int	altseen;	/* port -> generation, for dedup */
 	int	altscratch;	/* co -> alt scratch, weak keys */
@@ -57,7 +66,7 @@ struct sched {
 	int	inplace;	/* coroutine cut by the count hook */
 
 	/* los.sys entry points, kept by ref rather than looked up */
-	int	anyready, altpoll, altrecv, altblock, hungup, block, tryrecv;
+	int	anyready, altpoll, alt, hungup, block, tryrecv;
 	int	sendblock, close, send, timer, newport, sendright, call;
 	int	replyports;	/* co -> {h,s}, weak keys */
 	int	selfsend;	/* the proc own send right, or nil */
@@ -308,7 +317,7 @@ deliver(lua_State *L, struct sched *s, lua_Integer h, int mi)
 	return done;
 }
 
-/* Refill the port set handed to altblock. Returns its length.
+/* Refill the port set handed to alt. Returns its length.
  *
  * Filled in place rather than rebuilt. Both tails are cleared: a
  * receive landing where a send wait was would otherwise leave a stale
@@ -822,38 +831,39 @@ run_k(lua_State *L, int status, lua_KContext ctx)
 	struct sched *s = getsched(L);
 
 	(void)status;
-	if (ctx == K_ALTRECV) {
-		/* i, msg */
-		if (!lua_isnil(L, -2)) {
-			lua_Integer h = altset_at(L, s,
-			    (int)lua_tointeger(L, -2));
+	if (ctx == K_ALTMSG || ctx == K_ALTANY) {
+		/* i, msg, why */
+		const char *why = lua_type(L, -1) == LUA_TSTRING ?
+		    lua_tostring(L, -1) : NULL;
+		int woke = 0;
 
-			if (!deliver(L, s, h, -1)) {
-				hold_pending(L, s, h, -1);
+		if (why && why[0] != 'h') {
+			/* ready, not taken: the thread reads it itself */
+			lua_Integer h = altset_at(L, s,
+			    (int)lua_tointeger(L, -3));
+
+			woke = readyon(L, s, h);
+		} else if (!why && !lua_isnil(L, -3)) {
+			lua_Integer h = altset_at(L, s,
+			    (int)lua_tointeger(L, -3));
+
+			if (!deliver(L, s, h, -2)) {
+				hold_pending(L, s, h, -2);
 				readyall(L, s);
 			}
+			woke = 1;
 		}
-		lua_pop(L, 2);
+		lua_pop(L, 3);
 		/* asked every time: a hangup and a message can arrive in
 		 * one wake, and taking the message consumes it
 		 */
-		wakehungup(L, s);
-	} else if (ctx == K_ALTBLOCK) {
-		int woke = 0;
-
-		if (!lua_isnil(L, -1)) {
-			lua_Integer h = altset_at(L, s,
-			    (int)lua_tointeger(L, -1));
-
-			woke = readyon(L, s, h);
-		}
-		lua_pop(L, 1);
 		if (wakehungup(L, s))
 			woke = 1;
 		/* a wake we cannot attribute to a port of ours still has to
-		 * be safe, so everyone gets to look
+		 * be safe, so everyone gets to look. Only where a send wait
+		 * was in the set: a plain recv accounts for every wake.
 		 */
-		if (!woke)
+		if (ctx == K_ALTANY && !woke)
 			readyall(L, s);
 	}
 	return run_loop(L);
@@ -898,7 +908,7 @@ tablehasany(lua_State *L, int ref)
 /* Deliver to parked threads while a sibling is still runnable.
  *
  * A thread that never parks would otherwise starve every thread that
- * does, since the altrecv branch runs only with the ring empty. The
+ * does, since the take branch runs only with the ring empty. The
  * kernel cannot wake us here: this proc is running, not parked.
  */
 static void
@@ -982,19 +992,26 @@ blocked:
 			return luaL_error(L,
 			    "deadlock: all threads parked on channels");
 		if (!tablehasany(L, s->nonrecv)) {
-			/* every waiter is a plain recv(): take the message
-			 * here and hand it over, with no wake to go looking
+			/* every waiter is a plain recv(): the message is
+			 * taken there and handed over here, with no wake to
+			 * go looking
 			 */
-			pushref(L, s->altrecv);
+			pushref(L, s->alt);
 			pushref(L, s->altset);
-			lua_callk(L, 1, 2, K_ALTRECV, run_k);
-			return run_k(L, LUA_OK, K_ALTRECV);
+			lua_callk(L, 1, 3, K_ALTMSG, run_k);
+			return run_k(L, LUA_OK, K_ALTMSG);
 		}
-		pushref(L, s->altblock);
+		/* wake, not take: a port here may be waited on to send as
+		 * well as to receive, and only the thread that waits to
+		 * receive should be given a message.
+		 */
+		pushref(L, s->alt);
 		pushref(L, s->altset);
 		pushref(L, s->altsends);
-		lua_callk(L, 2, 1, K_ALTBLOCK, run_k);
-		return run_k(L, LUA_OK, K_ALTBLOCK);
+		lua_pushboolean(L, 0);		/* wanthup */
+		lua_pushboolean(L, 1);		/* wake */
+		lua_callk(L, 4, 3, K_ALTANY, run_k);
+		return run_k(L, LUA_OK, K_ALTANY);
 	}
 	return 0;
 }
@@ -1725,7 +1742,7 @@ alt_body(lua_State *L)
 			int i;
 
 			lua_settop(L, 1);
-			pushref(L, s->altblock);
+			pushref(L, s->alt);
 			lua_newtable(L);
 			for (i = 1; i <= n; i++) {
 				lua_rawgeti(L, 1, i);
@@ -1736,8 +1753,14 @@ alt_body(lua_State *L)
 				lua_rawseti(L, -3, i);
 				lua_pop(L, 1);
 			}
-			lua_callk(L, 1, 0, 0, alt_k);
-			return alt_k(L, LUA_OK, 0);
+			/* no hangup: a caller may well be waiting on a port
+			 * nobody else holds yet, which thread.recvtimeout
+			 * does every time it waits on a silent one.
+			 */
+			lua_pushnil(L);		/* no send waits here */
+			lua_pushboolean(L, 0);
+			lua_callk(L, 3, 3, K_ALTBARE, alt_k);
+			return alt_k(L, LUA_OK, K_ALTBARE);
 		}
 
 		scratchfor(L, s);
@@ -1760,9 +1783,36 @@ static int
 alt_k(lua_State *L, int status, lua_KContext ctx)
 {
 	struct sched *s = getsched(L);
-	int nm = (int)(size_t)ctx;
+	int nm;
 
 	(void)status;
+
+	/* the port block above, which took a message rather than merely
+	 * saying one was there. i, msg, why are on the stack.
+	 */
+	if (ctx == K_ALTBARE) {
+		const char *why = lua_type(L, -1) == LUA_TSTRING ?
+		    lua_tostring(L, -1) : NULL;
+
+		parkon_end(L, s);
+		if (why && why[0] == 'h') {
+			/* the case's port has no other holder: alt's third
+			 * answer, as for a closed channel
+			 */
+			lua_pop(L, 2);
+			lua_pushnil(L);
+			lua_pushboolean(L, 0);
+			return 3;
+		}
+		if (!why && !lua_isnil(L, -3)) {
+			lua_pop(L, 1);
+			return 2;
+		}
+		lua_settop(L, 1);
+		return alt_body(L);
+	}
+
+	nm = (int)(size_t)ctx;
 	if (nm > 0) {
 		parkon_end(L, s);
 		lua_settop(L, 1);
@@ -2396,7 +2446,7 @@ l_await(lua_State *L)
  *
  * Two implementations: sys.call marks the whole proc blocked, which
  * would strand a thread's siblings, so a thread sends and then awaits.
- * The block is already fused on its side, in thread.run's altrecv.
+ * The block is already fused on its side, in thread.run's alt.
  *
  * Failures are "dead", "full" and "hungup". A full queue is reported
  * rather than waited out, since waiting is the caller's policy.
@@ -2673,8 +2723,7 @@ luaopen_los_thread(lua_State *L)
 	sysidx = lua_gettop(L);
 	s->anyready = sysref(L, sysidx, "anyready");
 	s->altpoll = sysref(L, sysidx, "altpoll");
-	s->altrecv = sysref(L, sysidx, "altrecv");
-	s->altblock = sysref(L, sysidx, "altblock");
+	s->alt = sysref(L, sysidx, "alt");
 	s->hungup = sysref(L, sysidx, "hungup");
 	s->block = sysref(L, sysidx, "block");
 	s->tryrecv = sysref(L, sysidx, "tryrecv");

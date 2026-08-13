@@ -392,7 +392,7 @@ end
 -- ---- 6. a server parked in altrecv, with concurrent callers ----
 --
 -- Everything above uses tryrecv and yield, which never blocks. Nothing
--- real does that. A server built on los.thread parks in sys.altrecv --
+-- real does that. A server built on los.thread parks in sys.alt --
 -- thread.run hands every waiting port to it, so one entry blocks and
 -- takes on behalf of all of them -- and that is the path gefssrv,
 -- blksrv and every mnt client actually wait on.

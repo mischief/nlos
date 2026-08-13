@@ -256,7 +256,7 @@ M.ports = setmetatable({}, ports_mt)
 -- __tostring question never arises.
 -- sys.stack returns one entry per COROUTINE, not a flat frame list: a
 -- proc built on lib/thread keeps its threads inside its own state, and
--- reporting only the main one showed the scheduler parked in altblock
+-- reporting only the main one showed the scheduler parked in alt
 -- whether the proc was idle or wedged. src/debug.c finds the rest.
 function M.stack(pid)
 	local coros = sys.stack(pid)

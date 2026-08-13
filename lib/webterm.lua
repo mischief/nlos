@@ -295,7 +295,7 @@ end
 
 -- NEVER close a port some coroutine may be parked on.
 --
--- thread.run hands every parked port to sys.altblock in ONE call, so a
+-- thread.run hands every parked port to sys.alt in one call, so a
 -- right that went away underneath it raises "bad receive right" from
 -- the scheduler itself -- which kills this entire proc, every other
 -- session with it, rather than the one session being torn down. that

@@ -7,7 +7,7 @@
 -- Reports every coroutine of the proc, not only its main one. That
 -- distinction is the whole value: a proc built on lib/thread keeps its
 -- threads as coroutines inside its own state, so reporting just the
--- main one showed the SCHEDULER -- altblock / thread.run / entrypoint,
+-- main one showed the SCHEDULER -- alt / thread.run / entrypoint,
 -- identical whether the proc was idle or deadlocked. src/debug.c walks
 -- the target state for the rest.
 

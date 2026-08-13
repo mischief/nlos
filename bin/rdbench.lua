@@ -59,7 +59,7 @@ local server = [[
 
 	sys.send(back, { port = { __right = sys.sendright(p) } })
 	while true do
-		local _, m = sys.altrecv({ p })
+		local _, m = sys.alt({ p })
 
 		if type(m) ~= "table" then break end
 		local out = {}
@@ -74,7 +74,7 @@ local server = [[
 local rp = sys.newport("rdbench_reply")
 local myright = sys.sendright(rp)
 local pid = sys.spawn(server, { arg = { reply = { __right = myright } } })
-local _, hello = sys.altrecv({ rp })
+local _, hello = sys.alt({ rp })
 local sright = hello and hello.port and hello.port.__right
 
 if sright then
@@ -84,7 +84,7 @@ if sright then
 	for _, n in ipairs({ 0, 8, 28, 73 }) do
 		local t = timeit(function()
 			sys.send(sright, { n = n })
-			sys.altrecv({ rp })
+			sys.alt({ rp })
 		end)
 
 		print(string.format("%-10s %6d %8.2fms %8.3fms", "table", n,

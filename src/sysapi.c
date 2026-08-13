@@ -84,22 +84,38 @@ static int port_owner(const struct kport *port);
 
 static int altready(lua_State *L, struct kproc *p);
 static int altrecv_take(lua_State *L, struct kproc *p);
+static int alt_take(lua_State *L, struct kproc *p, int wake);
+static int altrecv_hup(lua_State *L, struct kproc *p, int n);
 
-/* the tail of api_altblock, after the proc has been woken. returns the
- * ready index if there is one; returning nothing is legal and means
- * "could not say", which is what the caller assumed before this existed.
+/* the tail of api_alt, after the proc has been woken. Nothing is a
+ * legal answer and means "go round again": another proc may have taken
+ * what woke this one, and a hangup wakes every waiter.
  */
 static int
-altblock_k(lua_State *L, int status, lua_KContext ctx)
+alt_k(lua_State *L, int status, lua_KContext ctx)
 {
-	int i = altready(L, self(L));
+	struct kproc *p = self(L);
+	int got, n = 0;
+	int wanthup = lua_toboolean(L, 3);
+	int wake = lua_toboolean(L, 4);
 
 	(void)status;
 	(void)ctx;
-	if (!i)
-		return 0;
-	lua_pushinteger(L, i);
-	return 1;
+	luaL_checkstack(L, 4, "alt");
+
+	/* outside the region, since luaL_len can raise */
+	if (wanthup)
+		n = (int)luaL_len(L, 1);
+
+	ipclock_enter();
+	got = alt_take(L, p, wake);
+	if (!got && wanthup)
+		got = altrecv_hup(L, p, n);
+	ipclock_leave();
+
+	if (got < 0)
+		return popfail(L, p, got);
+	return got;
 }
 
 /* an alt set may carry send waits as well as receive waits: sends[i] is
@@ -166,36 +182,6 @@ altready(lua_State *L, struct kproc *p)
 	return 0;
 }
 
-static int altrecv_hup(lua_State *L, struct kproc *p, int n);
-
-static int
-altrecv_k(lua_State *L, int status, lua_KContext ctx)
-{
-	(void)status;
-	(void)ctx;
-	/* nothing for us after all -- a hangup wake, or another proc took
-	 * it. returning nothing is legal and means "go round again".
-	 */
-	int got, n = 0;
-	int wanthup = lua_toboolean(L, 2);
-
-	luaL_checkstack(L, 3, "altrecv");
-
-	/* outside the region, since luaL_len can raise */
-	if (wanthup)
-		n = (int)luaL_len(L, 1);
-
-	ipclock_enter();
-	got = altrecv_take(L, self(L));
-	if (!got && wanthup)
-		got = altrecv_hup(L, self(L), n);
-	ipclock_leave();
-
-	if (got < 0)
-		return popfail(L, self(L), got);
-	return got;
-}
-
 /* take the first available message from a set of receive rights, never
  * having merely looked at one. Peeking answers a level question that
  * goes stale as soon as a second cpu exists, and the answer is not a
@@ -207,12 +193,8 @@ altrecv_k(lua_State *L, int status, lua_KContext ctx)
  * it can tell which port answered.
  */
 static int
-altrecv_take(lua_State *L, struct kproc *p)
+altrecv_take_at(lua_State *L, struct kproc *p, int i)
 {
-	int i = altready(L, p);
-
-	if (!i)
-		return 0;
 	lua_rawgeti(L, 1, i);
 
 	struct right *r = right_get(p, (int)lua_tointeger(L, -1));
@@ -238,6 +220,47 @@ altrecv_take(lua_State *L, struct kproc *p)
 	return 2;
 }
 
+static int
+altrecv_take(lua_State *L, struct kproc *p)
+{
+	int i = altready(L, p);
+
+	if (!i)
+		return 0;
+	return altrecv_take_at(L, p, i);
+}
+
+/* the same, answering in the three values sys.alt speaks: the index,
+ * the message, and why. A send wait has room rather than a message, so
+ * it says so and hands back nothing to deliver.
+ */
+static int
+alt_take(lua_State *L, struct kproc *p, int wake)
+{
+	int i = altready(L, p);
+	int rc;
+
+	if (!i)
+		return 0;
+	if (wake) {
+		lua_pushinteger(L, i);
+		lua_pushnil(L);
+		lua_pushliteral(L, "ready");
+		return 3;
+	}
+	if (altneed(L, i) >= 0) {
+		lua_pushinteger(L, i);
+		lua_pushnil(L);
+		lua_pushliteral(L, "send");
+		return 3;
+	}
+	rc = altrecv_take_at(L, p, i);
+	if (rc <= 0)
+		return rc;
+	lua_pushnil(L);			/* why: a message needs no reason */
+	return 3;
+}
+
 /* the hangup half of altrecv, inside the take's region: asked
  * separately it is two syscalls with a gap, and a sender can answer and
  * close in it. Only where the caller asked -- sole_holder walks this
@@ -255,40 +278,71 @@ altrecv_hup(lua_State *L, struct kproc *p, int n)
 		lua_pop(L, 1);
 		/* a port with something queued is not finished, however
 		 * few rights are left: the take above just found nothing
-		 * on it, so this is only about who can still send.
+		 * on it, so this is only about who can still send. A send
+		 * wait asks about room instead, which a port with no other
+		 * holder still has.
 		 */
+		if (altneed(L, i) >= 0)
+			continue;
 		if (r && r->recv && !r->port->head &&
 		    sole_holder(p, r->port)) {
+			lua_pushinteger(L, i);
 			lua_pushnil(L);
 			lua_pushliteral(L, "hungup");
-			lua_pushinteger(L, i);
 			return 3;
 		}
 	}
 	return 0;
 }
 
-/* block until any entry of a port set is ready.
+/* sys.alt(set [, sends [, wanthup [, wake]]]) -> i, msg, why | nothing.
  *
- * sys.altblock(set [, sends]) -> index | nothing. An entry is a receive
- * wait unless sends[i] gives a size, in which case it waits for room --
- * so one park can cover both directions, which is what lets a thread
- * scheduler park a thread waiting to send without blocking itself.
+ * An entry is a receive wait unless sends[i] gives a size, in which
+ * case it waits for room. wake names the ready entry and takes
+ * nothing, for a caller that hands the port to somebody else to read.
  */
 static int
-api_altblock(lua_State *L)
+api_alt(lua_State *L)
 {
 	struct kproc *p = self(L);
 
-	int n;
+	int n, got, wanthup, wake;
 
 	nopark(L, p);
 
 	luaL_checktype(L, 1, LUA_TTABLE);
 	n = (int)luaL_len(L, 1);
 	if (n < 1)
-		return luaL_error(L, "altblock: need at least one port");
-	luaL_checkstack(L, 2, "altblock");	/* raises; before the region */
+		return luaL_error(L, "alt: need at least one port");
+	wanthup = lua_toboolean(L, 3);
+	wake = lua_toboolean(L, 4);
+	luaL_checkstack(L, 4, "alt");		/* raises; before the region */
+
+	/* one region: a message arriving after the take failed but during
+	 * the build would be lost, and a sender that answers and closes
+	 * between the take and a separate hangup check would be missed.
+	 */
+	ipclock_enter();
+
+	/* why says what i means, since a message may itself be nil: none
+	 * for a receive that took msg, "send" for room, "hungup" for a
+	 * port whose last other holder has gone.
+	 */
+	got = alt_take(L, p, wake);
+
+	/* before parking, not only after a wake: a caller that arrives
+	 * once the last sender has gone would otherwise wait for a wake
+	 * that has already happened.
+	 */
+	if (!got && wanthup)
+		got = altrecv_hup(L, p, n);
+
+	if (got) {
+		ipclock_leave();
+		if (got < 0)
+			return popfail(L, p, got);
+		return got;
+	}
 
 	/* the whole scan is one region. The loop adds a waiter to each
 	 * port as it goes, so a sender to the first could wake this proc
@@ -299,7 +353,6 @@ api_altblock(lua_State *L)
 	 * Nothing that raises may run in here, so a handle is read with
 	 * lua_tointegerx and a bad one is reported below as an outcome.
 	 */
-	ipclock_enter();
 	wait_clear(p);
 	for (int i = 1; i <= n; i++) {
 		int isnum = 0;
@@ -318,7 +371,7 @@ api_altblock(lua_State *L)
 		if (!isnum) {
 			wait_clear(p);
 			ipclock_leave();
-			return luaL_error(L, "altblock: bad receive right");
+			return luaL_error(L, "alt: bad receive right");
 		}
 		r = right_get(p, h);
 		/* a send wait needs only a send right, for the same reason
@@ -328,16 +381,42 @@ api_altblock(lua_State *L)
 		if (!r || (!send && !r->recv)) {
 			wait_clear(p);
 			ipclock_leave();
-			return luaL_error(L, send ? "altblock: bad right" :
-			    "altblock: bad receive right");
+			return luaL_error(L, send ? "alt: bad right" :
+			    "alt: bad receive right");
 		}
-		if (send ? (r->port->dead ||
-		    r->port->qbytes + (size_t)need <= MAXQUEUE) :
-		    (r->port->head != 0)) {
+		/* ready while the set was still being built, so answer
+		 * rather than sleep. A message is taken here for the same
+		 * reason alt_take does not report one: it goes stale.
+		 */
+		if (send && (r->port->dead ||
+		    r->port->qbytes + (size_t)need <= MAXQUEUE)) {
 			wait_clear(p);
 			ipclock_leave();
 			lua_pushinteger(L, i);
-			return 1;	/* already ready, don't sleep */
+			lua_pushnil(L);
+			lua_pushstring(L, wake ? "ready" : "send");
+			return 3;
+		}
+		if (!send && r->port->head != 0 && wake) {
+			wait_clear(p);
+			ipclock_leave();
+			lua_pushinteger(L, i);
+			lua_pushnil(L);
+			lua_pushliteral(L, "ready");
+			return 3;
+		}
+		if (!send && r->port->head != 0) {
+			int rc = altrecv_take_at(L, p, i);
+
+			wait_clear(p);
+			ipclock_leave();
+			if (rc < 0)
+				return popfail(L, p, rc);
+			if (rc > 0) {
+				lua_pushnil(L);
+				return 3;
+			}
+			return 0;	/* taken from under us; go round */
 		}
 		/* dedup: the caller may list the same handle more than once,
 		 * since alt cases share ports. two waits on one port would
@@ -359,15 +438,15 @@ api_altblock(lua_State *L)
 		if (!seen && !wait_add(p, r->port, send)) {
 			wait_clear(p);
 			ipclock_leave();
-			return luaL_error(L, "altblock: out of waiters");
+			return luaL_error(L, "alt: out of waiters");
 		}
 	}
 	proc_block(p);
 	ipclock_leave();
-	return lua_yieldk(L, 0, 0, altblock_k);
+	return lua_yieldk(L, 0, 0, alt_k);
 }
 
-/* sys.altpoll(set) -> index | nil. altblock's non-blocking half, for a
+/* sys.altpoll(set) -> index | nil. alt's non-blocking half, for a
  * proc that is still runnable and only wants to know whether any of its
  * parked threads could make progress. without it los.thread has to wake
  * every parked thread to have each one find out for itself, which is
@@ -385,93 +464,6 @@ api_altpoll(lua_State *L)
 		return 0;
 	lua_pushinteger(L, i);
 	return 1;
-}
-
-static int
-api_altrecv(lua_State *L)
-{
-	struct kproc *p = self(L);
-
-	int n;
-
-	nopark(L, p);
-
-	luaL_checktype(L, 1, LUA_TTABLE);
-	n = (int)luaL_len(L, 1);
-	if (n < 1)
-		return luaL_error(L, "altrecv: need at least one port");
-
-	/* sys.altrecv(set [, wanthup]) -> i, msg | nil, "hungup", i |
-	 * nothing. A message may itself be nil, so the reason and not the
-	 * message is what a caller tests.
-	 */
-	int wanthup = lua_toboolean(L, 2);
-
-	luaL_checkstack(L, 3, "altrecv");	/* raises; before the region */
-
-	/* the take and the wait-set build are one region. altrecv_take's
-	 * own comment already said the find and the take are one
-	 * critical section that this kernel could not yield between, and
-	 * that a lock would go around both; it goes around rather more
-	 * than that, because a message arriving after the take failed
-	 * but during the build is lost the same way altblock's is.
-	 */
-	ipclock_enter();
-
-	int got = altrecv_take(L, p);
-
-	/* before parking, not only after a wake: a caller that arrives
-	 * once the last sender has gone would otherwise wait for a wake
-	 * that has already happened.
-	 */
-	if (!got && wanthup)
-		got = altrecv_hup(L, p, n);
-
-	if (got) {
-		ipclock_leave();
-		if (got < 0)
-			return popfail(L, p, got);
-		return got;
-	}
-
-	wait_clear(p);
-	for (int i = 1; i <= n; i++) {
-		int isnum = 0;
-		lua_Integer h;
-		struct right *r;
-
-		lua_rawgeti(L, 1, i);
-		h = lua_tointegerx(L, -1, &isnum);
-		lua_pop(L, 1);
-		if (!isnum) {
-			wait_clear(p);
-			ipclock_leave();
-			return luaL_error(L, "altrecv: bad receive right");
-		}
-		r = right_get(p, h);
-		if (!r || !r->recv) {
-			wait_clear(p);
-			ipclock_leave();
-			return luaL_error(L, "altrecv: bad receive right");
-		}
-
-		int seen = 0;
-		struct waiter *w;
-
-		SLIST_FOREACH(w, &p->waiters, pw)
-			if (w->port == r->port) {
-				seen = 1;
-				break;
-			}
-		if (!seen && !wait_add(p, r->port, 0)) {
-			wait_clear(p);
-			ipclock_leave();
-			return luaL_error(L, "altrecv: out of waiters");
-		}
-	}
-	proc_block(p);
-	ipclock_leave();
-	return lua_yieldk(L, 0, 0, altrecv_k);
 }
 
 /* sys.altrecvnb(set) -> index, msg | nothing. the non-blocking form, for
@@ -2322,11 +2314,10 @@ static const luaL_Reg kapi[] = {
 	{ "tryrecv", api_tryrecv },
 	{ "block", api_block },
 	{ "sendblock", api_sendblock },
-	{ "altblock", api_altblock },
+	{ "alt", api_alt },
 	{ "altpoll", api_altpoll },
 	{ "anyready", api_anyready },
 	{ "hangups", api_hangups },
-	{ "altrecv", api_altrecv },
 	{ "altrecvnb", api_altrecvnb },
 	{ "yield", api_yield },
 	{ "newport", api_newport },

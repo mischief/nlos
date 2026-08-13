@@ -2,7 +2,7 @@
  *
  * sys.stack(pid) used to walk one coroutine -- the proc's main one --
  * which for anything built on lib/thread is the SCHEDULER. Every such
- * proc reported the same three frames, altblock / thread.run /
+ * proc reported the same three frames, alt / thread.run /
  * entrypoint, whether it was idle or deadlocked, so the one question
  * worth asking a stuck proc was the one it could not answer.
  *

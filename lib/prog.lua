@@ -668,9 +668,9 @@ end
 -- ABI message, turn rights into streams and a description into a
 -- namespace, then run.
 function M.main()
-	-- altrecv, not thread.recv: every program does this one receive,
+	-- sys.alt, not thread.recv: every program does this one receive,
 	-- and it must not be what loads the thread module.
-	local _, ctx = sys.altrecv({ sys.SELF })
+	local _, ctx = sys.alt({ sys.SELF })
 
 	-- stdinpull is a TOP-LEVEL field, not one inside stdin: a table
 	-- carrying __right serializes to the right alone and drops its

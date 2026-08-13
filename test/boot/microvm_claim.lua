@@ -74,7 +74,7 @@ local RECV = [==[
 	local n = 0
 
 	while n < want do
-		local i, m = sys.altrecv(set)
+		local i, m = sys.alt(set)
 
 		-- nothing for us: a hangup wake, or a message another proc
 		-- took first. altrecv_k documents this and the caller loops.

@@ -57,8 +57,8 @@ local CHILD = [==[
 	-- port it sent to, so it can tell a message found by the wake from
 	-- one found by the re-scan.
 	--
-	-- The loop is the contract, not defensive coding: sys.altrecv may
-	-- return nothing, and altrecv_k's comment says so -- a hangup wake
+	-- The loop is the contract, not defensive coding: sys.alt may
+	-- return nothing, and alt_k's comment says so -- a hangup wake
 	-- or another proc taking the message first. This test provokes one
 	-- of those on the first call every time. The parent receiving the
 	-- introduction message disposes of the two rights it carried,
@@ -67,7 +67,7 @@ local CHILD = [==[
 	local got = {}
 
 	while #got < nport do
-		local i, m = sys.altrecv(set)
+		local i, m = sys.alt(set)
 
 		if i then
 			got[#got + 1] = { i = i, m = m }
