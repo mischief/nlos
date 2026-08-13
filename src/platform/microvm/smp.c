@@ -50,6 +50,13 @@ static unsigned char apstacks[NCPU - 1][APSTACK] __attribute__((aligned(16)));
 static struct cpu cpus[NCPU];
 static unsigned ncpu = 1;	/* the BSP is cpu 0 and is already here */
 
+/* the APs' starting gun. They come up one at a time and each is counted
+ * as it arrives, so none may dispatch until the last one has been: the
+ * count is part of what a proc can ask about the machine, and a proc
+ * must not run on a cpu the total does not include yet.
+ */
+static atomic_uint apgo;
+
 /* set by an AP once it is far enough along to say so, read by the BSP
  * spinning on it. Atomic because that is exactly a value written by
  * one cpu and read by another while it changes.
@@ -142,6 +149,15 @@ ap_main(unsigned idx)
 	 * BSP's acquire.
 	 */
 	atomic_store_explicit(&online, idx, memory_order_release);
+
+	/* wait to be let go. Coming up is not the same as being counted:
+	 * the BSP records this cpu after startap returns, and an AP that
+	 * dispatched straight away could take the first proc and answer
+	 * questions about the machine -- how many cpus it has -- before
+	 * it had been added to the total.
+	 */
+	while (atomic_load_explicit(&apgo, memory_order_acquire) == 0)
+		__asm__ volatile ("pause");
 
 	kernel_run_ap();
 
@@ -238,6 +254,12 @@ smp_start_aps(void)
 		} else
 			ncpu++;
 	}
+
+	/* every cpu that arrived is now in the total, so they may run.
+	 * Release pairs with the acquire in ap_main: an AP that gets
+	 * past this sees ncpu as complete.
+	 */
+	atomic_store_explicit(&apgo, 1, memory_order_release);
 }
 
 /* wake another cpu. The vector carries nothing: ending its hlt is the
