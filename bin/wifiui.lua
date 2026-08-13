@@ -129,17 +129,21 @@ end
 -- ---- the keyboard ----
 --
 -- Whichever of the two this was started under: a tty from a shell, and
--- under dio the bare keyboard port the front app is lent, since an app
--- in a window is not on a console. Same characters either way.
+-- under dio the event port the front app is lent, which carries keys
+-- as bare strings. Same characters either way.
 local ctx = prog.ctx
 local tty = prog.tty()
-local kbd = ctx and ctx.kbd and ctx.kbd.__right
+local ev = prog.events()
+local kbd = prog.haskeys() and ev or nil
 
 if not tty and not kbd then
 	io.stderr:write("wifiui: no keyboard on this machine\n")
 	os.exit(1)
 end
 
+-- the shell-started path, where the only thing to wait on is the tty.
+-- Under dio the loop below reads the port itself, since a window event
+-- arrives on it too.
 local function key()
 	if tty then
 		return tty.getch()
@@ -308,28 +312,16 @@ if tty then
 end
 
 -- brought back to the front with a cleared rectangle: dio saves no
--- pixels, so an app that does not repaint here comes back empty. Its
--- own thread, because the loop below is parked in getch and a switch
--- must not wait for a keystroke.
-local wctl = N:open("/dev/wctl", "r")
-
-if wctl then
-	thread.spawn(function()
-		while true do
-			local s = wctl:read(16)
-
-			if not s then
-				break
-			end
-			if s:match("redraw") or s:match("visible") then
-				visible = true
-				paint()
-			elseif s:match("hidden") then
-				visible = false
-			end
-		end
-		wctl:close()
-	end)
+-- pixels, so an app that does not repaint here comes back empty. No
+-- thread for it -- the loop below is on that port already, and a run
+-- started from a shell has no window to hear about.
+local function onwin(state)
+	if state == "redraw" or state == "visible" then
+		visible = true
+		paint()
+	elseif state == "hidden" then
+		visible = false
+	end
 end
 
 local function bye()
@@ -470,17 +462,21 @@ rearm()
 
 while true do
 	if mport and kbd then
-		-- both, without a thread apiece: the keyboard is a port
-		-- under dio and the pointer's reply lands on one of ours.
-		-- A tty cannot join them -- getch is a call, not a port --
-		-- so a shell-started run is keys alone.
+		-- all three without a thread apiece: keys and the window
+		-- share dio's event port, and the pointer's reply lands on
+		-- one of ours. A tty cannot join them -- getch is a call,
+		-- not a port -- so a shell-started run is keys alone.
 		local which, m = thread.alt({
 			{ port = kbd },
 			{ port = mport },
 		})
 
 		if which == 1 then
-			if not onkey(m) then
+			if type(m) == "table" then
+				if m.t == "win" then
+					onwin(m.state)
+				end
+			elseif not onkey(m) then
 				break
 			end
 		elseif type(m) == "table" and not m.gone then

@@ -29,7 +29,6 @@ if not fb then
 	os.exit(1)
 end
 
-local N = prog.ns()
 local mouse = prog.mouse()
 
 if not mouse then
@@ -162,7 +161,7 @@ local CORNER = 28
 
 local lastx, lasty, drawing = nil, nil, false
 
--- Two files are read at once -- the pointer and the window -- so each
+-- Two things are read at once -- the pointer and the window -- so each
 -- gets a thread and the main body drives them. os.exit stays out of
 -- both: it unwinds through prog's runner, and a thread that raises it
 -- is a fault printed to the console instead of a program leaving.
@@ -174,22 +173,21 @@ local BADMAX = 8
 local bad = 0
 
 local thread = require("los.thread")
-local N = prog.ns()
-local wctl = N and N:open("/dev/wctl", "r")
+local ev = prog.events()
 
-if wctl then
+if ev then
 	thread.spawn(function()
 		while true do
-			local s = wctl:read(16)
+			local m, why = thread.await(ev)
 
-			if not s then
+			if why then
 				break
 			end
-			if s:match("redraw") then
+			if type(m) == "table" and m.t == "win" and
+			    m.state == "redraw" then
 				replay()
 			end
 		end
-		wctl:close()
 	end)
 end
 

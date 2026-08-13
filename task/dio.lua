@@ -81,10 +81,10 @@
 -- Dropped rather than refused. An app behind has nothing to fix, and an
 -- error per drawing call would make every program handle a window
 -- system it otherwise need not know about. It is told to draw itself
--- again through /dev/wctl when it comes back.
+-- again on its event port when it comes back.
 --
 -- So there are no saved pixels anywhere: coming to the front is a
--- cleared rectangle and one line on a file. An app that cannot redraw
+-- cleared rectangle and one message. An app that cannot redraw
 -- itself comes back empty, which is the price of a window system on a
 -- board with 4MB.
 
@@ -94,9 +94,7 @@ local font = require("los.font")
 local draw = require("draw")
 local sendwait = require("client.rpc").sendwait
 local mouse = require("mouse")
-local wctlfs = require("wctlfs")
 local proc = require("proc")
-local srv = require("srv")
 
 -- started either way: as a service, lib/svc.lua hands the capabilities
 -- to the chunk as its argument; started by hand from the repl, they
@@ -556,55 +554,44 @@ end
 
 -- ---- one window each, and one of them in front ----
 --
--- Every app gets its own framebuffer port, its own pointer and its
--- own /dev/wctl. A port carries no sender identity, so a shared port
--- could not tell whose draw had arrived -- and knowing that is the
--- whole of what focus means here.
+-- Every app gets its own framebuffer port, its own pointer and its own
+-- event port. A port carries no sender identity, so a shared port could
+-- not tell whose draw had arrived -- and knowing that is the whole of
+-- what focus means here.
 --
 -- an instance is:
---	{ id, entry, name, pid, winid, fbport, mouse, wctl, mport,
---	  wport, kind }
+--	{ id, entry, name, pid, winid, fbport, mouse, mport, ev, evsend,
+--	  wstate, kind }
 
--- Started once the app it serves exists, and not before.
---
--- srv.serve gives up when its port hangs up, and sys.hungup is
--- sole_holder: it is true while THIS proc holds every right to the
--- port. Between making an app's ports and spawning the app, dio holds
--- them all -- so a serve thread that runs in that window sees a port
--- nobody is left to talk on and returns, and the app's first walk of
--- /dev/wctl then waits for an answer that will never come.
---
--- Nothing is lost by starting late: a message sent before the thread
--- is running waits on the port like any other.
+-- Started once the app it serves exists, and not before: sys.hungup is
+-- sole_holder, so a thread running while dio still holds every right
+-- sees a port nobody can talk on and returns, and the app's first
+-- pointer read waits for an answer that never comes. Starting late
+-- loses nothing -- a message sent first waits like any other.
 local function serveapp(a)
 
-	-- Each owns its pair of rights and closes them when it ends, which
-	-- is when the app has gone: sys.hungup is true once dio is the
-	-- only holder left. Closing them anywhere else would close a port
-	-- another thread of this proc is parked on.
+	-- the thread owns this pair and closes it once the app has gone.
+	-- Closing anywhere else closes a port a thread is parked on.
 	thread.spawn(function()
 		a.mouse.serve(a.mrecv)
 		sys.close(a.mport)
 		sys.close(a.mrecv)
 	end)
-	thread.spawn(function()
-		srv.serve(a.wctl.backend, a.wrecv)
-		sys.close(a.wport)
-		sys.close(a.wrecv)
-	end)
 end
 
--- the namespace an app gets: dio's own, with this app's mouse and wctl
--- in front of the machine's /dev. Union order is list order, and a walk
--- that fails in one mount falls through to the next -- so wctl resolves
--- in the first, mouse in the second, and everything else in the
--- machine's.
-local function appns(a)
-	local desc = N:describe()
+-- ---- the window, as a message ----
 
-	table.insert(desc, 1, { prefix = "/dev", kind = "mnt",
-	    args = { port = { __right = a.wport } } })
-	return desc
+-- "visible", "hidden" or "redraw", on the port the keys arrive on. Only
+-- a change is an event, except redraw: the pixels are gone whatever the
+-- app believes about its focus. A full port is dropped rather than
+-- waited on -- this is the state and not a log of it, and waiting would
+-- park the switch behind an app that stopped reading.
+local function tellwin(a, state)
+	if state ~= "redraw" and state == a.wstate then
+		return
+	end
+	a.wstate = state
+	sys.send(a.evsend, { t = "win", state = state })
 end
 
 -- a name for this instance, unique among the ones running: the second
@@ -650,25 +637,23 @@ local function newapp(entryidx, kind)
 	end
 
 	local mrecv = sys.newport("dio.mouse")
-	local wrecv = sys.newport("dio.wrecv")
-	-- a keyboard port per app, not one shared: a key belongs to
-	-- whichever terminal is in front, and a port handed to two of them
-	-- would give it to whichever asked first.
-	local keys = sys.newport("dio.keys")
+	-- one event port per app, not one shared: keys and window state
+	-- belong to whichever app is in front, and a port handed to two of
+	-- them would give a key to whichever asked first.
+	local ev = sys.newport("dio.ev")
 	local a = {
 		id = nextid,
 		entry = entryidx,
 		kind = kind,
 		winid = winid, fbport = win.handle,
 		mrecv = mrecv, mport = sys.sendright(mrecv),
-		wrecv = wrecv, wport = sys.sendright(wrecv),
-		keys = keys, keysend = sys.sendright(keys),
+		ev = ev, evsend = sys.sendright(ev),
 		mouse = mouse.server(),
-		-- a fresh window is empty, so the first word an app reads
-		-- is redraw. Switching says visible and hidden after that,
-		-- and the pixels stay put across both.
-		wctl = wctlfs.new(),
 	}
+
+	-- a fresh window is empty, so the first thing an app is told is to
+	-- paint it. Sent before the app exists, and waits on the port.
+	tellwin(a, "redraw")
 
 	nextid = nextid + 1
 	apps[a.id] = a
@@ -725,7 +710,7 @@ if kbd then
 
 			if wantkeys and a and type(c) == "string" and
 			    c ~= "" then
-				sys.send(a.keysend, c)
+				sys.send(a.evsend, c)
 			end
 		end
 	end)
@@ -751,7 +736,10 @@ local function startterm(a, entry, desc)
 	sys.send(h, {
 		fb = { __right = a.fbport },
 		ptr = { __right = a.mport },
-		kbd = { __right = a.keys },
+		-- the event port, which for a terminal is its keyboard: the
+		-- window messages riding on it are not keystrokes and the
+		-- console hands them on rather than typing them.
+		kbd = { __right = a.ev },
 		-- the serial line, for what the terminal cannot report
 		-- about itself. Its own output goes to the glass.
 		cons = cons and { __right = cons } or nil,
@@ -778,7 +766,7 @@ end
 --
 -- The app in front owns the glass and the pointer; every other one
 -- keeps running with its draws dropped. Coming to the front is an area
--- cleared and a "redraw" on /dev/wctl, so an app paints from its own
+-- cleared and a "redraw" on its event port, so an app paints from its own
 -- state onto a known-empty rectangle -- which is what buys a machine
 -- this size a window system with no saved pixels anywhere.
 local function focus(id)
@@ -793,11 +781,11 @@ local function focus(id)
 
 	front = id
 	if was and apps[was] then
-		apps[was].wctl.show(false)
+		tellwin(apps[was], "hidden")
 		screen.place(apps[was].winid, WINAT, false)
 	end
 	if id and apps[id] then
-		apps[id].wctl.show(true)
+		tellwin(apps[id], "visible")
 		screen.place(apps[id].winid, WINAT, true)
 	else
 		clearapp()
@@ -845,7 +833,10 @@ local function start(i)
 	end
 	a.name = instname(entry, a.id)
 
-	local desc = appns(a)
+	-- dio's own namespace, unchanged: an app's window reaches it as a
+	-- capability rather than as a file, so there is nothing per-app in
+	-- here to mount.
+	local desc = N:describe()
 	local pid, err
 
 	if entry.kind == "term" then
@@ -869,13 +860,13 @@ local function start(i)
 				nsdesc = desc,
 				fb = { __right = a.fbport },
 				ptr = { __right = a.mport },
-				-- the keyboard, where the entry asked for
-				-- it: a picker that takes a passphrase
-				-- needs one, and this board has keys. The
-				-- pump above delivers only while such an
-				-- app is in front.
-				kbd = entry.keys and
-				    { __right = a.keys } or nil,
+				-- window state, and keystrokes where the
+				-- entry asked for them: a picker that takes
+				-- a passphrase needs keys, and this board
+				-- has them. The pump above delivers only
+				-- while such an app is in front.
+				ev = { __right = a.ev },
+				keys = entry.keys or nil,
 				stdout = cons and { __right = cons } or nil,
 				stderr = cons and { __right = cons } or nil,
 			})
@@ -913,7 +904,7 @@ local function opensel()
 
 		front = nil
 		if apps[was] then
-			apps[was].wctl.show(false)
+			tellwin(apps[was], "hidden")
 			-- off the glass, so the list is not drawn over by
 			-- an app that keeps painting behind it
 			screen.place(apps[was].winid, WINAT, false)
@@ -1196,12 +1187,12 @@ thread.spawn(function()
 				sys.close(a.ctl)
 				a.ctl = nil
 			end
-			-- the keyboard pair, which no thread waits on: the
-			-- app received on it and dio only ever sent. The
-			-- other three pairs are closed by the threads that
-			-- serve them, since those are parked on them.
-			sys.close(a.keysend)
-			sys.close(a.keys)
+			-- the event pair, which no thread waits on: the app
+			-- received on it and dio only ever sent. The mouse
+			-- pair is closed by the thread that serves it,
+			-- since that one is parked on it.
+			sys.close(a.evsend)
+			sys.close(a.ev)
 			-- the list closed up over it, so every button below
 			-- where it was has moved
 			drawlist()

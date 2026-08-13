@@ -367,7 +367,6 @@ end
 
 paint(nil, false, true)
 
-local N = prog.ns()
 
 -- a touch anywhere turns the clock over. Press, not release, so it
 -- answers under the finger.
@@ -397,30 +396,34 @@ end
 
 -- brought back to the front: whatever was there in between is not ours
 -- to know, so repaint the lot.
-local wctl = N and N:open("/dev/wctl", "r")
-
+--
 -- Behind another app the face stays in the window, so a tick spent
 -- painting is a tick spent on a second nobody is looking at. Coming
 -- back shows the time it stopped at, which one paint corrects.
-if wctl then
+local ev = prog.events()
+
+if ev then
 	thread.spawn(function()
 		while true do
-			local s = wctl:read(16)
+			local m, why = thread.await(ev)
 
-			if not s then
+			if why then
 				break
 			end
-			if s:match("redraw") then
+			if type(m) ~= "table" or m.t ~= "win" then
+				goto continue
+			end
+			if m.state == "redraw" then
 				visible = true
 				paint(nil, false, true)
-			elseif s:match("visible") then
+			elseif m.state == "visible" then
 				visible = true
 				paint(nil, false, false)
-			elseif s:match("hidden") then
+			elseif m.state == "hidden" then
 				visible = false
 			end
+			::continue::
 		end
-		wctl:close()
 	end)
 end
 

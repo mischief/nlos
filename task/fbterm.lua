@@ -59,9 +59,28 @@ local backend = fbcons.new({
 -- it does not recognise, and a right per message is a right leaked.
 local notices = sys.newport("fbterm.notices")
 local noticeto = assert(sys.sendright(notices), "out of rights")
+
+-- ---- the window, where there is one ----
+--
+-- Under task/dio.lua the keyboard port carries window state as well as
+-- keys: hidden the terminal stops drawing, so output produced behind
+-- another app costs one repaint on the way back rather than a span per
+-- write. On a machine with no window system it never arrives.
 local con = console.new(backend, {
 	other = function(m)
 		sys.send(noticeto, m)
+	end,
+	kbdother = function(m)
+		if m.t ~= "win" then
+			return
+		end
+		if m.state == "redraw" then
+			backend.redraw()
+		elseif m.state == "hidden" then
+			backend.hide()
+		elseif m.state == "visible" then
+			backend.show()
+		end
 	end,
 })
 
@@ -79,40 +98,6 @@ local consright = sys.sendright(sys.SELF)
 thread.spawn(function()
 	con:serve()
 end)
-
--- ---- the window, where there is one ----
---
--- Under task/dio.lua this terminal has an app's namespace, and
--- /dev/wctl in it says whether it is on the glass. Hidden it stops
--- drawing, so output produced behind another app costs one repaint on
--- the way back rather than a span per write.
-
--- On a machine with no window system there is no such file, and this
--- thread never starts. Nothing else in the terminal differs.
-do
-	local N = require("ns").current()
-	local wctl = N and N:open("/dev/wctl", "r")
-
-	if wctl then
-		thread.spawn(function()
-			while true do
-				local s = wctl:read(16)
-
-				if not s then
-					break
-				end
-				if s:match("redraw") then
-					backend.redraw()
-				elseif s:match("hidden") then
-					backend.hide()
-				elseif s:match("visible") then
-					backend.show()
-				end
-			end
-			wctl:close()
-		end)
-	end
-end
 
 -- The shell runs here, as a thread. Sharing the proc means it needs no
 -- namespace description, no monitor on the terminal and no rights of its

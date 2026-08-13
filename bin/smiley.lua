@@ -118,13 +118,13 @@ paint()
 -- eof at once, which is indistinguishable from a person pressing enter
 -- the instant it drew.
 if not prog.stdin() then
-	local N = prog.ns()
-	local wctl = N and N:open("/dev/wctl", "r")
+	local thread = require("los.thread")
+	local ev = prog.events()
 
-	if not wctl then
+	if not ev then
 		-- parked, not spinning: nothing will ever be sent here,
 		-- and the point is to cost nothing until killed.
-		require("los.thread").recv(require("los.sys").SELF)
+		thread.recv(require("los.sys").SELF)
 		return
 	end
 
@@ -132,16 +132,16 @@ if not prog.stdin() then
 	-- them while this one is behind, so coming back to the front is
 	-- being told to paint again.
 	while true do
-		local s = wctl:read(16)
+		local m, why = thread.await(ev)
 
-		if not s then
+		if why then
 			break
 		end
-		if s:match("redraw") then
+		if type(m) == "table" and m.t == "win" and
+		    m.state == "redraw" then
 			paint()
 		end
 	end
-	wctl:close()
 	return
 end
 
