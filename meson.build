@@ -612,6 +612,7 @@ lua_payload = files(
   # record is an ordinary send to it.
   'task/dio.lua',
   'etc/dio.lua',
+  'bin/win.lua',
   'lib/mouse.lua',
   'task/fbterm.lua',
   'lib/fbsh.lua',

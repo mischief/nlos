@@ -134,6 +134,10 @@ function M.new(caps)
 		-- decides whether programs here can draw is one grant, one
 		-- level up -- exactly like `cons`.
 		fb = caps.fb,
+		-- the pointer, on the screen's terms: lent to every program
+		-- this shell starts, and a shell given none hands out none.
+		-- What spends it is a program that takes the machine whole.
+		ptr = caps.ptr,
 		-- the tcp task, lent on the same terms as the screen: a
 		-- shell given none hands out none.
 		net = caps.net,
@@ -443,6 +447,9 @@ function Sh:spawn1(path, argv, streams)
 	-- neither has anything it spawns.
 	if self.fb then
 		msg.fb = { __right = self.fb }
+	end
+	if self.ptr then
+		msg.ptr = { __right = self.ptr }
 	end
 	-- and the terminal, on the same terms as the screen: lent to every
 	-- program, used by the few that ask (prog.tty -> a full-screen editor

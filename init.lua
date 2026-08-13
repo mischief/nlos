@@ -357,6 +357,10 @@ local repl_worker_src = [[
 	local udph = (m.udp and m.udp.__right) or (m.ip and m.ip.__right)
 	local dnsh = m.dns and m.dns.__right
 	local fbh = m.fb and m.fb.__right
+	-- the pointer, on the same terms as the screen. Nothing here reads
+	-- it: it is for a program that takes the machine whole, and a
+	-- machine without one lends none.
+	local ptrh = m.ptr and m.ptr.__right
 	-- the debug capability: a right to it debugs any proc, which is
 	-- what reaches a boot service. The console gets it and dos
 	-- inherits it; nothing else is offered one.
@@ -435,7 +439,7 @@ local repl_worker_src = [[
 			-- adds no authority a session here did not have.
 			-- A public session gets no such grant.
 			launcher.start({ ns = require("ns").current(),
-			    cons = consh, fb = fbh, net = tcph,
+			    cons = consh, fb = fbh, ptr = ptrh, net = tcph,
 			    udp = udph, power = powerh, dbg = dbgh },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")
@@ -547,6 +551,11 @@ while true do
 	end
 	if caps_of.fb then
 		grant.fb = { __right = caps_of.fb }
+	end
+	-- the pointer travels with the screen: what spends it is bin/win.lua,
+	-- which hands both to a window system and takes them back.
+	if caps_of.ptr then
+		grant.ptr = { __right = caps_of.ptr }
 	end
 	-- no srv grant: the worker reaches the registry through /srv in
 	-- the namespace it was spawned with, the same way it reaches the
