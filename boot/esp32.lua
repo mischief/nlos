@@ -395,11 +395,17 @@ _G.dos = setmetatable({}, {
 		-- name. bin/host.lua and bin/date.lua spend it.
 		-- a seed rather than the draw: this proc is the only one
 		-- with los.platform.rng, and what a program gets is bytes.
+		-- the debug capability goes with the console, as it does on
+		-- the other platforms: a right to it debugs any proc on the
+		-- machine, so what earns it is being at the serial line. A
+		-- session that arrives over the network is given none, and
+		-- so is the panel shell, which nobody has to be present to
+		-- reach.
 		require("dos").start({ ns = N, cons = caps.cons,
 		    fb = caps.fb, net = caps.tcp, udp = caps.ip,
 		    dns = svcport.dns,
 		    seed = rng and rng.bytes(32) or nil,
-		    power = caps.power },
+		    power = caps.power, dbg = caps.dbg },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")
 		return "back at the lua repl"
