@@ -72,6 +72,9 @@ function M.server()
 	local wheelq = {}
 	local self = {}
 
+	-- Every waiter answered here is closed: sending copies the right
+	-- rather than handing it over, so the server's own copy is still
+	-- its own to drop. Left open, a drag leaks one right an event.
 	function self.post(x, y, b, ms)
 		local ev = { x = x, y = y, b = b, ms = ms or sys.uptime_ms() }
 
@@ -96,12 +99,14 @@ function M.server()
 
 				sys.send(w, { t = "ptr", seq = seq, x = ev2.x,
 				    y = ev2.y, b = ev2.b, ms = ev2.ms })
+				sys.close(w)
 			end
 		else
 			for _, w in ipairs(waiters) do
 				sys.send(w, { t = "ptr", seq = seq, x = latest.x,
 				    y = latest.y, b = latest.b,
 				    ms = latest.ms })
+				sys.close(w)
 			end
 			waiters = {}
 		end
