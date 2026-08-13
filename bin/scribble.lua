@@ -21,7 +21,6 @@
 local prog = require("prog")
 local memdraw = require("memdraw")
 
-
 local fb = prog.screen()
 
 if not fb then
@@ -29,12 +28,9 @@ if not fb then
 	os.exit(1)
 end
 
-local mousemod = require("mouse")
 local mouse = prog.mouse()
 
--- in a window the records come on the event port and there is no
--- pointer of our own, so one or the other is enough.
-if not mouse and not prog.events() then
+if not mouse then
 	io.stderr:write("scribble: no pointer on this machine\n")
 	os.exit(1)
 end
@@ -45,9 +41,6 @@ local W, H = mode.w, mode.h
 -- two answers, and they are deliberately different:
 --	x, y, b   an event
 --	nil, why  the pointer is gone, and so are we
---
--- Under a window the same port carries its state, and a redraw is
--- answered here: this is what the program waits in.
 local event
 
 local function pointerevent()
@@ -169,9 +162,6 @@ local CORNER = 28
 
 local lastx, lasty, drawing = nil, nil, false
 
--- The pointer and the window arrive on one port, so this is one loop
--- and no threads.
---
 -- A run of unreadable records is a broken pointer rather than a stray
 -- one, and reading it forever while drawing nothing is no better than
 -- leaving. Report the first, count them, give up with a reason.
@@ -181,87 +171,91 @@ local bad = 0
 local thread = require("los.thread")
 local ev = prog.events()
 
--- in a window the records arrive on the event port, mixed in with the
--- window's own state; off one there is a pointer of our own to read.
-if not ev then
-	event = pointerevent
-else
-	event = function()
+-- The pointer is a port of its own, so reading it is the same here as
+-- it is off a window system: this waits in one place.
+event = pointerevent
+
+-- The window's state arrives separately, and a thread of its own reads
+-- it. alt would do, but it cannot tell a port that hung up from one
+-- that is quiet -- and the pointer going away is how this program
+-- learns to leave.
+if ev then
+	thread.spawn(function()
 		while true do
 			local m, why = thread.await(ev)
 
 			if why then
-				return nil, "window gone"
+				return
 			end
-
-			local x, y, b = mousemod.parse(m)
-
-			if x then
-				return x, y, b
-			elseif type(m) == "table" and m.t == "win" and
+			if type(m) == "table" and m.t == "win" and
 			    m.state == "redraw" then
 				replay()
 			end
-			-- anything else is a key, which this program was
-			-- lent none of
 		end
-	end
+	end)
 end
 
-while true do
-	local x, y, b = event()
+-- the drawing loop is a thread of its own, so the window's thread runs
+-- as well: thread.run is what resumes either of them.
+local function draw1()
+	while true do
+		local x, y, b = event()
 
-	if x == nil then
-		io.stderr:write("scribble: " .. tostring(y) .. "\n")
-		break
-	end
-	if x == false then
-		bad = bad + 1
-		if bad == 1 then
-			io.stderr:write("scribble: not a mouse record: " ..
-			    tostring(y) .. "\n")
-		end
-		if bad >= BADMAX then
-			io.stderr:write(("scribble: %d bad records; giving up\n")
-			    :format(bad))
+		if x == nil then
+			io.stderr:write("scribble: " .. tostring(y) .. "\n")
 			break
 		end
-		goto continue
-	end
-	bad = 0
-
-	if b & WHEELUP ~= 0 then
-		pen = pen % #palette + 1
-		swatch()
-	elseif b & WHEELDOWN ~= 0 then
-		pen = (pen - 2) % #palette + 1
-		swatch()
-	elseif b & BUT1 ~= 0 then
-		if x < CORNER and y < CORNER then
-			-- the corner empties the picture, which is the
-			-- strokes and not only the pixels: what is redrawn
-			-- after a switch is this list.
-			strokes = {}
-			clear()
-			drawing = false
-		elseif drawing and lastx then
-			-- joined to where it was: a finger moves further
-			-- than one dab between reads, so without the line a
-			-- quick stroke comes out dotted.
-			line(lastx, lasty, x, y, palette[pen])
-			remember(lastx, lasty, x, y, palette[pen])
-			lastx, lasty = x, y
-		else
-			dab(x, y, palette[pen])
-			remember(x, y, x, y, palette[pen])
-			lastx, lasty, drawing = x, y, true
+		if x == false then
+			bad = bad + 1
+			if bad == 1 then
+				io.stderr:write("scribble: not a mouse record: " ..
+				    tostring(y) .. "\n")
+			end
+			if bad >= BADMAX then
+				io.stderr:write(("scribble: %d bad records; giving up\n")
+				    :format(bad))
+				break
+			end
+			goto continue
 		end
-	else
-		drawing = false
-		lastx, lasty = nil, nil
-	end
+		bad = 0
 
-	::continue::
+		if b & WHEELUP ~= 0 then
+			pen = pen % #palette + 1
+			swatch()
+		elseif b & WHEELDOWN ~= 0 then
+			pen = (pen - 2) % #palette + 1
+			swatch()
+		elseif b & BUT1 ~= 0 then
+			if x < CORNER and y < CORNER then
+				-- the corner empties the picture, which is the
+				-- strokes and not only the pixels: what is redrawn
+				-- after a switch is this list.
+				strokes = {}
+				clear()
+				drawing = false
+			elseif drawing and lastx then
+				-- joined to where it was: a finger moves further
+				-- than one dab between reads, so without the line a
+				-- quick stroke comes out dotted.
+				line(lastx, lasty, x, y, palette[pen])
+				remember(lastx, lasty, x, y, palette[pen])
+				lastx, lasty = x, y
+			else
+				dab(x, y, palette[pen])
+				remember(x, y, x, y, palette[pen])
+				lastx, lasty, drawing = x, y, true
+			end
+		else
+			drawing = false
+			lastx, lasty = nil, nil
+		end
+
+		::continue::
+	end
 end
+
+thread.spawn(draw1)
+thread.run()
 
 fb.fill(memdraw.rect(0, 0, W, H), 0x000000)

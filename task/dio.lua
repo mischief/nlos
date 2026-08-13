@@ -639,17 +639,13 @@ local function newapp(entryidx, kind)
 		ev = ev, evsend = evsend,
 	}
 
-	-- An app takes its records on the event port: one recv is its whole
-	-- input. A terminal cannot -- that port is its keyboard, and a
-	-- record pushed onto it is typed rather than read -- so it gets a
-	-- port of its own, which it lends to the programs it runs.
-	if kind == "term" then
-		a.ptr = sys.newport("dio.ptr")
-		a.ptrsend = sys.sendright(a.ptr)
-		a.mouse = mouse.queue(a.ptrsend)
-	else
-		a.mouse = mouse.queue(evsend)
-	end
+	-- The pointer has a port of its own, as plan 9 gives it a file of
+	-- its own. Records are dropped and coalesced where a key and a
+	-- window state must not be, and one queue can hold one such rule.
+	-- A terminal lends this to the programs it runs; it reads keys.
+	a.ptr = sys.newport("dio.ptr")
+	a.ptrsend = sys.sendright(a.ptr)
+	a.mouse = mouse.queue(a.ptrsend)
 
 	-- a fresh window is empty, so the first thing an app is told is to
 	-- paint it. Sent before the app exists, and waits on the port.
@@ -861,12 +857,12 @@ local function start(i)
 				cwd = "/",
 				nsdesc = desc,
 				fb = { __right = a.fbport },
-				-- the pointer, window state, and keystrokes
-				-- where the entry asked for them: a picker
-				-- that takes a passphrase needs keys. One
-				-- port is an app's whole input, and the
-				-- pump above delivers only while such an
-				-- app is in front.
+				ptr = { __right = a.ptr },
+				-- window state, and keystrokes where the
+				-- entry asked for them: a picker that takes
+				-- a passphrase needs keys. The pump above
+				-- delivers only while such an app is in
+				-- front.
 				ev = { __right = a.ev },
 				keys = entry.keys or nil,
 				stdout = cons and { __right = cons } or nil,

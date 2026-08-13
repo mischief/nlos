@@ -454,36 +454,51 @@ refresh()
 paint()
 rescan()
 
-while true do
-	if ev then
-		-- one port and no threads: keys, the window and the
-		-- pointer all arrive here. await rather than recv, or a
-		-- dio that went away parks this forever.
-		local m, why = thread.await(ev)
+-- the pointer is a port of its own, and a thread of its own reads it:
+-- alt cannot tell a port that hung up from a quiet one, and the loop
+-- below has to end when dio does.
+local point = prog.mouse()
 
-		if why then
-			break
-		end
+if point then
+	thread.spawn(function()
+		while true do
+			local px, py, pb = point.read()
 
-		local px, py, pb = mouse.parse(m)
-
-		if px then
+			if not px then
+				return
+			end
 			onpoint(px, py, pb)
-		elseif type(m) == "string" then
-			if not onkey(m) then
+		end
+	end)
+end
+
+local function ui()
+	while true do
+		if ev then
+			-- keys and the window arrive here. await rather than recv,
+			-- or a dio that went away parks this forever.
+			local m, why = thread.await(ev)
+
+			if why then
 				break
 			end
-		elseif type(m) ~= "table" then
-			-- nothing else speaks on this port
-		elseif m.t == "win" then
-			onwin(m.state)
+			if type(m) == "string" then
+				if not onkey(m) then
+					break
+				end
+			elseif type(m) == "table" and m.t == "win" then
+				onwin(m.state)
+			end
+		elseif not onkey(key()) then
+			break
 		end
-	elseif not onkey(key()) then
-		break
+		-- no repaint here: what changed is what draws. A full one per
+		-- event is what made a roll flicker, since every rectangle is a
+		-- message and the whole window went out for a moved highlight.
 	end
-	-- no repaint here: what changed is what draws. A full one per
-	-- event is what made a roll flicker, since every rectangle is a
-	-- message and the whole window went out for a moved highlight.
 end
+
+thread.spawn(ui)
+thread.run()
 
 bye()
