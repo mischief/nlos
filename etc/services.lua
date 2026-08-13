@@ -46,8 +46,12 @@ return {
 	-- spends. A panel you have to be holding the board to touch is
 	-- allowed to restart it; a session that arrives over the network
 	-- is not, which is why the grant is here and not in dos.
-	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "tcp", "ip", "dns", "power" } },
+	-- kbd is optional, and the pointer is not: a tray is reached by
+	-- touching it, and dio drops the key pump where there is no
+	-- keyboard. That is a machine whose keys arrive over the console
+	-- rather than as a device of their own, which is every efi one.
+	{ path = "/task/dio.lua", caps = { "fb", "ptr", "cons" },
+	  optcaps = { "kbd", "tcp", "ip", "dns", "power" } },
 
 	-- the panel and the keyboard as a plain terminal, for a board
 	-- with no pointer. Exactly one of this and dio above belongs in a

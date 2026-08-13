@@ -881,8 +881,44 @@ typedef struct {
 	void *ConfigurationTable;
 } EFI_SYSTEM_TABLE;
 
+/* the absolute pointer, which is what a tablet and a touchscreen are.
+ * Absolute rather than the relative EFI_SIMPLE_POINTER: this machine's
+ * ui is a panel you touch, and qemu's usb-tablet reports the same way.
+ */
+typedef struct {
+	UINT64 CurrentX;
+	UINT64 CurrentY;
+	UINT64 CurrentZ;
+	UINT32 ActiveButtons;
+} EFI_ABSOLUTE_POINTER_STATE;
+
+typedef struct {
+	UINT64 AbsoluteMinX;
+	UINT64 AbsoluteMinY;
+	UINT64 AbsoluteMinZ;
+	UINT64 AbsoluteMaxX;
+	UINT64 AbsoluteMaxY;
+	UINT64 AbsoluteMaxZ;
+	UINT32 Attributes;
+} EFI_ABSOLUTE_POINTER_MODE;
+
+typedef struct EFI_ABSOLUTE_POINTER_PROTOCOL EFI_ABSOLUTE_POINTER_PROTOCOL;
+struct EFI_ABSOLUTE_POINTER_PROTOCOL {
+	EFI_STATUS (EFIAPI *Reset)(EFI_ABSOLUTE_POINTER_PROTOCOL *This,
+	    BOOLEAN ExtendedVerification);
+	EFI_STATUS (EFIAPI *GetState)(EFI_ABSOLUTE_POINTER_PROTOCOL *This,
+	    EFI_ABSOLUTE_POINTER_STATE *State);
+	void *WaitForInput;
+	EFI_ABSOLUTE_POINTER_MODE *Mode;
+};
+
 extern EFI_SYSTEM_TABLE *ST;
 extern EFI_BOOT_SERVICES *BS;
 extern EFI_HANDLE self_image;
+
+/* the screen's size in pixels, 0 where there is no screen. The pointer
+ * driver scales into it; the protocol itself lives in gop.c.
+ */
+int efi_fb_size(UINTN *w, UINTN *h);
 
 #endif

@@ -64,6 +64,19 @@ platform_have_fb(void)
 	return gop != 0;
 }
 
+int
+efi_fb_size(UINTN *w, UINTN *h)
+{
+	if (!gop || !gop->Mode || !gop->Mode->Info) {
+		*w = 0;
+		*h = 0;
+		return 0;
+	}
+	*w = gop->Mode->Info->HorizontalResolution;
+	*h = gop->Mode->Info->VerticalResolution;
+	return 1;
+}
+
 /* every entry point below re-checks. the module is unreachable without
  * PRIV_FB, but PRIV_FB does not by itself prove the probe succeeded --
  * kernel.c could grow a path that spawns the task anyway, and a null

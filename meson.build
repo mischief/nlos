@@ -823,6 +823,15 @@ run_target('qemu-gtk',
   env: archenv,
 )
 
+# the same, named for what it is now: a window plus a tablet, which is
+# an absolute pointer, which is what makes the machine start dio -- so
+# this is the tray and the apps, driven with a real mouse. The lua repl
+# stays on stdio in this terminal.
+run_target('qemu-gui',
+  command: [lua_interp, files('tools/qemu.lua'), luaos_img, 'gtk'],
+  env: archenv,
+)
+
 # boots test/boot/fetch_mcp.lua instead of init.lua (single-url mcp
 # fetch server), mcp reachable on host tcp/8090
 run_target('fetch-mcp',

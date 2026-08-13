@@ -366,23 +366,67 @@ platform_kbd_read(void)
 	return -1;
 }
 
-/* No pointing device on this platform. A machine with none reports
- * none, and the kernel creates no port for it -- so nothing above can
- * be handed a right to a mouse that does not exist.
+/* qemu publishes this for -device usb-tablet and nothing else, so the
+ * device decides whether the window system starts.
  */
+static EFI_GUID abs_ptr_guid =
+    { 0x8d59d32b, 0xc655, 0x4ae9,
+      { 0x9b, 0x15, 0xf2, 0x59, 0x04, 0x99, 0x2a, 0x43 } };
+
+static EFI_ABSOLUTE_POINTER_PROTOCOL *absptr;
+
 int
 platform_have_ptr(void)
 {
-	return 0;
+	EFI_HANDLE *handles = 0;
+	UINTN count = 0;
+
+	if (absptr)
+		return 1;
+
+	if (BS->LocateHandleBuffer(2 /* ByProtocol */, &abs_ptr_guid, 0,
+	    &count, &handles) != EFI_SUCCESS || count == 0)
+		return 0;
+
+	if (BS->HandleProtocol(handles[0], &abs_ptr_guid,
+	    (void **)&absptr) != EFI_SUCCESS)
+		absptr = 0;
+
+	BS->FreePool(handles);
+	if (absptr)
+		absptr->Reset(absptr, 0);
+	return absptr != 0;
 }
 
+/* GetState is EFI_NOT_READY until something moves, which is the poll
+ * the pump expects. Scaled here because the device's range is its own.
+ */
 int
 platform_ptr_read(int *x, int *y, int *buttons)
 {
-	(void)x;
-	(void)y;
-	(void)buttons;
-	return 0;
+	EFI_ABSOLUTE_POINTER_STATE st;
+	EFI_ABSOLUTE_POINTER_MODE *md;
+	UINTN w = 0, h = 0;
+	UINT64 rx, ry;
+
+	if (!absptr || absptr->GetState(absptr, &st) != EFI_SUCCESS)
+		return 0;
+
+	md = absptr->Mode;
+	rx = (md && md->AbsoluteMaxX > md->AbsoluteMinX) ?
+	    md->AbsoluteMaxX - md->AbsoluteMinX : 0;
+	ry = (md && md->AbsoluteMaxY > md->AbsoluteMinY) ?
+	    md->AbsoluteMaxY - md->AbsoluteMinY : 0;
+
+	efi_fb_size(&w, &h);
+	if (rx == 0 || ry == 0 || w == 0 || h == 0)
+		return 0;
+
+	*x = (int)(((st.CurrentX - md->AbsoluteMinX) * (UINT64)(w - 1)) / rx);
+	*y = (int)(((st.CurrentY - md->AbsoluteMinY) * (UINT64)(h - 1)) / ry);
+	/* bit 0 is the touch, which is button 1 here and on the panel */
+	*buttons = (st.ActiveButtons & 1) ? 1 : 0;
+	return 1;
 }
 
 /* los.rom: no embedded set published here yet. An empty table rather
