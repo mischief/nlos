@@ -12,6 +12,7 @@
 -- lacks that mount cannot run it.
 
 local prog = require("prog")
+local thread = require("los.thread")
 local font = require("los.font")
 
 local N = prog.ns()
@@ -112,12 +113,40 @@ local function join(ssid, psk)
 	    "join\n" .. ssid .. "\n" .. ((psk and psk ~= "") and psk or ""))
 end
 
+-- ---- the keyboard ----
+--
+-- Whichever of the two this was started under: a tty from a shell, and
+-- under dio the bare keyboard port the front app is lent, since an app
+-- in a window is not on a console. Same characters either way.
+local ctx = prog.ctx
+local tty = prog.tty()
+local kbd = ctx and ctx.kbd and ctx.kbd.__right
+
+if not tty and not kbd then
+	io.stderr:write("wifiui: no keyboard on this machine\n")
+	os.exit(1)
+end
+
+local function key()
+	if tty then
+		return tty.getch()
+	end
+	return thread.recv(kbd)
+end
+
 -- ---- the screen ----
 
 local aps, sel, top = {}, 1, 1
 local msg = "scanning..."
+-- dio keeps no pixels for an app that is not in front, so what is drawn
+-- behind another one is thrown away. Skipping it is not an optimisation
+-- here: a scan repaints while the terminal is on the glass.
+local visible = true
 
 local function paint()
+	if not visible then
+		return
+	end
 	clear()
 	text(8, 4, "wifi", FG)
 
@@ -159,7 +188,7 @@ end
 -- Typed here rather than through readline, which draws into a console
 -- this program has taken the screen from. Echoed as dots: someone is
 -- holding the board, and a shoulder is the threat a panel actually has.
-local function askpsk(tty, ssid)
+local function askpsk(ssid)
 	local pw = ""
 
 	while true do
@@ -170,7 +199,7 @@ local function askpsk(tty, ssid)
 		text(8, H - ROWH - 2, "enter to join, esc to go back", DIM)
 		fb.sync()
 
-		local k = tty.getch()
+		local k = key()
 
 		if k == nil or k == "\27" then
 			return nil
@@ -186,17 +215,37 @@ end
 
 -- ---- main ----
 
-local tty = prog.tty()
-
-if not tty then
-	io.stderr:write("wifiui: no keyboard on this machine\n")
-	os.exit(1)
+if tty then
+	tty.rawon()
 end
 
-tty.rawon()
+-- brought back to the front with a cleared rectangle: dio saves no
+-- pixels, so an app that does not repaint here comes back empty. Its
+-- own thread, because the loop below is parked in getch and a switch
+-- must not wait for a keystroke.
+local wctl = N:open("/dev/wctl", "r")
+
+if wctl then
+	thread.spawn(function()
+		while true do
+			local s = wctl:read(16)
+
+			if not s then
+				break
+			end
+			if s:match("redraw") or s:match("visible") then
+				visible = true
+				paint()
+			elseif s:match("hidden") then
+				visible = false
+			end
+		end
+		wctl:close()
+	end)
+end
 
 local function bye()
-	tty.rawoff()
+	if tty then tty.rawoff() end
 	clear(0)
 	fb.sync()
 end
@@ -207,7 +256,7 @@ msg = #aps .. " networks -- enter to join, r to rescan, q to quit"
 paint()
 
 while true do
-	local k = tty.getch()
+	local k = key()
 
 	if k == nil or k == "q" or k == "\3" then
 		break
@@ -227,7 +276,7 @@ while true do
 			local psk = nil
 
 			if not ap.open then
-				psk = askpsk(tty, ap.ssid)
+				psk = askpsk(ap.ssid)
 			end
 			if psk ~= nil or ap.open then
 				msg = "joining " .. ap.ssid .. "..."

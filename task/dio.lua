@@ -802,8 +802,13 @@ local function focus(id)
 	else
 		clearapp()
 	end
-	-- keys follow the front, and only a terminal reads them
-	wantkeys = id ~= nil and apps[id] ~= nil and apps[id].kind == "term"
+	-- keys follow the front, to a terminal or to a program whose
+	-- entry asked for them. A pointer program is given none: what it
+	-- does not read would sit in a port nobody drains.
+	local fa = id ~= nil and apps[id] or nil
+
+	wantkeys = fa ~= nil and (fa.kind == "term" or
+	    (catalog[fa.entry] or {}).keys == true)
 	if was then
 		drawbutton(was)
 	end
@@ -864,6 +869,13 @@ local function start(i)
 				nsdesc = desc,
 				fb = { __right = a.fbport },
 				ptr = { __right = a.mport },
+				-- the keyboard, where the entry asked for
+				-- it: a picker that takes a passphrase
+				-- needs one, and this board has keys. The
+				-- pump above delivers only while such an
+				-- app is in front.
+				kbd = entry.keys and
+				    { __right = a.keys } or nil,
 				stdout = cons and { __right = cons } or nil,
 				stderr = cons and { __right = cons } or nil,
 			})

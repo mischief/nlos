@@ -17,6 +17,10 @@
 --	label	one character for the button. The tray is 28 pixels wide
 --		and a glyph is 8, so a word does not fit.
 --	color	the button, 0xRRGGBB.
+--	keys	give this one the keyboard while it is in front. Off by
+--		default: an app is reached with the pointer, and keys sent
+--		to a program that never reads them would fill a port. A
+--		terminal gets them whatever this says.
 --	kind	"term" for the console stack, which takes a framebuffer
 --		and a keyboard rather than the program ABI. Anything else
 --		is an ordinary program.
@@ -49,6 +53,13 @@ return {
 		{ name = "smiley", cmd = "/bin/smiley.lua",
 		  label = "O", color = 0xffdc00,
 		  desc = "a face, for testing the framebuffer" },
+		-- the radio. It reads and writes /net/wifi, which is a
+		-- mount rather than a capability, so it appears here on a
+		-- board that has one and does nothing on a board that
+		-- does not.
+		{ name = "wifi", cmd = "/bin/wifiui.lua",
+		  label = "W", color = 0x7fdbff, keys = true,
+		  desc = "join a network" },
 		{ name = "clock", cmd = "/bin/clock.lua",
 		  label = "T", color = 0xff2418,
 		  desc = "the time; touch it to turn it over" },
