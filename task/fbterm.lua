@@ -115,6 +115,9 @@ thread.spawn(function()
 		notices = notices,
 		ns = require("ns").current(),
 		fb = fb,
+		-- the pointer, for the programs run here: this reads keys
+		-- and never a record.
+		ptr = job.ptr and job.ptr.__right,
 		net = job.tcp and job.tcp.__right,
 		udp = job.ip and job.ip.__right,
 		dns = job.dns and job.dns.__right,

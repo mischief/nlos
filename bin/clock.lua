@@ -371,25 +371,31 @@ paint(nil, false, true)
 -- a touch anywhere turns the clock over. Press, not release, so it
 -- answers under the finger.
 local mouse = prog.mouse()
+local mousemod = require("mouse")
+local down = false
 
+local function ontap(b)
+	-- the wheel is buttons 8 and 16 on a T-Deck's trackball, and
+	-- rolling it is not a tap
+	local tap = b and b % 8 ~= 0 and b % 8 or 0
+
+	if tap ~= 0 and not down then
+		paint(nil, true)
+	end
+	down = tap ~= 0
+end
+
+-- off a window system the pointer is read directly. In one the records
+-- arrive with the window's own state, and the loop below takes them.
 if mouse then
 	thread.spawn(function()
-		local down = false
-
 		while true do
 			local _, _, b = mouse.read()
 
 			if not b then
 				break
 			end
-			-- the wheel is buttons 8 and 16 on a T-Deck's
-			-- trackball, and rolling it is not a tap
-			local tap = b and b % 8 ~= 0 and b % 8 or 0
-
-			if tap ~= 0 and not down then
-				paint(nil, true)
-			end
-			down = tap ~= 0
+			ontap(b)
 		end
 	end)
 end
@@ -409,6 +415,12 @@ if ev then
 
 			if why then
 				break
+			end
+			local _, _, b = mousemod.parse(m)
+
+			if b then
+				ontap(b)
+				goto continue
 			end
 			if type(m) ~= "table" or m.t ~= "win" then
 				goto continue

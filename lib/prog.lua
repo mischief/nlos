@@ -821,9 +821,10 @@ function M.dns()
 	return require("client.dns").new(ctx.dns)
 end
 
--- the pointer, as a reader over the right the launcher lent us. A
--- program that draws with a finger asks for this the way it asks for
--- the screen, and gets nil where the machine has none.
+-- the pointer, as a reader over the right the launcher lent us: the
+-- port carries records and read() takes one off it. nil where the
+-- machine has none, and in a window, where they arrive on the event
+-- port with the window's own state -- see M.events.
 function M.mouse()
 	local ctx = M.ctx
 

@@ -560,24 +560,8 @@ end
 -- what focus means here.
 --
 -- an instance is:
---	{ id, entry, name, pid, winid, fbport, mouse, mport, ev, evsend,
+--	{ id, entry, name, pid, winid, fbport, mouse, ev, evsend,
 --	  wstate, kind }
-
--- Started once the app it serves exists, and not before: sys.hungup is
--- sole_holder, so a thread running while dio still holds every right
--- sees a port nobody can talk on and returns, and the app's first
--- pointer read waits for an answer that never comes. Starting late
--- loses nothing -- a message sent first waits like any other.
-local function serveapp(a)
-
-	-- the thread owns this pair and closes it once the app has gone.
-	-- Closing anywhere else closes a port a thread is parked on.
-	thread.spawn(function()
-		a.mouse.serve(a.mrecv)
-		sys.close(a.mport)
-		sys.close(a.mrecv)
-	end)
-end
 
 -- ---- the window, as a message ----
 
@@ -642,20 +626,30 @@ local function newapp(entryidx, kind)
 		return nil
 	end
 
-	local mrecv = sys.newport("dio.mouse")
-	-- one event port per app, not one shared: keys and window state
-	-- belong to whichever app is in front, and a port handed to two of
-	-- them would give a key to whichever asked first.
+	-- one event port per app, not one shared: keys, window state and
+	-- the pointer belong to whichever app is in front, and a port
+	-- handed to two of them would give a key to whichever asked first.
 	local ev = sys.newport("dio.ev")
+	local evsend = sys.sendright(ev)
 	local a = {
 		id = nextid,
 		entry = entryidx,
 		kind = kind,
 		winid = winid, fbport = win.handle,
-		mrecv = mrecv, mport = sys.sendright(mrecv),
-		ev = ev, evsend = sys.sendright(ev),
-		mouse = mouse.server(),
+		ev = ev, evsend = evsend,
 	}
+
+	-- An app takes its records on the event port: one recv is its whole
+	-- input. A terminal cannot -- that port is its keyboard, and a
+	-- record pushed onto it is typed rather than read -- so it gets a
+	-- port of its own, which it lends to the programs it runs.
+	if kind == "term" then
+		a.ptr = sys.newport("dio.ptr")
+		a.ptrsend = sys.sendright(a.ptr)
+		a.mouse = mouse.queue(a.ptrsend)
+	else
+		a.mouse = mouse.queue(evsend)
+	end
 
 	-- a fresh window is empty, so the first thing an app is told is to
 	-- paint it. Sent before the app exists, and waits on the port.
@@ -741,7 +735,9 @@ local function startterm(a, entry, desc)
 
 	sys.send(h, {
 		fb = { __right = a.fbport },
-		ptr = { __right = a.mport },
+		-- the pointer, for the programs it runs rather than for
+		-- itself: a shell reads keys, and scribble reads this.
+		ptr = { __right = a.ptr },
 		-- the event port, which for a terminal is its keyboard: the
 		-- window messages riding on it are not keystrokes and the
 		-- console hands them on rather than typing them.
@@ -865,12 +861,12 @@ local function start(i)
 				cwd = "/",
 				nsdesc = desc,
 				fb = { __right = a.fbport },
-				ptr = { __right = a.mport },
-				-- window state, and keystrokes where the
-				-- entry asked for them: a picker that takes
-				-- a passphrase needs keys, and this board
-				-- has them. The pump above delivers only
-				-- while such an app is in front.
+				-- the pointer, window state, and keystrokes
+				-- where the entry asked for them: a picker
+				-- that takes a passphrase needs keys. One
+				-- port is an app's whole input, and the
+				-- pump above delivers only while such an
+				-- app is in front.
 				ev = { __right = a.ev },
 				keys = entry.keys or nil,
 				stdout = cons and { __right = cons } or nil,
@@ -887,9 +883,6 @@ local function start(i)
 		return nil, err
 	end
 	a.pid = pid
-	-- the app holds rights to its ports now, so the serves may
-	-- start: see serveapp for what starting them sooner does.
-	serveapp(a)
 	sys.monitor(pid)
 	-- the list grew, so every button below the new one moved
 	drawlist()
@@ -1066,7 +1059,7 @@ thread.spawn(function()
 					if scrollto(trayoff + by) then
 						drawlist()
 					end
-				elseif front and apps[front] then
+				elseif front and apps[front] and apps[front].mouse then
 					apps[front].mouse.post(x - APPX,
 					    y - APPY, b)
 				end
@@ -1135,7 +1128,7 @@ thread.spawn(function()
 						pick(k)
 					end
 				end
-			elseif front and apps[front] then
+			elseif front and apps[front] and apps[front].mouse then
 				-- the pointer belongs to the app in front,
 				-- and to nothing else: an app behind sees no
 				-- part of a stroke it is not in.
@@ -1194,11 +1187,16 @@ thread.spawn(function()
 				a.ctl = nil
 			end
 			-- the event pair, which no thread waits on: the app
-			-- received on it and dio only ever sent. The mouse
-			-- pair is closed by the thread that serves it,
-			-- since that one is parked on it.
+			-- received on it and dio only ever sent, keys,
+			-- window state and the pointer alike.
 			sys.close(a.evsend)
 			sys.close(a.ev)
+			-- a terminal's pointer pair, on the same terms
+			if a.ptr then
+				sys.close(a.ptrsend)
+				sys.close(a.ptr)
+				a.ptr, a.ptrsend = nil, nil
+			end
 			-- the list closed up over it, so every button below
 			-- where it was has moved
 			drawlist()

@@ -30,10 +30,11 @@ if not fb then
 end
 
 local mousemod = require("mouse")
-local ptr = prog.ctx and prog.ctx.ptr
 local mouse = prog.mouse()
 
-if not mouse then
+-- in a window the records come on the event port and there is no
+-- pointer of our own, so one or the other is enough.
+if not mouse and not prog.events() then
 	io.stderr:write("scribble: no pointer on this machine\n")
 	os.exit(1)
 end
@@ -179,16 +180,12 @@ local bad = 0
 
 local thread = require("los.thread")
 local ev = prog.events()
--- answered onto the event port where there is one; off a window system
--- the reader makes its own and this is the only thing to wait on.
-local point = ev and mousemod.onport(ptr, ev) or nil
 
--- off a window system there is no shared port, so the pull reader is
--- still the way to read a pointer.
-if not point then
+-- in a window the records arrive on the event port, mixed in with the
+-- window's own state; off one there is a pointer of our own to read.
+if not ev then
 	event = pointerevent
 else
-	point.arm()
 	event = function()
 		while true do
 			local m, why = thread.await(ev)
@@ -196,19 +193,17 @@ else
 			if why then
 				return nil, "window gone"
 			end
-			if type(m) ~= "table" then
-				-- keys, which this program was lent none of
-			elseif m.t == "win" then
-				if m.state == "redraw" then
-					replay()
-				end
-			elseif m.t == "ptr" then
-				if not point.took(m) then
-					return nil, "pointer hung up"
-				end
-				point.arm()
-				return m.x, m.y, m.b
+
+			local x, y, b = mousemod.parse(m)
+
+			if x then
+				return x, y, b
+			elseif type(m) == "table" and m.t == "win" and
+			    m.state == "redraw" then
+				replay()
 			end
+			-- anything else is a key, which this program was
+			-- lent none of
 		end
 	end
 end

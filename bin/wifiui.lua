@@ -143,10 +143,8 @@ end
 
 -- ---- the pointer ----
 --
--- answered onto the event port, so keys, the window and the pointer all
--- arrive in one place and there is nothing to alt over.
-local ptr = ctx and ctx.ptr
-local point = (ptr and ev) and mouse.onport(ptr, ev) or nil
+-- records arrive on the event port, so keys, the window and the pointer
+-- all come to one place and there is nothing to alt over.
 
 -- filled in below, and named here because key() reaches it: the
 -- passphrase screen waits for a keystroke and the window may change
@@ -155,8 +153,7 @@ local onwin
 
 -- the next keystroke, whatever else arrives first. The window and the
 -- pointer share this port, so a reader after a key has to take them off
--- it rather than mistake one for input -- and keep the pointer armed,
--- or its credit stalls until this returns.
+-- it rather than mistake one for input.
 local function key()
 	if tty then
 		return tty.getch()
@@ -167,15 +164,11 @@ local function key()
 		if why then
 			return nil
 		end
-		if type(m) == "string" then
+		if type(m) == "string" and not mouse.parse(m) then
 			return m
 		end
-		if type(m) == "table" then
-			if m.t == "win" then
-				onwin(m.state)
-			elseif m.t == "ptr" and point and point.took(m) then
-				point.arm()
-			end
+		if type(m) == "table" and m.t == "win" then
+			onwin(m.state)
 		end
 	end
 end
@@ -460,21 +453,23 @@ end
 refresh()
 paint()
 rescan()
-if point then
-	point.arm()
-end
 
 while true do
 	if ev then
 		-- one port and no threads: keys, the window and the
-		-- pointer's answer all arrive here. await rather than
-		-- recv, or a dio that went away parks this forever.
+		-- pointer all arrive here. await rather than recv, or a
+		-- dio that went away parks this forever.
 		local m, why = thread.await(ev)
 
 		if why then
 			break
 		end
-		if type(m) == "string" then
+
+		local px, py, pb = mouse.parse(m)
+
+		if px then
+			onpoint(px, py, pb)
+		elseif type(m) == "string" then
 			if not onkey(m) then
 				break
 			end
@@ -482,12 +477,6 @@ while true do
 			-- nothing else speaks on this port
 		elseif m.t == "win" then
 			onwin(m.state)
-		elseif m.t == "ptr" then
-			if not point or not point.took(m) then
-				break	-- the pointer hung up, and so do we
-			end
-			onpoint(m.x or 0, m.y or 0, m.b or 0)
-			point.arm()
 		end
 	elseif not onkey(key()) then
 		break
