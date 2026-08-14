@@ -264,15 +264,11 @@ do
 	-- commented out in the baked-in config.
 	local injected = efi.fwcfg and efi.fwcfg("opt/org.luaos.services")
 	local list, why
-	-- what the config may decide from: this machine's capabilities.
-	-- One file describes a board with a radio and a machine with a
-	-- disk without being two files that drift apart.
-	local machine = svc.machine(caps_of)
 
 	if injected then
-		list, why = svc.parse(injected, "fw_cfg:services", machine)
+		list, why = svc.parse(injected, "fw_cfg:services")
 	else
-		list, why = svc.load(rootns, "/etc/services.lua", machine)
+		list, why = svc.load(rootns, "/etc/services.lua")
 	end
 
 	if list then

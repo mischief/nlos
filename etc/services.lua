@@ -10,25 +10,20 @@
 -- NIC) is skipped rather than started to fail.
 --
 -- it is a lua chunk rather than a data format so a machine can decide
--- what to run from what it can see, without this growing a syntax. What
--- it can see arrives as the argument: m.caps holds the names
--- sys.granted() answered with, so this one file is a board with a radio
--- and 4MB as well as a machine with a disk.
+-- what to run from what it can see, without this growing a syntax.
+--
+-- The list for a machine with a disk: efi and microvm, read by
+-- init.lua. The board has its own, etc/services-esp32.lua.
 
-local m = ...
-local svcs = {
+return {
 	-- names to addresses, for anything above it. First, because a
 	-- service is a capability to whatever comes after it and the
 	-- panel's programs name this one.
 	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },
 
-	-- the radio's control plane as /net/wifi, so a program can pick a
-	-- network without being handed the NIC. Before the panel, because
-	-- `mount` is inherited by what starts after it and the panel's
-	-- programs are what read it. A machine whose interface has nothing
-	-- to associate serves nothing and the mount does not appear.
-	{ path = "/task/wifisrv.lua", caps = { "eth" }, ns = false,
-	  mount = "/net/wifi" },
+	-- No wifisrv: these machines have a NIC rather than a radio, and
+	-- task/wifisrv.lua is not on this image. It is in the board's
+	-- list, which is the whole reason there are two.
 
 	-- the panel, the keyboard and the pointer, as the machine's own
 	-- interface: a tray of apps, one of them a terminal, which starts
@@ -68,8 +63,8 @@ local svcs = {
 	-- the browser shell. off by default: it hands anonymous visitors a
 	-- shell, which is a decision to make deliberately rather than
 	-- inherit from a default config.
-	-- note port 80 rather than 7777: init's 9p-over-tcp server holds
-	-- 7777, and two listeners on one port is EFI_INVALID_PARAMETER.
+	-- note port 80 rather than 7777: the 9P export below holds 7777,
+	-- and two listeners on one port is EFI_INVALID_PARAMETER.
 	-- { path = "/task/webterm.lua", caps = { "tcp" },
 	--   args = { port = 80 } },
 
@@ -97,5 +92,3 @@ local svcs = {
 	{ path = "/task/9pexport.lua", name = "9pexport-all",
 	  caps = { "tcp" }, args = { root = "/", port = 7777 } },
 }
-
-return svcs

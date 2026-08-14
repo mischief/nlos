@@ -307,10 +307,10 @@ local function services()
 	end
 
 	local svc = require("svc")
-	-- what the config may decide from, described the same way init.lua
-	-- describes its machine: one file, and this board's half of it.
-	local list, why = svc.load(rootns, "/etc/services.lua",
-	    svc.machine(caps))
+	-- this board's own list. etc/services.lua is the one a machine
+	-- with a disk reads, and both ship here because luafs takes etc/
+	-- whole -- so the name is what picks, not the image.
+	local list, why = svc.load(rootns, "/etc/services-esp32.lua")
 
 	if not list then
 		print("svc: " .. tostring(why))
