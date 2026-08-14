@@ -56,13 +56,18 @@ local M = {}
 --
 -- returns the list, or nil plus a reason. a missing config is not an
 -- error: a machine with no services is a perfectly good machine.
-function M.parse(src, name)
+-- `machine` is what the chunk is given: { caps = { tcp = true, ... } },
+-- the names sys.granted() answered with. It is the whole of what a
+-- config may decide from, and it is why this is code -- a board with a
+-- radio and 4MB runs a different list from a machine with a disk, said
+-- once here rather than by keeping two files that drift.
+function M.parse(src, name, machine)
 	local chunk, err = load(src, "=" .. name, "t")
 
 	if not chunk then
 		return nil, err
 	end
-	local ok, list = pcall(chunk)
+	local ok, list = pcall(chunk, machine or { caps = {} })
 
 	if not ok then
 		return nil, list
@@ -73,13 +78,25 @@ function M.parse(src, name)
 	return list
 end
 
-function M.load(ns, path)
+function M.load(ns, path, machine)
 	local src = ns:readfile(path)
 
 	if not src then
 		return nil, "no " .. path
 	end
-	return M.parse(src, path)
+	return M.parse(src, path, machine)
+end
+
+-- the machine, as a config may ask about it: the capability names the
+-- kernel granted, as a set. Built here so both boot payloads describe a
+-- machine the same way.
+function M.machine(granted)
+	local caps = {}
+
+	for k in pairs(granted or {}) do
+		caps[k] = true
+	end
+	return { caps = caps }
 end
 
 -- start(list, opts) -> started, skipped

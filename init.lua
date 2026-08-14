@@ -211,19 +211,10 @@ if gefs_mounted and caps_of.tcp then
 	sys.log("gefs exported over 9p on tcp/564")
 end
 
--- and the whole namespace over tcp/7777: the same exportfs, rooted at "/"
--- instead of /n/gefs, so a client sees /net, /srv, /n, /proc and the ESP
--- together. This is where a synth "hello" tree used to be; now it is the
--- machine's real namespace, which is what 9P is for.
-if has_tcp then
-	local _, wh = proc.spawn(
-	    assert(rootns:readfile("/task/9pexport.lua")),
-	    { name = "9pexport-all", ns = nsdesc })
-
-	sys.send(wh, { net = { __right = caps_of.tcp },
-	    root = "/", port = 7777 })
-	sys.log("9p server listening on tcp/7777")
-end
+-- The whole namespace goes out over tcp/7777 as well, rooted at "/"
+-- instead of /n/gefs. That one is an entry in /etc/services.lua, since
+-- it needs nothing this proc holds privately -- see the note there on
+-- why the config decides and not the capability.
 
 -- the resolver, which /etc/services.lua starts like any other service.
 -- Filled in below from what svc published under that name, so a shell
@@ -273,11 +264,15 @@ do
 	-- commented out in the baked-in config.
 	local injected = efi.fwcfg and efi.fwcfg("opt/org.luaos.services")
 	local list, why
+	-- what the config may decide from: this machine's capabilities.
+	-- One file describes a board with a radio and a machine with a
+	-- disk without being two files that drift apart.
+	local machine = svc.machine(caps_of)
 
 	if injected then
-		list, why = svc.parse(injected, "fw_cfg:services")
+		list, why = svc.parse(injected, "fw_cfg:services", machine)
 	else
-		list, why = svc.load(rootns, "/etc/services.lua")
+		list, why = svc.load(rootns, "/etc/services.lua", machine)
 	end
 
 	if list then

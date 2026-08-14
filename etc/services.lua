@@ -10,9 +10,13 @@
 -- NIC) is skipped rather than started to fail.
 --
 -- it is a lua chunk rather than a data format so a machine can decide
--- what to run from what it can see, without this growing a syntax.
+-- what to run from what it can see, without this growing a syntax. What
+-- it can see arrives as the argument: m.caps holds the names
+-- sys.granted() answered with, so this one file is a board with a radio
+-- and 4MB as well as a machine with a disk.
 
-return {
+local m = ...
+local svcs = {
 	-- names to addresses, for anything above it. First, because a
 	-- service is a capability to whatever comes after it and the
 	-- panel's programs name this one.
@@ -86,4 +90,12 @@ return {
 	-- console, which is what to turn on when working on the protocol.
 	-- { path = "/task/sshd.lua", caps = { "tcp" },
 	--   args = { port = 2222 } },
+
+	-- the whole namespace over tcp/7777: /net, /srv, /n, /proc and
+	-- whatever is mounted, which is what 9P is for. Last, so the
+	-- mounts it exports are already made.
+	{ path = "/task/9pexport.lua", name = "9pexport-all",
+	  caps = { "tcp" }, args = { root = "/", port = 7777 } },
 }
+
+return svcs

@@ -307,7 +307,10 @@ local function services()
 	end
 
 	local svc = require("svc")
-	local list, why = svc.load(rootns, "/etc/services.lua")
+	-- what the config may decide from, described the same way init.lua
+	-- describes its machine: one file, and this board's half of it.
+	local list, why = svc.load(rootns, "/etc/services.lua",
+	    svc.machine(caps))
 
 	if not list then
 		print("svc: " .. tostring(why))
