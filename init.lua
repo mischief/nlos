@@ -1,8 +1,16 @@
 -- lua-os init (proc 0): spawn the 9p file server, then repl
 
 local sys = require("los.sys")
-local efi = require("los.efi")
 local thread = require("los.thread")
+
+-- the firmware's own module, which only a machine booted by firmware
+-- has. Absent on a board, where every use below is a question this
+-- answers with nil rather than a branch on the machine's name.
+local ok_efi, efi = pcall(require, "los.efi")
+
+if not ok_efi or type(efi) ~= "table" then
+	efi = {}
+end
 
 -- what the kernel granted us at boot, by name -> handle. handle
 -- numbers are whatever right_new picked and are not stable across
@@ -18,7 +26,6 @@ local caps_of = sys.granted()
 -- which is where require() happens, and therefore where a namespace has
 -- to already be. plan 9 gets this from fork; we get it from arg.
 local nsmod = require("ns")
-local proc = require("proc")
 
 -- the machine's entropy source, if the firmware has one
 -- (los.platform.rng: EFI_RNG_PROTOCOL here, virtio-rng on microvm). it
@@ -58,10 +65,42 @@ local rootns = nsmod.new()
 -- rebuilding the driver. a child therefore inherits ESP access the same
 -- way it inherits anything else, and one handed a namespace without it
 -- cannot reach the disk at all.
-rootns:mount("/", require("mnt").new(caps_of.esp), "mnt",
-    { port = { __right = caps_of.esp } })
-rootns:mount("/proc", require("procfs").new(), "procfs")
+-- Which of these a machine has is what decides its root, rather than
+-- the machine's name: a disk is served by a task and mounted, and a
+-- board with none has the image the kernel was built with.
+if caps_of.esp then
+	rootns:mount("/", require("mnt").new(caps_of.esp), "mnt",
+	    { port = { __right = caps_of.esp } })
+else
+	local rok, rerr = rootns:mount("/", require("romfs").new(), "romfs")
+
+	if not rok then
+		sys.log("boot: no root: %s", tostring(rerr))
+	end
+end
+
+-- and the flash volume over it, searched first, where there is one: a
+-- file on the partition shadows the image, so an uploaded program wins
+-- and a board with an empty partition still boots.
+if caps_of.flash then
+	local fok, ferr = pcall(function()
+		assert(rootns:mount("/", require("mnt").new(caps_of.flash),
+		    "mnt", { port = { __right = caps_of.flash } }, "before"))
+	end)
+
+	sys.log("luafs: %s", fok and "mounted over the image" or
+	    tostring(ferr))
+end
+
+-- the proc table as files, where the module is on this machine
+pcall(function()
+	rootns:mount("/proc", require("procfs").new(), "procfs")
+end)
 nsmod.setcurrent(rootns)
+
+-- after the mounts, since a board carries lib/proc.lua on its
+-- partition rather than in the image the kernel was built with.
+local proc = require("proc")
 
 
 local nsdesc = rootns:describe()
@@ -79,8 +118,12 @@ do
 	sys.log("granted: %s", table.concat(names, " "))
 end
 
-print(("%s on %s (fw rev 0x%x)"):format(_VERSION, efi.firmware,
-    efi.firmware_revision))
+if efi.firmware then
+	print(("%s on %s (fw rev 0x%x)"):format(_VERSION, efi.firmware,
+	    efi.firmware_revision))
+else
+	print(_VERSION)
+end
 print("mach-lite kernel + plan9 furniture (threads, channels, alt, 9p)")
 print("")
 
@@ -128,7 +171,8 @@ local has_tcp = caps_of.tcp ~= nil
 -- The listing mounts at /srv so `ls /srv` shows what is there; the
 -- rights themselves come from messages to srvd, never from reading
 -- those files.
-local _, srvdh = proc.spawn(assert(rootns:readfile("/task/srvd.lua")),
+local srvdsrc = rootns:readfile("/task/srvd.lua")
+local _, srvdh = srvdsrc and proc.spawn(srvdsrc,
     { name = "srv", ns = nsdesc })
 
 if srvdh then
@@ -216,6 +260,34 @@ end
 -- it needs nothing this proc holds privately -- see the note there on
 -- why the config decides and not the capability.
 
+-- the network a radio is on: { ssid = "labratory", psk = "..." }.
+--
+-- Read here because task/eth.lua owns the radio but is a kernel driver
+-- with no namespace. /config survives a reflash; a machine whose
+-- interface is a cable has neither file and does nothing.
+if caps_of.eth then
+	local where = "/config/wifi.lua"
+	local src = rootns:readfile(where)
+
+	if not src then
+		where = "/etc/wifi.lua"
+		src = rootns:readfile(where)
+	end
+	if src then
+		local wok, conf = pcall(function()
+			return assert(load(src, "=" .. where, "t", {}))()
+		end)
+
+		if wok and type(conf) == "table" and conf.ssid then
+			sys.send(caps_of.eth, { op = "wifi", how = "connect",
+			    ssid = conf.ssid, psk = conf.psk })
+			sys.log("wifi: joining %s", conf.ssid)
+		else
+			sys.log("wifi: %s: %s", where, tostring(conf))
+		end
+	end
+end
+
 -- the resolver, which /etc/services.lua starts like any other service.
 -- Filled in below from what svc published under that name, so a shell
 -- and the panel share one proc and one cache.
@@ -294,7 +366,7 @@ do
 			end,
 			log = sys.log,
 			-- where a service that serves a filesystem belongs.
-			-- The same callback boot/esp32.lua passes, because
+			-- One callback for every machine, because
 			-- /etc/services.lua is one file for both machines: a
 			-- mount declared there has to mean the same thing on
 			-- either, and without this it silently meant nothing
@@ -350,7 +422,8 @@ end
 local repl_worker_src = [[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
-	local efi = require("los.efi")
+	-- the firmware module, where the machine has firmware
+	local ok_efi, efi = pcall(require, "los.efi")
 	local powerc = require("client.power")
 	local dnsc = require("client.dns")
 	local tcpc = require("client.tcp")
@@ -367,6 +440,9 @@ local repl_worker_src = [[
 	local udph = (m.udp and m.udp.__right) or (m.ip and m.ip.__right)
 	local dnsh = m.dns and m.dns.__right
 	local fbh = m.fb and m.fb.__right
+	-- the panel keyboard, which bin/term.lua spends to hand the
+	-- screen to a terminal of its own.
+	local kbdh = m.kbd and m.kbd.__right
 	-- the pointer, on the same terms as the screen. Nothing here reads
 	-- it: it is for a program that takes the machine whole, and a
 	-- machine without one lends none.
@@ -382,7 +458,7 @@ local repl_worker_src = [[
 	-- chunk aren't visible there, only globals are.
 	_G.sys = sys
 	_G.thread = thread
-	_G.efi = efi
+	_G.efi = ok_efi and efi or nil
 	local magic = require("ps")
 	_G.ps = magic.ps
 	-- stack(pid): a cross-proc traceback. safe to call on anything,
@@ -449,7 +525,8 @@ local repl_worker_src = [[
 			-- adds no authority a session here did not have.
 			-- A public session gets no such grant.
 			launcher.start({ ns = require("ns").current(),
-			    cons = consh, fb = fbh, ptr = ptrh, net = tcph,
+			    cons = consh, fb = fbh, ptr = ptrh,
+			    kbd = kbdh, net = tcph,
 			    udp = udph, power = powerh, dbg = dbgh },
 			    "lua-os. programs live in /bin; type exit to " ..
 			    "return to lua.\n")
@@ -561,6 +638,9 @@ while true do
 	end
 	if caps_of.fb then
 		grant.fb = { __right = caps_of.fb }
+	end
+	if caps_of.kbd then
+		grant.kbd = { __right = caps_of.kbd }
 	end
 	-- the pointer travels with the screen: what spends it is bin/win.lua,
 	-- which hands both to a window system and takes them back.

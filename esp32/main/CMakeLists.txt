@@ -97,7 +97,11 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
 # injected at boot: it is chosen at build time and the image is rebuilt
 # per test. Whatever it points at is embedded as /boot/esp32.lua, so
 # src/platform/esp32/main.c's BOOT_PAYLOAD stays one constant path.
-set(LUAOS_PAYLOAD "${LUAOS_ROOT}/boot/esp32.lua"
+#
+# The default is the same init.lua every other machine runs. What
+# differs between them is the capabilities the kernel grants and the
+# services list the build installs, not a second copy of this.
+set(LUAOS_PAYLOAD "${LUAOS_ROOT}/init.lua"
     CACHE FILEPATH "lua chunk proc 0 runs; a test payload replaces it")
 
 # What the machine needs before it can read a file, and nothing above

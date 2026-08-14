@@ -5,7 +5,7 @@
 --   > wifi -s                   say what is saved
 --   > wifi -l                   what is in range
 --
--- Writes /config/wifi.lua, which boot/esp32.lua joins at startup, and
+-- Writes /config/wifi.lua, which init joins at startup, and
 -- joins now through /net/wifi/ctl where the namespace has it. Without
 -- that mount it still saves, and says so.
 --

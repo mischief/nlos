@@ -1,6 +1,6 @@
 -- what the board runs, and what each of those may touch. Read by
--- boot/esp32.lua; etc/services.lua is the same for a machine with a
--- disk.
+-- init.lua on this board; machine/efi/services.lua is the same for a
+-- machine with a disk.
 --
 -- `caps` names are looked up in sys.granted() and are all the authority
 -- a service gets. An entry naming one this board lacks is skipped.
