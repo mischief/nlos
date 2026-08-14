@@ -302,6 +302,27 @@ do
 				return inj or rootns:readfile(p)
 			end,
 			log = sys.log,
+			-- where a service that serves a filesystem belongs.
+			-- The same callback boot/esp32.lua passes, because
+			-- /etc/services.lua is one file for both machines: a
+			-- mount declared there has to mean the same thing on
+			-- either, and without this it silently meant nothing
+			-- here.
+			mount = function(prefix, h)
+				local mok, merr = pcall(function()
+					assert(rootns:mount(prefix,
+					    require("mnt").new(h), "mnt",
+					    { port = { __right = h } }))
+				end)
+
+				if not mok then
+					return nil, merr
+				end
+				-- what later services are spawned with, and
+				-- what the repl worker below inherits.
+				nsdesc = rootns:describe()
+				return nsdesc
+			end,
 			-- entropy for services that want it. absent on a
 			-- machine whose firmware publishes no RNG, which
 			-- makes a service that needs one fail loudly at its
