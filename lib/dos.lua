@@ -138,6 +138,11 @@ function M.new(caps)
 		-- this shell starts, and a shell given none hands out none.
 		-- What spends it is a program that takes the machine whole.
 		ptr = caps.ptr,
+		-- the machine's keyboard as a device, where the shell was
+		-- lent one. What spends it is a program that hands the
+		-- panel to a terminal of its own; a session that arrives
+		-- over a network is given none, having no panel to give.
+		kbd = caps.kbd,
 		-- the tcp task, lent on the same terms as the screen: a
 		-- shell given none hands out none.
 		net = caps.net,
@@ -450,6 +455,9 @@ function Sh:spawn1(path, argv, streams)
 	end
 	if self.ptr then
 		msg.ptr = { __right = self.ptr }
+	end
+	if self.kbd then
+		msg.kbd = { __right = self.kbd }
 	end
 	-- and the terminal, on the same terms as the screen: lent to every
 	-- program, used by the few that ask (prog.tty -> a full-screen editor

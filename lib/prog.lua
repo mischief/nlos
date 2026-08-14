@@ -689,6 +689,9 @@ function M.main()
 	ctx.fb = ctx.fb and ctx.fb.__right or nil
 	-- the pointer, if the launcher lent us one. see M.mouse below.
 	ctx.ptr = ctx.ptr and ctx.ptr.__right or nil
+	-- the keyboard as a device, for a program that hands the panel to
+	-- a terminal rather than reading keys itself.
+	ctx.kbd = ctx.kbd and ctx.kbd.__right or nil
 	-- the window, if we are in one. see M.events below.
 	ctx.ev = ctx.ev and ctx.ev.__right or nil
 	-- the terminal, if the launcher lent us one. see M.tty below.

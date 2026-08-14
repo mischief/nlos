@@ -36,138 +36,11 @@ end
 -- ps arrives after the partition is mounted -- see repltools() below.
 local ok, magic
 
--- shot("name.pbm") -- send the screen to the host over ZMODEM.
---
--- Lazy on purpose: lib/zmodem.lua is 27KB of source and its compiled
--- form is resident in this proc once required, which on a board with no
--- PSRAM is memory a repl should not spend until asked.
---
--- The screen comes back as a P4 PBM because that is exactly what the
--- driver keeps: CONFIG_LUAOS_FB_SHADOW is one bit per pixel, so a
--- screenshot is shape and not colour, and a PPM would triple the file
--- to carry two of them. fb.unload hands out BGRx (the shared protocol's
--- layout), so a row is 960 bytes in and 30 bytes out -- built a row at
--- a time so the whole 129600-byte expansion never exists at once.
---
--- ZMODEM rather than printing hex: the console is the only line out,
--- and a guest that free-runs a dump into it blocks forever once the
--- USB-Serial-JTAG buffer fills with nobody draining. ZMODEM has its own
--- flow control, so the transfer is paced by the receiver.
--- shot("name.pbm" [, rows]) -- send the screen to the host over
--- ZMODEM, from a proc of its own.
---
--- Spawned rather than run here: lib/zmodem.lua is ~30KB resident and
--- the image another 4KB, against a repl that is already 63KB on a board
--- with ~120KB free. Doing it in this proc measured "not enough memory"
--- every time; doing it in a proc that exits afterwards costs the same
--- memory for the length of the transfer and hands it straight back.
---
--- Receive it with: lrz -y  (see tools/screenshot-esp32.lua)
 -- the framebuffer's right, for driving the panel from the repl:
 --	thread.rpc(fb, {op="fill", r={0,0,320,240}, color=0xffffff})
--- Named rather than granted: this proc already holds it, and shot()
--- below is built on the same handle.
+-- Named rather than granted: this proc already holds it.
 if caps.fb then
 	_G.fb = caps.fb
-end
-
--- term() -- start the panel+keyboard terminal, in a proc of its own.
---
--- Separate so the serial console survives it: this line is how the
--- board is debugged, and a shell that took both terminals would take
--- the way in with it.
-if caps.fb and caps.kbd then
-	_G.term = function()
-		local f = io.open("/task/fbterm.lua")
-
-		if not f then
-			return nil, "no /task/fbterm.lua"
-		end
-
-		local src = f:read("a")
-
-		f:close()
-
-		local pid, right = sys.spawn(src, { name = "fbterm" })
-
-		sys.send(right, { fb = { __right = caps.fb },
-		    kbd = { __right = caps.kbd },
-		    cons = { __right = caps.cons } })
-		sys.close(right)
-		return pid
-	end
-end
-
--- fbtest(text) -- draw through the framebuffer console backend.
---
--- The rendering half of it, alone: no lib/console.lua, no shell. What
--- this answers is whether glyphs land where the grid says, which
--- shot() can then read back off the panel.
-if caps.fb and caps.kbd then
-	_G.fbtest = function(msg)
-		local fbcons = require("fbcons")
-		local b = fbcons.new({ fb = caps.fb, keyport = caps.kbd,
-		    font = require("los.font") })
-
-		b.write(msg or "lua-os on the panel\n")
-		return b.cols .. "x" .. b.rows
-	end
-end
-
-_G.shot = function(name, rows)
-	local f = io.open("/task/shot.lua")
-
-	if not f then
-		return nil, "no /task/shot.lua"
-	end
-
-	local src = f:read("a")
-
-	f:close()
-
-	-- proc.spawn rather than sys.spawn, because the sender requires
-	-- lib/zmodem.lua and that lives on the partition. A raw spawn
-	-- gives the child no namespace, so its require would search the
-	-- image alone and find nothing.
-	local N = require("ns").current()
-	local pid, right = require("proc").spawn(src,
-	    { name = "shot", ns = N and N:describe() })
-
-	-- rights are copied rather than moved, so ours stay ours.
-	sys.send(right, {
-		cons = { __right = caps.cons },
-		fb = { __right = caps.fb },
-		name = name,
-		rows = rows,
-		done = { __right = sys.SELF },
-	})
-	sys.close(right)
-
-	-- hear the death as well as the reply. A sender that raises never
-	-- sends anything, and without this the wait below is indefinite --
-	-- so a crashed child and a stalled transfer look identical from
-	-- here, which is how an unbound global read like a protocol bug.
-	sys.monitor(pid)
-
-	-- Wait. Not politeness: while the transfer runs this proc must not
-	-- ask cons for a line, or the shell and the sender both take from
-	-- the same keyboard and the receiver's headers land in the repl --
-	-- "unexpected symbol near '*'", which is a ZMODEM frame being
-	-- parsed as lua.
-	while true do
-		local m = thread.recv(sys.SELF)
-
-		if type(m) == "table" and m.exit == pid then
-			-- a proc that raised is a corpse, and a corpse keeps
-			-- its heap so it can be inspected. Nothing else will
-			-- free it, so a few failed shots would eat the board.
-			pcall(sys.reap, pid)
-			return nil, "shot died: " .. tostring(m.reason or
-			    m.exitmsg)
-		elseif type(m) == "table" and m.ok ~= nil then
-			return m.ok, m.err
-		end
-	end
 end
 
 -- what this machine runs, from /etc/services.lua.
@@ -420,9 +293,12 @@ _G.dos = setmetatable({}, {
 		-- session that arrives over the network is given none, and
 		-- so is the panel shell, which nobody has to be present to
 		-- reach.
+		-- kbd as well as fb: bin/term.lua hands the panel to a
+		-- terminal of its own, which is what this console is for
+		-- on a board whose services start no window system.
 		require("dos").start({ ns = N, cons = caps.cons,
-		    fb = caps.fb, net = caps.tcp, udp = caps.ip,
-		    dns = svcport.dns,
+		    fb = caps.fb, kbd = caps.kbd, net = caps.tcp,
+		    udp = caps.ip, dns = svcport.dns,
 		    seed = rng and rng.bytes(32) or nil,
 		    power = caps.power, dbg = caps.dbg },
 		    "lua-os. programs live in /bin; type exit to " ..

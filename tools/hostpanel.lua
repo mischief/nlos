@@ -282,7 +282,12 @@ function Panel:shot(out, rows)
 	local tmp = ".shot-esp32.pbm"
 
 	os.remove(tmp)
-	self:say(("shot(%q%s)"):format(tmp, rows and (", " .. rows) or ""),
+	-- a program in /bin rather than a word at the lua prompt, so the
+	-- session goes through dos and comes back. dos blocks while it
+	-- runs, which is what keeps the shell off the console during the
+	-- transfer.
+	self:say("dos()", 0.6)
+	self:say(("shot %s%s"):format(tmp, rows and (" " .. rows) or ""),
 	    0.5)
 
 	local pid = self.hu.spawn({ "lrz", "-y" },
@@ -340,6 +345,10 @@ function Panel:shot(out, rows)
 			why = l
 		end
 	end
+
+	-- back to the lua prompt, so the next call finds the session where
+	-- it left it rather than one dos deep.
+	self:say("exit", 0.4)
 
 	local fh = io.open(tmp, "rb")
 
