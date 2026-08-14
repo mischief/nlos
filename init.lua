@@ -225,17 +225,11 @@ if has_tcp then
 	sys.log("9p server listening on tcp/7777")
 end
 
--- dns server proc: resolves hostnames via lib/dns.lua, riding on the
--- udp task's capability -- not a kernel-level exclusive task itself
--- (no raw efi access of its own), same shape as the 9P export.
-local _, dnssrv = proc.spawn(assert(rootns:readfile("/task/dns.lua")),
-    { name = "dns", ns = nsdesc })
-local has_dns = caps_of.ip and
-    pcall(sys.send, dnssrv, { ip = { __right = caps_of.ip } })
+-- the resolver, which /etc/services.lua starts like any other service.
+-- Filled in below from what svc published under that name, so a shell
+-- and the panel share one proc and one cache.
+local dnssrv
 
-if has_dns then
-	sys.log("dns resolver ready")
-end
 print("")
 
 -- ---- services ----
@@ -314,6 +308,10 @@ do
 			-- own drbg.new rather than quietly at a weaker one.
 			seed = rng and rng.bytes or nil,
 		})
+		-- svc publishes a started service under its name, which
+		-- is where the resolver comes from: the repl and dos are
+		-- handed the same one the panel's services were.
+		dnssrv = grants.dns
 	elseif why and not why:match("^no ") then
 		-- a missing config is a machine with no services, which is
 		-- fine. a config that failed to load is a mistake worth saying.
@@ -546,7 +544,7 @@ while true do
 	if caps_of.ip then
 		grant.ip = { __right = caps_of.ip }
 	end
-	if has_dns then
+	if dnssrv then
 		grant.dns = { __right = dnssrv }
 	end
 	if caps_of.fb then
