@@ -258,7 +258,7 @@ local function main()
 	-- `exit` ends the shell while the request handler is parked in
 	-- pump() on that session's port. the janitor hears the exit notice
 	-- and must NOT close the port underneath it: thread.run passes
-	-- every parked port to altblock in one call, so a right vanishing
+	-- every parked port to alt in one call, so a right vanishing
 	-- there raises from the scheduler and kills the whole server proc.
 	-- this took the server down the first time it was tried by hand.
 	rr, jr = post("/session/" .. sid, "exit")

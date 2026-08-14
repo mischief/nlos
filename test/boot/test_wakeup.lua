@@ -1,6 +1,6 @@
 -- one message must wake one thread, not all of them.
 --
--- thread.run wakes in the narrowest way it can: sys.altblock returns a
+-- thread.run wakes in the narrowest way it can: sys.alt returns a
 -- hint naming the port that has something and readyon wakes only the
 -- threads parked on it, wakehungup covers the hangup a hint can never
 -- name, and readyall -- wake everyone and let each find out for itself
@@ -62,7 +62,7 @@ local pid = sys.spawn(([[
 tap.ok(pid ~= nil, "the server proc started")
 tap.ok(thread.recvtimeout(done, 5000) ~= nil, "and its threads parked")
 
--- let the last of them settle into altblock
+-- let the last of them settle into alt
 thread.sleep(50)
 
 sys.set_trace(pid, 6000)

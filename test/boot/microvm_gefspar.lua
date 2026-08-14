@@ -193,7 +193,7 @@ local function main()
 	local heard, failures = 0, {}
 
 	-- thread.recv, not sys.tryrecv: this runs under thread.run(), which
-	-- holds the proc's ports in its own altblock. A bare receive in the
+	-- holds the proc's ports in its own alt. A bare receive in the
 	-- main body races the scheduler for them.
 	while heard < NPROC do
 		local m = thread.recv(sys.SELF)

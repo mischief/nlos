@@ -158,7 +158,7 @@ The original reason was the `__gc` re-entry above, and stopping the
 collector retired it: nothing arbitrary re-enters any more. What is
 left is nesting this kernel writes itself, which is auditable rather
 than open-ended -- `msg_dispose` takes the wide lock from inside
-`altrecv_take`, which already holds it, and `port_unref` reaches
+`alt_take_at`, which already holds it, and `port_unref` reaches
 itself through `port_flush` and `release_inflight`.
 
 Whether that is enough to make the buckets non-recursive has not been

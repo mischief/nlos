@@ -458,9 +458,9 @@ that calls it gets an error, not a corrupted waiter list.
 `thread.call` picks the fused entry only at the top level.
 
 That costs a thread nothing, because its expensive half is already
-fused: `thread.run` hands every parked port to `sys.altrecv`, which
-blocks and takes a message in one entry on behalf of all of them at
-once. What is left over is a plain send, which never blocks.
+fused: `thread.run` hands every parked port to `sys.alt`, which blocks
+and takes a message in one entry on behalf of all of them at once. What
+is left over is a plain send, which never blocks.
 
 **Build an `alt` case table once, outside the loop.** `alt` neither
 keeps nor mutates `cases`, so writing the literal at the call site —
@@ -560,7 +560,7 @@ at thousands of timers, and `MAXPROCS` is 32.
   A third return value carries the refused size, which is what
   `sendblock` and an alt send case need; `thread.sendwait` is that loop
   written out, and `thread.call` passes the size through.
-- **`alt` has both directions.** `sys.altblock(set, sends)` takes a
+- **`alt` has both directions.** `sys.alt(set, sends)` takes a
   second, parallel table: `sends[i]` is the size entry `i` wants room
   for, and anything else leaves entry `i` an ordinary receive. Parallel
   rather than boxing every entry, so the common all-receive call passes
@@ -573,6 +573,14 @@ at thousands of timers, and `MAXPROCS` is 32.
   lasted, and `lib/mnt.lua` reads exactly those counts to find a dead
   server. Inside a thread, `thread.parksend` waits on one coroutine and
   leaves its siblings running.
+- **`alt` takes the message, unless told to wake.** It answers `i, msg,
+  why`, and `why` is what a caller tests, since a message may itself be
+  nil: absent for a receive that took one, `"send"` for room, `"ready"`
+  in wake mode, `"hungup"` where the caller asked. Taking is the point —
+  a ready answer goes stale as soon as a second cpu exists. Pass `wake`
+  only where somebody else does the reading: one port may be waited on
+  to send and to receive at once, and handing the message to the wrong
+  waiter of the two wedges both.
 - **Pixels do not fit in a message.** `sys.MAXMSG` is 64KiB, which is
   16384 BGRx pixels — a 128x128 tile — so "load the whole screen in one
   call" cannot exist, in either direction (a reply is a message too).

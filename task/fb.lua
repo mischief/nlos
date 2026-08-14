@@ -72,7 +72,7 @@ end
 -- a port carries no sender identity. lib/srv.lua says the same of fids.
 local anon = { images = {}, nextid = 1 }
 
--- parallel: ports is the set altrecv waits on, spaces[i] is whose
+-- parallel: ports is the set alt waits on, spaces[i] is whose
 -- images arrive on ports[i]. [1] is this task's own port, for a client
 -- that never asked for a session.
 local ports = { sys.SELF }

@@ -2,7 +2,7 @@
 --
 -- The version that walked only the main coroutine was useless for
 -- exactly the procs worth inspecting: anything on lib/thread reported
--- its scheduler -- altblock / thread.run / entrypoint -- identically
+-- its scheduler -- alt / thread.run / entrypoint -- identically
 -- whether it was idle or deadlocked.
 --
 -- The parked threads below are the case that matters and the case that

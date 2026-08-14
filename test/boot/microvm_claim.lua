@@ -18,7 +18,7 @@
 -- READY -- a few hundred nanoseconds, schedlock included. Two procs
 -- land inside that only if they are genuinely simultaneous. But
 -- senders dense enough to be simultaneous keep the alt set non-empty,
--- so altrecv takes at entry and the receiver never parks at all, and a
+-- so alt takes at entry and the receiver never parks at all, and a
 -- proc that never parks cannot be raced for.
 --
 -- Measured, in order:
@@ -77,7 +77,7 @@ local RECV = [==[
 		local i, m = sys.alt(set)
 
 		-- nothing for us: a hangup wake, or a message another proc
-		-- took first. altrecv_k documents this and the caller loops.
+		-- took first. alt_k documents this and the caller loops.
 		if i then
 			per[i] = per[i] + 1
 			n = n + 1
@@ -93,7 +93,7 @@ local RECV = [==[
 --
 -- The barrier is the whole design, and two cheaper arrangements were
 -- measured and thrown away first. Senders pushing flat out keep the
--- set permanently non-empty, so altrecv takes at entry, the receiver
+-- set permanently non-empty, so alt takes at entry, the receiver
 -- never parks, and a proc that never parks cannot be raced for: 32000
 -- messages, 4 wakes, no collisions. Senders yielding between sends do
 -- make the receiver park -- 2400 messages, 303 wakes -- but they drift
@@ -222,7 +222,7 @@ tap.diag(string.format("claims: %d won, %d lost", won, lost))
 
 -- that the receiver genuinely parked, which is the part of the race
 -- this test can guarantee. Without it the whole thing degenerates into
--- an ordinary send loop -- the first arrangement above, where altrecv
+-- an ordinary send loop -- the first arrangement above, where alt
 -- took at entry every time and the wake path was never entered -- and
 -- it would still pass every assertion above.
 tap.ok(won > NPORT, won .. " wakes: the receiver parked and was woken")

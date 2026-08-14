@@ -31,9 +31,9 @@ second level at all — its chunk runs directly in `p->co`.
 Not having it is worth about 4KB, measured on esp32 as two parked procs
 differing only in the require. So `lib/prog.lua` requires it where it
 is used rather than at the top, and takes its one unavoidable receive —
-the ABI message — with `sys.altrecv`, which needs no scheduler. A
+the ABI message — with `sys.alt`, which needs no scheduler. A
 program that neither spawns a thread nor blocks on a stream never opens
-the module. `sys.altrecv` is legal there because `M.main` runs at the
+the module. `sys.alt` is legal there because `M.main` runs at the
 top of the proc, which is the one place `nopark` is satisfied by
 construction rather than by care.
 
@@ -163,7 +163,7 @@ Everything above is about the **hook**, and the walk-out makes it reach
 any depth. A **park** gets no such help, and the difference is the one
 that bites.
 
-`sys.block`, `sys.call`, `sys.altblock`, `sys.altrecv` and
+`sys.block`, `sys.call`, `sys.alt` and
 `sys.sendblock` all end in `lua_yield`, and they mark the proc `BLOCKED`
 and take it off the run queue *before* yielding. The kernel cannot arm
 its way out of this the way it does for the hook: a park has already
@@ -292,14 +292,16 @@ and a scheduler has to see the preemption: `resume_one` in
 Three paths, in order of preference:
 
 1. **The run queue is empty and every waiter is a plain `recv`.**
-   `sys.altrecv` takes a message from whichever port has one and
+   `sys.alt` takes a message from whichever port has one and
    `thread.run` hands it straight to the waiter. No wake, no scan.
 2. **The run queue is empty and some waiter is not a plain recv.**
-   `sys.altblock` blocks and returns a hint naming the port that has
-   something; `readyon` wakes only the threads parked on it. A thread
-   waiting for room is one of these -- see "How a thread waits for
-   room" -- since it must not be handed a message it has nowhere to
-   put.
+   `sys.alt(set, sends, nil, true)` -- `wake`, so it takes nothing --
+   blocks and returns a hint naming the port that has something;
+   `readyon` wakes only the threads parked on it. A thread waiting for
+   room is one of these -- see "How a thread waits for room" -- since
+   it must not be handed a message it has nowhere to put. Taking here
+   would be worse than useless: one port may be waited on both ways at
+   once, and only the thread waiting to receive may have the message.
    `readyall` — wake everyone and let each look — is the last resort
    for a wake no port of ours accounts for.
 3. **Something is still runnable** — the run queue is not empty, or a
@@ -321,7 +323,7 @@ The section above is the receive side. A thread that wants to **send**
 on a full port has the same problem and, for a while, a worse answer:
 `parksend` called `sys.sendblock` directly, on the grounds that the
 scheduler's park reasons were receive-shaped -- `thread.run` hands a
-port set to `sys.altblock`, and "wait for room" is not a port set. What
+port set to `sys.alt`, and "wait for room" is not a port set. What
 actually happened was neither parking the thread nor parking the proc:
 the yield reached `thread.run`, which reads a coroutine with no park
 sentinel as a hook cut and resumes it, so the send never waited at all.
@@ -329,9 +331,9 @@ sentinel as a hook cut and resumes it, so the send never waited at all.
 The kernel had always been able to say it. `wait_add(p, port, send)`
 takes the flag, `wake_senders` and `wake_receivers` walk the same list
 and skip what is not theirs, and `sys.sendblock` has always passed 1.
-Only `api_altblock` hardcoded 0.
+Only the scheduler's own park hardcoded 0.
 
-So `sys.altblock(set, sends)` takes a second, parallel table: where
+So `sys.alt(set, sends)` takes a second, parallel table: where
 `sends[i]` is a size, entry `i` waits for room for that many bytes
 instead of for a message, and is ready when `qbytes + need <= MAXQUEUE`
 (or when the port is dead, since then the send itself should report it).

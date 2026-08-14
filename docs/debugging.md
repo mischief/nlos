@@ -30,7 +30,7 @@ into one marker. The trace has them all.
 `sys.stack(pid)` returns one entry per **coroutine**, not a flat frame
 list. A proc built on `lib/thread` keeps its threads inside its own
 state, so reporting only the main one shows the scheduler parked in
-`altblock` whether the proc is idle or wedged.
+`alt` whether the proc is idle or wedged.
 
 It is safe on anything, including a proc that is running right now,
 because the kernel **holds the target still** before reading it. That

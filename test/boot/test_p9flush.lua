@@ -36,7 +36,7 @@ local respond = ninep.responder(tree)
 
 -- The queue between send and recv is a Channel, not a table the reader
 -- spins on. That matters here: a deadline is a timer PORT, and
--- thread.run only readies port-parked threads after sys.altblock
+-- thread.run only readies port-parked threads after sys.alt
 -- returns, which it only reaches once the run queue empties. A reader
 -- that yields in a loop is always runnable, so the run queue never
 -- empties and the timer never fires.

@@ -83,9 +83,8 @@ static int port_owner(const struct kport *port);
 	"use los.thread's park)"
 
 static int altready(lua_State *L, struct kproc *p);
-static int altrecv_take(lua_State *L, struct kproc *p);
 static int alt_take(lua_State *L, struct kproc *p, int wake);
-static int altrecv_hup(lua_State *L, struct kproc *p, int n);
+static int alt_hup(lua_State *L, struct kproc *p, int n);
 
 /* the tail of api_alt, after the proc has been woken. Nothing is a
  * legal answer and means "go round again": another proc may have taken
@@ -110,7 +109,7 @@ alt_k(lua_State *L, int status, lua_KContext ctx)
 	ipclock_enter();
 	got = alt_take(L, p, wake);
 	if (!got && wanthup)
-		got = altrecv_hup(L, p, n);
+		got = alt_hup(L, p, n);
 	ipclock_leave();
 
 	if (got < 0)
@@ -193,7 +192,7 @@ altready(lua_State *L, struct kproc *p)
  * it can tell which port answered.
  */
 static int
-altrecv_take_at(lua_State *L, struct kproc *p, int i)
+alt_take_at(lua_State *L, struct kproc *p, int i)
 {
 	lua_rawgeti(L, 1, i);
 
@@ -220,16 +219,6 @@ altrecv_take_at(lua_State *L, struct kproc *p, int i)
 	return 2;
 }
 
-static int
-altrecv_take(lua_State *L, struct kproc *p)
-{
-	int i = altready(L, p);
-
-	if (!i)
-		return 0;
-	return altrecv_take_at(L, p, i);
-}
-
 /* the same, answering in the three values sys.alt speaks: the index,
  * the message, and why. A send wait has room rather than a message, so
  * it says so and hands back nothing to deliver.
@@ -254,21 +243,21 @@ alt_take(lua_State *L, struct kproc *p, int wake)
 		lua_pushliteral(L, "send");
 		return 3;
 	}
-	rc = altrecv_take_at(L, p, i);
+	rc = alt_take_at(L, p, i);
 	if (rc <= 0)
 		return rc;
 	lua_pushnil(L);			/* why: a message needs no reason */
 	return 3;
 }
 
-/* the hangup half of altrecv, inside the take's region: asked
+/* the hangup half of the take, inside its region: asked
  * separately it is two syscalls with a gap, and a sender can answer and
  * close in it. Only where the caller asked -- sole_holder walks this
  * proc's rights per port, and thread.run parks here every round with
  * every waiting port. n comes from outside: luaL_len can raise.
  */
 static int
-altrecv_hup(lua_State *L, struct kproc *p, int n)
+alt_hup(lua_State *L, struct kproc *p, int n)
 {
 	for (int i = 1; i <= n; i++) {
 		struct right *r;
@@ -335,7 +324,7 @@ api_alt(lua_State *L)
 	 * that has already happened.
 	 */
 	if (!got && wanthup)
-		got = altrecv_hup(L, p, n);
+		got = alt_hup(L, p, n);
 
 	if (got) {
 		ipclock_leave();
@@ -406,7 +395,7 @@ api_alt(lua_State *L)
 			return 3;
 		}
 		if (!send && r->port->head != 0) {
-			int rc = altrecv_take_at(L, p, i);
+			int rc = alt_take_at(L, p, i);
 
 			wait_clear(p);
 			ipclock_leave();
@@ -464,26 +453,6 @@ api_altpoll(lua_State *L)
 		return 0;
 	lua_pushinteger(L, i);
 	return 1;
-}
-
-/* sys.altrecvnb(set) -> index, msg | nothing. the non-blocking form, for
- * a proc that is still runnable and only wants what is already there.
- */
-static int
-api_altrecvnb(lua_State *L)
-{
-	int got;
-
-	luaL_checktype(L, 1, LUA_TTABLE);
-	luaL_checkstack(L, 3, "altrecvnb");
-
-	ipclock_enter();
-	got = altrecv_take(L, self(L));
-	ipclock_leave();
-
-	if (got < 0)
-		return popfail(L, self(L), got);
-	return got;
 }
 
 /* sys.anyready() -> bool. Does any port this proc can receive on have a
@@ -2318,7 +2287,6 @@ static const luaL_Reg kapi[] = {
 	{ "altpoll", api_altpoll },
 	{ "anyready", api_anyready },
 	{ "hangups", api_hangups },
-	{ "altrecvnb", api_altrecvnb },
 	{ "yield", api_yield },
 	{ "newport", api_newport },
 	{ "owned", api_owned },

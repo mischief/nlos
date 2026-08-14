@@ -16,7 +16,7 @@
 -- otherwise. What is still guaranteed is everything below.
 --
 -- PARKED siblings are the older half of this and still matter: parked
--- threads were once readied only after sys.altblock, which runs only
+-- threads were once readied only after sys.alt, which runs only
 -- when the runq is empty, so anything still runnable meant a parked
 -- thread never woke however long its message had been waiting.
 -- thread.sleep is the smallest case, parking on a timer port that

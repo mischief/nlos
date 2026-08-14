@@ -96,7 +96,7 @@ local ports = recv1().ports
 
 tap.ok(#ports == NPORT, NPORT .. " ports in the alt set")
 
--- let the child reach altrecv and park. sys.yield does not promise the
+-- let the child reach alt and park. sys.yield does not promise the
 -- child ran, so this loops: the child is parked once it has stopped
 -- being runnable, and the cheapest honest way to wait for that here is
 -- to give the scheduler several laps.

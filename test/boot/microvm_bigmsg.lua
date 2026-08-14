@@ -389,7 +389,7 @@ if rbad ~= 0 then
 	tap.diag(("%d of %d were wrong; %s"):format(rbad, RN, tostring(rfirst)))
 end
 
--- ---- 6. a server parked in altrecv, with concurrent callers ----
+-- ---- 6. a server parked in alt, with concurrent callers ----
 --
 -- Everything above uses tryrecv and yield, which never blocks. Nothing
 -- real does that. A server built on los.thread parks in sys.alt --
@@ -397,7 +397,7 @@ end
 -- takes on behalf of all of them -- and that is the path gefssrv,
 -- blksrv and every mnt client actually wait on.
 --
--- It is also the path where a bug does not announce itself. altrecv
+-- It is also the path where a bug does not announce itself. alt
 -- has to return both a message and which port it came from; hand back
 -- a message paired with the wrong port and a caller waiting on its own
 -- reply port is given somebody else's reply. That is indistinguishable
@@ -473,7 +473,7 @@ thread.spawn(altmain)
 thread.run()
 
 tap.ok(altbad == 0,
-    ("%d callers x %d calls through a server parked in altrecv"):format(
+    ("%d callers x %d calls through a server parked in alt"):format(
 	ATHREADS, APER))
 if altbad ~= 0 then
 	tap.diag(("%d wrong; %s"):format(altbad, tostring(altfirst)))

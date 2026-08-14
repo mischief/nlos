@@ -307,7 +307,7 @@ end
 -- the path that allocates: plist, marks, and a waiter per channel case,
 -- all rebuilt on every trip round alt's inner loop. driven from a
 -- thread, because parking is what a thread does differently -- a
--- top-level alt goes to sys.altblock instead and never touches marks.
+-- top-level alt goes to sys.alt instead and never touches marks.
 local function alt_park(sz, iters)
 	local _, h = sys.spawn(echo, { name = "echo" })
 	local rp = sys.newport("bench_ipc.rp")
