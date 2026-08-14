@@ -1418,6 +1418,17 @@ test('tcp4-codec', lua_interp,
   depends: host_deps,
 )
 
+# lib/mouse.lua's record codec, and one client's queue driven against a
+# port that refuses. "the reader stopped reading" is a function that
+# returns false here, and a machine under load anywhere else.
+test('mouse-queue', lua_interp,
+  args: [files('test/host_mouse.lua')],
+  protocol: 'tap',
+  timeout: 20,
+  env: host_env,
+  depends: host_deps,
+)
+
 # lib/dhcp.lua's options, built by hand. A server offers what it is
 # configured to offer, so the ones this machine's server does not send
 # are reachable here and nowhere else.

@@ -1,8 +1,8 @@
--- the window system, under qemu. platform_have_ptr is 0 here, so the
--- kernel makes no pointer port and this makes one: a synthetic event is
--- an ordinary send to the port the driver would have sent to. Pixels
--- are read back, so this fails if dio stops drawing as well as if it
--- stops answering.
+-- the window system, under qemu. The payload holds no pointer right, so
+-- this makes the port itself: a synthetic event is an ordinary send to
+-- the port the driver would have sent to, which is the whole of what
+-- the driver does for anything above it. Pixels are read back, so this
+-- fails if dio stops drawing as well as if it stops answering.
 
 local sys = require("los.sys")
 local draw = require("draw")
