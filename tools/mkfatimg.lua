@@ -65,6 +65,20 @@ end
 -- image is built, checks clean, flashes, and the board comes up with an
 -- empty /bin -- a wrong path costs a boot to discover instead of a
 -- line.
+-- a plain file, told from a directory by whether it opens as one. No
+-- stat in stock lua, and this is the same shell-out walkdir already is.
+local function isfile(path)
+	local f = io.open(path, "rb")
+
+	if not f then
+		return false
+	end
+	local ok = f:read(0) ~= nil
+
+	f:close()
+	return ok
+end
+
 local function walkdir(dir)
 	local out = {}
 	local p = io.popen(("find %q -type f -printf '%%P\\n'"):format(dir))
@@ -141,6 +155,24 @@ for j = 3, #args do
 	end
 	dst = dst:gsub("/+$", "")
 
+	-- one file lands at exactly the name given, so a file whose name
+	-- in the tree is not its name on the image -- the machine's own
+	-- services list -- needs no directory built around it.
+	if isfile(src) then
+		local dir = dst:match("^(.*)/[^/]+$")
+
+		if dir and dir ~= "" then
+			assert(fs:mkdirp(dir))
+		end
+
+		local data = slurp(src)
+
+		assert(fs:writefile(dst, data))
+		nfiles = nfiles + 1
+		nbytes = nbytes + #data
+		goto continue
+	end
+
 	for _, rel in ipairs(walkdir(src)) do
 		local path = (dst == "" and "/" or dst .. "/") .. rel
 		local dir = path:match("^(.*)/[^/]+$")
@@ -154,6 +186,8 @@ for j = 3, #args do
 		nfiles = nfiles + 1
 		nbytes = nbytes + #data
 	end
+
+	::continue::
 end
 
 fs:sync()

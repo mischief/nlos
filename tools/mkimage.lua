@@ -122,13 +122,36 @@ local function under(f, top)
 	return rest and (top .. "/" .. rest) or nil
 end
 
-for i = 3, #arg do
-	local f = arg[i]
-	local dest = under(f, "lib") or under(f, "bin") or under(f, "task") or
-	    under(f, "etc") or basename(f)
+-- `--install SRC DEST` puts one file at a path of the caller's
+-- choosing, for a file whose name here is not its name on the image:
+-- the machine's own services list is machine/<name>/services.lua in
+-- the tree and /etc/services.lua on every image built from it.
+local i = 3
 
-	mkdirs(dest)
-	run("mcopy -o -i " .. qdrive .. " " .. quote(f) .. " ::" .. dest)
+while i <= #arg do
+	local f = arg[i]
+
+	if f == "--install" then
+		local src, dest = arg[i + 1], arg[i + 2]
+
+		if not src or not dest then
+			io.stderr:write("mkimage: --install wants SRC DEST\n")
+			os.exit(2)
+		end
+		dest = dest:gsub("^/", "")
+		mkdirs(dest)
+		run("mcopy -o -i " .. qdrive .. " " .. quote(src) ..
+		    " ::" .. dest)
+		i = i + 3
+	else
+		local dest = under(f, "lib") or under(f, "bin") or
+		    under(f, "task") or under(f, "etc") or basename(f)
+
+		mkdirs(dest)
+		run("mcopy -o -i " .. qdrive .. " " .. quote(f) ..
+		    " ::" .. dest)
+		i = i + 1
+	end
 end
 
 -- drop the gefs volume into its partition, after the ESP is done with.

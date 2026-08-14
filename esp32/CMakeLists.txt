@@ -41,12 +41,17 @@ math(EXPR luafs_size "${CMAKE_MATCH_2}")
 set(luafs_root "${CMAKE_CURRENT_SOURCE_DIR}/..")
 file(GLOB_RECURSE luafs_sources CONFIGURE_DEPENDS
     "${luafs_root}/bin/*" "${luafs_root}/lib/*"
-    "${luafs_root}/task/*" "${luafs_root}/etc/*")
+    "${luafs_root}/task/*" "${luafs_root}/etc/*"
+    "${luafs_root}/machine/esp32/*")
 
 set(luafs_img "${CMAKE_BINARY_DIR}/luafs.img")
 add_custom_command(OUTPUT "${luafs_img}"
     COMMAND "${LUA_EXE}" tools/mkfatimg.lua "${luafs_img}" "${luafs_size}"
         bin/=/bin lib/=/lib task/=/task etc/=/etc
+        # what this board runs. The path is /etc/services.lua on every
+        # machine, so the build picks the list and the boot payload
+        # reads one name -- see machine/.
+        machine/esp32/services.lua=/etc/services.lua
     DEPENDS "${luafs_root}/tools/mkfatimg.lua" ${luafs_sources}
     WORKING_DIRECTORY "${luafs_root}"
     VERBATIM)

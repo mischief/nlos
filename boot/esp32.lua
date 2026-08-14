@@ -307,10 +307,10 @@ local function services()
 	end
 
 	local svc = require("svc")
-	-- this board's own list. etc/services.lua is the one a machine
-	-- with a disk reads, and both ship here because luafs takes etc/
-	-- whole -- so the name is what picks, not the image.
-	local list, why = svc.load(rootns, "/etc/services-esp32.lua")
+	-- the same path on every machine. Which list is here is a build
+	-- decision -- see machine/ -- so this reads the name and never
+	-- the machine's.
+	local list, why = svc.load(rootns, "/etc/services.lua")
 
 	if not list then
 		print("svc: " .. tostring(why))

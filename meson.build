@@ -561,8 +561,6 @@ if platform == 'efi'
 
 lua_payload = files(
   'init.lua',
-  # what the machine runs, and what each may touch -- see lib/svc.lua
-  'etc/services.lua',
   # services, at /task/<name> -- started by init rather than by
   # replacing it. same directory as the driver tasks because the only
   # difference is who spawns them and what they are granted, and both
@@ -787,10 +785,18 @@ gefs_img = custom_target('gefs.img',
 # gpt disk: an esp, and a gefs partition after it holding gefs_img.
 # Assembled with sfdisk + mtools + dd, no root. $GEFS_IMG is what makes
 # mkimage add the second partition.
+# which services list this machine gets. The path on the image is
+# /etc/services.lua wherever it boots, so what a machine runs is a
+# build decision rather than something the boot payload knows the name
+# of -- see machine/ for the lists themselves.
+machine_services = files('machine/efi/services.lua')
+
 luaos_img = custom_target('luaos.img',
   input: [luaos_efi] + lua_payload,
   output: 'luaos.img',
-  command: [lua_interp, files('tools/mkimage.lua'), '@OUTPUT@', '@INPUT@'],
+  command: [lua_interp, files('tools/mkimage.lua'), '@OUTPUT@', '@INPUT@',
+            '--install', machine_services, '/etc/services.lua'],
+  depend_files: machine_services,
   env: {'BOOT_EFI': boot_efi, 'GEFS_IMG': gefs_img.full_path()},
   depends: gefs_img,
   build_by_default: true,
