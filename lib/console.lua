@@ -135,6 +135,7 @@ end
 -- and the last frame never arrives at all -- a message from the network
 -- is invisible until you type. Anything that is not a write waits for
 -- serve, which is what `deferred` is for.
+
 -- one keystroke, from a chunk that may hold many.
 --
 -- The pump delivers whatever arrived together, so a reader taking one
@@ -168,9 +169,12 @@ function Console:readchunk(ms)
 	return self:recvchunk(ms)
 end
 
--- one key, waiting at most ms for it. The editor's primitive: every
--- read of the queue goes through here or getch, so a chunk is split in
--- one place and nothing is left where only one of them can see it.
+-- one key, waiting at most ms for it, from `pend` first as getch does:
+-- the queue delivers a chunk and whoever splits one leaves the rest
+-- there for the next reader.
+--
+-- Not the only splitter. readline takes from `pend` itself, because it
+-- waits on the mailbox as well and this waits only on the keyboard.
 function Console:keytimeout(ms)
 	local p = self.pend
 
@@ -438,6 +442,7 @@ end
 --
 -- Everything else is forwarded unchanged, so a reader cannot tell the
 -- pump is there.
+
 -- into the input queue, waiting for room rather than losing what does
 -- not fit. A dropped chunk of a file transfer is a checksum failure a
 -- long way from its cause. Waiting is also what stops the machine ahead
@@ -464,16 +469,16 @@ function Console:pump()
 		    c:find(INTR, 1, true) then
 			-- to whoever asked to hear it, and not into the
 			-- input: a program being interrupted should not
-			-- also read the character that interrupted it. The
-			-- rest of the chunk is ordinary typing and stays.
-			local i = c:find(INTR, 1, true)
-
+			-- also read the character that interrupted it.
+			-- Every one in the chunk, not the first, since a
+			-- read returns a batch of keys and mashing the key
+			-- puts several in one.
 			sys.send(self.intr, { op = "interrupt" })
 			-- the console is usually inside a read for the
 			-- program being killed, and a dead program never
 			-- types the line that would end it.
 			sys.send(thread.selfright(), { op = "abort" })
-			c = c:sub(1, i - 1) .. c:sub(i + 1)
+			c = c:gsub(INTR, "")
 			if c ~= "" then
 				self:queue(c)
 			end

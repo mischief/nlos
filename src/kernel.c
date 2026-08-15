@@ -468,9 +468,10 @@ pump_devptr(void)
 #define KBDBATCH 256
 
 /* What the console has not taken yet. A full queue means the reader is
- * behind, and dropping there loses the middle of a file: hold the batch
- * instead and stop reading the device, so the sender is the one that
- * waits. On a usb console that back pressure reaches the host.
+ * behind, and dropping loses the middle of a file: hold the batch and
+ * stop reading the device, so the sender waits instead. One buffer for
+ * the machine is enough -- only the boot cpu pumps devices, as
+ * kernel_run_ap says.
  */
 static unsigned char kbdheld[5 + KBDBATCH];
 static size_t kbdheldn;
@@ -553,12 +554,20 @@ pump_keyboard(void)
 			 * as the ANSI sequence a raw serial line would send.
 			 */
 			const char *seq = scancode_seq(key.ScanCode);
+			size_t len = 0;
 
-			for (; seq && *seq && !full; seq++) {
-				if (n == KBDBATCH)
-					full = !kbdflush(msg, &n);
-				if (!full)
-					msg[5 + n++] = (unsigned char)*seq;
+			while (seq && seq[len])
+				len++;
+			/* the whole sequence or none of it. Half an escape
+			 * is not a shorter escape -- it reaches the editor
+			 * as Escape followed by rubbish, and the rubbish is
+			 * whatever letter the arrow ended with.
+			 */
+			if (len > 0 && n + len > KBDBATCH)
+				full = !kbdflush(msg, &n);
+			if (!full) {
+				for (size_t k = 0; k < len; k++)
+					msg[5 + n++] = (unsigned char)seq[k];
 			}
 		} else if (key.UnicodeChar <= 0xff) {
 			/* 0x80..0xff is a byte, not a character to judge: on

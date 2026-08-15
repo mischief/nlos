@@ -9,7 +9,7 @@
 local p9 = require("ninep")
 local tap = require("tap")
 
-tap.plan(36)
+tap.plan(38)
 
 local C, L = p9, p9.pure
 
@@ -130,6 +130,15 @@ local qemustat = string.pack("<I4BI2I2", 7 + 2 + #sf, p9.Rstat, 13, 0) .. sf
 agree("rstat with qemu's zero count", qemustat)
 tap.is(C.unpackstat(C.decode(qemustat).statbytes).name, "hello.txt",
     "and the name survives it")
+
+-- the record's own size claiming more than arrived. Both codecs must
+-- refuse: clamping to what is there yields a stat with fields missing
+-- off the end, which reads as a file rather than as a short message.
+local cutstat = string.pack("<I4BI2I2I2", 7 + 4 + 8, p9.Rstat, 13, 0,
+    #sf - 2) .. sf:sub(3, 10)
+
+agree("rstat whose record runs past the message", cutstat)
+tap.ok(C.decode(cutstat) == nil, "and it is refused rather than clamped")
 
 -- ---- malformed input: agreeing on refusal ----
 --

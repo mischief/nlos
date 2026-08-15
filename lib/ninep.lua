@@ -159,6 +159,13 @@ function M.decode(msg)
 
 		_, off = sunpack("<I2", msg, off)
 		n, off = sunpack("<I2", msg, off)
+		-- refused rather than truncated, and nil as src/ninep.c
+		-- answers: sub would clamp and hand back a short record,
+		-- which unpackstat reads as a stat missing fields off the
+		-- end rather than as a message that did not arrive whole.
+		if off + n - 1 > #msg then
+			return nil
+		end
 		m.statbytes = msg:sub(off, off + n - 1)
 	else
 		m.unknown = true

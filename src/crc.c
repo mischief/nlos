@@ -120,8 +120,16 @@ l_unzdle(lua_State *L)
 	size_t n = 0;
 	const char *s = luaL_checklstring(L, 1, &n);
 	const unsigned char *p = (const unsigned char *)s;
-	size_t i = (size_t)luaL_checkinteger(L, 2) - 1;
+	lua_Integer at = luaL_checkinteger(L, 2);
+	size_t i;
 	luaL_Buffer b;
+
+	/* one-based, and checked: zero wraps the index below, which reads
+	 * nothing but answers with a nextpos of zero -- and a caller that
+	 * resumes from what it is told loops on that forever.
+	 */
+	luaL_argcheck(L, at >= 1, 2, "position must be 1 or more");
+	i = (size_t)at - 1;
 
 	luaL_buffinit(L, &b);
 	while (i < n) {
@@ -152,6 +160,13 @@ l_unzdle(lua_State *L)
 		else if ((c & 0x60) == 0x40)
 			luaL_addchar(&b, (char)(c ^ 0x40));
 		else {
+			/* finished and dropped, not abandoned: the buffer
+			 * owns stack slots below whatever is returned, and
+			 * leaving it only works while nothing is pushed
+			 * after it.
+			 */
+			luaL_pushresult(&b);
+			lua_pop(L, 1);
 			lua_pushnil(L);
 			lua_pushstring(L, "bad escape");
 			return 2;
