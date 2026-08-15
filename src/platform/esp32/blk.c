@@ -35,13 +35,12 @@
  * bus, so whichever driver probes first brings it up.
  */
 
-/* Ask high and let the card answer: sdspi divides a 40MHz source by an
- * integer and sdmmc_card_init clamps to what the card reports, which
- * this one does at 20MHz. The probe prints the rate it landed on. The
- * bus is not the limit -- the clock is per-device, and the display runs
- * at 60MHz beside this.
+/* 20MHz asked for, not clamped down to. Asking high reaches 20 only on
+ * a card that declines it; one that accepts takes IDF's CMD6 path,
+ * where a U3/V30 card failed with ESP_ERR_INVALID_RESPONSE from
+ * send_csd. The bus is not the limit: the display runs at 60MHz here.
  */
-#define TDECK_SD_FREQ_KHZ	SDMMC_FREQ_HIGHSPEED
+#define TDECK_SD_FREQ_KHZ	SDMMC_FREQ_DEFAULT
 
 static sdmmc_card_t card;
 static int probed;		/* probe ran; present says what it found */
