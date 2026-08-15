@@ -56,9 +56,9 @@ local function rpc(h, port, msg)
 	return recv(port)
 end
 
--- ask the panel rather than assume it: this runs on a 240x135
--- Cardputer and a 320x240 T-Deck, and a wrong width silently shears
--- the image instead of failing.
+-- ask the panel rather than assume it: the size differs from board to
+-- board, and a wrong width silently shears the image instead of
+-- failing.
 local mode = rpc(fb, fbport, { op = "mode" }).ok
 local W = mode.w
 local H = math.min(job.rows or mode.h, mode.h)
@@ -73,9 +73,9 @@ local size = #header + H * stride
 -- always recomputable from the panel.
 --
 -- unload hands back BGRx, the shared framebuffer layout: real colors
--- where the driver keeps a color copy (the T-Deck), or black and white
--- where it keeps only a one-bit shape (the Cardputer). PPM wants RGB, so
--- each pixel is reordered as it is read.
+-- where the driver keeps a color copy, or black and white where the
+-- shadow is one bit per pixel. PPM wants RGB, so each pixel is
+-- reordered as it is read.
 local cached, cachedy = nil, -1
 
 local function row(y)

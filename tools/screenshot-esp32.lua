@@ -10,13 +10,10 @@
 -- tools/poke-esp32.lua to touch or type as well as look.
 --
 -- The guest does the work, in task/shot.lua, so the size comes from the
--- panel rather than from here -- 240x135 on a Cardputer, 320x240 on a
--- T-Deck -- and adding a board does not touch this file.
+-- panel rather than from here; adding a board does not touch this file.
 --
--- --rows N captures the top N rows only, for a board that cannot manage
--- a whole screen: the image and the sender have to be resident at once,
--- and on a Cardputer (no PSRAM, ~107KB free) a full 240x135 does not
--- fit. Sixteen rows transfer there without trouble.
+-- --rows N captures the top N rows only: the image and the sender must
+-- be resident at once, which a board with no PSRAM has no room for.
 
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 

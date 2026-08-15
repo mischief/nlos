@@ -249,11 +249,10 @@ set(EMBED_FILES
 # Some modules ship as stripped bytecode rather than source.
 #
 # Loading from source needs the source, the parser's state and the
-# resulting prototypes live at once, and that peak is what fails first
-# on a board with no PSRAM: lib/zmodem.lua is 27595 bytes and require
-# answered "not enough memory" with 62KB free. luac -s is 12716 and
-# skips the parser entirely. Measured more generally at 11703 resident
-# bytes per chunk against 14894, and about 16x faster to load.
+# resulting prototypes live at once. That peak is what fails first on a
+# board with no PSRAM; where there is PSRAM it does not bind at all, and
+# what remains is footprint and speed: 11703 resident bytes per chunk
+# against 14894, and about 16x faster to load.
 #
 # Portable because the header says so: host and guest are both Lua 5.4.8
 # and both are 4-byte instructions, 8-byte integers, 8-byte numbers.

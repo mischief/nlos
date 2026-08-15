@@ -150,11 +150,8 @@ kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
  * CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL serves anything at or below its
  * threshold (4096 by default) from internal sram, so a heap whose
  * chunks are smaller than that never sees PSRAM however much is
- * fitted -- which is exactly what happened: a chunk size tuned on the
- * Cardputer, which has none, kept the T-Deck's entire lua heap in
- * internal sram with 8MB sitting unused beside it. Naming the memory
- * we want makes the chunk size a tuning decision again instead of a
- * placement one.
+ * fitted. Naming the memory we want makes the chunk size a tuning
+ * decision instead of a placement one.
  *
  * The fallback is for the board with no PSRAM, where
  * heap_caps_malloc(MALLOC_CAP_SPIRAM) has nothing to give whatever is

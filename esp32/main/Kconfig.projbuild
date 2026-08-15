@@ -58,9 +58,9 @@ config LUAOS_FB_SHADOW
 	bool "keep a copy of the framebuffer, so fb.unload works"
 	default n
 	help
-	  This panel cannot be read back -- the Cardputer's LCD connector
-	  is eight pins and the ST7789's SDO is routed nowhere -- so the
-	  only unload possible is from a copy the driver keeps.
+	  These panels cannot be read back: the ST7789's SDO is routed
+	  nowhere, so the only unload possible is from a copy the driver
+	  keeps.
 
 	  Costs 64800 bytes of internal SRAM at 240x135, which on a board
 	  with no PSRAM is a large fraction of what is free. It exists so

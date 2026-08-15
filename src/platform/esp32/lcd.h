@@ -1,7 +1,7 @@
 /* luaos_ prefix, not esp_lcd_: that is ESP-IDF's own namespace and
  * this file calls into it. The console_write collision was the lesson.
  */
-/* the Cardputer's ST7789 panel, as the framebuffer task/fb.lua serves.
+/* the ST7789 panel, as the framebuffer task/fb.lua serves.
  *
  * No font here, deliberately. fb.lua "knows rectangles, pixels and a
  * fill colour; it does not know what a window is, what a font is, or

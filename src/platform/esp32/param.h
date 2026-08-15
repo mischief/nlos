@@ -46,12 +46,10 @@
  *
  * CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL serves any allocation at or below
  * its threshold (4096) from internal sram, so a chunk under that never
- * reaches PSRAM however much is fitted. The T-Deck ran its whole Lua
- * heap out of internal sram for exactly this reason -- 8MB present and
- * none of it used -- because the 2KB below was tuned on the Cardputer,
- * which has no PSRAM at all. Above the threshold the same tuning is
- * pointless: chunks come from the 8MB and the tail of one costs
- * nothing worth counting.
+ * reaches PSRAM however much is fitted -- the whole Lua heap comes out
+ * of internal sram with the PSRAM sitting unused beside it. Above the
+ * threshold there is nothing to tune for: chunks come from PSRAM and
+ * the tail of one costs nothing worth counting.
  */
 #define LUAHEAP_CHUNK		(8 * 1024)
 #define LUAHEAP_LARGE_CACHED	4

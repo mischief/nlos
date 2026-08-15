@@ -1,19 +1,8 @@
-/* the Cardputer's ST7789, over IDF's esp_lcd.
- *
- * Pin map, orientation and the panel offsets are from
- * clm's esp32 firmware (board_config.h), which is the tested
- * source for this board. The offsets are the part not to rederive: a
- * 240x135 panel sits inside the ST7789's 240x320 RAM, and in this
- * landscape orientation (swap_xy + mirror_x) that lands at
- * colstart=40, rowstart=240-(135+52)=53. Wrong offsets do not fail --
- * they draw a shifted, wrapped picture, which reads as a broken driver.
- *
- * No shadow framebuffer, which is the memory decision here. 240x135 at
- * RGB565 is 64800 bytes against ~190KB free on a board with no PSRAM,
- * and the fb protocol is rectangle-based: fill and load go straight at
- * the panel. Only unload -- reading pixels back -- would need one, and
- * ST7789 readback over SPI is unreliable anyway, so it says so instead
- * of guessing.
+/* the ST7789 panel, over IDF's esp_lcd: one driver, a pin map and a
+ * geometry per board. Pin maps and offsets are from clm's esp32
+ * firmware (board_config.h), the tested source for these boards.
+ * A panel smaller than the ST7789's 240x320 RAM is a window inside it,
+ * and wrong offsets draw a shifted, wrapped picture rather than fail.
  */
 
 #include <sdkconfig.h>
