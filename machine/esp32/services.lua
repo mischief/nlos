@@ -6,7 +6,12 @@
 -- a service gets. An entry naming one this board lacks is skipped.
 
 return {
-	-- names for rights, at /srv. First, because the mount it declares
+	-- the lease as a filesystem: addr, mask, gw, dns, ntp, domain, one
+	-- per file. `from` mounts a capability the kernel already started,
+	-- with no proc to spawn -- dhcpd is a driver, not a service.
+	{ from = "dhcpd", mount = "/net" },
+
+	-- names for rights, at /srv. Early, because the mount it declares
 	-- is inherited by everything after it. No esp to post here: this
 	-- board's volume is flash, and fatsrv already serves it at /.
 	{ path = "/task/srvd.lua", name = "srv",

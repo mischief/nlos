@@ -133,9 +133,39 @@ function M.start(list, opts)
 	local started, skipped = {}, {}
 	local log = opts.log or function() end
 
+	-- a mount an entry declares. What comes after it is spawned with the
+	-- description that includes it, so order in the file is the
+	-- dependency here exactly as it is for a capability.
+	local function domount(prefix, h, fs, name)
+		local nsd, merr = opts.mount(prefix, h, fs or "mnt")
+
+		if nsd then
+			opts.ns = nsd
+		else
+			log("svc: " .. name .. ": " .. prefix .. ": " ..
+			    tostring(merr))
+		end
+	end
+
 	for _, e in ipairs(list or {}) do
 		local name = e.name or
-		    tostring(e.path):match("([^/]+)%.lua$") or "svc"
+		    (e.path and e.path:match("([^/]+)%.lua$")) or
+		    e.from or "svc"
+
+		-- `from`: a capability the kernel already holds, put in the
+		-- namespace. dhcpd serves the lease as /net and is a driver
+		-- rather than a service, so there is nothing here to spawn.
+		if e.from then
+			local h = opts.granted[e.from]
+
+			if not h then
+				skipped[#skipped + 1] = name
+			elseif opts.mount then
+				domount(e.mount, h, e.mountfs, name)
+			end
+			goto continue
+		end
+
 		local src = e.path and opts.readfile(e.path)
 		local arg = { args = e.args or {} }
 
@@ -210,11 +240,6 @@ function M.start(list, opts)
 				log("svc: " .. name .. " started as pid " ..
 				    pid)
 
-				-- a service that serves a filesystem says
-				-- where it belongs, and everything started
-				-- after it inherits the mount. Same rule as
-				-- the capability above: order in the file
-				-- is the dependency.
 				-- names for rights, published into a service
 				-- that keeps them. `net = "dhcpd"` offers the
 				-- dhcpd capability under the name "net", which
@@ -227,24 +252,18 @@ function M.start(list, opts)
 					end
 				end
 
+				-- a service that serves a filesystem says where
+				-- it belongs, and what starts after it
+				-- inherits the mount.
 				if e.mount and opts.mount then
-					local nsd, merr =
-					    opts.mount(e.mount, h,
-					        e.mountfs or "mnt")
-
-					if nsd then
-						opts.ns = nsd
-					else
-						log("svc: " .. name .. ": " ..
-						    e.mount .. ": " ..
-						    tostring(merr))
-					end
+					domount(e.mount, h, e.mountfs, name)
 				end
 			else
 				log("svc: " .. name .. ": spawn failed")
 				skipped[#skipped + 1] = name
 			end
 		end
+		::continue::
 	end
 	return started, skipped
 end

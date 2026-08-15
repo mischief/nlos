@@ -163,26 +163,12 @@ local has_tcp = caps_of.tcp ~= nil
 -- retries, so the address simply appears underneath them. and if it
 -- never does, the firmware's own DHCP was left running and they retry
 -- exactly as they always did.
--- the lease as a filesystem, at /net: addr, mask, gw, dns, ntp, domain,
--- one per file. This is how a program finds the resolver without
--- holding a right to dhcpd or being told an address at spawn -- see
--- task/dns.lua and bin/host.lua, which both just read /net/dns.
-if caps_of.dhcpd then
-	rootns:mount("/net", require("mnt").new(caps_of.dhcpd), "mnt",
-	    { port = { __right = caps_of.dhcpd } })
-end
-
--- Re-taken, because /net did not exist when the first description was
--- made. dhcpd deliberately keeps the earlier one: it serves /net, and a
--- namespace containing a mount to itself is a loop waiting to be walked.
--- /srv is a service, and svc re-describes when its entry declares it.
-nsdesc = rootns:describe()
-
--- Both 9P exports are entries in /etc/services.lua, along with the gefs
--- chain they export: none of them needs anything this proc holds
--- privately, and a mount an entry declares is inherited by the entries
--- after it -- which is what lets one list say partsrv, then gefssrv at
--- /n/gefs, then an export rooted there.
+-- This proc mounts nothing: /net, /srv, /n/gefs and both 9P exports are
+-- entries in /etc/services.lua. A mount an entry declares is inherited
+-- by the entries after it, which is what lets one list say partsrv,
+-- then gefssrv at /n/gefs, then an export rooted there.
+-- dhcpd keeps the description made above, without /net: it serves /net,
+-- and a namespace holding a mount to itself is a loop to be walked.
 
 -- the network a radio is on: { ssid = "labratory", psk = "..." }.
 --

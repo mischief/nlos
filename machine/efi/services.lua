@@ -16,7 +16,14 @@
 -- init.lua. The board has its own, etc/services-esp32.lua.
 
 return {
-	-- names for rights, at /srv. First, because the mount it declares
+	-- the lease as a filesystem: addr, mask, gw, dns, ntp, domain, one
+	-- per file. `from` mounts a capability the kernel already started,
+	-- with no proc to spawn -- dhcpd is a driver, not a service. This
+	-- is how a program finds the resolver without holding a right to
+	-- dhcpd or being told an address at spawn.
+	{ from = "dhcpd", mount = "/net" },
+
+	-- names for rights, at /srv. Early, because the mount it declares
 	-- is inherited by everything after it. `post` publishes a right
 	-- under the name a shell says to mount it by; the listing is what
 	-- `ls /srv` shows, and the rights come from messages to srvd

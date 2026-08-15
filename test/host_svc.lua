@@ -49,13 +49,21 @@ local function ok(cond, what)
 	end
 end
 
+-- every mount an entry declared, so a test can read back what went where.
+local mounts = {}
+
 local function run(list, granted)
-	spawned = {}
+	spawned, mounts = {}, {}
 	local logged = {}
 	local started, skipped = svc.start(list, {
 		readfile = function(p) return "-- " .. p end,
 		granted = granted or {},
 		log = function(m) logged[#logged + 1] = m end,
+		mount = function(prefix, h, fs)
+			mounts[#mounts + 1] =
+			    { prefix = prefix, handle = h, fs = fs }
+			return "nsdesc-" .. #mounts
+		end,
 	})
 	return started, skipped, logged
 end
@@ -112,6 +120,31 @@ _, skipped = run({ { path = "/task/a.lua", caps = { net = "tcp" },
 
 ok(#skipped == 1, "an unmet need skips the entry")
 ok(#spawned == 0, "and nothing is spawned")
+
+-- from: a capability the kernel already holds, mounted with no proc.
+run({ { from = "dhcpd", mount = "/net" } }, { dhcpd = 77 })
+
+ok(#spawned == 0, "a `from` entry spawns nothing")
+ok(#mounts == 1 and mounts[1].prefix == "/net", "and mounts where it says")
+ok(mounts[1].handle == 77, "with the capability it named")
+ok(mounts[1].fs == "mnt", "through mnt by default")
+
+_, skipped = run({ { from = "dhcpd", mount = "/net" } }, {})
+ok(#skipped == 1, "a machine without the capability skips the mount")
+ok(#mounts == 0, "and mounts nothing")
+
+-- mountfs picks the backend, which is what /srv needs.
+run({ { path = "/task/srvd.lua", name = "srv", mount = "/srv",
+    mountfs = "srvfs" } }, {})
+ok(mounts[1].fs == "srvfs", "mountfs picks the backend")
+
+-- a mount is inherited by what starts after it, and not before it.
+run({ { path = "/task/a.lua", name = "a" },
+      { from = "dhcpd", mount = "/net" },
+      { path = "/task/b.lua", name = "b" } }, { dhcpd = 77 })
+
+ok(spawned[1].opts.ns == nil, "an entry before the mount does not see it")
+ok(spawned[2].opts.ns == "nsdesc-1", "one after it is spawned with it")
 
 -- svcarg: the spawn-arg form. Rights top level, scalars under `args`.
 local m0, cfg = svcarg({ net = { __right = 42 },
