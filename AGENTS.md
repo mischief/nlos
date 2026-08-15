@@ -4,9 +4,12 @@ Read this before changing anything. It is advice and constraint, not
 neutral documentation — its audience is whoever (or whatever) is about
 to edit this repo next.
 
-Lua 5.4 on bare UEFI, x86_64 and aarch64: Lua, Mach and Plan 9 fused. Isolated Lua
+Lua 5.4 on the bare machine: Lua, Mach and Plan 9 fused. Isolated Lua
 states as processes, Mach-style ports and rights for all IPC, 9P at
-every boundary facing outward. A playground with discipline — toy
+every boundary facing outward. Three machines — UEFI, qemu's
+firmware-less `microvm`, and an ESP32-S3 handheld — differing in
+`src/platform/` and in which services they start, above which the
+system is one tree. A playground with discipline — toy
 scope, real protocols, real isolation, real tests. The point is to find
 out how much OS fits in Lua, not to ship a product.
 
@@ -522,6 +525,15 @@ at thousands of timers, and `MAXPROCS` is 32.
 
 ## Traps already walked — do not re-derive these
 
+- **The esp32 has two roots, and a change may land in either.** The
+  firmware image carries one set of Lua modules and the `luafs`
+  partition carries the rest. The partition is mounted over the image
+  and searched first, so a file present in both is the partition's copy
+  however old it is. `esp32/main/CMakeLists.txt` names the firmware set
+  and `tools/mkfatimg.lua` leaves exactly those out of the image, so the
+  two stay disjoint by the build — but editing a module in the firmware
+  set still means flashing the firmware, and flashing only the partition
+  leaves the old code running with nothing to say so.
 - **EFI events are completion tokens, not readiness**, and the signaled
   state is consumed by whoever observes it first. A notify function eats
   it; so does including the event in `kernel_run`'s wait array. Either

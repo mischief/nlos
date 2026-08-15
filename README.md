@@ -1,9 +1,14 @@
 # lua-os
 
-Lua 5.4 running on bare UEFI — x86_64, aarch64 or riscv64: a cursed
-fusion of Lua, Mach, and Plan 9. Most logic in Lua, small C glue.
-Isolated Lua states as processes, capabilities for all IPC, 9P at every
-boundary facing the outside world.
+Lua 5.4 running on the bare machine — a cursed fusion of Lua, Mach, and
+Plan 9. Most logic in Lua, small C glue. Isolated Lua states as
+processes, capabilities for all IPC, 9P at every boundary facing the
+outside world.
+
+Three machines, one system above the platform layer: UEFI (x86_64,
+aarch64, riscv64), qemu's firmware-less `microvm`, and an ESP32-S3
+handheld (the LilyGO T-Deck). They differ in `src/platform/` and in
+which services they start; `init.lua` is the same file on all of them.
 
 Built from scratch — no gnu-efi, no mingw, no EDK II, no glibc. Vanilla
 Lua 5.4 as an unpatched submodule; everything else is ours.
@@ -69,6 +74,25 @@ repl, reachable on host tcp/8090.
 
 On real hardware: `dd` `build/luaos.img` to a USB stick and UEFI-boot it.
 
+## The other two machines
+
+```sh
+meson setup build-microvm -Dplatform=microvm
+ninja -C build-microvm qemu     # no firmware: own PVH entry, idt, lapic
+```
+
+microvm boots in milliseconds and has more than one cpu, which is why
+the smp and scheduling tests live there. Its root is a host directory
+over virtio-9p, and it has no network stack.
+
+The ESP32-S3 build is CMake rather than meson, because it is an ESP-IDF
+project — see [esp32/README.md](esp32/README.md) for the boards, the
+partitions and the flashing. The one thing worth saying here: the
+firmware carries a set of Lua modules and the `luafs` partition carries
+the rest, the two are disjoint by the build, and changing a module in
+the firmware set means reflashing the firmware and not just the
+partition.
+
 ## SSH into it
 
 ```sh
@@ -94,7 +118,7 @@ Three things about it that are prototype, not design:
   persistent key means either the ESP right (which the session
   deliberately does without) or a key baked into the image.
 - **Any public key is accepted**, from any username. `authorized` in
-  `svc/sshd.lua` is one line so that this is obvious.
+  `authorized` in `task/sshd.lua` is one line so that this is obvious.
 - **You need an ed25519 key.** `ssh-ed25519` is the only host key and
   user key algorithm offered; there is no RSA anywhere.
 
@@ -106,9 +130,10 @@ quantum-resistant part is the cheap part. Authentication stays
 confidentiality, and a signature forged in 2040 verifies nothing today.
 `curve25519-sha256` is still offered for clients that want it.
 
-`etc/services.lua` is what starts it, and `args.trace = true` there logs
-every packet's message number to the console -- which is on because this
-is a branch for working on it.
+`machine/efi/services.lua` is what starts it, commented out by default:
+an anonymous visitor gets a shell, and it costs about 284KB idle.
+`args.trace = true` there logs every packet's message number to the
+console, which is what to turn on when working on the protocol.
 
 The crypto is `lib/crypto` (Lua) over `src/native.c` (the C primitives,
 copied verbatim), the protocols are `lib/ssh` and `lib/tls` with
@@ -141,7 +166,7 @@ Three kinds of test, all real boots:
 - **net boot tests** — same, but `NET=1` gives the guest a real NIC on
   qemu's usermode network. Separate because DHCP costs boot seconds the
   other tests have no reason to pay.
-- **host-driven tests** (`test/test_*.py`) — a real external client
+- **host-driven tests** (`test/test_*.lua`) — a real external client
   drives the guest: plan9port-compatible 9P over the com2 socket, and
   HTTP/JSON-RPC over a forwarded port. A guest cannot test its own TCP
   server, because qemu's usermode network does not hairpin.
@@ -168,10 +193,13 @@ Everything is .lua, so the directory is what says which kind it is:
 lib/     required. returns a table. loading it does nothing else.
 task/    a proc's main chunk: loaded by PATH, runs, never returns.
          drivers (spawned by src/kernel.c) and services (spawned from
-         etc/services.lua) alike -- the difference between them is who
+         /etc/services.lua) alike -- the difference between them is who
          starts them and what they are granted, and both of those are
          stated at the spawn site rather than in a directory name.
 bin/     a program under the lib/prog.lua ABI, run by a shell.
+machine/ one services list per machine. The build installs the one it
+         built for as /etc/services.lua, so the boot payload reads a
+         single name and no machine knows the others exist.
 tools/   host-side. builds and runs the image; never reaches the guest.
 test/    boot/ is guest payloads; the rest are host-side drivers.
 ```
