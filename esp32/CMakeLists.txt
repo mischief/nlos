@@ -44,9 +44,20 @@ file(GLOB_RECURSE luafs_sources CONFIGURE_DEPENDS
     "${luafs_root}/task/*" "${luafs_root}/etc/*"
     "${luafs_root}/machine/esp32/*")
 
+# what the firmware image already carries, which this one must not: the
+# partition is mounted over the image, so a file in both is the
+# partition's copy however old it is. main/CMakeLists.txt publishes the
+# list; taking it from there rather than repeating it is what keeps the
+# two roots disjoint without anyone remembering to.
+get_property(luafs_embedded GLOBAL PROPERTY LUAOS_EMBED_FILES)
+set(luafs_skip "${CMAKE_BINARY_DIR}/luafs.exclude")
+string(REPLACE ";" "\n" luafs_skip_text "${luafs_embedded}")
+file(WRITE "${luafs_skip}" "${luafs_skip_text}\n")
+
 set(luafs_img "${CMAKE_BINARY_DIR}/luafs.img")
 add_custom_command(OUTPUT "${luafs_img}"
     COMMAND "${LUA_EXE}" tools/mkfatimg.lua "${luafs_img}" "${luafs_size}"
+        --exclude-from "${luafs_skip}"
         bin/=/bin lib/=/lib task/=/task etc/=/etc
         # what this board runs. The path is /etc/services.lua on every
         # machine, so the build picks the list and the boot payload

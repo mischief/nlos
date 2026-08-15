@@ -35,8 +35,31 @@ end
 
 local function usage()
 	io.stderr:write(
-	    "usage: mkfatimg.lua [--secsz N] [--label L] out.img size src=/dst ...\n")
+	    "usage: mkfatimg.lua [--secsz N] [--label L] [--exclude-from F] " ..
+	    "out.img size src=/dst ...\n")
 	os.exit(2)
+end
+
+-- paths this image must not carry, one per line, as the firmware's own
+-- embedded list names them. A file in both roots is worse than a file
+-- in neither: the partition is mounted over the image and silently
+-- wins, so an embedded copy is unreachable until the partition is
+-- reflashed, and then it is whichever of the two is older.
+local skip = {}
+
+local function excludefrom(path)
+	local f = io.open(path, "r")
+
+	if not f then
+		die("cannot read " .. path)
+	end
+	for l in f:lines() do
+		l = l:gsub("%s+$", "")
+		if l ~= "" then
+			skip[l] = true
+		end
+	end
+	f:close()
 end
 
 -- "2M", "512K", "1048576"
@@ -128,6 +151,9 @@ while i <= #arg do
 	elseif a == "--label" then
 		i = i + 1
 		label = arg[i] or die("--label wants a name")
+	elseif a == "--exclude-from" then
+		i = i + 1
+		excludefrom(arg[i] or die("--exclude-from wants a file"))
 	elseif a:sub(1, 2) == "--" then
 		usage()
 	else
@@ -145,7 +171,7 @@ local size = bytes(args[2])
 
 local dev = assert(io_dev.create(out, size))
 local fs = assert(fat.ream(dev, { label = label, secsz = secsz }))
-local nfiles, nbytes = 0, 0
+local nfiles, nbytes, nskip = 0, 0, 0
 
 for j = 3, #args do
 	local src, dst = args[j]:match("^(.-)=(.*)$")
@@ -174,6 +200,16 @@ for j = 3, #args do
 	end
 
 	for _, rel in ipairs(walkdir(src)) do
+		local from = src:gsub("/+$", "") .. "/" .. rel
+
+		-- checked here rather than in walkdir, so its "no files
+		-- under it" still means the path was wrong. A directory
+		-- whose every file is embedded is a legitimate empty one.
+		if skip[from] then
+			nskip = nskip + 1
+			goto next
+		end
+
 		local path = (dst == "" and "/" or dst .. "/") .. rel
 		local dir = path:match("^(.*)/[^/]+$")
 		local data = slurp(src .. "/" .. rel)
@@ -185,6 +221,7 @@ for j = 3, #args do
 		assert(fs:writefile(path, data))
 		nfiles = nfiles + 1
 		nbytes = nbytes + #data
+		::next::
 	end
 
 	::continue::
@@ -194,8 +231,12 @@ fs:sync()
 
 local info = fs:info()
 
-io.write(("%s: FAT%d, %d byte sectors, %d files, %d bytes\n"):format(
-    out, info.type, secsz, nfiles, nbytes))
+-- the skipped count is said out loud because it is the only evidence
+-- the two roots stayed disjoint: zero where one was expected means the
+-- exclusions missed, and the firmware's copies go back to being dead.
+io.write(("%s: FAT%d, %d byte sectors, %d files, %d bytes%s\n"):format(
+    out, info.type, secsz, nfiles, nbytes,
+    nskip > 0 and (", " .. nskip .. " left to the image") or ""))
 
 -- Say it back rather than trust it. The image is about to be flashed to
 -- a board with no way to report a bad volume except by failing to boot,

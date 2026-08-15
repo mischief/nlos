@@ -221,7 +221,6 @@ set(EMBED_FILES
     lib/client/tty.lua
     lib/client/power.lua
     lib/client/wire.lua
-    lib/client/rpc.lua
     lib/dns.lua
     task/eth.lua
     task/ip.lua
@@ -243,8 +242,13 @@ set(EMBED_FILES
 #
 # A file that exists in both places is worse than a file in neither:
 # the partition is mounted before the image and silently wins, so an
-# image rebuild leaves the old copy in charge. Keep this list and the
-# image disjoint.
+# image rebuild leaves the old copy in charge.
+#
+# The two are kept disjoint by the build rather than by remembering to:
+# ../CMakeLists.txt reads this list back out and mkfatimg leaves out
+# whatever is in it. Published as a property because that file defines
+# the image after project() has already processed this one.
+set_property(GLOBAL PROPERTY LUAOS_EMBED_FILES "${EMBED_FILES}")
 
 # Some modules ship as stripped bytecode rather than source.
 #
