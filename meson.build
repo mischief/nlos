@@ -1428,6 +1428,18 @@ test('tcp4-codec', lua_interp,
 # lib/mouse.lua's record codec, and one client's queue driven against a
 # port that refuses. "the reader stopped reading" is a function that
 # returns false here, and a machine under load anywhere else.
+# what a service list means, with proc.spawn replaced by a function that
+# records what it was handed. An entry naming a capability the task never
+# reads is the failure this catches, and it went unseen on a real machine
+# because the service started and only then hung.
+test('svc-start', lua_interp,
+  args: [files('test/host_svc.lua')],
+  protocol: 'tap',
+  timeout: 20,
+  env: host_env,
+  depends: host_deps,
+)
+
 test('mouse-queue', lua_interp,
   args: [files('test/host_mouse.lua')],
   protocol: 'tap',
