@@ -90,5 +90,5 @@ return {
 	-- whatever is mounted, which is what 9P is for. Last, so the
 	-- mounts it exports are already made.
 	{ path = "/task/9pexport.lua", name = "9pexport-all",
-	  caps = { "tcp" }, args = { root = "/", port = 7777 } },
+	  caps = { net = "tcp" }, args = { root = "/", port = 7777 } },
 }

@@ -742,6 +742,7 @@ lua_payload = files(
   'lib/srv.lua',
   'lib/stdout.lua',
   'lib/svc.lua',
+  'lib/svcarg.lua',
   'lib/dos.lua',
   'task/power.lua',
   'lib/p9fs.lua',

@@ -25,10 +25,10 @@ local ns = require("ns")
 local nsfs = require("nsfs")
 local p9serve = require("p9serve")
 
-local m0 = thread.recv(sys.SELF)
+local m0, cfg = require("svcarg")(...)
 local net = m0.net.__right
-local port = m0.port or 564
-local backend = nsfs.new(ns.current(), m0.root or "/")
+local port = cfg.port or 564
+local backend = nsfs.new(ns.current(), cfg.root or "/")
 
 -- the tcp task's request/reply protocol, as init's tcp9srv uses it
 local replyport = sys.newport("9pexport.replyp")

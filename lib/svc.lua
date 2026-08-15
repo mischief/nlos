@@ -104,6 +104,31 @@ end
 -- Each service gets a DIFFERENT seed, which is why this is a function
 -- rather than a string: one compromised service must not be able to
 -- predict another's keys.
+-- what a `caps` or `optcaps` list means, one (argname, capname) at a
+-- time. `"tcp"` names the capability and calls it that in the arg;
+-- `net = "tcp"` names the same capability and calls it `net`, which is
+-- how a task written against one name takes a machine's other name for
+-- the same thing. Array entries come first and in order, so the
+-- capability a machine is missing is reported the same way every boot.
+local function caps(t)
+	local i, seen, out = 0, {}, {}
+
+	for n, cap in ipairs(t or {}) do
+		out[n], seen[n] = { cap, cap }, true
+	end
+	for k, v in pairs(t or {}) do
+		if not seen[k] then
+			out[#out + 1] = { k, v }
+		end
+	end
+	return function()
+		i = i + 1
+		if out[i] then
+			return out[i][1], out[i][2]
+		end
+	end
+end
+
 function M.start(list, opts)
 	local started, skipped = {}, {}
 	local log = opts.log or function() end
@@ -119,11 +144,11 @@ function M.start(list, opts)
 		end
 		local missing = nil
 
-		for _, cap in ipairs(e.caps or {}) do
+		for as, cap in caps(e.caps) do
 			local h = opts.granted[cap]
 
 			if h then
-				arg[cap] = { __right = h }
+				arg[as] = { __right = h }
 			else
 				missing = cap
 				break
@@ -135,11 +160,11 @@ function M.start(list, opts)
 		-- terminal wants the network so its programs can reach it
 		-- and is still a terminal without one -- where naming tcp
 		-- in caps would stop the panel on a board with no stack.
-		for _, cap in ipairs(e.optcaps or {}) do
+		for as, cap in caps(e.optcaps) do
 			local h = opts.granted[cap]
 
 			if h then
-				arg[cap] = { __right = h }
+				arg[as] = { __right = h }
 			end
 		end
 
