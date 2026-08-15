@@ -135,10 +135,21 @@ function Fs:readbuf(ent, off, count)
   if off + count > ent.size then count = ent.size - off end
 
   local csz = self:clustersz()
-  local out = buf.new(count)
-  local at = 1
   local c = self:clusat(ent.clus, off // csz)
   local within = off % csz
+
+  -- whole sectors inside one cluster: the run is already the answer, so
+  -- neither a second buffer nor a copy of it is needed. dev.IOUNIT and a
+  -- cluster are both 16KiB on the card, which makes this the usual case
+  -- rather than a corner of one.
+  if c and within % self.secsz == 0 and count % self.secsz == 0 and
+      within + count <= csz then
+    return self:rdrun(self:clusterlba(c) + within // self.secsz,
+        count // self.secsz)
+  end
+
+  local out = buf.new(count)
+  local at = 1
   local left = count
   while left > 0 do
     if not c then break end        -- the chain is shorter than the size

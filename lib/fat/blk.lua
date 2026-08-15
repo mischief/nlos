@@ -148,9 +148,14 @@ function Fs:rdrun(lba, n)
     return buf.new(0)
   end
   self:checklba(lba, n)
-  for i = lba, lba + n - 1 do
-    if self.cache[i] then
-      return self:rdsecs(lba, n)
+  -- only a dirty sector can differ from the device, and where none are
+  -- held the scan is skipped entirely -- which is every read of a volume
+  -- nothing has written.
+  if self.ndirty > 0 then
+    for i = lba, lba + n - 1 do
+      if self.dirty[i] then
+        return self:rdsecs(lba, n)
+      end
     end
   end
 
