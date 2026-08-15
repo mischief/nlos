@@ -373,6 +373,23 @@ l_spawn(lua_State *L)
 			if (wired[i] >= 0)
 				dup2(wired[i], i);
 
+		/* opts.session: a session of its own, with the wired stdin
+		 * as controlling terminal. lrzsz sets raw and flushes the
+		 * line, which returns EIO from a background or orphaned
+		 * process group rather than raising SIGTTOU.
+		 */
+		if (lua_istable(L, 2)) {
+			int want = 0;
+
+			if (lua_getfield(L, 2, "session") != LUA_TNIL)
+				want = lua_toboolean(L, -1);
+			lua_pop(L, 1);
+			if (want) {
+				setsid();
+				ioctl(STDIN_FILENO, TIOCSCTTY, 0);
+			}
+		}
+
 		/* only the streams left unwired are discarded, so asking
 		 * for stderr and nothing else still gets the diagnostics.
 		 */
@@ -434,6 +451,14 @@ l_poll(lua_State *L)
 
 	if (r == 0) {
 		lua_pushnil(L);
+		return 1;
+	}
+	/* -1 leaves `status` untouched, and reading it then reports whatever
+	 * was on the stack as an exit code -- a caller sees a plausible
+	 * number and stops waiting for a child that is still running.
+	 */
+	if (r < 0) {
+		lua_pushinteger(L, -1);
 		return 1;
 	}
 	if (WIFEXITED(status))
