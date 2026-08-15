@@ -425,7 +425,14 @@ local repl_worker_src = [[
 	_G.tcp = tcph and tcpc.new(tcph) or nil
 	_G.udp = udph and udpc.new(udph) or nil
 	_G.dnscap = dns
-	_G.http = require("http")
+	-- a convenience, and the only one big enough to be worth leaving
+	-- on the root it lives on: a machine whose root did not mount has
+	-- no network configured either, so this is absent there rather
+	-- than carried in the firmware against the chance. help lists what
+	-- is bound, so it simply does not appear.
+	local ok_http, http = pcall(require, "http")
+
+	_G.http = ok_http and http or nil
 
 	-- resolve: a real function (needs an argument) rather than a word
 	-- that explains itself. plain nil when there's no dns capability

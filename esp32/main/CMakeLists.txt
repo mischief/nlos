@@ -226,6 +226,28 @@ set(EMBED_FILES
     task/ip.lua
     task/tcp4.lua
     task/dhcpd.lua
+
+    # the rescue set: a launcher, the program ABI under it, and a
+    # ZMODEM receiver. What it buys is a board whose partition is empty
+    # or broken repairing itself -- reformat the volume, then send the
+    # tree down the serial line -- where otherwise the only way back is
+    # a cable and a host that can flash.
+    lib/dos.lua
+    lib/prog.lua
+    lib/zmodem.lua
+    bin/rz.lua
+    # init requires this one before it reaches any of the above, so a
+    # board without it does not boot far enough to be rescued.
+    lib/svc.lua
+    # what those two reach on the way up. proc and procfs come with the
+    # launcher's spawn, time and drbg with the program context, mouse
+    # and espfs with the namespace it builds.
+    lib/proc.lua
+    lib/procfs.lua
+    lib/espfs.lua
+    lib/mouse.lua
+    lib/time.lua
+    lib/crypto/drbg.lua
 )
 
 # What is not here: the programs in bin/, the shell and the terminal

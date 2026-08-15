@@ -49,10 +49,16 @@ file(GLOB_RECURSE luafs_sources CONFIGURE_DEPENDS
 # partition's copy however old it is. main/CMakeLists.txt publishes the
 # list; taking it from there rather than repeating it is what keeps the
 # two roots disjoint without anyone remembering to.
+#
+# file(GENERATE), not file(WRITE): the image depends on this list, so
+# adding a file to the firmware has to rebuild the image that must now
+# leave it out. GENERATE leaves the timestamp alone when the content
+# has not changed, so that dependency does not rebuild the image on
+# every configure.
 get_property(luafs_embedded GLOBAL PROPERTY LUAOS_EMBED_FILES)
 set(luafs_skip "${CMAKE_BINARY_DIR}/luafs.exclude")
 string(REPLACE ";" "\n" luafs_skip_text "${luafs_embedded}")
-file(WRITE "${luafs_skip}" "${luafs_skip_text}\n")
+file(GENERATE OUTPUT "${luafs_skip}" CONTENT "${luafs_skip_text}\n")
 
 set(luafs_img "${CMAKE_BINARY_DIR}/luafs.img")
 add_custom_command(OUTPUT "${luafs_img}"
@@ -63,7 +69,8 @@ add_custom_command(OUTPUT "${luafs_img}"
         # machine, so the build picks the list and the boot payload
         # reads one name -- see machine/.
         machine/esp32/services.lua=/etc/services.lua
-    DEPENDS "${luafs_root}/tools/mkfatimg.lua" ${luafs_sources}
+    DEPENDS "${luafs_root}/tools/mkfatimg.lua" "${luafs_skip}"
+        ${luafs_sources}
     WORKING_DIRECTORY "${luafs_root}"
     VERBATIM)
 add_custom_target(luafs DEPENDS "${luafs_img}")
