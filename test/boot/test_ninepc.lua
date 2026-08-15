@@ -9,7 +9,7 @@
 local p9 = require("ninep")
 local tap = require("tap")
 
-tap.plan(34)
+tap.plan(36)
 
 local C, L = p9, p9.pure
 
@@ -120,6 +120,16 @@ local su = same(C.unpackstat(sf:sub(3)), L.unpackstat(sf:sub(3)))
 tap.ok(su, "unpackstat agrees")
 tap.is(C.unpackstat(sf:sub(3)).name, "hello.txt", "and reads the name")
 agree("rstat", p9.rstat(13, sf:sub(3)))
+
+-- qemu marshals Rstat's outer stat[n] as a literal zero and leaves the
+-- record's own size[2] as the only real length. Built by hand because
+-- our own encoder cannot produce it, and agreeing on nil here would be
+-- agreeing on the wrong answer -- which is what both codecs did.
+local qemustat = string.pack("<I4BI2I2", 7 + 2 + #sf, p9.Rstat, 13, 0) .. sf
+
+agree("rstat with qemu's zero count", qemustat)
+tap.is(C.unpackstat(C.decode(qemustat).statbytes).name, "hello.txt",
+    "and the name survives it")
 
 -- ---- malformed input: agreeing on refusal ----
 --

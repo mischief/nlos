@@ -150,17 +150,16 @@ function M.decode(msg)
 	elseif typ == M.Rclunk or typ == M.Rremove or typ == M.Rflush then
 		-- empty body
 	elseif typ == M.Rstat then
-		-- Rstat double-wraps: an outer stat[n] count (Rstat's own
-		-- framing), around a stat record that ALSO starts with its
-		-- own leading size[2] (M.packstat's first field). strip
-		-- both, so m.statbytes ends up the bare body -- the same
-		-- shape M.unpackstat expects and a directory Tread's
-		-- back-to-back entries already are (each entry there is
-		-- only singly-wrapped, framed by Tread's own count[4]).
+		-- Rstat double-wraps: an outer stat[n] count around a
+		-- record that ALSO starts with its own size[2]. Strip
+		-- both, so statbytes is the bare body unpackstat wants.
+		-- The outer count is discarded because qemu marshals it as
+		-- a literal zero; the record's own size is the real one.
 		local n
+
+		_, off = sunpack("<I2", msg, off)
 		n, off = sunpack("<I2", msg, off)
-		local blob = msg:sub(off, off + n - 1)
-		m.statbytes = blob:sub(3)
+		m.statbytes = msg:sub(off, off + n - 1)
 	else
 		m.unknown = true
 	end

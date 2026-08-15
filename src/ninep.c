@@ -292,18 +292,21 @@ np_decode(lua_State *L)
 	case Rwstat:
 		break;			/* empty body */
 	case Rstat: {
-		/* two wrappers: Rstat's own stat[n], and the leading
-		 * size[2] every stat record carries. Both are stripped,
-		 * which is the shape unpackstat wants.
+		/* two wrappers, both stripped for unpackstat: Rstat's own
+		 * stat[n], and the size[2] every stat record carries. The
+		 * outer count is discarded because qemu marshals it as a
+		 * literal zero, leaving the record's own size the only one
+		 * that can be trusted. Linux's v9fs ignores it too.
 		 */
-		uint64_t n = rdint(&r, 2);
+		uint64_t n;
 
-		if (r.bad || n < 2 || r.off + n > r.len) {
+		rdint(&r, 2);
+		n = rdint(&r, 2);
+		if (r.bad || r.off + n > r.len) {
 			r.bad = 1;
 			break;
 		}
-		lua_pushlstring(L, (const char *)r.p + r.off + 2,
-		    (size_t)n - 2);
+		lua_pushlstring(L, (const char *)r.p + r.off, (size_t)n);
 		lua_setfield(L, -2, "statbytes");
 		r.off += (size_t)n;
 		break;
