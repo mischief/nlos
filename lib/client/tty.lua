@@ -54,6 +54,14 @@ function M.new(handle)
 		    reply = { __right = reply() } })
 		return thread.recv(replyport)
 	end
+	-- one edited line, with the terminal's own history and cursor
+	-- keys, or nil at end of input. A program that prompts wants this
+	-- rather than stdin: fd 0 reads the same lines underneath, but the
+	-- prompt belongs to the editor, so recalling a line through stdin
+	-- redraws over a prompt the console does not know is there.
+	function t.readline(prompt)
+		return thread.readline(handle, prompt)
+	end
 	-- bulk sibling of getch, for a program moving bytes rather than
 	-- keystrokes: whatever is queued after the first byte, in one
 	-- reply. "" on a timeout. The console caps `n` at its own bound,

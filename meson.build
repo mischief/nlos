@@ -614,6 +614,9 @@ lua_payload = files(
   # transfer the user only started at their terminal.
   'bin/rz.lua',
   'bin/sz.lua',
+  # a lua prompt as a program: the boot console is one, and a dos, ssh
+  # or panel shell had no way to reach one.
+  'bin/lua.lua',
   'bin/host.lua',
   'bin/date.lua',
   'lib/ntp.lua',
