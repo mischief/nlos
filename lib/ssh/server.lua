@@ -37,6 +37,10 @@ M.VERSION = "SSH-2.0-luassh_0.1"
 local WINDOW = 2 * 1024 * 1024
 local MAXPACKET = 32768
 
+-- How many packets a peer may make us hold while we wait for one it owes
+-- us. Its window bounds the channel data; this bounds the rest.
+local QUEUE_MAX = 512
+
 local S = {}
 S.__index = S
 
@@ -57,6 +61,10 @@ function M.new(conn, conf)
     hostkey_pub = conf.hostkey_pub or ed25519.publickey(seed),
     chans = {},
     nextchan = 0,
+    -- Channel traffic that arrives on the wire while a rekey is waiting
+    -- for its half of the exchange. recv() drains it next, so the
+    -- embedder's loop sees no gap in the stream.
+    kexqueue = {},
   }, S)
 end
 
@@ -82,6 +90,9 @@ function S:banner()
     return fail("client speaks " .. line)
   end
 
+  -- Kept for the exchange hash, initial and rekey alike: RFC 4253 9.1
+  -- builds H from the banners, and a rekey must reuse these rather than
+  -- re-read the wire.
   self.v_c, self.v_s = line, M.VERSION
   return true
 end
@@ -122,6 +133,12 @@ function S:transport_msg(payload)
 end
 
 function S:recv()
+  -- Packets a rekey queued on its way through come out here first, in
+  -- order: the embedder's loop sees no gap in the stream.
+  if self.kexqueue[1] then
+    return table.remove(self.kexqueue, 1)
+  end
+
   while true do
     local payload, err = self.pkt:recvpkt()
     if not payload then return fail(err) end
@@ -136,9 +153,59 @@ end
 --------------------------------------------------------------------------
 -- key exchange
 
-function S:kex()
-  -- Set for the whole of the initial exchange, and cleared once NEWKEYS
-  -- has been seen in both directions: see transport_msg for what it
+-- The first packet whose type is in `keep`. The rest is queued in order
+-- for recv(): a peer may keep sending channel data until it processes
+-- the exchange, and none of that is part of the exchange hash. The
+-- queue is read before the wire, so a KEXINIT that landed there when
+-- both ends opened a rekey at once is answered rather than waited for
+-- again. The cap bounds what a stalling peer can make us hold.
+function S:recv_until(keep)
+  for _ = 1, QUEUE_MAX do
+    for i, p in ipairs(self.kexqueue) do
+      if keep[p:byte(1)] then return table.remove(self.kexqueue, i) end
+    end
+
+    local payload, err = self.pkt:recvpkt()
+    if not payload then return nil, err end
+    if keep[payload:byte(1)] then return payload end
+
+    local handled, reject = self:transport_msg(payload)
+    if reject then return nil, reject end
+    if handled then
+      if self.closed then return nil, self.closed end
+    else
+      self.kexqueue[#self.kexqueue + 1] = payload
+    end
+  end
+  return nil, "too many packets during key exchange"
+end
+
+-- True once the packet layer has run far enough that the sequence
+-- numbers must be reset. See ssh.packet need_rekey.
+function S:need_rekey()
+  return self.session_id ~= nil and not self.rekeying and self.pkt:need_rekey()
+end
+
+-- Run the owed exchange, leading it. Nothing to do before the first one.
+function S:rekey_if_owed()
+  if not self:need_rekey() then return true end
+  return self:kex(nil, true)
+end
+
+-- The key exchange, initial and rekey. Same exchange both times, RFC
+-- 4253 9.1: both KEXINITs go into the hash along with the banners
+-- banner() parked in v_c and v_s, the ECDH roles follow the role rather
+-- than the initiator, and the session_id stays what it was. `i_c` is the
+-- client's KEXINIT when one is in hand already; `lead` says whether ours
+-- goes out before reading it or in reply to it.
+function S:kex(i_c, lead)
+  if self.rekeying then
+    return fail("rekey already in progress")
+  end
+  self.rekeying = true
+
+  -- Set for the whole of the exchange, and cleared once NEWKEYS has
+  -- been seen in both directions: see transport_msg for what it
   -- changes and why the window is exactly this one.
   self.inkex = true
 
@@ -146,25 +213,59 @@ function S:kex()
   -- ML-KEM with encapsulation alone, which is the cheap half.
   local opts = { hybrid = self.conf.hybrid ~= false }
   local i_s = kex.kexinit(self.conn.rand, "server", opts)
-  local ok, err = self:send(i_s)
-  if not ok then return fail(err) end
 
-  local i_c
-  i_c, err = self:recv()
-  if not i_c then return fail(err) end
+  -- Every exit clears both flags, and there are several of them, so the
+  -- failures go through one place.
+  local function bail(errmsg)
+    self.inkex = false
+    self.rekeying = false
+    return fail(errmsg)
+  end
+
+  local ok, err
+
+  if lead then
+    ok, err = self:send(i_s)
+    if not ok then return bail(err) end
+  end
+
+  if not i_c then
+    i_c, err = self:recv_until { [msg.KEXINIT] = true }
+    if not i_c then return bail(err) end
+  end
+
+  if i_c:byte(1) ~= msg.KEXINIT then
+    return bail("expected KEXINIT")
+  end
+
+  if not lead then
+    ok, err = self:send(i_s)
+    if not ok then return bail(err) end
+  end
 
   -- No `local` here: this must be the offer built above, not a fresh
   -- nil. Shadowing it means check() is told we support nothing.
   opts, err = kex.check(i_c, "server", opts)
-  if not opts then return fail(err) end
-  if not opts.strict then
-    return fail("client does not support " .. kex.STRICT_C)
+  if not opts then return bail(err) end
+
+  -- Strict kex is required of the initial exchange: a client without it
+  -- has no legacy to support, so refuse rather than negotiating down to
+  -- the framing Terrapin broke. A rekey cannot require it -- OpenSSH
+  -- drops the flag from its rekey proposal (kex.c, kex_input_newkeys) --
+  -- so a conforming peer offers no strict flag there. The sequence reset
+  -- at NEWKEYS applies to the rekey either way, and is done below.
+  if self.session_id == nil and not opts.strict then
+    return bail("client does not support " .. kex.STRICT_C)
   end
 
   local res
   res, err = kex.server {
     sendpkt = function(p) return self:send(p) end,
-    recvpkt = function() return self:recv() end,
+    -- Channel traffic in flight at the moment of the rekey is not part
+    -- of the exchange; read past it rather than failing on it.
+    recvpkt = function()
+      return self:recv_until { [msg.KEX_ECDH_INIT] = true }
+    end,
     rand = self.conn.rand,
     v_c = self.v_c, v_s = self.v_s, i_c = i_c, i_s = i_s,
     hybrid = opts.hybrid,
@@ -172,15 +273,17 @@ function S:kex()
     hostkey_pub = self.hostkey_pub,
     session_id = self.session_id,
   }
-  if not res then return fail(err) end
+  if not res then return bail(err) end
 
   ok, err = self:send(string.char(msg.NEWKEYS))
-  if not ok then return fail(err) end
+  if not ok then return bail(err) end
 
   local payload
-  payload, err = self:recv()
-  if not payload then return fail(err) end
-  if payload:byte(1) ~= msg.NEWKEYS then return fail("expected NEWKEYS") end
+  payload, err = self:recv_until { [msg.NEWKEYS] = true }
+  if not payload then return bail(err) end
+  if payload:byte(1) ~= msg.NEWKEYS then
+    return bail("expected NEWKEYS")
+  end
 
   -- The server's outgoing direction is server-to-client; the same pair,
   -- swapped relative to the client.
@@ -188,6 +291,7 @@ function S:kex()
   self.pkt:resetseq()
   self.session_id = self.session_id or res.session_id
   self.inkex = false
+  self.rekeying = false
 
   return true
 end
@@ -318,7 +422,7 @@ end
 function S:handshake()
   local ok, err = self:banner()
   if not ok then return fail(err) end
-  ok, err = self:kex()
+  ok, err = self:kex(nil, true)
   if not ok then return fail(err) end
   return self:userauth()
 end
@@ -345,6 +449,15 @@ end
 -- One protocol step. Returns an event table, or nil plus an error, or
 -- nil, nil at a clean end of session.
 function S:step()
+  -- The read path is the only one that may block, so it is where an owed
+  -- rekey is run. An embedder that writes for a long time without coming
+  -- back here should ask need_rekey() itself.
+  local ok, kerr = self:rekey_if_owed()
+  if not ok then
+    self:disconnect("rekey failed")
+    return fail(kerr)
+  end
+
   local payload, err = self:recv()
   if not payload then
     if self.closed then return nil, nil end
@@ -354,15 +467,24 @@ function S:step()
   local r = wire.reader(payload)
   local t = r:byte()
 
-  -- A peer asking to rekey. Not implemented, and saying so beats the
-  -- alternative: falling through to the channel dispatch below treats
-  -- this as a message for channel 0x14, finds no such channel, ignores
-  -- it, and leaves the client waiting for a KEXINIT that never comes.
-  -- OpenSSH asks after an hour or a gigabyte, so a long session reaches
-  -- this rather than a test.
+  -- A peer asking to rekey, RFC 4253 9.1: it sent its KEXINIT and waits
+  -- for ours, so answer with the exchange and swallow the packet.
+  -- Anything arriving inside that exchange which is not part of it is
+  -- refused by transport_msg, as in the initial one. A KEXINIT reaching
+  -- here while we are already mid-exchange belongs to the read inside
+  -- kex, and passes through rather than re-entering.
   if t == msg.KEXINIT then
-    self:disconnect("rekeying is not implemented")
-    return fail("client asked to rekey")
+    -- No re-key re-entry check here: kex() has one, and it fails loudly
+    -- rather than the way a falsy return would, which events() reads as
+    -- a clean end of session.
+    local ok, err = self:kex(payload, false)
+    if not ok then
+      self:disconnect("rekey failed")
+      return nil, err or "rekey failed"
+    end
+    -- An event rather than a bare true: the caller of step() indexes
+    -- the result, and an embedder may want to know a rekey happened.
+    return { type = "rekey" }
   end
 
   if t == msg.CHANNEL_OPEN then

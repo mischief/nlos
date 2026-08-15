@@ -35,6 +35,13 @@ local spack, sunpack = string.pack, string.unpack
 local MAX_PACKET = 35000
 local BLOCK = 8
 
+-- RFC 4344 3.1, and what OpenSSH enforces: rekey once 2^31 packets have
+-- gone either way. The sequence number is 32 bits and it is the nonce,
+-- so a wrap repeats a nonce under the same key. The limit leaves 2^31
+-- packets of slack for the exchange to happen in.
+local REKEY_PACKETS = 1 << 31
+local MAX_SEQ = 0xffffffff
+
 local P = {}
 P.__index = P
 
@@ -46,7 +53,17 @@ function M.new(conn)
     trace = conn.trace,
     send_seq = 0,
     recv_seq = 0,
+    -- Lowered by the tests, which cannot send 2^31 packets.
+    rekey_packets = REKEY_PACKETS,
   }, P)
+end
+
+-- True once a key exchange is owed. The transport cannot run one itself:
+-- an exchange is a conversation, and who may block on a read is the
+-- caller's business.
+function P:need_rekey()
+  return self.send_seq >= self.rekey_packets
+      or self.recv_seq >= self.rekey_packets
 end
 
 -- Install keys: 64 bytes in each direction, named by which way they run
@@ -70,6 +87,12 @@ local function nonce(seq)
 end
 
 function P:sendpkt(payload)
+  -- The backstop under need_rekey: a peer that will not rekey does not
+  -- get a repeated nonce out of us.
+  if self.out_k2 and self.send_seq == MAX_SEQ then
+    return nil, "send sequence number exhausted: no rekey"
+  end
+
   local padlen = BLOCK - ((1 + #payload) % BLOCK)
   if self.out_k2 == nil then
     -- Unencrypted, the length field counts toward the padded region.
@@ -96,6 +119,10 @@ function P:sendpkt(payload)
 end
 
 function P:recvpkt()
+  if self.in_k2 and self.recv_seq == MAX_SEQ then
+    return nil, "receive sequence number exhausted: no rekey"
+  end
+
   local n = nonce(self.recv_seq)
 
   local enclen, err = self.read(4)
@@ -153,5 +180,6 @@ function P:recvpkt()
 end
 
 M.MAX_PACKET = MAX_PACKET
+M.REKEY_PACKETS = REKEY_PACKETS
 
 return M
