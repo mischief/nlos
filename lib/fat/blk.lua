@@ -225,11 +225,35 @@ function Fs:flush()
   if self.ndirty == 0 then return end
   local order = {}
   for lba in pairs(self.dirty) do order[#order + 1] = lba end
-  table.sort(order, function(a, b) return self.dirty[a] < self.dirty[b] end)
-  for _, lba in ipairs(order) do
-    -- the sector goes out as it is held: the device takes a buffer.
-    self.dev:write(self:secoff(lba), self.cache[lba])
+  -- By sector, not by the order the writes happened. A file written
+  -- straight through dirties a contiguous run, and in this order that
+  -- run is one call to the device instead of one per sector -- which on
+  -- a card is the whole cost. Nothing is lost by it: the paragraph above
+  -- says why no order here makes a half-flush consistent.
+  table.sort(order)
+
+  local i = 1
+
+  while i <= #order do
+    local j = i
+
+    while j < #order and order[j + 1] == order[j] + 1 do
+      j = j + 1
+    end
+    if j == i then
+      -- the sector goes out as it is held: the device takes a buffer.
+      self.dev:write(self:secoff(order[i]), self.cache[order[i]])
+    else
+      local n = j - i + 1
+      local run = buf.new(n * self.secsz)
+
+      for k = 0, n - 1 do
+        run:copy(k * self.secsz + 1, self.cache[order[i + k]])
+      end
+      self.dev:write(self:secoff(order[i]), run)
+    end
     self.nwrite = self.nwrite + 1
+    i = j + 1
   end
   -- Written out, so they are clean now and may be evicted.
   for lba in pairs(self.dirty) do

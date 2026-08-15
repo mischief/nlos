@@ -7,10 +7,11 @@
 --      dev:size()         -> bytes
 --      dev:sync()         -- optional, called at the end of a flush
 --
--- Offsets are bytes and always sector-aligned, and a write is one whole
--- sector. Nothing above this asks for anything else, which is what lets
--- the same code sit on a disk image, on a USB mass storage device, or
--- on a virtio queue.
+-- Offsets are bytes and always sector-aligned, and a write is a whole
+-- number of sectors -- a flush hands over a contiguous run in one call.
+-- Nothing above this asks for anything else, which is what lets the same
+-- code sit on a disk image, on a USB mass storage device, or on a virtio
+-- queue.
 
 local M = {}
 
@@ -61,12 +62,21 @@ function Ram:read(off, len)
   return table.concat(out)
 end
 
+-- Any whole number of blocks, which is what a real device takes: a
+-- flush hands over a contiguous run in one call, and refusing that here
+-- would make the test double stricter than the thing it stands in for.
 function Ram:write(off, s)
   assert(off >= 0 and off + #s <= self.nbytes, "write outside the device")
-  assert(off % self.blksz == 0 and #s == self.blksz,
+  assert(off % self.blksz == 0 and #s % self.blksz == 0,
     "writes are whole blocks")
+
+  local bytes = type(s) == "string" and s or s:str()
+
   self.nwrite = self.nwrite + 1
-  self.blocks[off // self.blksz] = s
+  for i = 0, #bytes // self.blksz - 1 do
+    self.blocks[off // self.blksz + i] =
+      bytes:sub(i * self.blksz + 1, (i + 1) * self.blksz)
+  end
 end
 
 -- a copy that shares nothing, for taking a snapshot of a device mid-test
