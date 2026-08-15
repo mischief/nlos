@@ -16,6 +16,20 @@
 -- init.lua. The board has its own, etc/services-esp32.lua.
 
 return {
+	-- the network, from the wire up. eth owns the NIC and stays a
+	-- kernel driver; each of these owns no device and holds one send
+	-- right to the layer below it. A machine with no NIC grants no
+	-- eth, so ip is skipped, and tcp and dhcpd skip after it.
+	{ path = "/task/ip.lua", capname = "ip", caps = { "eth" } },
+
+	-- capname "tcp", not "tcp4": a client asks for the protocol, and
+	-- lib/http.lua and lib/ssh cannot tell what implements it.
+	{ path = "/task/tcp4.lua", capname = "tcp", caps = { "ip" } },
+
+	-- the address, and keeping it. What it serves is the /net mounted
+	-- below.
+	{ path = "/task/dhcpd.lua", capname = "dhcpd", caps = { "ip" } },
+
 	-- the lease as a filesystem: addr, mask, gw, dns, ntp, domain, one
 	-- per file. `from` mounts a capability the kernel already started,
 	-- with no proc to spawn -- dhcpd is a driver, not a service. This

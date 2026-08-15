@@ -308,6 +308,10 @@ else
     'lib/crypto/poly1305.lua',
     'lib/crypto/hashstate.lua',
     'lib/crypto/sha256.lua',
+    # what task/tcp4.lua draws an initial sequence number from when it
+    # is started as a service: a service holds no raw rng, so lib/svc.lua
+    # hands it a seed and it expands that here.
+    'lib/crypto/drbg.lua',
     'lib/tcb.lua',
     'task/ip.lua',
     'task/tcp4.lua',
@@ -320,10 +324,23 @@ else
     'lib/tap.lua',
     'lib/ps.lua',
     'lib/zmodem.lua',
+    # what init.lua needs before it has mounted anything. romfs is the
+    # root on a machine with no disk, and is what makes the embedded
+    # files above reachable by path rather than by require alone.
+    'lib/romfs.lua',
+    'lib/procfs.lua',
+    'lib/svc.lua',
+    'lib/svcarg.lua',
+    'lib/dnsc.lua',
+    'task/dns.lua',
   ]
   embed_args = ['/boot/microvm.lua=' +
       (boot_payload.startswith('/') ? boot_payload
-       : meson.current_source_dir() / boot_payload)]
+       : meson.current_source_dir() / boot_payload),
+    # the machine picks its own list, installed under the one name the
+    # payload reads -- the same arrangement the efi and esp32 builds use.
+    '/etc/services.lua=' + meson.current_source_dir() /
+        'machine/microvm/services.lua']
   foreach f : embed_files
     embed_args += '/' + f + '=' + meson.current_source_dir() / f
   endforeach
@@ -945,7 +962,7 @@ if fw_network
   # seconds that the tests above have no reason to pay.
   foreach t : ['netboot', 'dns', 'dhcp', 'efiprobe', 'host', 'date', 'irc']
     test('boot-' + t, boottest,
-      args: [luaos_img, files('test/boot/test_' + t + '.lua')],
+      args: [luaos_img, files('test/boot/test_' + t + '.lua')] + ['--services'],
       protocol: 'tap',
       timeout: 120,
       is_parallel: true,
@@ -956,7 +973,7 @@ if fw_network
   foreach t : shared_tests
     if t[2]
       test('boot-' + t[0], boottest,
-        args: [luaos_img, files('test/boot/shared_' + t[0] + '.lua')],
+        args: [luaos_img, files('test/boot/shared_' + t[0] + '.lua')] + ['--services'],
         protocol: 'tap',
         timeout: 120,
         is_parallel: true,
@@ -1098,9 +1115,22 @@ microvm_tests = [
 # for every entry rather than only those: the cost is nothing for a test
 # that does not load it, and a --gefs flag added to an entry later would
 # otherwise fail as a missing lua module far from this list.
+# payloads that reach the ip or tcp task, and so must run under a real
+# init: those are services now. A raw-ethernet test is deliberately not
+# here -- it wants the wire to itself, and the ip task would take frames
+# from under it.
+net_service_tests = ['dhcp', 'netfiles', 'dns', 'iptask', 'udpq',
+  'loopback', 'udpbench', 'autoip', 'ipraw', 'tcp', 'tcpbench',
+  'tcploop', 'fetch', 'httpd']
+
 foreach t : microvm_tests
+  tflags = t[1]
+  if t[0] in net_service_tests
+    tflags += ['--services']
+  endif
   test('microvm-' + t[0], microvm_boottest,
-    args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] + t[1],
+    args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] +
+      tflags,
     protocol: 'tap',
     timeout: 90,
     is_parallel: true,
@@ -1140,10 +1170,14 @@ microvm_smp_tests = [
 
 foreach n : ['2', '4']
   foreach t : microvm_smp_tests
+    tflags = t[1]
+    if t[0] in net_service_tests
+      tflags += ['--services']
+    endif
     test('smp' + n + '-' + t[0], microvm_boottest,
       args: [luaos_microvm_elf,
         files('test/boot/microvm_' + t[0] + '.lua'),
-        '--smp=' + n] + t[1],
+        '--smp=' + n] + tflags,
       protocol: 'tap',
       timeout: 90,
       is_parallel: true,
@@ -1154,8 +1188,12 @@ foreach n : ['2', '4']
 endforeach
 
 foreach t : shared_tests
+  tflags = t[1]
+  if t[0] in net_service_tests
+    tflags += ['--services']
+  endif
   test('microvm-' + t[0], microvm_boottest,
-    args: [luaos_microvm_elf, files('test/boot/shared_' + t[0] + '.lua')] + t[1],
+    args: [luaos_microvm_elf, files('test/boot/shared_' + t[0] + '.lua')] + tflags,
     protocol: 'tap',
     timeout: 90,
     is_parallel: true,
@@ -1206,9 +1244,13 @@ foreach t : microvm_pci0_tests
 endforeach
 
 foreach t : microvm_pci_tests
+  tflags = t[1]
+  if t[0] in net_service_tests
+    tflags += ['--services']
+  endif
   test('pci-' + t[0], microvm_boottest,
     args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] +
-      t[1] + ['--pci'],
+      tflags + ['--pci'],
     protocol: 'tap',
     timeout: 90,
     is_parallel: true,

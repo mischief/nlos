@@ -6,6 +6,20 @@
 -- a service gets. An entry naming one this board lacks is skipped.
 
 return {
+	-- the network, from the wire up. eth owns the radio and stays a
+	-- kernel driver; each of these owns no device and holds one send
+	-- right to the layer below it. They start before the radio has
+	-- associated and carry nothing until it does.
+	{ path = "/task/ip.lua", capname = "ip", caps = { "eth" } },
+
+	-- capname "tcp", not "tcp4": a client asks for the protocol, and
+	-- lib/http.lua and lib/ssh cannot tell what implements it.
+	{ path = "/task/tcp4.lua", capname = "tcp", caps = { "ip" } },
+
+	-- the address, and keeping it. What it serves is the /net mounted
+	-- below.
+	{ path = "/task/dhcpd.lua", capname = "dhcpd", caps = { "ip" } },
+
 	-- the lease as a filesystem: addr, mask, gw, dns, ntp, domain, one
 	-- per file. `from` mounts a capability the kernel already started,
 	-- with no proc to spawn -- dhcpd is a driver, not a service.

@@ -73,10 +73,12 @@ local arp = require("arp")
 local inet = require("inet")
 local ethwire = require("ethwire")
 
--- the eth right is granted by name, like every other task's device --
--- this one's device just happens to be another task. kernel.c's driver
--- table says so with .needs = "eth"; see struct driver_desc.
-local ethh = sys.granted().eth
+-- the eth right, whose device happens to be another task. Named in the
+-- spawn arg when a service list starts this, and in sys.granted() on a
+-- machine whose kernel still spawns it as a driver.
+local a = ...
+local ethh = sys.granted().eth or
+    (type(a) == "table" and a.eth and a.eth.__right) or nil
 
 if not ethh then
 	-- nothing under us. Say it once and stop, rather than serving a

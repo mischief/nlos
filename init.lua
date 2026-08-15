@@ -48,6 +48,13 @@ end
 -- console, which is what "one owner per resource" asks for.
 require("stdout").set(caps_of.cons)
 
+-- the console's input, for the repl below. Where one serial line is both
+-- the keyboard and the 9p wire the wire keeps the bytes until someone
+-- asks, so a machine that means to be typed at has to say so. A no-op
+-- where the two are different devices: lib/console.lua skips it when the
+-- backend publishes no claim_input.
+sys.send(caps_of.cons, { op = "claim_input" })
+
 -- diagnostics are a different stream from output: sys.log lands in the
 -- kernel's ring, stamped and tagged with this proc's name, alongside
 -- what the kernel writes there itself.
@@ -142,9 +149,7 @@ print("")
 -- same exportfs that serves gefs on 564 -- rooted at "/" instead of
 -- /n/gefs, so `9p tcp!host!7777 ls /` shows /net, /srv, /n and the rest.
 -- It is spawned after the namespace is fully assembled (below), because
--- it needs those mounts to be there to export them. tcp only exists when
--- a NIC was found at boot (see have_net in kernel.c).
-local has_tcp = caps_of.tcp ~= nil
+-- it needs those mounts to be there to export them.
 
 -- ---- get an address, before anything wants one ----
 --
@@ -198,10 +203,12 @@ if caps_of.eth then
 	end
 end
 
--- the resolver, which /etc/services.lua starts like any other service.
--- Filled in below from what svc published under that name, so a shell
--- and the panel share one proc and one cache.
-local dnssrv
+-- what this machine has: the kernel's own grants to start with, and
+-- below, everything /etc/services.lua started as well, under the name
+-- the list gave it. The stack is in the second group -- ip, tcp and
+-- dhcpd are services -- so a shell is lent the same procs the panel's
+-- services were, from one table.
+local avail = caps_of
 
 print("")
 
@@ -314,10 +321,10 @@ do
 			-- own drbg.new rather than quietly at a weaker one.
 			seed = rng and rng.bytes or nil,
 		})
-		-- svc publishes a started service under its name, which
-		-- is where the resolver comes from: the repl and dos are
-		-- handed the same one the panel's services were.
-		dnssrv = grants.dns
+		-- svc publishes a started service under its name, so this
+		-- now holds the stack and the resolver as well as what the
+		-- kernel granted.
+		avail = grants
 	elseif why and not why:match("^no ") then
 		-- a missing config is a machine with no services, which is
 		-- fine. a config that failed to load is a mistake worth saying.
@@ -547,16 +554,16 @@ while true do
 	if caps_of.dbg then
 		grant.dbg = { __right = caps_of.dbg }
 	end
-	if has_tcp then
-		grant.tcp = { __right = caps_of.tcp }
+	if avail.tcp then
+		grant.tcp = { __right = avail.tcp }
 	end
 	-- the stack, which is what serves udp: there is no separate udp
 	-- capability on any platform.
-	if caps_of.ip then
-		grant.ip = { __right = caps_of.ip }
+	if avail.ip then
+		grant.ip = { __right = avail.ip }
 	end
-	if dnssrv then
-		grant.dns = { __right = dnssrv }
+	if avail.dns then
+		grant.dns = { __right = avail.dns }
 	end
 	if caps_of.fb then
 		grant.fb = { __right = caps_of.fb }

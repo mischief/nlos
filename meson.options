@@ -33,7 +33,12 @@ option('platform', type: 'combo', choices: ['efi', 'microvm'], value: 'efi',
 #
 # Pointing this at a test payload builds an image that runs it on vmd
 # with nothing injected and nothing typed.
-option('boot_payload', type: 'string', value: 'boot/microvm.lua',
+# init.lua is the same payload the other machines run, so a microvm
+# assembles its namespace and starts /etc/services.lua like anything
+# else. boot/microvm.lua is still here and still the right answer for
+# bringing up a loader that has never booted this: it asks for nothing
+# but the console, where init asks for what the machine says it has.
+option('boot_payload', type: 'string', value: 'init.lua',
   description: 'lua payload embedded in the microvm image as the fw_cfg fallback')
 
 # -fsanitize=undefined, trapping rather than reporting.

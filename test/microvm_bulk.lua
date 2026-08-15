@@ -20,7 +20,9 @@
 
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 
-package.path = scriptdir .. "/?.lua;" .. package.path
+-- tools/ too: fwcfg.lua is shared with the boot harnesses.
+local toolsdir = scriptdir .. "/../tools"
+package.path = scriptdir .. "/?.lua;" .. package.path .. ";" .. toolsdir .. "/?.lua"
 
 local server = require("hostserver")
 local hostutil = assert(package.loadlib(os.getenv("HOSTUTIL_SO") or
@@ -120,18 +122,29 @@ local gf = assert(io.open(genpath, "wb"))
 gf:write(src)
 gf:close()
 
-local pid = hostutil.spawn({
+-- the fw_cfg keys come from tools/fwcfg.lua, which the boot harnesses
+-- share: a list rather than table.unpack, which mid-constructor would
+-- expand to one argument.
+local argv = {
 	"qemu-system-x86_64",
 	"-M", "microvm,pit=on,pic=off,rtc=off,ioapic2=off,acpi=on",
 	"-enable-kvm", "-cpu", "host", "-m", "256",
 	"-kernel", elf,
-	"-fw_cfg", "name=opt/org.luaos.test,file=" .. genpath,
+}
+for _, a in ipairs(require("fwcfg").args(genpath,
+    { services = true, dir = tmp, tools = toolsdir })) do
+	argv[#argv + 1] = a
+end
+for _, a in ipairs({
 	"-device", "virtio-rng-device,bus=virtio-mmio-bus.1",
 	"-netdev", "user,id=n0",
 	"-device", "virtio-net-device,netdev=n0,bus=virtio-mmio-bus.2",
 	"-nodefaults", "-no-user-config", "-no-reboot", "-display", "none",
-	"-serial", "file:" .. serial,
-})
+	"-serial", "file:" .. serial,}) do
+	argv[#argv + 1] = a
+end
+
+local pid = hostutil.spawn(argv)
 
 if not pid then
 	print("1..1")

@@ -10,6 +10,9 @@
 
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 package.path = scriptdir .. "/?.lua;" .. package.path
+-- tools/ too: fwcfg.lua is shared with the boot harnesses.
+local toolsdir = scriptdir .. "/../tools"
+package.path = toolsdir .. "/?.lua;" .. package.path
 local qemuarch = require("qemuarch")
 local http = require("hosthttp")
 local hostutil = qemuarch.hostutil
@@ -95,7 +98,8 @@ extend({ "-device", "virtio-net-pci,netdev=n0" })
 extend({ "-no-reboot", "-snapshot" })
 extend({ "-serial", "file:" .. serial_log })
 extend(qemuarch.wire())
-extend({ "-fw_cfg", "name=opt/org.luaos.test,file=" .. payload })
+extend(require("fwcfg").args(payload,
+    { services = true, dir = tmp, tools = toolsdir }))
 extend({ "-drive", "if=pflash,format=raw,readonly=on,file=" .. qemuarch.FW_CODE })
 extend({ "-drive", "if=pflash,format=raw,file=" .. vars_path })
 extend(qemuarch.disk(img))

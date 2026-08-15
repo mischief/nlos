@@ -628,28 +628,6 @@ struct driver_desc {
 	int enabled;
 	const char *capname;	/* what sys.granted() calls it */
 
-	/* another driver this one cannot work without, by capname.
-	 *
-	 * The device tasks each own a raw right and need nothing from each
-	 * other, but a task can also be built on one of them: the ip stack
-	 * is a proc whose device is the eth task. Naming it here rather
-	 * than passing the right in a first message keeps a task's
-	 * capabilities in one place -- sys.granted() -- however it got
-	 * them, and means a task whose dependency failed to start is
-	 * simply a task with nothing under it, which it can say so about.
-	 */
-	const char *needs;
-
-	/* this task needs to draw random bytes. The raw draw is the
-	 * capability, so it goes to as few procs as possible -- only the
-	 * boot proc by default. But tcp cannot do without one: RFC 6528
-	 * wants an initial sequence number that is neither a counter nor
-	 * derivable from another connection's, or an off-path attacker
-	 * who guesses it can inject into the stream. lib/tcb.lua refuses
-	 * to invent one, having no clock and no secret, so the task that
-	 * owns the connections must be able to.
-	 */
-	unsigned rng;
 };
 
 static int
@@ -720,38 +698,12 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_ETH, .devport = ethport, .devrecv = 1,
 		  .what = "networking (raw ethernet)", .enabled = have_eth,
 		  .capname = "eth" },
-		/* the ipv4 stack: arp, ip, icmp and udp over the eth task
-		 * above. Not a device owner -- it holds no raw right of its
-		 * own, only a send right to eth -- but a task all the same,
-		 * and one that must be running for the machine to be on a
-		 * network at all rather than merely able to get onto one.
-		 *
-		 * After eth in this table because it is granted eth's port,
-		 * and the loop below resolves that by looking backwards.
+		/* ip, tcp and dhcp are not here. Each owns no device and
+		 * holds only a send right to the task below it, so they
+		 * come off the filesystem, started from a machine's
+		 * /etc/services.lua.
 		 */
-		{ .path = "/task/ip.lua", .chunkname = "=ip",
-		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
-		  .what = "the ipv4 stack", .enabled = have_eth,
-		  .capname = "ip", .needs = "eth" },
-		/* tcp in lua, over the ip task. Its capname is "tcp"
-		 * because that is the protocol name its clients ask for:
-		 * lib/http.lua, lib/ssh, task/sshd.lua and task/webterm.lua
-		 * are written against it and cannot tell what implements
-		 * it. The firmware's own TCP4 used to answer to the same
-		 * name on efi, which is how they came to run unchanged on
-		 * both platforms; now this is the only thing that does.
-		 */
-		{ .path = "/task/tcp4.lua", .chunkname = "=tcp4",
-		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
-		  .what = "networking (tcp)", .enabled = have_eth,
-		  .capname = "tcp", .needs = "ip", .rng = 1 },
-		/* the dhcp client, which is what gives the stack above an
-		 * address and then keeps it.
-		 */
-		{ .path = "/task/dhcpd.lua", .chunkname = "=dhcpd",
-		  .priv = PRIV_NONE, .devport = 0, .devrecv = 0,
-		  .what = "dhcp", .enabled = have_eth,
-		  .capname = "dhcpd", .needs = "ip" },
+
 		/* the framebuffer. no devport: unlike the console or the
 		 * wire there is nothing to poll -- a screen produces no
 		 * events, and the input devices that go with one are
@@ -789,18 +741,6 @@ spawn_init(const char *code, size_t len, int is_file)
 		    drivers[i].priv, drivers[i].devport, drivers[i].devrecv,
 		    drivers[i].what);
 
-		/* the same grant the boot proc gets below, for the one task
-		 * that asked for it. Narrow on purpose: this hands over
-		 * los.platform.rng and nothing else -- virtio-9p is a
-		 * separate decision behind PRIV_P9 -- and it is a no-op on
-		 * efi, where the module does not exist.
-		 */
-		if (drivers[i].rng && pids[i] >= 0) {
-			struct kproc *rp = find_proc(pids[i]);
-
-			if (rp)
-				platform_boot_extra_modules(rp->L);
-		}
 	}
 
 	int pid = proc_new(code, len, "=init", is_file, 0, 0, 0, PRIV_BOOT);
@@ -825,31 +765,6 @@ spawn_init(const char *code, size_t len, int is_file)
 	 * doesn't appear in the mapping, and everything after it shifts
 	 * down a slot harmlessly.
 	 */
-	/* a task that names another gets a send right to it, under the
-	 * same name the boot proc knows it by. Done before the boot proc's
-	 * own grants purely for reading order; the two are independent.
-	 */
-	for (i = 0; i < ndrivers; i++) {
-		if (!drivers[i].needs || pids[i] < 0)
-			continue;
-
-		struct kproc *np = find_proc(pids[i]);
-
-		for (size_t j = 0; j < ndrivers; j++) {
-			if (pids[j] < 0 || !drivers[j].capname)
-				continue;
-			if (strcmp(drivers[j].capname, drivers[i].needs) != 0)
-				continue;
-
-			struct kproc *dep = find_proc(pids[j]);
-
-			if (np && dep)
-				grant_named(np, drivers[j].capname,
-				    dep->rights[0].port, 0);
-			break;
-		}
-	}
-
 	for (i = 0; i < ndrivers; i++) {
 		struct kproc *dp = pids[i] >= 0 ? find_proc(pids[i]) : 0;
 

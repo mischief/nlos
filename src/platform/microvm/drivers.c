@@ -12,6 +12,7 @@
 #include "lauxlib.h"
 
 #include "buf.h"
+#include "embedfs.h"
 #include "platform.h"
 #include "virtio.h"
 #include "virtio_9p.h"
@@ -160,9 +161,29 @@ luaopen_los_platform_power(lua_State *L)
 	return 1;
 }
 
-/* ---- los.efi: no firmware here, so an empty read-only table ---- */
+/* ---- los.efi: no firmware here, but the host's fw_cfg is read the
+ * same way, so init.lua reads a services list out of it on this machine
+ * exactly as it does on one with firmware. Grants nothing: fw_cfg is
+ * read-only data the host handed us at boot.
+ */
+int	fwcfg_load(const char *name, char **buf, size_t *len);
+
+static int
+l_efi_fwcfg(lua_State *L)
+{
+	const char *name = luaL_checkstring(L, 1);
+	char *buf = 0;
+	size_t len = 0;
+
+	if (fwcfg_load(name, &buf, &len) != 0)
+		return 0;
+	lua_pushlstring(L, buf, len);
+	free(buf);
+	return 1;
+}
 
 static const luaL_Reg efilib[] = {
+	{ "fwcfg", l_efi_fwcfg },
 	{ NULL, NULL }
 };
 
@@ -724,18 +745,70 @@ platform_ptr_read(int *x, int *y, int *buttons)
 	return 0;
 }
 
-/* los.rom: no embedded set published here yet. An empty table rather
- * than an absent module, so a caller can ask and get "nothing" instead
- * of a require error -- this platform reaches its files through a
- * filesystem server, which is what los.rom exists to stand in for where
- * there is none.
+/* los.rom: the embedded set as data, so lib/romfs.lua can mount it as
+ * this machine's root. require() already loads these bytes through
+ * luaL_loadfile, below the lua-level io stripping; what this adds is
+ * listing them and reading one without executing it. No authority
+ * require does not already have: the set is fixed at build time.
  */
+static int
+rom_list(lua_State *L)
+{
+	lua_createtable(L, (int)embedfs_nfiles, 0);
+	for (size_t i = 0; i < embedfs_nfiles; i++) {
+		lua_pushstring(L, embedfs_files[i].path);
+		lua_rawseti(L, -2, (lua_Integer)i + 1);
+	}
+	return 1;
+}
+
+static const struct embedfile *
+rom_find(const char *path)
+{
+	for (size_t i = 0; i < embedfs_nfiles; i++)
+		if (strcmp(embedfs_files[i].path, path) == 0)
+			return &embedfs_files[i];
+	return 0;
+}
+
+/* the whole file: these are source measured in kilobytes, so a partial
+ * read would buy nothing and add a place to get wrong.
+ */
+static int
+rom_read(lua_State *L)
+{
+	const struct embedfile *f = rom_find(luaL_checkstring(L, 1));
+
+	if (!f)
+		return 0;
+	lua_pushlstring(L, (const char *)f->data, f->len);
+	return 1;
+}
+
+static int
+rom_size(lua_State *L)
+{
+	const struct embedfile *f = rom_find(luaL_checkstring(L, 1));
+
+	if (!f)
+		return 0;
+	lua_pushinteger(L, (lua_Integer)f->len);
+	return 1;
+}
+
+static const luaL_Reg romlib[] = {
+	{ "list", rom_list },
+	{ "read", rom_read },
+	{ "size", rom_size },
+	{ NULL, NULL }
+};
+
 int luaopen_los_rom(lua_State *L);
 
 int
 luaopen_los_rom(lua_State *L)
 {
-	lua_createtable(L, 0, 0);
+	luaL_newlib(L, romlib);
 	return 1;
 }
 

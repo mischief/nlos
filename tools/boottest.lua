@@ -12,6 +12,19 @@ local q = arch.quote
 local TIMEOUT = os.getenv("TIMEOUT") or "60"
 local img, payload = arg[1], arg[2]
 
+-- --services: start the payload as the last entry of an injected
+-- service list, under the real init.lua, instead of in place of it. A
+-- test that wants a network needs this -- the stack is services now --
+-- and a test of the kernel alone wants the bare machine it gets
+-- without it. See tools/boottest-svc.lua.
+local as_service = false
+
+for i = 3, #arg do
+	if arg[i] == "--services" then
+		as_service = true
+	end
+end
+
 -- NET=1 gives the guest a real NIC on qemu's usermode (slirp) network:
 -- gateway 10.0.2.2, dns 10.0.2.3, guest 10.0.2.15 via slirp's built-in
 -- dhcp. without it the guest sees no tcp4/udp4 service binding at all
@@ -52,6 +65,15 @@ local function getpid()
 end
 
 local tmp = assert(popen_line("mktemp -d"), "mktemp -d failed")
+
+-- what the guest is told to run, from tools/fwcfg.lua so the harnesses
+-- and the host-driven tests all say it once.
+local fwcfg = ""
+
+for _, a in ipairs(require("fwcfg").args(payload,
+    { services = as_service, dir = tmp, tools = scriptdir })) do
+	fwcfg = fwcfg .. " " .. (a:sub(1, 1) == "-" and a or q(a))
+end
 
 local function cleanup()
 	os.execute("rm -rf " .. q(tmp))
@@ -108,7 +130,7 @@ local cmd = table.concat({
 	"-no-reboot -snapshot",
 	"-serial file:" .. q(tmp .. "/serial.log"),
 	arch.wire_args("null"),
-	"-fw_cfg name=opt/org.luaos.test,file=" .. q(payload),
+	fwcfg,
 	"-drive if=pflash,format=raw,readonly=on,file=" .. q(arch.FW_CODE),
 	"-drive if=pflash,format=raw,file=" .. q(tmp .. "/vars.fd"),
 	"-drive " .. arch.BLK .. ",file=" .. q(img),

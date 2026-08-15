@@ -52,7 +52,14 @@ local ether = require("ether")
 local ip4 = require("ip4")
 local tcp4 = require("tcp4")
 local tcb = require("tcb")
-local iph = sys.granted().ip
+-- the ip right, and the entropy the ISN below is drawn from. Both come
+-- in the spawn arg from a service list, and from sys.granted() plus the
+-- kernel's own rng where this is still spawned as a driver.
+local a = ...
+local iph = sys.granted().ip or
+    (type(a) == "table" and a.ip and a.ip.__right) or nil
+local seed = type(a) == "table" and a.seed or nil
+
 if not iph then
 	error("tcp: no ip capability granted", 0)
 end
@@ -141,12 +148,25 @@ end
 --
 -- nil rather than a fallback when there is no rng. A counter dressed up
 -- as an ISN is worse than a refusal, because it looks like it works.
+-- the machine's rng where this proc has one, and the spawn seed
+-- otherwise -- a service holds no raw draw, so lib/svc.lua hands it 32
+-- bytes and it expands them here. Both are real generators; a counter
+-- is not, which is why there is no third branch.
+local issrng
+
 local function draw_iss()
-	local ok, rng = pcall(require, "los.platform.rng")
-	if not ok or not rng then
-		return nil
+	if not issrng then
+		local ok, rng = pcall(require, "los.platform.rng")
+
+		if ok and rng then
+			issrng = rng
+		elseif seed then
+			issrng = require("crypto.drbg").new(seed)
+		else
+			return nil
+		end
 	end
-	return string.unpack(">I4", rng.bytes(4))
+	return string.unpack(">I4", issrng.bytes(4))
 end
 -- ---- the wire ----
 local function output(c, seg)

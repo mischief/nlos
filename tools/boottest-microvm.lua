@@ -53,9 +53,15 @@ local wantgefs, wantgefscommit, wantgefsgpt = false, false, false
 local wantfat = false
 local wantpci, wantpci0 = false, false
 local wantsmp = 1
+-- --services: start the payload under the real init.lua rather than in
+-- place of it, which is the only way it sees a network now that ip, tcp
+-- and dhcpd are services. See tools/fwcfg.lua.
+local as_service = false
 
 for i = 3, #arg do
-	if arg[i] == "--9p" then
+	if arg[i] == "--services" then
+		as_service = true
+	elseif arg[i] == "--9p" then
 		want9p = true
 	elseif arg[i] == "--net" then
 		wantnet = true
@@ -312,7 +318,9 @@ local function seedrun(cmd)
 	-- the CLI's own progress goes to stdout; keep it out of the TAP stream
 	cmd = cmd .. " >/dev/null"
 	if os.execute(cmd) ~= true then
-		dump("gefs seed failed: " .. cmd)
+		-- not dump(): the guest has not run, so there is no serial
+		-- trace to print and the command is the whole story.
+		print("# gefs seed failed: " .. cmd)
 		print("not ok - boottest-microvm harness (gefs seed failed)")
 		cleanup()
 		os.exit(1)
@@ -446,6 +454,19 @@ end
 local machine = wantpci and "-M q35" or
     "-M microvm,pit=on,pic=off,rtc=off,ioapic2=off,acpi=on"
 
+-- what the guest is told to run, from tools/fwcfg.lua so this harness
+-- and the efi one say it once. "-" injects nothing, and the guest falls
+-- back to what the image embeds.
+local fwcfg = ""
+
+if payload ~= "-" then
+	for _, a in ipairs(require("fwcfg").args(payload,
+	    { services = as_service, dir = tmp, tools = scriptdir })) do
+		fwcfg = fwcfg .. " " ..
+		    (a:sub(1, 1) == "-" and a or q(a))
+	end
+end
+
 local cmd = table.concat({
 	"timeout", TIMEOUT,
 	"qemu-system-x86_64",
@@ -454,8 +475,7 @@ local cmd = table.concat({
 	"-enable-kvm -cpu host -m 256",
 	wantsmp > 1 and ("-smp " .. wantsmp) or "",
 	"-kernel " .. q(elf),
-	payload ~= "-" and
-	    ("-fw_cfg name=opt/org.luaos.test,file=" .. q(payload)) or "",
+	fwcfg,
 	p9args, rngargs, netargs, blkargs,
 	"-nodefaults -no-user-config -no-reboot -nographic",
 	"-serial file:" .. q(tmp .. "/serial.log"),
