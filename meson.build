@@ -474,6 +474,14 @@ endif
 # than failing the whole configure.
 lua54_dep = dependency('lua5.4', native: true, required: false)
 have_hostutil = lua54_dep.found()
+
+# lrzsz and socat, for the zmodem tests on both platforms. Optional on
+# purpose: nothing in the guest depends on either, and socat is here
+# only because lrzsz wants its stdio on a pipe pair while hostutil hands
+# out sockets.
+sz_prog = find_program('lsz', 'sz', required: false)
+rz_prog = find_program('lrz', 'rz', required: false)
+socat_prog = find_program('socat', required: false)
 if have_hostutil
   hostutil = shared_module('hostutil', 'test/hostutil.c',
     dependencies: lua54_dep,
@@ -600,6 +608,12 @@ lua_payload = files(
   'bin/reboot.lua',
   'bin/top.lua',
   'bin/xd.lua',
+  # the two halves of a ZMODEM transfer over the console. Named rz and
+  # sz because those are the words each end types at the other before
+  # its first header, so a launcher with them in /bin completes a
+  # transfer the user only started at their terminal.
+  'bin/rz.lua',
+  'bin/sz.lua',
   'bin/host.lua',
   'bin/date.lua',
   'lib/ntp.lua',
@@ -1265,6 +1279,21 @@ endforeach
 # is the test listen and accept exist for -- the guest runs lib/http.lua
 # and lib/caps.lua unmodified, and the client is a separate
 # implementation on the host.
+# bin/rz.lua and bin/sz.lua against real lrzsz, over a pty bridged to
+# the guest console. The only zmodem test with the whole path in it:
+# raw mode, the tty client's readraw, the program ABI, and the launcher
+# starting rz because a sender asked for it by name.
+if have_hostutil and sz_prog.found() and rz_prog.found() and \
+    socat_prog.found()
+  test('microvm-zmodem', lua_interp,
+    args: [files('tools/zmodemtest.lua'), luaos_microvm_elf],
+    protocol: 'tap',
+    timeout: 400,
+    env: {'HOSTUTIL_SO': hostutil.full_path()},
+    depends: hostutil,
+  )
+endif
+
 if have_hostutil
   test('microvm-http', lua_interp,
     args: [files('test/microvm_http.lua'), luaos_microvm_elf,
@@ -1549,14 +1578,6 @@ test('lazy-names', lua_interp,
 # be a promise about what you send rather than a preference about what
 # you accept, and a peer in that mode silently discards the control
 # characters you leave raw.
-#
-# Optional on purpose. Nothing in the guest depends on lrzsz, and socat
-# is here only because lrzsz wants its stdio on a pipe pair while
-# hostutil hands out sockets.
-sz_prog = find_program('lsz', 'sz', required: false)
-rz_prog = find_program('lrz', 'rz', required: false)
-socat_prog = find_program('socat', required: false)
-
 if have_hostutil and sz_prog.found() and rz_prog.found() and socat_prog.found()
   test('zmodem-lrzsz', lua_interp,
     args: [files('test/host_lrzsz.lua')],
