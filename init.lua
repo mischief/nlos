@@ -388,29 +388,37 @@ local repl_worker_src = [[
 	_G.sys = sys
 	_G.thread = thread
 	_G.efi = ok_efi and efi or nil
-	local magic = require("ps")
-	_G.ps = magic.ps
-	-- stack(pid): a cross-proc traceback. safe to call on anything,
-	-- including a wedged proc, because every proc but this one is
-	-- suspended between resumes.
-	_G.stack = function(pid)
-		return magic.stack(pid or sys.self())
+	-- ps, stats, ports, stack, trace, tracehist, halt and reboot are
+	-- each a program in /bin, so a word here that shadows one is a
+	-- second implementation to keep in step. Bound only where there is
+	-- no launcher to run the programs from -- a machine with no root
+	-- at all, where this prompt is the whole of the interface. See the
+	-- call below.
+	local function rescuewords()
+		local ok_ps, magic = pcall(require, "ps")
+
+		if not ok_ps then
+			return
+		end
+		_G.ps = magic.ps
+		_G.stats = magic.stats
+		_G.ports = magic.ports
+		_G.stack = function(pid)
+			return magic.stack(pid or sys.self())
+		end
+		-- arming a trace is a real effect on the target -- a line
+		-- hook costs the traced proc about 4.7x -- so it stays an
+		-- explicit sys.set_trace rather than another word here.
+		_G.trace = function(pid)
+			return magic.trace(pid or sys.self())
+		end
+		_G.tracehist = function(pid, top)
+			return magic.tracehist(pid or sys.self(), top)
+		end
+		_G.halt = magic.halt(powerh)
+		_G.reboot = magic.reboot(powerh)
 	end
-	-- trace(pid): the last lines a proc ran, once sys.set_trace(pid, n)
-	-- has armed it. arming stays an explicit sys call rather than
-	-- another magic word, because unlike everything else here it has an
-	-- effect on the target -- a line hook costs the traced proc about
-	-- 4.7x -- and that should be typed on purpose.
-	_G.trace = function(pid)
-		return magic.trace(pid or sys.self())
-	end
-	-- tracehist(pid): the same ring by cost, hottest line first. Needs
-	-- the same explicit arming, for the same reason.
-	_G.tracehist = function(pid, top)
-		return magic.tracehist(pid or sys.self(), top)
-	end
-	_G.stats = magic.stats
-	_G.ports = magic.ports
+
 	_G.power = powerc.new(powerh)
 	local dns = dnsh and dnsc.new(dnsh) or nil
 
@@ -419,15 +427,11 @@ local repl_worker_src = [[
 	_G.dnscap = dns
 	_G.http = require("http")
 
-	-- resolve: a real function (needs an argument), not a bare
-	-- magic word like ps/halt/stats. plain nil when there's no dns
-	-- capability (no NIC, no ip task, or dns task never spawned).
+	-- resolve: a real function (needs an argument) rather than a word
+	-- that explains itself. plain nil when there's no dns capability
+	-- (no NIC, no ip task, or dns task never spawned).
 	_G.resolve = dns and dns.resolve or nil
 
-	-- see lib/ps.lua for why the effect needs parens and the bare
-	-- word only explains itself.
-	_G.halt = magic.halt(powerh)
-	_G.reboot = magic.reboot(powerh)
 
 	-- the console, handed to the launcher until you type exit. The
 	-- namespace is this proc's own, so the launcher sees a mount the
@@ -462,28 +466,30 @@ local repl_worker_src = [[
 	})
 
 	-- help: without it a bare word that is not defined just errors, and
-	-- there was no way to discover dos() or halt() from the prompt. a word
-	-- that only explains itself -- no parens, no effect -- like ps and
-	-- stats. it lists only what is actually bound (tcp and resolve are nil
-	-- with no NIC), so it never names a word that would error if you typed
-	-- it, and a capability added here shows up without editing a recital.
+	-- there was no way to discover dos() from the prompt. a word that
+	-- only explains itself -- no parens, no effect. it lists only what
+	-- is actually bound (tcp and resolve are nil with no NIC), so it
+	-- never names a word that would error if you typed it, and a
+	-- capability added here shows up without editing a recital.
 	_G.help = setmetatable({}, {
 		__tostring = function()
 			local words = {
-				{ "dos", "dos()", "the shell: run programs from /bin (help there lists them)" },
-				{ "halt", "halt()", "power the machine off" },
-				{ "reboot", "reboot()", "restart the machine" },
+				{ "dos", "dos()", "back to the shell, where the programs are" },
 				{ "ps", "ps", "the process table" },
 				{ "stats", "stats", "scheduler counters" },
 				{ "ports", "ports", "open ports" },
+				{ "halt", "halt()", "power the machine off" },
+				{ "reboot", "reboot()", "restart the machine" },
 				{ "resolve", "resolve(name)", "look a name up over dns" },
 				{ "tcp", "tcp", "the tcp capability" },
 				{ "udp", "udp", "the udp capability" },
 				{ "http", "http", "the http client" },
+				{ "power", "power", "the power capability" },
 			}
 			local out = {
-				"lua 5.4 repl -- any lua expression works. these words are built in",
-				"(a bare word explains itself; parens do the thing):",
+				"the lua prompt behind the shell -- any lua expression works.",
+				"ps and the rest are programs where there is a /bin to run",
+				"them from; `lua` there is this prompt with a program's rights.",
 				"",
 			}
 			for _, w in ipairs(words) do
@@ -513,6 +519,7 @@ local repl_worker_src = [[
 
 	if not dosok then
 		print("dos: " .. tostring(doserr) .. " -- the lua repl instead")
+		rescuewords()
 	end
 
 	while true do
