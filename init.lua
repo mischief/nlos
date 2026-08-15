@@ -306,13 +306,11 @@ print("")
 do
 	local svc = require("svc")
 
-	-- a read-only right to the same ESP server, offered to services under
-	-- the name "espro". a service that only needs to READ the disk names
-	-- that instead of "esp" and cannot write it -- and the distinction is
-	-- which right it holds, not a check anywhere. see lib/dev.lua's
-	-- readonly and lib/srv.lua's op.
-	--
-	-- NEVER give a public session "esp": espsrv holds diskport, so a
+	-- a read-only right to the same ESP server, offered under the name
+	-- "espro". a service that only reads the disk names that instead of
+	-- "esp". the distinction is which right it holds, not a check
+	-- anywhere: see lib/dev.lua's readonly.
+	-- do not give a public session "esp". espsrv holds diskport, so a
 	-- holder can write the real boot volume.
 	local grants = {}
 
@@ -320,13 +318,15 @@ do
 		grants[k] = v
 	end
 
-	local roesp = caps_of.esp and
-	    select(2, pcall(require("mnt").readonly, caps_of.esp))
+	-- a machine with no ESP, such as a board on flash, wants no warning.
+	if caps_of.esp then
+		local ok, roesp = pcall(require("mnt").readonly, caps_of.esp)
 
-	if type(roesp) == "number" then
-		grants.espro = roesp
-	else
-		sys.log("svc: no read-only esp right (%s)", tostring(roesp))
+		if ok and type(roesp) == "number" then
+			grants.espro = roesp
+		else
+			sys.log("svc: no read-only esp right (%s)", tostring(roesp))
+		end
 	end
 	-- fw_cfg WINS over the disk. a host can therefore configure what
 	-- this machine runs -- and hand it the service source too, under
