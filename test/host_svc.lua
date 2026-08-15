@@ -99,6 +99,20 @@ started = run({ { path = "/task/a.lua", optcaps = { net = "tcp" } } },
     { tcp = 42 })
 ok(spawned[1].opts.arg.net.__right == 42, "a present optcap is renamed too")
 
+-- needs: the capability has to exist, and is not handed over.
+started = run({ { path = "/task/a.lua", caps = { net = "tcp" },
+    needs = { "gefs" } } }, { tcp = 42, gefs = 9 })
+
+ok(#started == 1, "an entry whose needs the machine meets starts")
+ok(spawned[1].opts.arg.gefs == nil, "a needed capability is not granted")
+ok(spawned[1].opts.arg.net.__right == 42, "and the granted ones still are")
+
+_, skipped = run({ { path = "/task/a.lua", caps = { net = "tcp" },
+    needs = { "gefs" } } }, { tcp = 42 })
+
+ok(#skipped == 1, "an unmet need skips the entry")
+ok(#spawned == 0, "and nothing is spawned")
+
 -- svcarg: the spawn-arg form. Rights top level, scalars under `args`.
 local m0, cfg = svcarg({ net = { __right = 42 },
     args = { root = "/n/gefs", port = 564 } })

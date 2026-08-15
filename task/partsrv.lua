@@ -21,10 +21,12 @@ local srv = require("srv")
 local gpt = require("gpt")
 local partfs = require("partfs")
 
+local a = ...
+
 thread.spawn(function()
-	local init = thread.recv(sys.SELF)
+	local init, cfg = require("svcarg")(a)
 	local blk = init.blk.__right
-	local name = init.partition or error("partsrv: no partition named", 0)
+	local name = cfg.partition or error("partsrv: no partition named", 0)
 
 	local N = ns.new()
 	assert(N:mount("/dev", mnt.new(blk), "mnt",

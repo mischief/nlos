@@ -51,17 +51,19 @@ end
 
 -- srv.serve directly rather than srv.main, so the sync interval can come
 -- from the init message (build() runs after it, too late to shape opts).
+local a = ...
+
 thread.spawn(function()
-	local init = thread.recv(sys.SELF)
+	local init, cfg = require("svcarg")(a)
 	local blk = init.blk.__right
-	local label = init.label or "main"
-	local syncms = init.syncms or 5000
+	local label = cfg.label or "main"
+	local syncms = cfg.syncms or 5000
 	-- a cached block is the parsed Blk, ~2x its 16KiB on disk, so the
 	-- library's 512-block default is ~16MiB -- too much to hand one
 	-- filesystem on a 128-256MiB machine, and mostly empty ceiling for
 	-- the small files served here. 128 (~4MiB) holds the tree metadata
 	-- and a working set with room to spare; the spawner may ask for more.
-	local cachesz = init.cachesz or 128
+	local cachesz = cfg.cachesz or 128
 
 	-- mount the block device and open /data as a seekable file, exactly
 	-- as a client of blksrv would -- gefs sits on the file, not on virtio

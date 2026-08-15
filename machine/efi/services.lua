@@ -25,6 +25,20 @@ return {
 	-- task/wifisrv.lua is not on this image. It is in the board's
 	-- list, which is the whole reason there are two.
 
+	-- the disk, in three steps. blk is the kernel's driver where the
+	-- platform has one; partsrv slices the gefs partition off it, and
+	-- gefssrv serves that as a filesystem at /n/gefs, which every
+	-- entry below inherits. A machine with no disk names no blk, so
+	-- all three are skipped and it comes up without /n/gefs.
+	{ path = "/task/partsrv.lua", name = "part", caps = { "blk" },
+	  args = { partition = "gefs" } },
+
+	-- `blk = "part"` because gefssrv sits on a block device and does
+	-- not care that this one is a slice of another.
+	{ path = "/task/gefssrv.lua", name = "gefs",
+	  caps = { blk = "part" }, args = { label = "main" },
+	  mount = "/n/gefs" },
+
 	-- the panel, the keyboard and the pointer, as the machine's own
 	-- interface: a tray of apps, one of them a terminal, which starts
 	-- at boot so the board still comes up at a prompt.
@@ -91,4 +105,12 @@ return {
 	-- mounts it exports are already made.
 	{ path = "/task/9pexport.lua", name = "9pexport-all",
 	  caps = { net = "tcp" }, args = { root = "/", port = 7777 } },
+
+	-- the gefs subtree alone, on the styx port, so `9fs host` reaches
+	-- the volume from off the machine. Exactly `exportfs -r /n/gefs`.
+	-- It names gefs so a machine with no disk skips the export too,
+	-- rather than serving an empty mount point.
+	{ path = "/task/9pexport.lua", name = "9pexport-gefs",
+	  caps = { net = "tcp" }, needs = { "gefs" },
+	  args = { root = "/n/gefs", port = 564 } },
 }

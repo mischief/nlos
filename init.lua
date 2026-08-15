@@ -196,35 +196,6 @@ if srvdh then
 	end
 end
 
--- the gefs partition, mounted so every session inherits it in the
--- namespace. blksrv is a kernel driver where the platform has a disk
--- (platform_have_blk); partsrv slices the gefs partition off it and
--- gefssrv serves the filesystem, the chain test/boot/microvm_gefspart
--- drives. Guarded: a machine with no disk, no gefs partition, or a volume
--- that will not open stays up without /n/gefs rather than failing to boot.
-local gefs_mounted = false
-
-if caps_of.blk then
-	gefs_mounted = pcall(function()
-		local _, ph = proc.spawn(
-		    assert(rootns:readfile("/task/partsrv.lua")),
-		    { name = "part", ns = nsdesc })
-
-		sys.send(ph, { blk = { __right = caps_of.blk },
-		    partition = "gefs" })
-
-		local _, g = proc.spawn(
-		    assert(rootns:readfile("/task/gefssrv.lua")),
-		    { name = "gefs", ns = nsdesc })
-
-		sys.send(g, { blk = { __right = ph }, label = "main" })
-		rootns:mount("/n/gefs", require("mnt").new(g), "mnt",
-		    { port = { __right = g } })
-	end)
-	sys.log(gefs_mounted and "gefs mounted at /n/gefs" or
-	    "gefs: no volume mounted this boot")
-end
-
 -- the lease as a filesystem, at /net: addr, mask, gw, dns, ntp, domain,
 -- one per file. This is how a program finds the resolver without
 -- holding a right to dhcpd or being told an address at spawn -- see
@@ -234,31 +205,17 @@ if caps_of.dhcpd then
 	    { port = { __right = caps_of.dhcpd } })
 end
 
--- RE-taken, because neither /net nor /srv existed when the first
+-- Re-taken, because neither /net nor /srv existed when the first
 -- description was made. dhcpd deliberately keeps the earlier one: it
--- SERVES /net, and a namespace containing a mount to itself is a loop
--- waiting to be walked. /n/gefs is taken in here too.
+-- serves /net, and a namespace containing a mount to itself is a loop
+-- waiting to be walked.
 nsdesc = rootns:describe()
 
--- export the gefs subtree over 9P on the styx port, so `9fs host` or the
--- 9p tool can reach the same volume from off the machine. It is spawned
--- with the namespace above (which now holds /n/gefs) and told to export
--- that subtree: exactly `exportfs -r /n/gefs`, and a different root or a
--- differently-built namespace exports anything else the same way.
-if gefs_mounted and caps_of.tcp then
-	local _, xh = proc.spawn(
-	    assert(rootns:readfile("/task/9pexport.lua")),
-	    { name = "9pexport", ns = nsdesc })
-
-	sys.send(xh, { net = { __right = caps_of.tcp },
-	    root = "/n/gefs", port = 564 })
-	sys.log("gefs exported over 9p on tcp/564")
-end
-
--- The whole namespace goes out over tcp/7777 as well, rooted at "/"
--- instead of /n/gefs. That one is an entry in /etc/services.lua, since
--- it needs nothing this proc holds privately -- see the note there on
--- why the config decides and not the capability.
+-- Both 9P exports are entries in /etc/services.lua, along with the gefs
+-- chain they export: none of them needs anything this proc holds
+-- privately, and a mount an entry declares is inherited by the entries
+-- after it -- which is what lets one list say partsrv, then gefssrv at
+-- /n/gefs, then an export rooted there.
 
 -- the network a radio is on: { ssid = "labratory", psk = "..." }.
 --
@@ -371,10 +328,13 @@ do
 			-- mount declared there has to mean the same thing on
 			-- either, and without this it silently meant nothing
 			-- here.
-			mount = function(prefix, h)
+			-- the backend an entry asked for. /srv is srvfs, which
+			-- lists names rather than forwarding to a server, and
+			-- everything else forwards.
+			mount = function(prefix, h, fs)
 				local mok, merr = pcall(function()
 					assert(rootns:mount(prefix,
-					    require("mnt").new(h), "mnt",
+					    require(fs).new(h), fs,
 					    { port = { __right = h } }))
 				end)
 

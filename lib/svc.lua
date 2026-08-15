@@ -144,7 +144,21 @@ function M.start(list, opts)
 		end
 		local missing = nil
 
+		-- what has to exist without being handed over. An export of
+		-- /n/gefs is pointless on a machine with no disk and holds no
+		-- right to gefssrv either: it reaches the volume through the
+		-- namespace, as any other reader does.
+		for _, cap in ipairs(e.needs or {}) do
+			if not opts.granted[cap] then
+				missing = cap
+				break
+			end
+		end
+
 		for as, cap in caps(e.caps) do
+			if missing then
+				break
+			end
 			local h = opts.granted[cap]
 
 			if h then
@@ -203,7 +217,8 @@ function M.start(list, opts)
 				-- is the dependency.
 				if e.mount and opts.mount then
 					local nsd, merr =
-					    opts.mount(e.mount, h)
+					    opts.mount(e.mount, h,
+					        e.mountfs or "mnt")
 
 					if nsd then
 						opts.ns = nsd
