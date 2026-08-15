@@ -105,12 +105,20 @@ function M.done()
 		    :format(M.ports0, now, now - M.ports0))
 	end
 	emit("# test complete, powering off\n")
-	-- a tap payload is always the boot payload (injected via fw_cfg in
-	-- place of init.lua), so the power capability is in its own grant
-	-- table. there is no well-known handle number to use instead.
-	local power = sys.granted().power
 
-	if power then
+	local power = sys.granted().power
+	local cons = sys.granted().cons
+
+	if power and cons then
+		-- through the console, so the machine does not go down with
+		-- output still queued: the two are different procs, and a
+		-- reset sent straight to power overtakes the plan line that
+		-- says whether the test passed. Waiting here instead is not
+		-- open to us -- plan() arms this through sys.atexit, and a
+		-- proc on its way out never sees the reply.
+		sys.send(cons, { op = "poweroff", mode = "shutdown",
+		    power = { __right = power } })
+	elseif power then
 		sys.send(power, { op = "reset", mode = "shutdown" })
 	else
 		emit("# no power capability; cannot power off\n")

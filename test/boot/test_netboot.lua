@@ -48,11 +48,28 @@ end
 -- purpose: the kernel's pump wakes it whenever the card reports a frame,
 -- so catching it READY is normal and asserting otherwise would be a
 -- race against the wire.
-for _, name in ipairs({ "ip", "tcp4" }) do
-	local w = sys.wchan(byname[name])
+--
+-- Waited for rather than sampled: these start from a service list and
+-- load their libraries off the filesystem, so catching one still
+-- running says it was busy, not that it is wedged. Parked is a steady
+-- state, and a task that never reaches it fails this on the timeout.
+local function parked(pid)
+	local w = sys.wchan(pid)
 
-	tap.ok(w:sub(1, 5) == "port#" or w:sub(1, 4) == "alt[",
-	    name .. " task is parked (wchan=" .. w .. ")")
+	return (w:sub(1, 5) == "port#" or w:sub(1, 4) == "alt["), w
+end
+
+for _, name in ipairs({ "ip", "tcp4" }) do
+	local isparked, w
+
+	for _ = 1, 100 do
+		isparked, w = parked(byname[name])
+		if isparked then
+			break
+		end
+		thread.sleep(50)
+	end
+	tap.ok(isparked, name .. " task is parked (wchan=" .. w .. ")")
 end
 
 tap.done()

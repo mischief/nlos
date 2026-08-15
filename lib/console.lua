@@ -165,6 +165,8 @@ function Console:getch(ms)
 			self:setintr(m)
 		elseif type(m) == "table" and m.op == "abort" then
 			return done(nil)
+		elseif type(m) == "table" and m.op == "poweroff" then
+			self:poweroff(m)
 		else
 			self.deferred[#self.deferred + 1] = m
 		end
@@ -301,6 +303,8 @@ function Console:readline(prompt)
 			elseif type(m) == "table" and m.op == "abort" then
 				io.write("\n")
 				return nil
+			elseif type(m) == "table" and m.op == "poweroff" then
+				self:poweroff(m)
 			else
 				self.deferred[#self.deferred + 1] = m
 			end
@@ -391,6 +395,18 @@ function Console:pump()
 	end
 end
 
+-- shut the machine down, but not before what was written is written. A
+-- sender cannot arrange that itself: the console and the power task are
+-- different procs, so a reset sent straight to power races the output
+-- still queued here. Handled wherever a message is taken, never
+-- deferred: a reader waiting on a key would hold the machine up forever.
+function Console:poweroff(m)
+	if m.power then
+		sys.send(m.power.__right,
+		    { op = "reset", mode = m.mode or "shutdown" })
+	end
+end
+
 function Console:serve()
 	local io = self.io
 
@@ -446,6 +462,8 @@ function Console:serve()
 		elseif m.op == "abort" then
 			-- nothing was reading: the interrupt arrived between
 			-- one read and the next, so there is nothing to end.
+		elseif m.op == "poweroff" then
+			self:poweroff(m)
 		elseif m.op == "size" then
 			-- how wide the far end is, for a program that lays
 			-- out columns. A backend that knows says so
