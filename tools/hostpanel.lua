@@ -69,6 +69,16 @@ function Panel:say(line, settle)
 	return self
 end
 
+-- torepl() -- get to the lua prompt, wherever the console was.
+--
+-- The console comes up in the launcher, which answers a lua line with
+-- "not found". exit returns to the repl from there and is a word that
+-- does nothing at the repl, so this lands in the same place either way
+-- and needs to know neither. Panel:shot types dos() for the mirror.
+function Panel:torepl()
+	return self:say(""):say("exit")
+end
+
 -- ask(line) -- type a line and collect what comes back.
 --
 -- Lines rather than a prompt match: the repl prints its prompt without
@@ -328,21 +338,29 @@ function Panel:shot(out, rows)
 	-- the guest reports its own result and says why it failed, which
 	-- is worth surfacing: "no receiver" and "not enough memory" are
 	-- different problems and both look like an empty file out here.
+	-- A byte at a time, for the reason drain says: read("l") waits for
+	-- a newline, and what is queued after a transfer ends with a
+	-- prompt that has none -- so a line read with a byte in hand
+	-- blocks until something else happens to type at the board.
 	local why = nil
+	local tail = {}
+	local stop = os.time() + 3
 
-	for _ = 1, 3 do
-		if not self.hu.readable(self.fd, 1.0) then
+	while os.time() < stop do
+		if not self.hu.readable(self.fd, 0.4) then
 			break
 		end
 
-		local l = self.f:read("l")
+		local c = self.f:read(1)
 
-		if not l then
+		if not c then
 			break
 		end
-		l = l:gsub("%c", "")
+		tail[#tail + 1] = c
+	end
+	for l in table.concat(tail):gmatch("[^\r\n]+") do
 		if l:match("shot:") then
-			why = l
+			why = (l:gsub("%c", ""))
 		end
 	end
 

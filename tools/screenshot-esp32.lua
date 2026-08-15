@@ -41,7 +41,7 @@ if not ok then
 	os.exit(1)
 end
 
-p:say("")
+p:torepl()
 
 if draw then
 	p:say("FT=require(\"los.font\") M=thread.rpc(fb,{op=\"mode\"}).ok")

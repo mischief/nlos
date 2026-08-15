@@ -62,10 +62,11 @@ end
 
 local p = hostpanel.open(port)
 
--- a bare newline first: the repl may be mid-line from whatever last
+-- to the lua prompt, since what this types is lua. The bare newline on
+-- the way matters too: the console may be mid-line from whatever last
 -- touched this port, and a stray prompt is easier to live with than a
 -- command joined onto somebody's half-typed one.
-p:say("")
+p:torepl()
 
 local i = 2
 

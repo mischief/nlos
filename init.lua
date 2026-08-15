@@ -429,36 +429,34 @@ local repl_worker_src = [[
 	_G.halt = magic.halt(powerh)
 	_G.reboot = magic.reboot(powerh)
 
-	-- dos(): hand the console to the DOS-shaped launcher. it takes over
-	-- input until you type exit, so like halt it needs parens -- a bare
-	-- __tostring must never do something this consequential.
-	--
-	-- the lua repl stays the debugging tool underneath; dos is where you
-	-- run programs from /bin. sh.lua and vi.lua, when they exist, are
-	-- programs you start FROM dos rather than alternatives to it.
+	-- the console, handed to the launcher until you type exit. The
+	-- namespace is this proc's own, so the launcher sees a mount the
+	-- session made. No srv capability: `mount` reads /srv out of that
+	-- same namespace. Power goes with it, because this console's repl
+	-- already has halt() and bin/reboot.lua adds nothing a session
+	-- here did not have -- a public session gets no such grant.
+	local function startdos()
+		require("dos").start({ ns = require("ns").current(),
+		    cons = consh, fb = fbh, ptr = ptrh,
+		    kbd = kbdh, net = tcph,
+		    udp = udph, power = powerh, dbg = dbgh },
+		    "lua-os. programs live in /bin; type exit to " ..
+		    "return to lua.\n")
+	end
+
+	-- dos(): back to the launcher from the repl. Like halt it needs
+	-- parens -- a bare __tostring must never do something this
+	-- consequential.
 	_G.dos = setmetatable({}, {
 		__tostring = function()
 			return "dos: type dos() to start the launcher"
 		end,
 		__call = function()
-			local launcher = require("dos")
+			local ok, err = pcall(startdos)
 
-			-- the proc's own namespace, inherited at spawn. it
-			-- used to build a fresh one here, which meant the
-			-- launcher could never see a mount the session had
-			-- made.
-			-- no srv capability: `mount` reads /srv out of this
-			-- namespace, which the worker inherited.
-			-- power goes with it: this is the boot console,
-			-- whose repl already has halt(), so bin/reboot.lua
-			-- adds no authority a session here did not have.
-			-- A public session gets no such grant.
-			launcher.start({ ns = require("ns").current(),
-			    cons = consh, fb = fbh, ptr = ptrh,
-			    kbd = kbdh, net = tcph,
-			    udp = udph, power = powerh, dbg = dbgh },
-			    "lua-os. programs live in /bin; type exit to " ..
-			    "return to lua.\n")
+			if not ok then
+				return "dos: " .. tostring(err)
+			end
 			return "back at the lua repl"
 		end,
 	})
@@ -503,6 +501,18 @@ local repl_worker_src = [[
 			chunk, err = load(line, "=repl")
 		end
 		return chunk, err
+	end
+
+	-- The launcher first, the repl behind it. Not everything arriving
+	-- at a console is typed by a person: a ZMODEM sender opens by
+	-- writing "rz" at whatever prompt it finds, which a launcher
+	-- answers and a lua prompt calls an undefined global. The repl is
+	-- what is left when there is nothing to launch -- no /bin, or a
+	-- root that never mounted -- and it is what you repair that from.
+	local dosok, doserr = pcall(startdos)
+
+	if not dosok then
+		print("dos: " .. tostring(doserr) .. " -- the lua repl instead")
 	end
 
 	while true do
