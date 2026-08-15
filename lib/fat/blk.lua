@@ -137,6 +137,43 @@ end
 
 -- A run of sectors as one string, and a run written back from one.
 -- Reading a cluster is the common case and it is contiguous.
+-- A run of sectors in one device read.
+--
+-- The cache is read but not filled: streaming never revisits a sector,
+-- and filling would evict the FAT and directory sectors that are. A
+-- dirty sector is the only copy of what it holds, so a run touching one
+-- takes the per-sector path instead.
+function Fs:rdrun(lba, n)
+  if n <= 0 then
+    return buf.new(0)
+  end
+  self:checklba(lba, n)
+  for i = lba, lba + n - 1 do
+    if self.cache[i] then
+      return self:rdsecs(lba, n)
+    end
+  end
+
+  local want = n * self.secsz
+  local r, err
+
+  if self.dev.readbuf then
+    r, err = self.dev:readbuf(self:secoff(lba), want)
+  else
+    r, err = self.dev:read(self:secoff(lba), want)
+  end
+  if not r then
+    error("read failed: " .. tostring(err), 0)
+  end
+  if #r ~= want then
+    error("short read at sector " .. lba, 0)
+  end
+  -- one read as far as this is concerned; what the device does with a
+  -- run larger than one transfer is its own business.
+  self.nread = self.nread + 1
+  return r
+end
+
 -- One buffer for the run, each sector copied into it once. As strings
 -- this was n slices and a concatenation of the whole cluster.
 function Fs:rdsecs(lba, n)

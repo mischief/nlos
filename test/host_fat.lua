@@ -102,7 +102,13 @@ ok(names["ctl"] ~= nil, "ctl appears in the root listing")
 local ctlh = B.walk(root, "ctl")
 
 ok(ctlh ~= nil, "ctl walks")
-ok(B.read(ctlh, 0, 16) == "", "reading ctl says nothing")
+local ctltext = B.read(ctlh, 0, 4096)
+
+ok(ctltext:match("sectorsize (%d+)") ~= nil, "ctl reports the sector size")
+ok(ctltext:match("clustersize (%d+)") ~= nil, "and the cluster size")
+ok(tonumber(ctltext:match("reads (%d+)")) ~= nil, "and a device read count")
+-- an offset into it, since a client reads a file in pieces
+ok(B.read(ctlh, 4, 6) == ctltext:sub(5, 10), "ctl reads at an offset")
 
 -- create, write, read
 local fh = B.create(root, "hello.txt", "rw", false)

@@ -224,7 +224,18 @@ function M.new(fs)
 
 	function B.readbuf(h, off, n)
 		if isctl(h) then
-			return ""	-- reading ctl says nothing; writing it does
+			-- what the volume is, and what it has cost: the shape
+			-- /net and blkfs's own ctl answer in, one fact per
+			-- line. Writing it still syncs -- the two verbs are
+			-- unrelated, as they are on a gefs volume.
+			local t = string.format(
+			    "sectorsize %d\nclustersize %d\nsectors %d\n" ..
+			    "reads %d\nwrites %d\ncached %d\ndirty %d\n",
+			    fs.secsz, fs:clustersz(), fs.totsec,
+			    fs.nread or 0, fs.nwrite or 0,
+			    fs.nclean or 0, fs.ndirty or 0)
+
+			return t:sub(off + 1, off + n)
 		end
 
 		local ent = entof(h)

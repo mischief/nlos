@@ -145,7 +145,7 @@ thread.spawn(function()
 	local dev, where
 
 	if ok and sd then
-		ok, dev, where = pcall(cardfat, sd, 8)
+		ok, dev, where = pcall(cardfat, sd)
 		if not ok then
 			print("fatsrv: /sd: " .. tostring(dev))
 			dev = nil
@@ -153,8 +153,11 @@ thread.spawn(function()
 	end
 	if dev then
 		print("fatsrv: /sd: " .. where)
+		-- the default cache, not /config s handful: the FAT and the
+		-- directories of a 30GB volume are revisited constantly, and
+		-- eight sectors of it thrash.
 		more[#more + 1] = { at = "/sd", dev = dev, ream = false,
-		    cache = 8, nofree = true }
+		    nofree = true }
 	end
 
 	if #more > 0 then

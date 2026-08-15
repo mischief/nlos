@@ -150,14 +150,14 @@ function Fs:readbuf(ent, off, count)
     local s0 = within // self.secsz
     local s1 = (within + n - 1) // self.secsz
 
-    for s = s0, s1 do
-      local from = s == s0 and within - s0 * self.secsz or 0
-      local to = s == s1 and (within + n - 1) - s * self.secsz or
-          self.secsz - 1
+    -- the whole span in one device read, then one copy out of it. Per
+    -- sector this was a transaction each, and on a card the command and
+    -- the card's own latency dwarf the 512 bytes they carry.
+    local run = self:rdrun(base + s0, s1 - s0 + 1)
+    local from = within - s0 * self.secsz
 
-      out:copy(at, self:rdsec(base + s), from + 1, to + 1)
-      at = at + (to - from + 1)
-    end
+    out:copy(at, run, from + 1, from + n)
+    at = at + n
     left = left - n
     within = 0
     c = self:fatget(c)
