@@ -173,6 +173,10 @@ set(EMBED_FILES
     lib/fat/ram.lua
     lib/gefs/io.lua
     lib/fatfs.lua
+    # the card's partition table, where its FAT is not at the front.
+    # fatsrv is a kernel driver with no namespace, so this has to be
+    # reachable without one.
+    lib/gpt.lua
     task/fatsrv.lua
 
     # and what a client needs to mount it, which is also what a spawned

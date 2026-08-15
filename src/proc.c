@@ -237,7 +237,8 @@ kernel_confine_gc(lua_State *L)
 int
 kernel_current_is_boot(void)
 {
-	return cpu_self()->current && cpu_self()->current->priv == PRIV_BOOT;
+	return cpu_self()->current &&
+	    (cpu_self()->current->priv & PRIV_BOOT) != 0;
 }
 
 static int
@@ -1253,7 +1254,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * bootstrap before that mount exists. every other proc reaches
 	 * files through a mount, which is a right rather than a reference.
 	 */
-	if (priv == PRIV_ESP || priv == PRIV_BOOT) {
+	if (priv & (PRIV_ESP | PRIV_BOOT)) {
 		lua_pushcfunction(p->L, luaopen_los_fs);
 		lua_setfield(p->L, -2, "los.fs");
 	}
@@ -1263,24 +1264,23 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * absent from package.preload everywhere else, so there is no
 	 * check to get wrong: the function isn't reachable to call.
 	 */
-	switch (priv) {
-	case PRIV_CONS:
+	if (priv & PRIV_CONS) {
 		lua_pushcfunction(p->L, luaopen_los_platform_cons);
 		lua_setfield(p->L, -2, "los.platform.cons");
-		break;
-	case PRIV_WIRE:
+	}
+	if (priv & PRIV_WIRE) {
 		lua_pushcfunction(p->L, luaopen_los_platform_wire);
 		lua_setfield(p->L, -2, "los.platform.wire");
-		break;
-	case PRIV_POWER:
+	}
+	if (priv & PRIV_POWER) {
 		lua_pushcfunction(p->L, luaopen_los_platform_power);
 		lua_setfield(p->L, -2, "los.platform.power");
-		break;
-	case PRIV_P9:
+	}
+	if (priv & PRIV_P9) {
 		lua_pushcfunction(p->L, luaopen_los_platform_p9);
 		lua_setfield(p->L, -2, "los.platform.p9");
-		break;
-	case PRIV_ETH:
+	}
+	if (priv & PRIV_ETH) {
 		lua_pushcfunction(p->L, luaopen_los_platform_eth);
 		lua_setfield(p->L, -2, "los.platform.eth");
 		/* the radio is one device: whoever moves its frames is
@@ -1290,19 +1290,18 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		 */
 		lua_pushcfunction(p->L, luaopen_los_platform_wifi);
 		lua_setfield(p->L, -2, "los.platform.wifi");
-		break;
-	case PRIV_BLK:
+	}
+	if (priv & PRIV_BLK) {
 		lua_pushcfunction(p->L, luaopen_los_platform_blk);
 		lua_setfield(p->L, -2, "los.platform.blk");
-		break;
-	case PRIV_FLASH:
+	}
+	if (priv & PRIV_FLASH) {
 		lua_pushcfunction(p->L, luaopen_los_platform_flash);
 		lua_setfield(p->L, -2, "los.platform.flash");
-		break;
-	case PRIV_FB:
+	}
+	if (priv & PRIV_FB) {
 		lua_pushcfunction(p->L, luaopen_los_platform_fb);
 		lua_setfield(p->L, -2, "los.platform.fb");
-		break;
 	}
 
 	lua_pushcfunction(p->L, luaopen_los_thread);
@@ -1327,7 +1326,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * half stays. Proc 0 keeps everything, because it builds the root
 	 * namespace and has none to be confined to until it has.
 	 */
-	if (priv != PRIV_BOOT) {
+	if (!(priv & PRIV_BOOT)) {
 		lua_pushcfunction(p->L, confine_proc);
 		if (lua_pcall(p->L, 0, 0, 0) != LUA_OK) {
 			kputs("proc confine error: ");

@@ -340,7 +340,11 @@ function M.open(dev, opts)
     end
     if b.fsinfo ~= 0 and b.fsinfo ~= 0xFFFF and b.fsinfo < b.rsvdseccnt then
       fs.fsinfosec = b.fsinfo
-      local fsi = pack.unpackfsinfo(fs:rdsec(b.fsinfo))
+      -- rdsec hands back the device's buffer where it has one, and
+      -- unpackfsinfo string.unpacks what it is given. Every other
+      -- reader of a sector goes through methods a buffer also has.
+      local sec = fs:rdsec(b.fsinfo)
+      local fsi = pack.unpackfsinfo(sec.str and sec:str() or sec)
       -- The hint is used as a starting point and never as an answer:
       -- a wrong next-free costs a scan, and the free count is only
       -- reported after it has been recomputed.

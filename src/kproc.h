@@ -304,25 +304,30 @@ enum {
 	STOPPED,
 };
 
-/* device capabilities, one per class of hardware a proc may reach. */
+/* device capabilities: which classes of hardware a proc may reach.
+ *
+ * A set rather than one value, because a task can own two devices and
+ * be right to -- fatsrv lays FAT on the flash and on the card both, and
+ * a second proc for the second device is a second copy of lib/fat.
+ */
 enum {
-	PRIV_NONE,
+	PRIV_NONE	= 0,
 
 	/* proc 0 and nothing else. not a device capability: it means raw
 	 * ESP access reaches this proc, which is what lets it build the
 	 * root namespace every other proc inherits.
 	 */
-	PRIV_BOOT,
+	PRIV_BOOT	= 1 << 0,
 
-	PRIV_ESP,
-	PRIV_CONS,
-	PRIV_WIRE,
-	PRIV_POWER,
-	PRIV_P9,
-	PRIV_ETH,
-	PRIV_FB,
-	PRIV_BLK,
-	PRIV_FLASH,
+	PRIV_ESP	= 1 << 1,
+	PRIV_CONS	= 1 << 2,
+	PRIV_WIRE	= 1 << 3,
+	PRIV_POWER	= 1 << 4,
+	PRIV_P9		= 1 << 5,
+	PRIV_ETH	= 1 << 6,
+	PRIV_FB		= 1 << 7,
+	PRIV_BLK	= 1 << 8,
+	PRIV_FLASH	= 1 << 9,
 };
 
 /* does this cpu hold a given bucket, every bucket, or any bucket at

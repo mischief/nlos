@@ -1,9 +1,10 @@
--- fatsrv: the flash, as FAT volumes served on a port.
+-- fatsrv: this machine's FAT volumes, served on a port.
 --
--- Holds PRIV_FLASH and lays the filesystem on the device itself, so a
--- sector is a call and not a message. Both partitions here: luafs is
--- the root, config is mounted inside it.
---
+-- Holds the devices and lays the filesystem on them directly, so a
+-- sector is a call and not a message: PRIV_FLASH for the flash, whose
+-- luafs is the root, and PRIV_BLK for the card. One server rather than
+-- one per device, since a second would be a second copy of lib/fat.
+
 -- One worker, since lib/fat has no locks. Clients queue at the port.
 -- srv.serve's tick syncs every volume between requests.
 
@@ -23,14 +24,19 @@ local buf = require("los.buf")
 -- read returns a string and readbuf the buffer: fat/vol.lua unpacks the
 -- boot sector with string.sub, fat/blk.lua caches buffers. Coming over
 -- a port these were the same thing, since the message carried bytes.
-local function device(vol)
-	local raw = flash.volume(vol)
+
+-- `at` and `bytes` name a slice: a partition, where the whole device is
+-- not one volume. Everything above works in offsets from zero.
+local function device(raw, at, bytes)
 	local nsec, secsz = raw.capacity()
 	local B = blkfs.new(raw)
 	local h = B.open(B.walk(B.attach(), "data"), "rw")
 
+	at = at or 0
+	bytes = bytes or (nsec * secsz)
+
 	local function rd(_, off, len)
-		return B.read(h, off, len)
+		return B.read(h, at + off, len)
 	end
 
 	return {
@@ -40,10 +46,50 @@ local function device(vol)
 
 			return buf.is(d) and d:str() or d
 		end,
-		write = function(_, off, s) return B.write(h, off, s) end,
-		size = function() return nsec * secsz end,
+		write = function(_, off, s) return B.write(h, at + off, s) end,
+		size = function() return bytes end,
 		sync = function() end,		-- a write is already through
 	}
+end
+
+-- the removable one, whose module says for itself whether a card
+-- answered. Where its FAT lives is cardfat below.
+local function card()
+	local ok, blk = pcall(require, "los.platform.blk")
+
+	if not ok or type(blk) ~= "table" or not blk.capacity then
+		return nil
+	end
+	return blk.capacity() and blk or nil
+end
+
+-- where the card's FAT is: inside a partition, or at the front where
+-- the card is one volume. The table is asked about first, because a GPT
+-- disk carries a protective MBR close enough to a boot sector that
+-- fat.open gets some way into it before failing.
+
+-- The first partition that opens wins. Naming one would be better for a
+-- machine's own disk, as partsrv does, but these labels are not ours.
+local function cardfat(raw, cache)
+	local whole = device(raw)
+	local ok, tbl = pcall(require("gpt").parse, whole)
+
+	if ok and tbl then
+		for i, p in ipairs(tbl.partitions) do
+			local dev = device(raw, p.off, p.bytes)
+
+			if fat.open(dev, { cache = cache }) then
+				return dev, "partition " .. i ..
+				    (p.name ~= "" and
+				     (" (" .. p.name .. ")") or "")
+			end
+		end
+		return nil
+	end
+	if fat.open(whole, { cache = cache }) then
+		return whole, "whole disk"
+	end
+	return nil
 end
 
 thread.spawn(function()
@@ -52,8 +98,11 @@ thread.spawn(function()
 
 	-- ream writes a fresh volume where there is nothing to open. Never
 	-- for the root: on a bad read that throws the programs away.
-	local function volume(vol, ream, cache)
-		local dev = device(vol)
+	--
+	-- `dev` where the caller already resolved one (the card, whose FAT
+	-- may be inside a partition), `raw` where it is a whole volume.
+	local function volume(v, at, ream, cache)
+		local dev = v.dev or device(v.raw)
 		local fs = fat.open(dev, { cache = cache })
 
 		if not fs and ream then
@@ -61,24 +110,57 @@ thread.spawn(function()
 			    cache = cache }))
 			fs = fat.open(dev, { cache = cache })
 		end
-		return assert(fs, "volume " .. vol .. ": no FAT volume here")
+		return assert(fs, at .. ": no FAT volume here")
 	end
 
 	-- names are ours to choose now; partitions.csv fixes what is there.
 	local WHERE = { [2] = "/config" }
-	local vols = { fatfs.new(volume(1, false)) }
+	local vols = { fatfs.new(volume({ raw = flash.volume(1) }, "/", false)) }
 	local B = vols[1]
+	-- what goes above the root, in order. The card is last and is not
+	-- reamed: an unreadable partition on removable media is a card
+	-- belonging to someone else, not a volume waiting to be made.
+	local more = {}
 
-	if nvol > 1 then
+	for i = 2, nvol do
+		more[#more + 1] = { at = WHERE[i] or ("/vol" .. i),
+		    raw = flash.volume(i), ream = true, cache = 8 }
+	end
+
+	-- Protected end to end: the flash is this machine's root, and a
+	-- card someone put in must not take it away. The worst it may do
+	-- is leave the board without /sd.
+
+	-- OFF: attaching the card wedges this proc between blkfs.new and
+	-- the first sector read, and the root is served from here, so the
+	-- board never finishes booting. Raw reads work. See #95.
+	local CARD = false
+	local ok, sd = CARD and pcall(card)
+	local dev, where
+
+	if ok and sd then
+		ok, dev, where = pcall(cardfat, sd, 8)
+		if not ok then
+			print("fatsrv: /sd: " .. tostring(dev))
+			dev = nil
+		end
+	end
+	if dev then
+		print("fatsrv: /sd: " .. where)
+		more[#more + 1] = { at = "/sd", dev = dev, ream = false,
+		    cache = 8 }
+	end
+
+	if #more > 0 then
 		local V = ns.new()
 		local n = 0
 
 		assert(V:mount("/", B, "fatfs"))
-		for i = 2, nvol do
-			local at = WHERE[i] or ("/vol" .. i)
+		for _, v in ipairs(more) do
+			local at = v.at
 			-- a missing volume is an older layout, not a
 			-- failure. Small cache: a few files, read once.
-			local ok, fs = pcall(volume, i, true, 8)
+			local ok, fs = pcall(volume, v, at, v.ream, v.cache)
 
 			if ok then
 				local sub = fatfs.new(fs)

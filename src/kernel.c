@@ -683,8 +683,14 @@ spawn_init(const char *code, size_t len, int is_file)
 		 * filesystem owns the device, so a sector is a call and not
 		 * a message, and there is no block server between them.
 		 */
+		/* the flash and the card both, where there is a card: two
+		 * devices in one proc because the alternative is a second
+		 * copy of lib/fat, which is the larger cost of the two on
+		 * a board whose ceiling is memory. los.platform.blk says
+		 * for itself whether a card answered.
+		 */
 		{ .path = "/task/fatsrv.lua", .chunkname = "=fatsrv",
-		  .priv = PRIV_FLASH, .devport = 0, .devrecv = 0,
+		  .priv = PRIV_FLASH | PRIV_BLK, .devport = 0, .devrecv = 0,
 		  .what = "the flash filesystem", .enabled = have_flash,
 		  .capname = "flash" },
 		/* raw ethernet frames, and the bottom of the whole stack.
