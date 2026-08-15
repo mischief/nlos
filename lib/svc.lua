@@ -215,6 +215,18 @@ function M.start(list, opts)
 				-- after it inherits the mount. Same rule as
 				-- the capability above: order in the file
 				-- is the dependency.
+				-- names for rights, published into a service
+				-- that keeps them. `net = "dhcpd"` offers the
+				-- dhcpd capability under the name "net", which
+				-- is what a shell asking to mount it says.
+				for as, cap in caps(e.post) do
+					local ph = opts.granted[cap]
+
+					if ph and opts.post then
+						opts.post(h, as, ph)
+					end
+				end
+
 				if e.mount and opts.mount then
 					local nsd, merr =
 					    opts.mount(e.mount, h,

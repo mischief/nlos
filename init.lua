@@ -163,39 +163,6 @@ local has_tcp = caps_of.tcp ~= nil
 -- retries, so the address simply appears underneath them. and if it
 -- never does, the firmware's own DHCP was left running and they retry
 -- exactly as they always did.
--- srvd: names for rights, so a shell can say what it wants to mount.
--- Without it `mount` has nothing to take an argument -- a right is not
--- a string, so there is no way to name a server at a prompt. See
--- lib/srvd.lua.
---
--- The listing mounts at /srv so `ls /srv` shows what is there; the
--- rights themselves come from messages to srvd, never from reading
--- those files.
-local srvdsrc = rootns:readfile("/task/srvd.lua")
-local _, srvdh = srvdsrc and proc.spawn(srvdsrc,
-    { name = "srv", ns = nsdesc })
-
-if srvdh then
-	-- the right goes in args so a child adopting this namespace can
-	-- rebuild the backend, exactly as /net's mnt does
-	rootns:mount("/srv", require("srvfs").new(srvdh), "srvfs",
-	    { port = { __right = srvdh } })
-
-	-- publish what is actually mountable. These are srv.lua-style
-	-- servers, which is what mnt.new can forward to -- unlike the 9P
-	-- export on tcp/7777, which speaks 9P to clients off the machine and
-	-- has no port to hand out.
-	--
-	-- sendright, not the handle: init keeps its own, and posting is
-	-- giving a right away.
-	local srvc = require("srvc")
-
-	srvc.post(srvdh, "esp", sys.sendright(caps_of.esp))
-	if caps_of.dhcpd then
-		srvc.post(srvdh, "net", sys.sendright(caps_of.dhcpd))
-	end
-end
-
 -- the lease as a filesystem, at /net: addr, mask, gw, dns, ntp, domain,
 -- one per file. This is how a program finds the resolver without
 -- holding a right to dhcpd or being told an address at spawn -- see
@@ -205,10 +172,10 @@ if caps_of.dhcpd then
 	    { port = { __right = caps_of.dhcpd } })
 end
 
--- Re-taken, because neither /net nor /srv existed when the first
--- description was made. dhcpd deliberately keeps the earlier one: it
--- serves /net, and a namespace containing a mount to itself is a loop
--- waiting to be walked.
+-- Re-taken, because /net did not exist when the first description was
+-- made. dhcpd deliberately keeps the earlier one: it serves /net, and a
+-- namespace containing a mount to itself is a loop waiting to be walked.
+-- /srv is a service, and svc re-describes when its entry declares it.
 nsdesc = rootns:describe()
 
 -- Both 9P exports are entries in /etc/services.lua, along with the gefs
@@ -328,6 +295,15 @@ do
 			-- mount declared there has to mean the same thing on
 			-- either, and without this it silently meant nothing
 			-- here.
+			-- a name for a right, published into srvd, so a shell
+			-- can say what it wants to mount -- a right is not a
+			-- string, and there is otherwise no way to name a
+			-- server at a prompt. sendright, not the handle: this
+			-- proc keeps its own, and posting gives a right away.
+			post = function(h, as, cap)
+				require("srvc").post(h, as,
+				    sys.sendright(cap))
+			end,
 			-- the backend an entry asked for. /srv is srvfs, which
 			-- lists names rather than forwarding to a server, and
 			-- everything else forwards.

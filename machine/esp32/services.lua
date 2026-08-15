@@ -6,7 +6,14 @@
 -- a service gets. An entry naming one this board lacks is skipped.
 
 return {
-	-- names to addresses, for anything above it. First, because a
+	-- names for rights, at /srv. First, because the mount it declares
+	-- is inherited by everything after it. No esp to post here: this
+	-- board's volume is flash, and fatsrv already serves it at /.
+	{ path = "/task/srvd.lua", name = "srv",
+	  mount = "/srv", mountfs = "srvfs",
+	  post = { net = "dhcpd" } },
+
+	-- names to addresses, for anything above it. Early, because a
 	-- service is a capability to whatever comes after it and the
 	-- panel's programs name this one.
 	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },

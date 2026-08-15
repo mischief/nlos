@@ -16,7 +16,16 @@
 -- init.lua. The board has its own, etc/services-esp32.lua.
 
 return {
-	-- names to addresses, for anything above it. First, because a
+	-- names for rights, at /srv. First, because the mount it declares
+	-- is inherited by everything after it. `post` publishes a right
+	-- under the name a shell says to mount it by; the listing is what
+	-- `ls /srv` shows, and the rights come from messages to srvd
+	-- rather than from reading those files.
+	{ path = "/task/srvd.lua", name = "srv",
+	  mount = "/srv", mountfs = "srvfs",
+	  post = { esp = "esp", net = "dhcpd" } },
+
+	-- names to addresses, for anything above it. Early, because a
 	-- service is a capability to whatever comes after it and the
 	-- panel's programs name this one.
 	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },

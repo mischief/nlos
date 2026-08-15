@@ -183,6 +183,11 @@ set(EMBED_FILES
     lib/mnt.lua
     lib/nsio.lua
     lib/romfs.lua
+    # /srv, which a service list declares. A backend a child rebuilds
+    # has to be here: adopt() runs before the namespace is installed,
+    # so a module only on the luafs partition is unreachable then.
+    lib/srvfs.lua
+    lib/srvc.lua
     # a namespace served as one backend, which is how blksrv offers two
     # flash partitions on one port and how fatsrv serves both volumes as
     # one tree. Two partitions cost a mount point here rather than two
