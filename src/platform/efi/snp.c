@@ -45,12 +45,14 @@
 #include "lauxlib.h"
 #include "buf.h"
 #include "snp.h"
+#include "kernel.h"
 
 static EFI_GUID snp_guid = { 0xA19832B9, 0xAC25, 0x11D3,
 	{ 0x9A, 0x2D, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D } };
 
 static EFI_SIMPLE_NETWORK_PROTOCOL *snp;
 static unsigned long rx_frames;	/* frames actually taken off the card */
+static unsigned long rx_toosmall;	/* frames refused for want of room */
 static unsigned long rx_events;	/* times the card said one had arrived */
 
 /* GetStatus has two callers wanting different halves of it -- the pump
@@ -85,10 +87,10 @@ status_poll(void)
  */
 static unsigned char txbuf[2048];
 
-/* the largest ethernet frame: 1500 of payload, 14 of header, and the
- * 4-byte fcs the card strips before we ever see it.
- */
-#define FRAME_MAX 1514
+/* Not the 1514 of a maximum frame: Receive refuses a buffer shorter
+ * than the driver means to write, and OVMF counts the fcs. A refusal
+ * is invisible to the peer, so one frame too small reads as a stall. */
+#define FRAME_MAX 2048
 
 int
 snp_init(void)
@@ -240,6 +242,15 @@ snp_recv(void *buf, size_t cap)
 		return 0;
 
 	st = snp->Receive(snp, 0, &size, buf, 0, 0, 0);
+	/* Said once: the frame is lost here, and every other symptom of
+	 * that is at the far end, as a peer retransmitting.
+	 */
+	if (st == EFI_BUFFER_TOO_SMALL) {
+		if (!rx_toosmall++)
+			kernel_log("snp: receive buffer too small; "
+			    "frames are being dropped");
+		return 0;
+	}
 	if (st != EFI_SUCCESS)
 		return 0;	/* EFI_NOT_READY, mostly: nothing waiting */
 
