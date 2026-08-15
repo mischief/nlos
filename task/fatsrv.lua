@@ -70,6 +70,15 @@ end
 
 -- The first partition that opens wins. Naming one would be better for a
 -- machine's own disk, as partsrv does, but these labels are not ours.
+-- freecount = false, and it is not a detail. countfree walks the whole
+-- FAT, which on a 30GB card is millions of entries at the card's clock:
+-- minutes of boot for a number nothing needs yet. Every use of it in
+-- lib/fat is guarded, and fsinfo has a sentinel for "unknown", so a
+-- volume opened this way still allocates and still writes.
+local function fatopen(dev, cache)
+	return fat.open(dev, { cache = cache, freecount = false })
+end
+
 local function cardfat(raw, cache)
 	local whole = device(raw)
 	local ok, tbl = pcall(require("gpt").parse, whole)
@@ -78,7 +87,7 @@ local function cardfat(raw, cache)
 		for i, p in ipairs(tbl.partitions) do
 			local dev = device(raw, p.off, p.bytes)
 
-			if fat.open(dev, { cache = cache }) then
+			if fatopen(dev, cache) then
 				return dev, "partition " .. i ..
 				    (p.name ~= "" and
 				     (" (" .. p.name .. ")") or "")
@@ -86,7 +95,7 @@ local function cardfat(raw, cache)
 		end
 		return nil
 	end
-	if fat.open(whole, { cache = cache }) then
+	if fatopen(whole, cache) then
 		return whole, "whole disk"
 	end
 	return nil
@@ -103,12 +112,13 @@ thread.spawn(function()
 	-- may be inside a partition), `raw` where it is a whole volume.
 	local function volume(v, at, ream, cache)
 		local dev = v.dev or device(v.raw)
-		local fs = fat.open(dev, { cache = cache })
+		local opts = { cache = cache, freecount = not v.nofree }
+		local fs = fat.open(dev, opts)
 
 		if not fs and ream then
 			assert(fat.ream(dev, { secsz = 4096, label = "CONFIG",
 			    cache = cache }))
-			fs = fat.open(dev, { cache = cache })
+			fs = fat.open(dev, opts)
 		end
 		return assert(fs, at .. ": no FAT volume here")
 	end
@@ -131,11 +141,7 @@ thread.spawn(function()
 	-- card someone put in must not take it away. The worst it may do
 	-- is leave the board without /sd.
 
-	-- OFF: attaching the card wedges this proc between blkfs.new and
-	-- the first sector read, and the root is served from here, so the
-	-- board never finishes booting. Raw reads work. See #95.
-	local CARD = false
-	local ok, sd = CARD and pcall(card)
+	local ok, sd = pcall(card)
 	local dev, where
 
 	if ok and sd then
@@ -148,7 +154,7 @@ thread.spawn(function()
 	if dev then
 		print("fatsrv: /sd: " .. where)
 		more[#more + 1] = { at = "/sd", dev = dev, ream = false,
-		    cache = 8 }
+		    cache = 8, nofree = true }
 	end
 
 	if #more > 0 then
