@@ -203,8 +203,43 @@ local SHELL = [[
 	ns.setcurrent(N)
 
 	local dos = require("dos")
+	local sh = dos.start({ ns = N, cons = cons, coro = true }, m.banner)
 
-	dos.start({ ns = N, cons = cons, coro = true }, m.banner)
+	-- what the session exited with, so the client is told rather than
+	-- left to time out. The console right is the only one this proc
+	-- has, and the daemon is listening on it either way.
+	sys.send(cons, { op = "exit", code = sh and sh.status or 0 })
+]]
+
+-- `ssh host 'command'`: the same namespace and the same launcher, one
+-- line of it. dos.once drives its own reactor, so redirections, pipes
+-- and argument splitting work here exactly as they do at the prompt.
+local EXEC = [[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+	local ns = require("ns")
+
+	local m = thread.recv(sys.SELF)
+	local cons = m.cons.__right
+	local N, err = ns.restore(m.nsdesc)
+
+	if not N then
+		sys.send(cons, { op = "write",
+		    data = "namespace: " .. tostring(err) .. "\n" })
+		sys.send(cons, { op = "exit", code = 1 })
+		return
+	end
+	ns.setcurrent(N)
+
+	local dos = require("dos")
+	local sh = dos.new({ ns = N, cons = cons, coro = true })
+	local st, why = dos.once(sh, m.command)
+
+	if why then
+		sys.send(cons, { op = "write",
+		    data = tostring(why) .. "\n" })
+	end
+	sys.send(cons, { op = "exit", code = st or 0 })
 ]]
 
 -- ---- one connection ----
@@ -233,6 +268,7 @@ local function session(connid)
 	-- and go to getch one at a time, unedited and unechoed, and the
 	-- program draws its own screen.
 	local rawmode = false
+	local execing = false		-- a command, not a shell: see from_shell
 	local rawin = ""		-- keystrokes not yet handed to a getch
 	local getwait = nil		-- reply port of a parked getch
 	local gettimer = nil		-- its timeout, so a lone Esc resolves
@@ -271,7 +307,13 @@ local function session(connid)
 				-- places every byte itself, so leave those alone.
 				local data = tostring(m.data)
 
-				if not rawmode then
+				-- Not for a command's output: `ssh host cmd`
+				-- is a pipe, and a caller reading it wants
+				-- the bytes the program wrote. A shell is
+				-- talking to a terminal and wants the
+				-- carriage return, as a raw-mode program
+				-- placing its own bytes does not.
+				if not rawmode and not execing then
 					data = data:gsub("\n", "\r\n")
 				end
 				srv:data(chan, data)
@@ -308,6 +350,16 @@ local function session(connid)
 
 			if rp then
 				sys.send(rp, { cols = ptycols, rows = ptyrows })
+			end
+		elseif m.op == "exit" then
+			-- The program or the shell is done. Its status is
+			-- what `ssh host cmd` reports to its caller, and a
+			-- session that closes without one leaves the client
+			-- guessing -- OpenSSH says "Exit status -1".
+			if chan then
+				srv:exit(chan, tonumber(m.code) or 0)
+				srv:close(chan)
+				chan = nil
 			end
 		elseif m.op == "readline" then
 			if m.prompt and chan then
@@ -465,15 +517,27 @@ local function session(connid)
 				})
 
 			elseif ev.type == "exec" then
-				-- Answered, not honoured: this serves one
-				-- thing, and pretending otherwise would fail
-				-- later and less clearly.
 				chan = ev.chan
-				srv:extended(ev.chan,
-				    "this sshd serves a shell only\r\n")
-				srv:exit(ev.chan, 1)
-				srv:close(ev.chan)
-				break
+				execing = true
+
+				local pid, h = sys.spawn(EXEC,
+				    { name = "ssh-exec" })
+
+				if not pid then
+					srv:extended(ev.chan,
+					    "cannot spawn a program\r\n")
+					srv:exit(ev.chan, 1)
+					srv:close(ev.chan)
+					break
+				end
+				shellpid = pid
+				-- giveright for the reason the shell path
+				-- gives: this daemon outlives the session.
+				sys.send(h, {
+					cons = thread.giveright(consport),
+					nsdesc = nsdesc,
+					command = ev.command,
+				})
 
 			elseif ev.type == "data" and rawmode then
 				-- a full-screen program is reading raw keys:
