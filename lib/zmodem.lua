@@ -42,6 +42,12 @@ local ZCBIN = 0x01
 
 local ZERO = "\0\0\0\0"
 
+-- how long a receiver listens before it prompts. Short, because what it
+-- is looking for is already queued if it is coming at all: the cost is
+-- paid only when the sender has said nothing yet, and then the sender is
+-- still starting and is in no hurry.
+local LISTEN = 300
+
 M.ZRQINIT, M.ZRINIT, M.ZFILE, M.ZDATA, M.ZEOF, M.ZFIN = ZRQINIT, ZRINIT,
     ZFILE, ZDATA, ZEOF, ZFIN
 
@@ -137,6 +143,10 @@ end
 if haveC then
 	crc16up, crc32up = ccrc.crc16, ccrc.crc32
 end
+
+-- the other loop that scales with the payload. Absent where los.crc is
+-- (the host tests), so subpacket() keeps a lua path that does the same.
+local unzdle = haveC and ccrc.unzdle
 
 local function crc16of(s)
 	return crc16up(s, 0)
@@ -281,6 +291,7 @@ function Mach:feed(s)
 		self.pos = 1
 	end
 	self.inbuf = self.inbuf .. s
+	self.needmore = false
 end
 
 function Mach:pull()
@@ -334,7 +345,8 @@ function Mach:run(now)
 	self.now = now
 
 	while self.state == "running" do
-		if self.waiting == "input" and self.pos > #self.inbuf then
+		if self.waiting == "input" and
+		    (self.pos > #self.inbuf or self.needmore) then
 			if self.deadline and now >= self.deadline then
 				self.expired = true
 			else
@@ -361,7 +373,7 @@ function Mach:run(now)
 			break
 		end
 		self.waiting = what
-		if what == "flush" or what == "file" then
+		if what == "flush" or what == "file" or what == "sink" then
 			self.wantinput = false
 			return "running"
 		end
@@ -400,6 +412,46 @@ function Mach:want(off, n)
 
 	self.filedata = nil
 	return d
+end
+
+-- the sink's half of the same rule: a sink that opens, writes and
+-- closes a file parks on a file server. See Mach:want for why a park
+-- inside the coroutine is not a park at all.
+-- one entry point for the three things a sink is asked, so the driver
+-- has a single call to make on the outside.
+function Mach:sinkdo(op, a, b)
+	if op == "open" then
+		self.sinkobj = self.sink(a)
+		return self.sinkobj
+	end
+	if op == "write" then
+		return self.sinkobj.write(a, b)
+	end
+	self.sinkobj.close(a)
+	self.sinkobj = nil
+end
+
+function Mach:sinkcall(op, a, b)
+	if not self.yieldwrite then
+		return self:sinkdo(op, a, b)
+	end
+
+	self.sinkreq = { op = op, a = a, b = b }
+	coroutine.yield("sink")
+	self.sinkreq = nil
+
+	local r = self.sinkres
+
+	self.sinkres = nil
+	return r
+end
+
+-- wait for input that has not arrived yet, with bytes still unread.
+-- An escape split across two reads is the case: the second byte decides
+-- what the first one means, so having the ZDLE is having nothing.
+function Mach:waitmore()
+	self.needmore = true
+	return self:wait()
 end
 
 function Mach:wait()
@@ -496,44 +548,75 @@ end
 -- crc. Returns data, terminator -- or nil, reason.
 function Mach:subpacket()
 	local parts, n = {}, 0
+	local c
 
-	while true do
-		local s = self:plain()
+	if unzdle then
+		-- the whole run in C. It stops at a terminator or at the end
+		-- of what is buffered, so the loop here is one turn per read
+		-- rather than one per escaped byte.
+		while true do
+			while self.pos > #self.inbuf do
+				if not self:wait() then
+					return nil, "timeout"
+				end
+			end
 
-		if s == nil then
+			local s, term, nxt = unzdle(self.inbuf, self.pos)
+
+			if s == nil then
+				return nil, "bad escape"
+			end
+			if #s > 0 then
+				n = n + 1
+				parts[n] = s
+			end
+			self.pos = nxt
+			if term then
+				c = term
+				break
+			end
+			if not self:waitmore() then
+				return nil, "timeout"
+			end
+		end
+	else
+		while true do
+			local s = self:plain()
+
+			if s == nil then
+				return nil, "timeout"
+			end
+			if #s > 0 then
+				n = n + 1
+				parts[n] = s
+			end
+			if self.pos <= #self.inbuf and
+			    sbyte(self.inbuf, self.pos) == ZDLE then
+				break
+			end
+		end
+
+		self.pos = self.pos + 1		-- the ZDLE
+		c = self:byte()
+		if c == nil then
 			return nil, "timeout"
 		end
-		if #s > 0 then
+
+		while c == ZRUB0 or c == ZRUB1 or c & 0x60 == 0x40 do
+			-- an escaped byte, not a terminator: take it and
+			-- go round
 			n = n + 1
-			parts[n] = s
+			parts[n] = string.char(c == ZRUB0 and 0x7f or
+			    c == ZRUB1 and 0xff or (c ~ 0x40))
+
+			local more = self:subpacket_more(parts)
+
+			if more == nil then
+				return nil, "timeout"
+			end
+			n = #parts
+			c = more
 		end
-		if self.pos <= #self.inbuf and
-		    sbyte(self.inbuf, self.pos) == ZDLE then
-			break
-		end
-	end
-
-	self.pos = self.pos + 1		-- the ZDLE
-
-	local c = self:byte()
-
-	if c == nil then
-		return nil, "timeout"
-	end
-
-	while c == ZRUB0 or c == ZRUB1 or c & 0x60 == 0x40 do
-		-- an escaped byte, not a terminator: take it and go round
-		n = n + 1
-		parts[n] = string.char(c == ZRUB0 and 0x7f or
-		    c == ZRUB1 and 0xff or (c ~ 0x40))
-
-		local more = self:subpacket_more(parts)
-
-		if more == nil then
-			return nil, "timeout"
-		end
-		n = #parts
-		c = more
 	end
 
 	if c ~= ZCRCE and c ~= ZCRCG and c ~= ZCRCQ and c ~= ZCRCW then
@@ -720,11 +803,11 @@ end
 
 local function recvfile(m, file, use32)
 	local parts, pos, tries = {}, 0, 0
-	local sink = m.sink and m.sink(file) or nil
+	local sink = m.sink and m:sinkcall("open", file) or nil
 
 	local function put(s)
 		if sink then
-			sink.write(pos, s)
+			m:sinkcall("write", pos, s)
 		else
 			parts[#parts + 1] = s
 		end
@@ -735,7 +818,7 @@ local function recvfile(m, file, use32)
 	local function finish()
 		if sink then
 			if sink.close then
-				sink.close(true)
+				m:sinkcall("close", true)
 			end
 		else
 			file.data = table.concat(parts)
@@ -764,6 +847,13 @@ local function recvfile(m, file, use32)
 				local d, term = m:subpacket()
 
 				if d == nil then
+					-- counted by reason: a transfer that
+					-- finishes slowly says nothing about
+					-- why, and "crc" (bytes lost) and
+					-- "timeout" (nothing sent) call for
+					-- opposite fixes.
+					m.rejects = m.rejects or {}
+					m.rejects[term] = (m.rejects[term] or 0) + 1
 					m:emit(binhdr(ZRPOS, pos4(pos), use32, m.escall))
 					break
 				end
@@ -801,9 +891,11 @@ end
 local function recvbody(m)
 	local files = {}
 	local tries = 0
-	-- a zero window is "stream, do not wait for me". The buffer is
-	-- Lua's problem, not the line's, so there is nothing to pace
-	-- against and an ack per window would only cost round trips.
+	-- opts.window is what the far end may send before waiting for us.
+	-- Zero is "stream, do not wait", which is right when the bytes
+	-- land in Lua and wrong when they land anywhere that takes time:
+	-- a sink writing to a file server cannot read while it writes, and
+	-- an unpaced sender overruns whatever is buffering underneath.
 	local can = CANFDX | CANOVIO
 
 	if m.crc32 then
@@ -813,19 +905,36 @@ local function recvbody(m)
 		can = can | ESCCTL
 	end
 
-	local flags = string.char(0, 0, 0, can)
+	local win = m.window or 0
+	local flags = string.char(win & 0xff, (win >> 8) & 0xff, 0, can)
 	-- ZRINIT is a prompt, not a heartbeat: it is said once at the
 	-- start, once per file finished, and again whenever the sender
 	-- has gone quiet. Repeating it per lap put a second one in flight
 	-- behind every frame, and the sender answered the echo.
-	local prompt = true
+	local prompt, listened = true, false
 
 	while true do
 		if tries > m.retries then
 			m.err = "no sender"
 			return nil
 		end
-		if prompt then
+		-- Listen before speaking, once. A sender starts us by name and
+		-- then pipelines its ZRQINIT and ZFILE without waiting, so by
+		-- the time this is running those frames are usually already
+		-- queued. Prompting on top of them puts our ZRINIT behind the
+		-- ZFILE, where lsz reads it as "the receiver restarted" and
+		-- spends two of its five second waits before trying again.
+		if not listened then
+			local save = m.timeout
+			listened = true
+			m.timeout = LISTEN
+			m:wait()
+			m.timeout = save
+		end
+		-- Only with nothing in hand. Anything buffered already answers
+		-- what a prompt would ask for, and the sender is further along
+		-- than a prompt assumes.
+		if prompt and m.pos > #m.inbuf then
 			m:emit(hexhdr(ZRINIT, flags))
 			prompt = false
 		end
@@ -1163,6 +1272,9 @@ local function newmach(body, opts)
 		-- a request the driver answers from outside the coroutine,
 		-- because a yield in here reaches Mach:run and nothing else.
 		yieldread = opts.yieldread,
+		-- the same, for a sink that writes to a file server.
+		yieldwrite = opts.yieldwrite,
+		window = opts.window,
 	}, Mach)
 
 	m.co = coroutine.create(function()
@@ -1219,6 +1331,13 @@ function M.drive(m, line)
 			-- parking reaches whoever should hear it.
 			m.filedata = m.filereader(m.filereq.off,
 			    m.filereq.n)
+		end
+		if m.sinkreq then
+			-- the receiver's counterpart of filereq: a sink that
+			-- writes to a file server parks, so the call is made
+			-- from out here.
+			m.sinkres = m:sinkdo(m.sinkreq.op, m.sinkreq.a,
+			    m.sinkreq.b)
 		end
 		if m.wantinput then
 			local d = line.read(m:timeleft(line.now()))

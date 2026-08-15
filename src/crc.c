@@ -105,9 +105,69 @@ l_crc32(lua_State *L)
 	return 1;
 }
 
+/* unzdle(s, pos) -- decode one run of ZDLE-escaped data. Returns data,
+ * terminator, nextpos at a subpacket terminator, and data, nil, nextpos
+ * when the input runs out first -- so the caller feeds more and calls
+ * again. nil, "bad escape" for an escape that means nothing here.
+ */
+#define ZDLE	0x18
+#define ZRUB0	0x6c
+#define ZRUB1	0x6d
+
+static int
+l_unzdle(lua_State *L)
+{
+	size_t n = 0;
+	const char *s = luaL_checklstring(L, 1, &n);
+	const unsigned char *p = (const unsigned char *)s;
+	size_t i = (size_t)luaL_checkinteger(L, 2) - 1;
+	luaL_Buffer b;
+
+	luaL_buffinit(L, &b);
+	while (i < n) {
+		unsigned char c = p[i];
+		size_t run;
+
+		if (c != ZDLE) {
+			/* the plain run to the next escape, in one copy. */
+			for (run = i; run < n && p[run] != ZDLE; run++)
+				;
+			luaL_addlstring(&b, s + i, run - i);
+			i = run;
+			continue;
+		}
+		if (i + 1 >= n)
+			break;		/* the escaped byte is not here yet */
+		c = p[i + 1];
+		if (c >= 0x68 && c <= 0x6b) {
+			luaL_pushresult(&b);
+			lua_pushinteger(L, (lua_Integer)c);
+			lua_pushinteger(L, (lua_Integer)(i + 3));
+			return 3;
+		}
+		if (c == ZRUB0)
+			luaL_addchar(&b, (char)0x7f);
+		else if (c == ZRUB1)
+			luaL_addchar(&b, (char)0xff);
+		else if ((c & 0x60) == 0x40)
+			luaL_addchar(&b, (char)(c ^ 0x40));
+		else {
+			lua_pushnil(L);
+			lua_pushstring(L, "bad escape");
+			return 2;
+		}
+		i += 2;
+	}
+	luaL_pushresult(&b);
+	lua_pushnil(L);
+	lua_pushinteger(L, (lua_Integer)(i + 1));
+	return 3;
+}
+
 static const luaL_Reg crclib[] = {
 	{ "crc16", l_crc16 },
 	{ "crc32", l_crc32 },
+	{ "unzdle", l_unzdle },
 	{ NULL, NULL },
 };
 
