@@ -53,6 +53,7 @@ void	isr_resched(void);
 void	idt_load(void);	/* this cpu's IDTR; the table is shared */
 void	smp_init(void);
 void	smp_start_aps(void);
+unsigned long uart_rx_irqs(void);
 void	uart_txlock(void);
 void	uart_txunlock(void);
 

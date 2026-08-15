@@ -54,6 +54,18 @@ function M.new(handle)
 		    reply = { __right = reply() } })
 		return thread.recv(replyport)
 	end
+	-- bulk sibling of getch, for a program moving bytes rather than
+	-- keystrokes: whatever is queued after the first byte, in one
+	-- reply. "" on a timeout. The console caps `n` at its own bound,
+	-- so a large ask is not a large answer.
+	function t.readraw(n, timeout)
+		sys.send(handle, { op = "readraw", n = n,
+		    timeout = timeout, reply = { __right = reply() } })
+
+		local d = thread.recv(replyport)
+
+		return type(d) == "string" and d or ""
+	end
 	-- how wide and how tall, or nil when the far end does not know.
 	-- A program that lays out columns asks once and falls back to its
 	-- own default; nil means a serial line, not an error.

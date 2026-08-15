@@ -127,7 +127,13 @@ console_init(void)
 	 * looks like a protocol bug and is not one.
 	 */
 	cfg.tx_buffer_size = 4096;
-	cfg.rx_buffer_size = 4096;
+	/* Receive is the asymmetric one. This is USB, not a 115200 line:
+	 * the host delivers as fast as it is asked to, while a receiver
+	 * stops reading for a flash write measured at 19ms. What arrives
+	 * meanwhile has to fit, or the sender retransmits -- 1.9x the
+	 * bytes for a 24KB file at 4096.
+	 */
+	cfg.rx_buffer_size = 16384;
 
 	if (usb_serial_jtag_driver_install(&cfg) == ESP_OK)
 		usb_serial_jtag_vfs_use_driver();
@@ -165,38 +171,18 @@ console_init(void)
 #endif
 }
 
-/* Raw mode: pass bytes through untouched.
- *
- * Not a convenience. The translation below corrupts any binary stream
- * that happens to contain 0x0a -- a ZMODEM data subpacket, for one,
- * which then fails its crc, gets asked for again and times out. The
- * handshake survives it because ZHEX headers are printable and already
- * carry their own CRLF, so the failure looks like "the transfer stalls
- * after the file is created" rather than like line endings.
- *
- * task/cons.lua's rawon says a console with nothing to switch may
- * ignore it because "platform.write is the same bytes either way".
- * That is true of the platforms it was written against and false here,
- * so this is what makes it true.
+/* Raw mode: pass bytes through untouched. The translation below
+ * corrupts any binary stream carrying 0x0a. Headers survive it, being
+ * printable, so the failure reads as a transfer that stalls after the
+ * file is created rather than as line endings.
  */
 static int rawmode;
 
-/* Write straight at the driver, not through stdio.
- *
- * IDF's VFS path (usbjtag_tx_char_via_driver) tries a non-blocking
- * write, then one blocking write, and if that times out it latches
- * tx_tried_blocking and SILENTLY DROPS every byte after it. That is a
- * reasonable answer to "no host is attached" and a corrupting one when
- * a host is attached and merely slower than we are: a ZMODEM transfer
- * loses bytes mid-stream, the crc fails and the receiver asks for
- * position 0 again. Measured as transfers that work to 2048 bytes and
- * fail at 3072 -- a size threshold, which is what a filling buffer
- * looks like.
- *
- * So: loop until the driver has taken everything, with a timeout long
- * enough that a reading host always wins. Giving up after that is
- * deliberate -- a console with nobody on the other end must not wedge
- * the machine.
+/* Write straight at the driver, not through stdio: IDF's vfs path
+ * discards every byte after one blocking write times out, which is
+ * right for an absent host and corrupting for a slow one. Loop until
+ * the driver has taken it all, then give up -- a console with nobody
+ * on the other end must not wedge the machine.
  */
 static void
 write_all(const char *s, size_t n)
@@ -289,39 +275,45 @@ console_write(const char *s, size_t n)
 		write_all(s + start, n - start);
 }
 
-/* one character of pushback, so console_peek can answer without
- * consuming. Not a ring: the only caller that peeks is the idle path,
- * and it reads the byte on the very next lap.
+/* What has arrived and nobody has asked for yet. The kernel takes input
+ * a byte at a time, and on this console a byte costs a driver call. A
+ * file arriving at USB speed outruns that, and what does not fit in the
+ * driver's ring meanwhile is dropped -- which reads as a transfer that
+ * resends, not as a slow console.
  */
-static int pushback = -1;
+static unsigned char rxbuf[1024];
+static size_t rxlen, rxpos;
+
+static void
+fill(void)
+{
+	int n;
+
+	if (rxpos < rxlen)
+		return;
+	rxlen = rxpos = 0;
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+	n = usb_serial_jtag_read_bytes(rxbuf, sizeof rxbuf, 0);
+#else
+	n = (int)read(STDIN_FILENO, rxbuf, sizeof rxbuf);
+#endif
+	if (n > 0)
+		rxlen = (size_t)n;
+}
 
 int
 console_peek(void)
 {
-	unsigned char c;
-
-	if (pushback >= 0)
-		return 1;
-	if (read(STDIN_FILENO, &c, 1) == 1) {
-		pushback = c;
-		return 1;
-	}
-	return 0;
+	fill();
+	return rxpos < rxlen;
 }
 
 int
 console_getchar(void)
 {
-	unsigned char c;
-
-	if (pushback >= 0) {
-		int v = pushback;
-
-		pushback = -1;
-		return v;
-	}
-	if (read(STDIN_FILENO, &c, 1) == 1)
-		return c;
+	fill();
+	if (rxpos < rxlen)
+		return rxbuf[rxpos++];
 	return -1;
 }
 

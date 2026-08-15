@@ -36,6 +36,13 @@ local thread = require("los.thread")
 -- rather than a throughput knob.
 local MAXRAW = 512
 
+-- how long readraw waits for more once it has some. A reader moving a
+-- file asks for hundreds of bytes and a line delivers them in pieces,
+-- so returning on the first piece costs a round trip per piece:
+-- measured at 3984 reads of 7.8 bytes for a 24KB transfer, with 98% of
+-- the wall time inside the read.
+local GATHER = 2
+
 -- the interrupt character, uniformly, whatever the terminal is: a
 -- serial line and an ssh client both send 0x03 for it, and a keyboard
 -- without a control key maps some combination to the same byte rather
@@ -128,7 +135,60 @@ end
 -- and the last frame never arrives at all -- a message from the network
 -- is invisible until you type. Anything that is not a write waits for
 -- serve, which is what `deferred` is for.
+-- one keystroke, from a chunk that may hold many.
+--
+-- The pump delivers whatever arrived together, so a reader taking one
+-- key at a time keeps the rest here. Bytes, not messages, are what the
+-- callers are counting.
 function Console:getch(ms)
+	local p = self.pend
+
+	if p and p ~= "" then
+		self.pend = p:sub(2)
+		return p:sub(1, 1)
+	end
+
+	local c = self:recvchunk(ms)
+
+	if type(c) ~= "string" or c == "" then
+		return c
+	end
+	self.pend = c:sub(2)
+	return c:sub(1, 1)
+end
+
+-- everything queued, in one string: what getch left plus one chunk.
+function Console:readchunk(ms)
+	local p = self.pend
+
+	if p and p ~= "" then
+		self.pend = ""
+		return p
+	end
+	return self:recvchunk(ms)
+end
+
+-- one key, waiting at most ms for it. The editor's primitive: every
+-- read of the queue goes through here or getch, so a chunk is split in
+-- one place and nothing is left where only one of them can see it.
+function Console:keytimeout(ms)
+	local p = self.pend
+
+	if p and p ~= "" then
+		self.pend = p:sub(2)
+		return p:sub(1, 1)
+	end
+
+	local c = thread.recvtimeout(self.inq, ms)
+
+	if type(c) ~= "string" or c == "" then
+		return c
+	end
+	self.pend = c:sub(2)
+	return c:sub(1, 1)
+end
+
+function Console:recvchunk(ms)
 	local timer = ms and sys.timer(ms) or nil
 
 	-- no timer to be had: keep the deadline, which is what an escape
@@ -241,10 +301,10 @@ function Console:readline(prompt)
 	end
 
 	local function escape()
-		local c = thread.recvtimeout(self.inq, ESCWAIT)
+		local c = self:keytimeout(ESCWAIT)
 
 		if c == "O" then
-			return arrow(thread.recvtimeout(self.inq, ESCWAIT))
+			return arrow(self:keytimeout(ESCWAIT))
 		end
 		if c ~= "[" then
 			-- a bare Escape, and c is whatever was typed next
@@ -257,7 +317,7 @@ function Console:readline(prompt)
 		local f
 
 		repeat
-			f = thread.recvtimeout(self.inq, ESCWAIT)
+			f = self:keytimeout(ESCWAIT)
 		until f == nil or f:match("[@-~]")
 		return arrow(f)
 	end
@@ -286,12 +346,20 @@ function Console:readline(prompt)
 		local c = pending
 
 		pending = nil
+		if c == nil and self.pend and self.pend ~= "" then
+			-- the rest of a chunk this editor already has: taking
+			-- it before waiting is what keeps a pasted line from
+			-- stopping halfway.
+			c = self.pend:sub(1, 1)
+			self.pend = self.pend:sub(2)
+		end
 		if c == nil then
 			local which, m = thread.alt({ { port = self.inq },
 			    { port = sys.SELF } })
 
 			if which == 1 then
-				c = m
+				c = m:sub(1, 1)
+				self.pend = m:sub(2)
 			-- a mailbox message mid-line: a write shows now;
 			-- anything else waits for serve, so nothing is
 			-- dropped.
@@ -370,19 +438,45 @@ end
 --
 -- Everything else is forwarded unchanged, so a reader cannot tell the
 -- pump is there.
+-- into the input queue, waiting for room rather than losing what does
+-- not fit. A dropped chunk of a file transfer is a checksum failure a
+-- long way from its cause. Waiting is also what stops the machine ahead
+-- of us: nothing drains the keyboard port meanwhile, so the kernel
+-- stops reading the device.
+function Console:queue(c)
+	while true do
+		local ok, why, need = sys.send(self.inq, c)
+
+		if ok ~= nil or why ~= "full" then
+			return
+		end
+		-- parksend, not sys.sendblock: this runs in the pump thread,
+		-- and only the coroutine the kernel resumed may park.
+		thread.parksend(self.inq, need)
+	end
+end
+
 function Console:pump()
 	while true do
 		local c = thread.recv(self.kbd)
 
-		if c == INTR and self.intr and not self.raw then
+		if type(c) == "string" and self.intr and not self.raw and
+		    c:find(INTR, 1, true) then
 			-- to whoever asked to hear it, and not into the
 			-- input: a program being interrupted should not
-			-- also read the character that interrupted it.
+			-- also read the character that interrupted it. The
+			-- rest of the chunk is ordinary typing and stays.
+			local i = c:find(INTR, 1, true)
+
 			sys.send(self.intr, { op = "interrupt" })
 			-- the console is usually inside a read for the
 			-- program being killed, and a dead program never
 			-- types the line that would end it.
 			sys.send(thread.selfright(), { op = "abort" })
+			c = c:sub(1, i - 1) .. c:sub(i + 1)
+			if c ~= "" then
+				self:queue(c)
+			end
 		elseif type(c) == "table" then
 			-- not input: a window system shares this port with
 			-- the keys. Handed on, never typed.
@@ -390,7 +484,7 @@ function Console:pump()
 				self.kbdother(c)
 			end
 		elseif c ~= nil then
-			sys.send(self.inq, c)
+			self:queue(c)
 		end
 	end
 end
@@ -523,23 +617,30 @@ function Console:serve()
 			-- queued turns a subpacket into one reply.
 			-- bounded hard, not by what the caller asks: every
 			-- byte is a lua string object until the concat, so
-			-- the batch is the peak. Measured on a Cardputer at
-			-- n=2048, cons peaked at 95KB of a 125KB board.
+			-- the batch is the peak.
 			local want = m.n or MAXRAW
 
 			if want > MAXRAW then
 				want = MAXRAW
 			end
 
-			local t = {}
-			local c = self:getch(m.timeout or 1000)
+			local t, got = {}, 0
+			local c = self:readchunk(m.timeout or 1000)
 
-			while c and c ~= "" do
+			while type(c) == "string" and c ~= "" do
+				if got + #c > want then
+					-- the tail belongs to the next read,
+					-- not to this one's bound.
+					self.pend = c:sub(want - got + 1) ..
+					    (self.pend or "")
+					c = c:sub(1, want - got)
+				end
 				t[#t + 1] = c
-				if #t >= want then
+				got = got + #c
+				if got >= want then
 					break
 				end
-				c = self:getch(0)
+				c = self:readchunk(GATHER)
 			end
 			if reply then
 				sys.send(reply, table.concat(t))

@@ -8,21 +8,35 @@
 #include "platform.h"
 #include "microvm.h"
 
-/* bare \n becomes \r\n on the way out.
- *
- * A terminal on the far end of a serial line does not move the carriage
- * for a line feed, so text written with unix line endings walks off to
- * the right one line at a time -- unmissable on a vmd console, and
- * invisible under the test harness, which strips \r before comparing.
- *
- * Here and not in uart_tx: com1 also carries the 9p wire (lib/wire.lua),
- * and rewriting bytes in a protocol stream would corrupt it. This is the
- * console, where the convention belongs.
+/* raw: write the bytes as given. The translation below corrupts a
+ * binary stream carrying 0x0a, so a program moving bytes rather than
+ * text turns it off for the length of the transfer.
+ */
+static int rawmode;
+
+void
+console_setraw(int on)
+{
+	rawmode = on;
+}
+
+/* bare \n becomes \r\n on the way out: a terminal on a serial line does
+ * not move the carriage for a line feed, so unix line endings walk the
+ * text off to the right. Here and not in uart_tx, because com1 also
+ * carries the 9p wire (lib/wire.lua) and rewriting bytes in a protocol
+ * stream would corrupt it.
  */
 void
 console_write(const char *s, size_t n)
 {
 	size_t start = 0;
+
+	if (rawmode) {
+		uart_txlock();
+		uart_tx(s, n);
+		uart_txunlock();
+		return;
+	}
 
 	/* one line, not one segment: the loop below makes several calls
 	 * per string and another cpu's console_write must not land in

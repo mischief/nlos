@@ -63,7 +63,13 @@
  *
  * A power of two, so the wrap is a mask.
  */
-#define RXRING 256
+/* big enough to hold a burst while the reader is busy elsewhere. A
+ * ZMODEM subpacket is 1024 bytes and its receiver writes each one to a
+ * file server before reading again: at 256 the tail of every subpacket
+ * was dropped, which cost a crc failure, a ten-second timeout and a
+ * retransmission -- 4.3x the bytes for a 4KB file, at 400 B/s.
+ */
+#define RXRING 8192
 
 static struct lock rxlk = LOCK_INIT;
 static unsigned char rxring[RXRING];
@@ -124,13 +130,18 @@ uart_init(void)
 {
 	outb(COM1 + IER, 0x00);		/* quiet while reconfiguring */
 	outb(COM1 + LCR, 0x80);		/* dlab on */
-	outb(COM1 + 0, 0x01);		/* divisor 1: 115200 */
+	/* divisor 1: 115200, and the most a 16550 can be asked for. qemu
+	 * pays no attention to it -- 9600 here measured the same rate --
+	 * so on this platform the figure is documentation.
+	 */
+	outb(COM1 + 0, 0x01);
 	outb(COM1 + 1, 0x00);
 	outb(COM1 + LCR, 0x03);		/* 8n1, dlab off */
 
 	/* trigger on one byte rather than fourteen. This is a console: a
 	 * keystroke should raise an interrupt, not wait for thirteen
-	 * friends or for the fifo's timeout to give up on them.
+	 * friends or for the fifo's timeout to give up on them. Raising it
+	 * to fourteen was measured and changed the inbound rate not at all.
 	 */
 	outb(COM1 + FCR, 0x07);		/* fifo on, both cleared, trigger 1 */
 	outb(COM1 + MCR, 0x0B);		/* dtr, rts, out2 */
@@ -173,9 +184,23 @@ uart_drain_locked(void)
 	}
 }
 
+/* how many receive interrupts have landed. What sleeps on it is the
+ * idle wait: without a count to watch, an arriving byte wakes the cpu
+ * from hlt and the wait goes straight back to sleep, so the console
+ * only moves on the next timer tick.
+ */
+static volatile unsigned long rxirqs;
+
+unsigned long
+uart_rx_irqs(void)
+{
+	return rxirqs;
+}
+
 void
 uart_isr(void)
 {
+	rxirqs++;
 	/* reading IIR is what tells the uart the interrupt was seen; the
 	 * fifo drain below is what stops it raising again immediately.
 	 */

@@ -462,10 +462,66 @@ pump_devptr(void)
 	}
 }
 
+/* how many keystrokes one message may carry. Bounded because the
+ * message is a stack buffer and a reader wants its keys promptly.
+ */
+#define KBDBATCH 256
+
+/* What the console has not taken yet. A full queue means the reader is
+ * behind, and dropping there loses the middle of a file: hold the batch
+ * instead and stop reading the device, so the sender is the one that
+ * waits. On a usb console that back pressure reaches the host.
+ */
+static unsigned char kbdheld[5 + KBDBATCH];
+static size_t kbdheldn;
+
+static int
+kbdflush(unsigned char *msg, size_t *n)
+{
+	msg[1] = (unsigned char)(*n & 0xff);
+	msg[2] = (unsigned char)((*n >> 8) & 0xff);
+	msg[3] = 0;
+	msg[4] = 0;
+	if (port_push(kbdport, msg, 5 + *n, 0, 0) == -2) {
+		memcpy(kbdheld, msg, 5 + *n);
+		kbdheldn = *n;
+		*n = 0;
+		return 0;
+	}
+	*n = 0;
+	return 1;
+}
+
+/* the held batch, if any. Zero means it still does not fit, and the
+ * caller must not read more.
+ */
+static int
+kbddrain(void)
+{
+	size_t n = kbdheldn;
+
+	if (n == 0)
+		return 1;
+	if (port_push(kbdport, kbdheld, 5 + n, 0, 0) == -2)
+		return 0;
+	kbdheldn = 0;
+	return 1;
+}
+
 static void
 pump_keyboard(void)
 {
 	EFI_INPUT_KEY key;
+
+	if (kbdheldn) {
+		int ok;
+
+		ipclock_enter();
+		ok = kbddrain();
+		ipclock_leave();
+		if (!ok)
+			return;
+	}
 
 	/* Poll before locking: the scheduler calls this every lap and
 	 * nearly every lap has no key, where taking the lock is the whole
@@ -474,39 +530,50 @@ pump_keyboard(void)
 	if (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) != EFI_SUCCESS)
 		return;
 
+	/* serialized string: tag, u32 len, bytes. One message per drain
+	 * rather than per byte -- a keyboard never fills it, and a serial
+	 * line carrying a file measured 440ms per 1024-byte subpacket when
+	 * every byte cost a message and a receive.
+	 */
+	unsigned char msg[5 + KBDBATCH] = { 'S', 0, 0, 0, 0 };
+	size_t n = 0;
+	int full = 0;
+
 	ipclock_enter();
 	do {
-		/* serialized one-char string: tag, u32 len, byte */
-		unsigned char msg[6] = { 'S', 1, 0, 0, 0, 0 };
-
 		/* the physical Backspace key arrives as ScanCode=SCAN_DELETE,
 		 * UnicodeChar=0 under OVMF (confirmed by direct trace), not
 		 * as CHAR_BACKSPACE -- map it to DEL (0x7f), which cons.lua's
 		 * readline already treats the same as Ctrl-H/0x08.
 		 */
 		if (key.ScanCode == SCAN_DELETE && key.UnicodeChar == 0) {
-			msg[5] = 0x7f;
-			port_push(kbdport, msg, sizeof msg, 0, 0);
-			continue;
-		}
-		/* a non-unicode key: an arrow, Escape and the like. Deliver the
-		 * ANSI sequence one byte per message, exactly as a raw serial
-		 * line would -- vi's readkey reads Esc, then the rest.
-		 */
-		if (key.UnicodeChar == 0) {
+			msg[5 + n++] = 0x7f;
+		} else if (key.UnicodeChar == 0) {
+			/* a non-unicode key: an arrow, Escape and the like,
+			 * as the ANSI sequence a raw serial line would send.
+			 */
 			const char *seq = scancode_seq(key.ScanCode);
 
-			for (; seq && *seq; seq++) {
-				msg[5] = (unsigned char)*seq;
-				port_push(kbdport, msg, sizeof msg, 0, 0);
+			for (; seq && *seq && !full; seq++) {
+				if (n == KBDBATCH)
+					full = !kbdflush(msg, &n);
+				if (!full)
+					msg[5 + n++] = (unsigned char)*seq;
 			}
-			continue;
+		} else if (key.UnicodeChar <= 0xff) {
+			/* 0x80..0xff is a byte, not a character to judge: on
+			 * a serial line this is a raw octet and a binary
+			 * stream is half made of them. Only a wide character,
+			 * which no byte source produces, has nowhere to go.
+			 */
+			msg[5 + n++] = (unsigned char)key.UnicodeChar;
 		}
-		if (key.UnicodeChar >= 0x80)
-			continue;
-		msg[5] = (unsigned char)key.UnicodeChar;
-		port_push(kbdport, msg, sizeof msg, 0, 0);
-	} while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_SUCCESS);
+		if (n == KBDBATCH)
+			full = !kbdflush(msg, &n);
+	} while (!full &&
+	    ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_SUCCESS);
+	if (n)
+		kbdflush(msg, &n);
 	ipclock_leave();
 }
 

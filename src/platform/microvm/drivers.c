@@ -24,18 +24,20 @@ extern void console_write(const char *s, unsigned long n);
 extern void uart_tx(const char *s, unsigned long n);
 extern void uart_txlock(void);
 extern void uart_txunlock(void);
+extern unsigned long uart_rx_irqs(void);
 _Noreturn void machine_reset(void);
 void platform_stall_us(unsigned long us);
 
-/* every device interrupt this platform can take is a virtio one: the
- * uart's own line feeds the console through a different path entirely
- * (pump_keyboard, via efi_shim's ReadKeyStroke), and the timer is not
- * a device anyone sleeps on.
+/* what an idle cpu is allowed to wake for: a virtio interrupt, and a
+ * byte on the console line. The uart counts because the idle wait
+ * watches this and nothing else -- without it a byte wakes the cpu from
+ * hlt and it sleeps again until the timer, which paces the console at
+ * one read per tick.
  */
 unsigned long
 platform_dev_irqs(void)
 {
-	return virtio_irq_count();
+	return virtio_irq_count() + uart_rx_irqs();
 }
 
 /* nothing: efi_shim's WaitForEvent already halts until an interrupt and
@@ -84,8 +86,19 @@ cons_write(lua_State *L)
 	return 0;
 }
 
+/* cons.raw(on) -- stop translating \n on the way out, so a binary
+ * stream survives. lib/console.lua calls this from rawon/rawoff.
+ */
+static int
+cons_raw(lua_State *L)
+{
+	console_setraw(lua_toboolean(L, 1));
+	return 0;
+}
+
 static const luaL_Reg conslib[] = {
 	{ "write", cons_write },
+	{ "raw", cons_raw },
 	{ "claim_input", cons_claim_input },
 	{ NULL, NULL }
 };

@@ -119,6 +119,13 @@ int	platform_ptr_read(int *x, int *y, int *buttons);
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);
 
+/* stop rewriting bytes on the way out, for a program moving a binary
+ * stream. A platform whose console writes what it is given need not
+ * define it; lib/console.lua treats a missing cons.raw as "nothing to
+ * switch".
+ */
+void	console_setraw(int on);
+
 /* does the console own the serial input, rather than the wire?
  *
  * On efi these are two devices -- the firmware's ConIn is the keyboard
