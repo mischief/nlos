@@ -35,12 +35,13 @@
  * bus, so whichever driver probes first brings it up.
  */
 
-/* Conservative on purpose. clm settles at 800kHz with the note that the
- * shared bus is fussy, and a card that enumerates but corrupts under
- * load is a far worse first result than a slow one. Raising this is a
- * follow-up with a read/write test behind it, not a guess.
+/* Ask high and let the card answer: sdspi divides a 40MHz source by an
+ * integer and sdmmc_card_init clamps to what the card reports, which
+ * this one does at 20MHz. The probe prints the rate it landed on. The
+ * bus is not the limit -- the clock is per-device, and the display runs
+ * at 60MHz beside this.
  */
-#define TDECK_SD_FREQ_KHZ	800
+#define TDECK_SD_FREQ_KHZ	SDMMC_FREQ_HIGHSPEED
 
 static sdmmc_card_t card;
 static int probed;		/* probe ran; present says what it found */
@@ -102,12 +103,21 @@ esp_blk_present(void)
 	 * a driver that found nothing and a card that is really there.
 	 */
 	{
-		char m[80];
+		char m[96];
 		unsigned long long mb = (unsigned long long)card.csd.capacity *
 		    card.csd.sector_size / (1024 * 1024);
-		int n = snprintf(m, sizeof m,
-		    "blk: %lluMB, %d sectors of %d bytes\n", mb,
-		    card.csd.capacity, card.csd.sector_size);
+		int khz = 0;
+		int n;
+
+		/* the negotiated rate, which is the card's answer and not
+		 * the request above: a high-speed card takes 40MHz and one
+		 * that is not clamps itself, and only this says which.
+		 */
+		if (sdspi_host_get_real_freq(dev, &khz) != ESP_OK)
+			khz = 0;
+		n = snprintf(m, sizeof m,
+		    "blk: %lluMB, %d sectors of %d bytes, %dkHz\n", mb,
+		    card.csd.capacity, card.csd.sector_size, khz);
 
 		console_write(m, (size_t)n);
 	}
