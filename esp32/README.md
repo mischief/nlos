@@ -134,6 +134,13 @@ A file must not be in both places. The partition is mounted over the
 image and searched first, so a copy left on flash silently outranks the
 one a firmware rebuild just changed.
 
+The build keeps them apart rather than trusting anyone to: `main/`
+publishes its embedded list, and mkfatimg is handed it with
+`--exclude-from` and leaves those out. It says how many it left out,
+because that count is the only evidence the exclusion matched -- zero
+where a number was expected means the paths drifted and the image
+quietly went back to carrying both.
+
 ## Flashing
 
     idf.py -B build-tdeck -p /dev/ttyACM0 flash

@@ -41,6 +41,18 @@ hatching proc waits on its creator and is on no port at all, and the
 wake paths test for `BLOCKED`, so nothing but its creator can make one
 runnable.
 
+`DEAD` is reached three ways, and which one matters to a watcher. A main
+chunk that returns, and `sys.exit(code)`, are the same path: `proc_kill`
+with a status. A fault or `sys.kill` goes through `proc_break` instead
+and leaves `BROKE` — a corpse, held for reading and reaping.
+
+`sys.exit` is a flag rather than an immediate death, because the caller
+is inside a syscall and freeing the state it is running in is what
+`sys.kill` refuses to smuggle in. The dispatch loop reads the flag after
+the next yield, which a parking thread already makes — so a proc whose
+other threads are waiting on ports still ends when one of them says the
+work is over.
+
 The state exists because a proc is not finished when `proc_new` returns.
 The caller still has to install the spawn argument, a driver's device
 right, or the boot proc's grants. A second cpu that dispatched it inside

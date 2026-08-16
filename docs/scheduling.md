@@ -41,6 +41,16 @@ construction rather than by care.
 `proc_new`, and is what the kernel resumes. Every other coroutine of
 the proc is created by Lua.
 
+A thread ends by returning, or by `thread.exit()` from anywhere inside
+it — plan 9's threadexit, and the run loop counts it finished rather
+than faulted, so nothing is printed. `thread.run` returns when the last
+one goes, which is what ends the proc in the ordinary case.
+
+Ending the **proc** from a thread is `sys.exit`, and the distinction is
+not pedantry: raising or exiting unwinds one coroutine, so a thread that
+does it leaves its siblings parked on ports nobody will write to and the
+run loop turning forever with nothing to run.
+
 ## The lap
 
 The kernel dispatches in laps. Each lap runs two phases over the run

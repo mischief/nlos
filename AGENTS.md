@@ -131,6 +131,14 @@ started, and a pid learned from `sys.procs` names a proc without
 reaching it. A pid is an identifier, not a capability, and nothing that
 acts on one should read as though it were.
 
+**Ending yourself is not `sys.kill`.** It refuses self on purpose: that
+would free the caller mid-syscall, and what a kill leaves is a corpse
+held BROKE for reaping, which a normal exit must not be. `sys.exit(code)`
+marks the proc and the dispatch loop ends it at the next yield, with a
+status, by the path a returning main chunk takes. `thread.exit()` is
+plan 9's threadexit: it ends one thread and reads as finished rather
+than raised.
+
 **The line is between reading a proc and acting on one.** `sys.stack`,
 `sys.trace`, `sys.pidstat` and `sys.wchan` stay ambient beside
 `sys.procs` and `sys.name`, which is what makes a debugger `cat
@@ -525,6 +533,18 @@ at thousands of timers, and `MAXPROCS` is 32.
 
 ## Traps already walked — do not re-derive these
 
+- **A green suite says nothing about a full-size frame.** `snp_recv` was
+  given a 1514-byte buffer, OVMF wanted room for the fcs, and every
+  maximum-length frame was refused and silently dropped while every
+  smaller one arrived. Arp, dhcp and a 9P request all fit, so the whole
+  suite passed while an ssh handshake took 139 seconds — the peer retransmits
+  what was never taken, so loss presents as a stall. `test/test_http.lua`
+  posts 64KB for this; a 1000-byte body passes either way.
+- **`os.exit` from a spawned thread does not end the proc.** It unwinds
+  one coroutine, leaving the siblings parked and `thread.run` turning,
+  so a program that started readers lives forever holding its terminal.
+  `lib/prog.lua` routes it to `sys.exit` where the program owns its
+  proc; a coroutine stage must never, since the proc is its launcher's.
 - **The esp32 has two roots, and a change may land in either.** The
   firmware image carries one set of Lua modules and the `luafs`
   partition carries the rest. The partition is mounted over the image

@@ -118,17 +118,19 @@ Three things about it that are prototype, not design:
   persistent key means either the ESP right (which the session
   deliberately does without) or a key baked into the image.
 - **Any public key is accepted**, from any username. `authorized` in
-  `authorized` in `task/sshd.lua` is one line so that this is obvious.
+  `task/sshd.lua` is one line so that this is obvious.
 - **You need an ed25519 key.** `ssh-ed25519` is the only host key and
   user key algorithm offered; there is no RSA anywhere.
 
 The key exchange is `mlkem768x25519-sha256` -- post-quantum, so OpenSSH
-10 does not warn about it. ML-KEM-768 encapsulation costs 14ms on this
-machine, against 85ms for the X25519 half it is paired with, so the
-quantum-resistant part is the cheap part. Authentication stays
-`ssh-ed25519` deliberately: harvest-now-decrypt-later attacks
-confidentiality, and a signature forged in 2040 verifies nothing today.
-`curve25519-sha256` is still offered for clients that want it.
+10 does not warn about it. On the guest, X25519 is 0.2ms and an Ed25519
+signature 0.6ms, both C in `src/native.c`. ML-KEM-768 encapsulation is
+about 3ms, measured on the host: the SHAKE under it is that same C, and
+what is Lua is the polynomial arithmetic above. So the post-quantum half
+is the expensive one, and the whole exchange is still milliseconds. Authentication stays `ssh-ed25519` deliberately:
+harvest-now-decrypt-later attacks confidentiality, and a signature
+forged in 2040 verifies nothing today. `curve25519-sha256` is still
+offered for clients that want it.
 
 `machine/efi/services.lua` is what starts it, commented out by default:
 an anonymous visitor gets a shell, and it costs about 284KB idle.
@@ -142,6 +144,31 @@ copied verbatim), the protocols are `lib/ssh` and `lib/tls` with
 Every file here is a copy: sync it by hand, rewriting `ssh.crypto.X` to
 `crypto.X`. Entropy is `EFI_RNG_PROTOCOL` via `los.platform.rng`; no RNG
 means no sshd, rather than a weaker one.
+
+## SSH out of it
+
+`bin/ssh.lua` is the other direction: a login shell where no command is
+given, one command where there is.
+
+```
+> keygen                        writes /config/id_ed25519 and .pub
+> ssh 192.168.0.12 uname -a     one command, and its exit status
+> ssh me@192.168.0.12           a pty and a shell
+```
+
+`keygen` writes a key openssh reads, and `/config` is where it goes
+because that is a flash partition of its own: a key there survives
+reflashing the filesystem. `ssh` takes that key with no arguments, and
+there is no generated fallback -- a key made on the spot is in nobody's
+`authorized_keys`, so it could only fail while looking like it tried.
+Where the far end refuses it and there is a terminal to type at,
+keyboard-interactive asks (RFC 4256), which is how a password login
+works.
+
+A host is a dotted quad: nothing resolves names for a program yet.
+Host keys are trust-on-first-use with the fingerprint printed, checked
+against `/config/known_hosts` if there is one, and a key that is known
+and differs is refused.
 
 TLS 1.3 is client and server, sans-io the same way `lib/ssh` is: one
 suite (ChaCha20-Poly1305), X25519 only, no resumption and no 0-RTT.
@@ -172,7 +199,16 @@ Three kinds of test, all real boots:
   server, because qemu's usermode network does not hairpin.
 
 `tools/boottest.lua` extracts the TAP and dumps the whole serial trace
-as diagnostics on failure. `lib/tap.lua` is the guest-side producer.
+as diagnostics on failure, keeping that log and printing its path --
+meson's own testlog is overwritten by the next run, and a rare failure
+is the one whose evidence you need. `lib/tap.lua` is the guest-side
+producer.
+
+A guest is pinned to one cpu, because an unpinned vcpu that migrates
+wedges OVMF before our binary loads: 32 unpinned guests lose about a
+quarter of themselves that way, each with an empty serial trace.
+`LUAOS_PIN` names a cpu or `off`, which is for measuring that rather
+than for tuning.
 
 Benchmarks are separate from tests and are not run by `meson test`:
 
