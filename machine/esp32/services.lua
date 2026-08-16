@@ -47,8 +47,16 @@ return {
 	-- the panel, the keyboard and the pointer, as the machine's own
 	-- interface: a tray of apps, one of them a terminal, which starts
 	-- at boot so the board comes up at a prompt.
+	-- the bluetooth controller, which is a singleton: one advertising
+	-- set, one scan, one attribute database and a budget of ten
+	-- activities between them. Programs hold a right to this rather
+	-- than to raw hci, and bin/hcitool.lua is the exception that
+	-- proves it -- a diagnostic, granted the transport directly.
+	-- Before the panel, because dio lends this to the apps it starts.
+	{ path = "/task/blesrv.lua", caps = { "hci" }, capname = "ble" },
+
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "tcp", "ip", "dns", "power" } },
+	  optcaps = { "tcp", "ip", "dns", "power", "ble" } },
 
 	-- the panel and the keyboard as a plain terminal, for a board
 	-- with no pointer. Exactly one of this and dio above belongs in a
@@ -63,13 +71,6 @@ return {
 	-- cannot move it.
 	{ path = "/task/timed.lua", caps = { "ip", "time" },
 	  optcaps = { "dns" } },
-
-	-- the bluetooth controller, which is a singleton: one advertising
-	-- set, one scan, one attribute database and a budget of ten
-	-- activities between them. Programs hold a right to this rather
-	-- than to raw hci, and bin/hcitool.lua is the exception that
-	-- proves it -- a diagnostic, granted the transport directly.
-	{ path = "/task/blesrv.lua", caps = { "hci" }, capname = "ble" },
 
 	-- No 9P export here. task/9pexport.lua ships to this board like
 	-- everything else under task/, and a machine with a disk runs it

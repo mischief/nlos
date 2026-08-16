@@ -21,6 +21,10 @@
 --		default: an app is reached with the pointer, and keys sent
 --		to a program that never reads them would fill a port. A
 --		terminal gets them whatever this says.
+--	ble	lend this one the bluetooth adapter. Off by default and
+--		named per entry rather than given to everything: the
+--		radio is a singleton, and a program that never asked for
+--		it cannot advertise as somebody else.
 --	kind	"term" for the console stack, which takes a framebuffer
 --		and a keyboard rather than the program ABI. Anything else
 --		is an ordinary program.
@@ -60,6 +64,11 @@ return {
 		{ name = "wifi", cmd = "/bin/wifiui.lua",
 		  label = "W", color = 0x7fdbff, keys = true,
 		  desc = "join a network" },
+		-- the mesh. Keys, because a chat is typed, and the radio,
+		-- which is what ble = true above means.
+		{ name = "bitchat", cmd = "/bin/bitchatui.lua",
+		  label = "B", color = 0xb10dc9, keys = true, ble = true,
+		  desc = "the bitchat mesh, over bluetooth" },
 		{ name = "clock", cmd = "/bin/clock.lua",
 		  label = "T", color = 0xff2418,
 		  desc = "the time; touch it to turn it over" },

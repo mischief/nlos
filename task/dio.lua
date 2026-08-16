@@ -112,6 +112,9 @@ local dnsh = job.dns and job.dns.__right
 local rng = job.seed and
     require("crypto.drbg").new(job.seed) or nil
 local ptr = job.ptr and job.ptr.__right
+-- the radio, lent on to an app whose entry asks for it. Held rather
+-- than used: dio draws, and what talks bluetooth is a program.
+local bleh = job.ble and job.ble.__right
 
 local function say(s)
 	if cons then
@@ -865,6 +868,11 @@ local function start(i)
 				-- front.
 				ev = { __right = a.ev },
 				keys = entry.keys or nil,
+				-- only where the entry named it: a right
+				-- nobody asked for is one more program
+				-- that could use the radio.
+				ble = entry.ble and bleh and
+				    { __right = bleh } or nil,
 				stdout = cons and { __right = cons } or nil,
 				stderr = cons and { __right = cons } or nil,
 			})
