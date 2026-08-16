@@ -80,6 +80,22 @@ return {
 		{ name = "settings", cmd = "/bin/settings.lua",
 		  category = "system", label = "=", color = 0xaaaaaa,
 		  keys = true, desc = "memory, network and uptime" },
+		-- the namespace. `opens` is the one entry given the door,
+		-- since it is the one that asks dio to open what was
+		-- touched; `handles = dir` is what a directory opens in,
+		-- so opening one from anywhere lands back here.
+		{ name = "files", cmd = "/bin/files.lua",
+		  category = "system", label = "/", color = 0xff851b,
+		  keys = true, opens = true, handles = { "dir" },
+		  desc = "the namespace, and what is in it" },
+		{ name = "view", cmd = "/bin/view.lua",
+		  category = "system", label = "T", color = 0x39cccc,
+		  keys = true,
+		  -- what claims a file. Last of the three, so a rule
+		  -- above it wins: this is the fallback, not the choice.
+		  handles = { "%.lua$", "%.txt$", "%.md$", "%.csv$",
+		    "%.conf$", "^[^.]*$" },
+		  desc = "read a file" },
 		{ name = "clock", cmd = "/bin/clock.lua", category = "toys",
 		  label = "T", color = 0xff2418,
 		  desc = "the time; touch it to turn it over" },

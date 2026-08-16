@@ -245,6 +245,32 @@ local order = {}	-- ids, top to bottom in the tray
 local front = nil	-- the id on the glass
 local nextid = 1
 
+-- ---- opening a thing ----
+-- Starting an app is authority and it stays here (see the selector).
+-- An app may be handed one port, one verb and a path instead: the
+-- rules decide what runs, so a sender says what it has, never what
+-- should run. `handles` declares what an entry opens; `opens` asks for
+-- the door.
+local openport = sys.newport("dio.open")
+local opensend = sys.sendright(openport)
+
+-- the first entry whose patterns match, in catalogue order, as plan 9
+-- takes the first rule set that fires. `dir` matches a directory.
+local function handler(path, isdir)
+	for i, e in ipairs(catalog) do
+		for _, pat in ipairs(e.handles or {}) do
+			if pat == "dir" then
+				if isdir then
+					return i
+				end
+			elseif not isdir and path:match(pat) then
+				return i
+			end
+		end
+	end
+	return nil
+end
+
 -- what stops another app being started.
 --
 -- The count is the backstop; the memory is the real answer, because
@@ -901,7 +927,7 @@ local function focus(id)
 	end
 end
 
-local function start(i)
+local function start(i, openarg)
 	local entry = catalog[i]
 
 	if not entry then
@@ -950,7 +976,12 @@ local function start(i)
 			sys.send(h, {
 				path = entry.cmd,
 				name = a.name,
-				args = { entry.name },
+				-- argv, so what an app is opened on arrives
+				-- as arg[1] and a program started from the
+				-- tray sees none. Nothing in a program has
+				-- to know it was plumbed.
+				args = openarg and { entry.name, openarg } or
+				    { entry.name },
 				env = { PATH = "/bin", HOME = "/" },
 				cwd = "/",
 				nsdesc = desc,
@@ -972,6 +1003,11 @@ local function start(i)
 				-- program that makes a key needs one, and
 				-- two apps must not draw the same bytes.
 				seed = rng and rng.bytes(32) or nil,
+				-- the open door, where the entry asked for
+				-- it. A send right: an app tells dio what it
+				-- has and cannot listen for anyone else's.
+				open = entry.opens and
+				    { __right = opensend } or nil,
 				stdout = cons and { __right = cons } or nil,
 				stderr = cons and { __right = cons } or nil,
 			})
@@ -1274,6 +1310,33 @@ local function appof(pid)
 	end
 	return nil
 end
+
+-- what an app asked to be opened. One verb, and a path it does not get
+-- to turn into a program name: the rules do that, and an entry that
+-- claims nothing can be reached by nobody.
+thread.spawn(function()
+	while true do
+		local m = thread.recv(openport)
+
+		if type(m) == "table" and m.op == "open" and
+		    type(m.path) == "string" then
+			local st = N:stat(m.path)
+			local k = st and handler(m.path, st.dir)
+
+			if not st then
+				say("open: " .. m.path .. ": not here")
+			elseif not k then
+				say("open: nothing handles " .. m.path)
+			else
+				local id, serr = start(k, m.path)
+
+				if not id then
+					say("open: " .. tostring(serr))
+				end
+			end
+		end
+	end
+end)
 
 -- ---- what is left of this thread ----
 --
