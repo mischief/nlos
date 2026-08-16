@@ -22,7 +22,12 @@ local M = {
   USERAUTH_FAILURE = 51,
   USERAUTH_SUCCESS = 52,
   USERAUTH_BANNER = 53,
+  -- 60 belongs to whichever method is running: publickey reads it as
+  -- PK_OK, keyboard-interactive as the prompts. Neither is in flight
+  -- while the other is, so the number is read inside the method.
   USERAUTH_PK_OK = 60,
+  USERAUTH_INFO_REQUEST = 60,
+  USERAUTH_INFO_RESPONSE = 61,
 
   GLOBAL_REQUEST = 80,
   REQUEST_SUCCESS = 81,

@@ -109,19 +109,21 @@ end
 -- "server rejected our key" while looking like it tried.
 local path = keyfile or DEFAULTKEY
 local text, why = slurp(path)
+local seed, pk
 
-if not text then
-	die(path .. ": " .. why ..
-	    (keyfile and "" or " (keygen makes one)"))
+if text then
+	local err
+
+	seed, err = keys.parse_private(text)
+	if not seed then
+		die(path .. ": " .. tostring(err))
+	end
+	pk = ed25519.publickey(seed)
+elseif keyfile then
+	-- named, and not there: that is a mistake rather than a machine
+	-- without a key.
+	die(path .. ": " .. why)
 end
-
-local seed, err = keys.parse_private(text)
-
-if not seed then
-	die(path .. ": " .. tostring(err))
-end
-
-local pk = ed25519.publickey(seed)
 
 -- ---- the transport ----
 
@@ -152,6 +154,11 @@ end
 local sendkey = nil
 local termcols, termrows	-- measured before the readers start
 
+-- Where keystrokes go while a prompt is up. Authentication happens with
+-- the readers already running, so a password is typed at the same
+-- keyboard the session will use, and only one of them may have it.
+local keysink = nil
+
 -- Wait for either source. Keystrokes go out from here rather than from
 -- their own thread, so that every packet is written by one of them.
 local function pump()
@@ -175,9 +182,51 @@ local function pump()
 		else
 			inbuf = inbuf .. v
 		end
-	elseif v ~= nil and sendkey then
-		sendkey(v)
+	elseif v ~= nil then
+		if keysink then
+			keysink(v)
+		elseif sendkey then
+			sendkey(v)
+		end
 	end
+end
+
+-- One typed line, for a prompt the server put up. The echo is ours to
+-- do: the terminal is raw for the session, and a password prompt says
+-- echo false precisely so the answer never reaches the screen.
+local function promptline(text, echo)
+	local acc = {}
+	local done = false
+
+	unistd.write(1, text)
+	keysink = function(k)
+		for i = 1, #k do
+			local c = k:sub(i, i)
+
+			if c == "\r" or c == "\n" then
+				done = true
+			elseif c == "\127" or c == "\8" then
+				if #acc > 0 then
+					acc[#acc] = nil
+					if echo then
+						unistd.write(1, "\8 \8")
+					end
+				end
+			elseif c >= " " then
+				acc[#acc + 1] = c
+				if echo then
+					unistd.write(1, c)
+				end
+			end
+		end
+	end
+
+	while not done and not closed do
+		pump()
+	end
+	keysink = nil
+	unistd.write(1, "\r\n")
+	return table.concat(acc)
 end
 
 -- One thread per source, started only where there is a reactor to run
@@ -295,7 +344,34 @@ local function session()
 	ok, err = C:service("ssh-userauth")
 	if not ok then return tostring(err) end
 
-	ok, err = C:auth_publickey(user, seed, pk)
+	local keyerr
+
+	if seed then
+		ok, err = C:auth_publickey(user, seed, pk)
+		keyerr = err
+	else
+		ok, err = false, DEFAULTKEY .. ": no key (keygen makes one)"
+		keyerr = err
+	end
+
+	-- The key first, and the questions only where there is somebody to
+	-- answer them: a command form has no terminal, and a prompt with
+	-- nothing to type at it is a session that hangs rather than fails.
+	if not ok and interactive then
+		ok, err = C:auth_keyboard(user, function(name, instr, prompts)
+			local out = {}
+
+			if name ~= "" then unistd.write(1, name .. "\r\n") end
+			if instr ~= "" then unistd.write(1, instr .. "\r\n") end
+			for i, p in ipairs(prompts) do
+				out[i] = promptline(p.text, p.echo)
+			end
+			return out
+		end)
+		if not ok then
+			err = tostring(keyerr) .. "; " .. tostring(err)
+		end
+	end
 	if not ok then return tostring(err) end
 
 	local ch

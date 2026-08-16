@@ -408,6 +408,85 @@ function C:auth_publickey(user, seed, pk)
               (msg.name[payload:byte(1)] or tostring(payload:byte(1))))
 end
 
+-- RFC 4256: the server asks and the user answers, over as many rounds
+-- as it likes. `ask(name, instruction, prompts)` takes prompts of
+-- {text=, echo=} and answers a list; echo false is a password, and must
+-- not appear on the screen as it is typed. 60 is INFO_REQUEST here and
+-- PK_OK to publickey -- one method runs at a time, which is what makes
+-- reading it inside the method safe.
+function C:auth_keyboard(user, ask)
+  local w = wire.writer()
+    :byte(msg.USERAUTH_REQUEST)
+    :string(user)
+    :string(SERVICE)
+    :string("keyboard-interactive")
+    :string("")                           -- language, deprecated
+    :string("")                           -- submethods: no preference
+  local ok, err = self:send(w:tostring())
+
+  if not ok then return fail(err) end
+
+  -- Bounded: a server that keeps asking without ever deciding is not a
+  -- login, and a client that answers forever is a prompt loop nobody
+  -- can leave.
+  for _ = 1, 16 do
+    local payload
+
+    payload, err = self:recv()
+    if not payload then return fail(err) end
+
+    local t = payload:byte(1)
+
+    if t == msg.USERAUTH_SUCCESS then return true end
+    if t == msg.USERAUTH_FAILURE then
+      local r = wire.reader(payload)
+
+      r:byte()
+
+      local methods = r:namelist()
+
+      return fail(("keyboard-interactive refused; it will accept: %s")
+        :format(table.concat(methods or {}, ", ")))
+    end
+    if t ~= msg.USERAUTH_INFO_REQUEST then
+      return fail("unexpected reply to keyboard-interactive: " ..
+                  (msg.name[t] or tostring(t)))
+    end
+
+    local r = wire.reader(payload)
+
+    r:byte()
+
+    local name = r:string() or ""
+    local instruction = r:string() or ""
+
+    r:string()                            -- language, deprecated
+    local n = r:uint32() or 0
+    local prompts = {}
+
+    for i = 1, n do
+      prompts[i] = { text = r:string() or "", echo = r:boolean() }
+    end
+
+    local answers = ask(name, instruction, prompts) or {}
+    local out = wire.writer()
+      :byte(msg.USERAUTH_INFO_RESPONSE)
+      :uint32(#prompts)
+
+    -- One answer per prompt, in order, and an empty string where the
+    -- caller gave none: a count that disagrees with the prompts is a
+    -- protocol error rather than a shorter conversation.
+    for i = 1, #prompts do
+      out:string(answers[i] or "")
+    end
+
+    ok, err = self:send(out:tostring())
+    if not ok then return fail(err) end
+  end
+
+  return fail("keyboard-interactive asked too many times")
+end
+
 --------------------------------------------------------------------------
 -- one session channel
 
