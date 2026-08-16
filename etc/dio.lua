@@ -74,6 +74,12 @@ return {
 		  category = "system", label = "B", color = 0xb10dc9,
 		  keys = true, ble = true,
 		  desc = "the bitchat mesh, over bluetooth" },
+		-- what the machine is and what it is holding. Reads only,
+		-- so it needs nothing granted; the controls it is named
+		-- for are the TODOs in its own header.
+		{ name = "settings", cmd = "/bin/settings.lua",
+		  category = "system", label = "=", color = 0xaaaaaa,
+		  keys = true, desc = "memory, network and uptime" },
 		{ name = "clock", cmd = "/bin/clock.lua", category = "toys",
 		  label = "T", color = 0xff2418,
 		  desc = "the time; touch it to turn it over" },
