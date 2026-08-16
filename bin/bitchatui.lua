@@ -17,6 +17,7 @@ local font = require("los.font")
 local frame = require("frame")
 local uuid = require("ble.uuid")
 local att = require("ble.att")
+local gattc = require("ble.gattc")
 local packet = require("bitchat.packet")
 local session = require("bitchat.session")
 local relay = require("bitchat.relay")
@@ -376,10 +377,144 @@ local function announce()
 		noisekey = noisepub, signkey = signpub }) })
 end
 
-local function send(b)
-	local r = ask({ op = "notify", attr = mychar, value = b })
+-- The links we hold and what has already been through here. All of it
+-- above the first function that reads it: a name declared later is a
+-- global, and a program is not allowed those.
+local outbound = {}		-- handle -> their characteristic
+local dialing = {}		-- address -> true while a connect is out
+local nlinks = 0
+local R = relay.new({ me = myid, now = function()
+	return sys.uptime_ms() // 1000
+end })
 
-	return not (r.err or r.ok == false)
+-- out on every link, whichever end of it we are. A peer that connected
+-- to us subscribed and is notified; one we connected to is written to,
+-- because on that link their database is the one with the handles.
+-- `except` is the link a relayed packet arrived on.
+local function send(b, except)
+	local any = false
+	local r = ask({ op = "notify", attr = mychar, value = b,
+	    except = except })
+
+	if not (r.err or r.ok == false) then
+		any = true
+	end
+	for h, value in pairs(outbound) do
+		if h ~= except then
+			local w = ask({ op = "att", handle = h,
+			    pdu = gattc.writecmd(value, b) })
+
+			if not w.err then
+				any = true
+			end
+		end
+	end
+	return any
+end
+
+-- ---- being the one who connects ----
+--
+-- Two nodes that only advertise wait for each other forever. A phone
+-- is a central and comes to us; another board is not, so one of us has
+-- to go to the other.
+
+-- their characteristic, by walking their database once. Only the one
+-- service is looked for; the rest of what they serve is not ours.
+local function findchar(h)
+	local from, start, last = 1, nil, nil
+
+	while from <= 0xffff and not start do
+		local r = ask({ op = "att", handle = h,
+		    pdu = gattc.services(from) }, 8000)
+		local list = r and r.pdu and gattc.services_result(r.pdu)
+
+		if not list or #list == 0 then
+			break
+		end
+		for _, s in ipairs(list) do
+			if uuid.eq(s.uuid, SERVICE) then
+				start, last = s.start, s.last
+			end
+			from = s.last + 1
+		end
+	end
+	if not start then
+		return nil, nil, "no bitchat service there"
+	end
+
+	local r = ask({ op = "att", handle = h,
+	    pdu = gattc.characteristics(start, last) }, 8000)
+	local chars = r and r.pdu and gattc.characteristics_result(r.pdu)
+
+	for _, c in ipairs(chars or {}) do
+		if uuid.eq(c.uuid, CHAR) then
+			-- the value handle, and where the service ends: the
+			-- descriptor to subscribe through is between them.
+			return c.value, last, nil
+		end
+	end
+	return nil, nil, "no bitchat characteristic there"
+end
+
+-- subscribe, so their notifications reach us: without this a link we
+-- opened carries our packets out and nothing back.
+local function subscribe(h, value, last)
+	local r = ask({ op = "att", handle = h,
+	    pdu = gattc.descriptors(value + 1, last) }, 8000)
+	local list = r and r.pdu and gattc.descriptors_result(r.pdu)
+
+	for _, d in ipairs(list or {}) do
+		if uuid.eq(d.uuid, uuid.short(0x2902)) then
+			ask({ op = "att", handle = h,
+			    pdu = gattc.subscribe(d.handle) }, 8000)
+			return true
+		end
+	end
+	return false
+end
+
+-- MAXLINKS in blesrv, kept here too: asking for a fourth link and
+-- being refused would cost a scan window and a connect timeout.
+local LINKS = 3
+
+local function onoutbound(h, addr)
+	thread.spawn(function()
+		local value, last, why = findchar(h)
+
+		if not value then
+			say("* " .. tostring(addr) .. ": " .. tostring(why),
+			    WARN)
+			return
+		end
+		outbound[h] = value
+		subscribe(h, value, last)
+		-- said down the new link at once: neither end announces
+		-- again for ten seconds otherwise.
+		send(announce())
+	end)
+end
+
+local function onadv(m)
+	if nlinks >= LINKS or dialing[m.addr] then
+		return
+	end
+	for _, u in ipairs(m.uuids or {}) do
+		if uuid.eq(u, SERVICE) then
+			dialing[m.addr] = true
+			thread.spawn(function()
+				-- a short wait, because the other side is
+				-- looking too and two links between one pair
+				-- is one wasted.
+				thread.sleep(200 + math.random(0, 1500))
+				if nlinks < LINKS then
+					ask({ op = "connect", addr = m.addr,
+					    random = m.addrtype == 1 }, 15000)
+				end
+				dialing[m.addr] = nil
+			end)
+			return
+		end
+	end
 end
 
 local function whois(id)
@@ -390,12 +525,6 @@ end
 
 -- ---- what arrives ----
 
--- what has been through here already, and how many links we hold: a
--- relay decision needs both.
-local R = relay.new({ me = myid, now = function()
-	return sys.uptime_ms() // 1000
-end })
-local nlinks = 0
 
 local function onhandshake(p)
 	if p.recipient ~= myid then
@@ -469,11 +598,7 @@ local function forward(p, b, from)
 	-- channel.
 	thread.spawn(function()
 		thread.sleep(wait)
-
-		local out = b:sub(1, 2) .. string.char(ttl) .. b:sub(4)
-
-		ask({ op = "notify", attr = mychar, value = out,
-		    except = from })
+		send(b:sub(1, 2) .. string.char(ttl) .. b:sub(4), from)
 	end)
 end
 
@@ -691,8 +816,18 @@ while true do
 			-- the handle it arrived on, so a relay does not send
 			-- it back where it came from.
 			onpacket(m.value or "", m.handle)
+		elseif m.kind == "adv" then
+			onadv(m)
 		elseif m.kind == "link" then
 			nlinks = math.max(0, nlinks + (m.up and 1 or -1))
+			if m.addr then
+				dialing[m.addr] = nil
+			end
+			if m.up and m.role == 0 then
+				onoutbound(m.handle, m.addr)
+			elseif not m.up then
+				outbound[m.handle] = nil
+			end
 			status = string.format("%d link%s", nlinks,
 			    nlinks == 1 and "" or "s")
 			paintbar()

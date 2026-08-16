@@ -1587,17 +1587,22 @@ proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 		dbg_notify(p, DBG_RUN, 1);
 }
 
-/* log line and copied reason are shared by both exits; the reason
- * usually points into the lua state, which one path is about to close
- * and the other will close later, so it is copied either way.
- */
+/* The reason points into the lua state, which one path closes now and
+ * the other later, so it is copied either way. No reason means it left
+ * of its own accord, and that is logged too: a proc that exits while
+ * starting looks exactly like one that never started. */
 static void
 proc_logdeath(struct kproc *p, const char *why, char *reason, size_t n)
 {
 	char buf[256];
 
-	if (!why)
+	if (!why) {
+		reason[0] = '\0';
+		snprintf(buf, sizeof buf, "proc %d (%s) exited", p->id,
+		    p->name);
+		kernel_log(buf);
 		return;
+	}
 	snprintf(reason, n, "%s", why);
 	snprintf(buf, sizeof buf, "proc %d (%s) died: %s", p->id, p->name,
 	    reason);
