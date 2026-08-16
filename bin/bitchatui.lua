@@ -22,6 +22,7 @@ local gattc = require("ble.gattc")
 local packet = require("bitchat.packet")
 local session = require("bitchat.session")
 local relay = require("bitchat.relay")
+local fragment = require("bitchat.fragment")
 local ed25519 = require("crypto.ed25519")
 local x25519 = require("crypto.x25519")
 local sha256 = require("crypto.sha256")
@@ -443,6 +444,9 @@ end
 local outbound = {}		-- handle -> their characteristic
 local dialing = {}		-- address -> true while a connect is out
 local nlinks = 0
+local ASM = fragment.new({ now = function()
+	return sys.uptime_ms() // 1000
+end })
 local R = relay.new({ me = myid, now = function()
 	return sys.uptime_ms() // 1000
 end })
@@ -451,7 +455,9 @@ end })
 -- to us subscribed and is notified; one we connected to is written to,
 -- because on that link their database is the one with the handles.
 -- `except` is the link a relayed packet arrived on.
-local function send(b, except)
+-- one frame at every link. Everything above goes through send, which
+-- cuts it up first where it has to.
+local function emit(b, except)
 	local any = false
 	local r = ask({ op = "notify", attr = mychar, value = b,
 	    except = except })
@@ -467,6 +473,43 @@ local function send(b, except)
 			if not w.err then
 				any = true
 			end
+		end
+	end
+	return any
+end
+
+-- what one notification may carry: the mtu less the three bytes of the
+-- att header. A packet past that is sent as fragments, which is the
+-- only way a peer gets to see it whole.
+local CUT = fragment.cut(182)
+
+local function send(b, except)
+	if #b <= 182 then
+		return emit(b, except)
+	end
+
+	local p = packet.decode(b)
+
+	if not p then
+		return false
+	end
+
+	local parts = fragment.split(b, p.type, CUT, randbytes(8))
+
+	if not parts then
+		say("* too big to send", WARN)
+		return false
+	end
+
+	local any = false
+
+	for _, body in ipairs(parts) do
+		-- the fragments carry the original's sender and recipient,
+		-- so a relay moves them the way it moves anything else.
+		if emit(packet.encode({ type = packet.FRAGMENT, ttl = p.ttl,
+		    timestamp = p.timestamp, sender = p.sender,
+		    recipient = p.recipient, payload = body }), except) then
+			any = true
 		end
 	end
 	return any
@@ -724,7 +767,10 @@ local function forward(p, b, from)
 	end)
 end
 
-local function onpacket(b, from)
+-- `joined` is set for a packet that arrived in pieces: its fragments
+-- were each relayed on the way in, so passing the whole one on again
+-- would send the mesh two of everything.
+local function onpacket(b, from, joined)
 	local p = packet.decode(b)
 
 	if not p or p.sender == myid then
@@ -737,7 +783,21 @@ local function onpacket(b, from)
 	if R:seen(p) then
 		return
 	end
-	forward(p, b, from)
+	if not joined then
+		forward(p, b, from)
+	end
+
+	-- a fragment is relayed as it stands and read only once the set is
+	-- whole. What comes out is the packet that was sent, so it goes
+	-- back through here rather than being handled halfway.
+	if p.type == packet.FRAGMENT then
+		local whole = ASM:feed(p.sender, p.payload)
+
+		if whole then
+			onpacket(whole, from, true)
+		end
+		return
+	end
 
 	if p.type == packet.ANNOUNCE then
 		local a = packet.decodeannounce(p.payload)

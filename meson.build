@@ -1651,6 +1651,15 @@ test('zlib', lua_interp,
   timeout: 60,
 )
 
+# a packet too big for a link, split and put back together.
+test('bitchat-fragment', lua_interp,
+  args: [files('test/host_fragment.lua')],
+  protocol: 'tap',
+  timeout: 30,
+  env: host_env,
+  depends: host_deps,
+)
+
 # what a mesh passes on, and what stops at it.
 test('bitchat-relay', lua_interp,
   args: [files('test/host_relay.lua')],
