@@ -4,7 +4,7 @@
 --	tab        the peer list, and our fingerprint
 --	enter      send what is typed
 --	esc        leave
---	/nick NAME what the mesh calls us, kept in /config
+--	/help      the commands; /nick sets what the mesh calls us
 
 -- A view over lib/bitchat and lib/noise. dio lends it the adapter
 -- because its /etc/dio.lua entry says ble = true.
@@ -515,45 +515,102 @@ end
 
 -- ---- sending ----
 
+-- ---- commands ----
+--
+-- A table rather than a chain of matches: the list is the help, so one
+-- cannot be added without saying what it does.
+local commands = {}
+local order = { "nick", "who", "clear", "help" }
+
+commands.nick = {
+	takes = "NAME", what = "what the mesh calls us",
+	run = function(rest)
+		local ok, why = setnick(rest)
+
+		if not ok then
+			return say(why, WARN)
+		end
+		say("* you are " .. nick, DIM)
+		-- said again at once, so a peer holding the old name does
+		-- not show it until the next timer.
+		send(announce())
+	end,
+}
+
+commands.who = {
+	what = "who is out there",
+	run = function()
+		local any = false
+
+		for id, p in pairs(peers) do
+			any = true
+			say(string.format("* %s  %s%s", p.nick or "?",
+			    id:sub(1, 8),
+			    sessions[id] and "  private" or ""), DIM)
+		end
+		if not any then
+			say("* nobody yet", DIM)
+		end
+	end,
+}
+
+commands.clear = {
+	what = "forget the transcript",
+	run = function()
+		lines = {}
+		retext()
+		paintbody(true)
+	end,
+}
+
+commands.help = {
+	what = "this",
+	run = function()
+		for _, name in ipairs(order) do
+			local c = commands[name]
+
+			say(string.format("  /%s%s -- %s", name,
+			    c.takes and (" " .. c.takes) or "", c.what), DIM)
+		end
+	end,
+}
+
+local function docommand(s)
+	local word, rest = s:match("^/(%S+)%s*(.*)$")
+	local c = word and commands[word:lower()]
+
+	if not c then
+		return say("* no /" .. tostring(word) ..
+		    "; /help lists them", WARN)
+	end
+	if c.takes and rest == "" then
+		return say("* /" .. word .. " takes " .. c.takes, WARN)
+	end
+	c.run(rest)
+end
+
 local function submit()
 	if typed == "" then
 		return
 	end
 
-	local name = typed:match("^/nick%s+(.+)$")
+	local said = typed
 
-	if name then
-		local ok, why = setnick(name)
+	typed = ""
+	paintinput()
 
-		if ok then
-			say("* you are " .. nick, DIM)
-			-- said again under the new name, so peers do not
-			-- carry the old one until the next timer.
-			send(announce())
-		else
-			say(why, WARN)
-		end
-		typed = ""
-		paintinput()
-		return
-	end
-	if typed:match("^/") then
-		say("* /nick NAME is the only command", WARN)
-		typed = ""
-		paintinput()
-		return
+	if said:match("^/") then
+		return docommand(said)
 	end
 
 	-- the text alone: a reader takes the name from our announce, and
 	-- derives an id from what it already has.
 	if send(signed({ type = packet.MESSAGE, ttl = 7, timestamp = now(),
-	    sender = myid, payload = typed })) then
-		say("<" .. nick .. "> " .. typed, MINE)
+	    sender = myid, payload = said })) then
+		say("<" .. nick .. "> " .. said, MINE)
 	else
 		say("not sent: nobody is listening", WARN)
 	end
-	typed = ""
-	paintinput()
 end
 
 -- ---- the loop ----
