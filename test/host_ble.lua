@@ -124,6 +124,48 @@ local raw = h7:next()
 ok(raw and raw.kind == "event" and raw.code == 0x02,
     "an event we do not read is handed up whole")
 
+-- ---- the trace format ----
+
+local btsnoop = require("ble.btsnoop")
+
+ok(hex(btsnoop.header()) == "6274736e6f6f700000000001000003ea",
+    "btsnoop header: id, version 1, datalink 1002")
+
+local rec = btsnoop.packet("\1\3\12\0", btsnoop.SENT, 1000000)
+
+ok(#rec == 24 + 4, "a record is its 24-byte header and the packet")
+ok(hex(rec:sub(1, 16)) == "00000004000000040000000000000000",
+    "lengths both given, sent, no drops")
+ok(hex(rec:sub(25)) == "01030c00", "and the packet follows unchanged")
+
+local recv = btsnoop.packet("\4\14\4\1\3\12\0", btsnoop.RECV, 1000000)
+
+ok(recv:byte(12) == 1, "an incoming packet is flagged as received")
+ok(rec:sub(17, 24) == recv:sub(17, 24), "the same clock reads the same")
+
+-- btmon is the reader this format exists for, so let it say.
+local btmon = os.getenv("BTMON")
+
+if btmon and btmon ~= "" then
+	local path = os.tmpname()
+	local f = assert(io.open(path, "wb"))
+
+	f:write(btsnoop.header())
+	f:write(btsnoop.packet("\1\3\12\0", btsnoop.SENT, 1000000))
+	f:write(btsnoop.packet("\4\14\4\1\3\12\0", btsnoop.RECV, 1002000))
+	f:close()
+
+	local p = io.popen(btmon .. " -r " .. path .. " 2>&1")
+	local said = p:read("a") or ""
+
+	p:close()
+	os.remove(path)
+	ok(said:find("HCI Command: Reset", 1, true) ~= nil,
+	    "btmon reads our trace and names the command")
+	ok(said:find("Status: Success", 1, true) ~= nil,
+	    "and decodes the event that answered it")
+end
+
 -- ---- against btvirt, where the build found one ----
 
 local btvirt = os.getenv("BTVIRT")

@@ -487,6 +487,7 @@ socat_prog = find_program('socat', required: false)
 # -Dbtvirt=/path/to/emulator/btvirt is the usual way to name it. Absent,
 # the codec still runs and only the exchanges with a controller are lost.
 btvirt_prog = find_program(get_option('btvirt'), 'btvirt', required: false)
+btmon_prog = find_program('btmon', required: false)
 sshd_prog = find_program('sshd', required: false,
   dirs: ['/usr/sbin', '/usr/bin', '/sbin'])
 sshkeygen_prog = find_program('ssh-keygen', required: false)
@@ -1625,6 +1626,12 @@ if have_hostutil
   ble_env = {'HOSTUTIL_SO': hostutil.full_path()}
   if btvirt_prog.found()
     ble_env += {'BTVIRT': btvirt_prog.full_path()}
+  endif
+  # btmon is the reader the trace format exists for, so where there is
+  # one it is what says whether we wrote the format or merely something
+  # that looks like it.
+  if btmon_prog.found()
+    ble_env += {'BTMON': btmon_prog.full_path()}
   endif
   test('ble-hci', lua_interp,
     args: [files('test/host_ble.lua')],
