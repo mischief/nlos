@@ -12,6 +12,8 @@ local thread = require("los.thread")
 local hcilib = require("ble.hci")
 local l2cap = require("ble.l2cap")
 local att = require("ble.att")
+local gatt = require("ble.gatt")
+local uuid = require("ble.uuid")
 
 local function out(s)
 	unistd.write(1, s)
@@ -50,6 +52,19 @@ local codec = hcilib.new()
 local chans = l2cap.new(27)
 local mtu = att.DEFAULT_MTU
 
+-- one service: something to write at, and something that notifies back.
+-- The shape a chat over BLE wants, and the shape a client discovers.
+local db = gatt.new()
+local svc = db:service(uuid.parse("F47B5E2D-1234-5678-9abc-def012345678"), {
+	{ name = "rx", uuid = uuid.parse("F47B5E2E-1234-5678-9abc-def012345678"),
+	  props = gatt.WRITE | gatt.WRITE_NO_RSP,
+	  write = function(_, v)
+		out(string.format("rx: %q\n", v))
+	  end },
+	{ name = "tx", uuid = uuid.parse("F47B5E2F-1234-5678-9abc-def012345678"),
+	  props = gatt.NOTIFY, value = "" },
+})
+
 local function writeout()
 	local pkt = codec:pull()
 
@@ -85,22 +100,24 @@ local function onatt(handle, pdu)
 		return
 	end
 
+	-- the mtu exchange belongs to the connection rather than to the
+	-- database, so it is answered here and everything else below.
 	if m.op == att.OP_MTU_REQ then
-		-- ours is what the controller can carry, and the one in
-		-- use is the smaller of the two.
 		local mine = 185
 
 		mtu = math.min(m.mtu, mine)
 		out(string.format("mtu: peer %d, ours %d, using %d\n",
 		    m.mtu, mine, mtu))
 		reply(handle, att.mtursp(mine))
-	elseif m.op == att.OP_WRITE_CMD then
-		out(string.format("write command to 0x%04x: %q\n",
-		    m.handle, m.value))
-	else
-		out(string.format("att op 0x%02x: not supported yet\n", m.op))
-		reply(handle, att.error(m.op, m.handle or 0,
-		    att.ERR_REQ_NOT_SUPPORTED))
+		return
+	end
+
+	local rsp = db:request(pdu, mtu)
+
+	out(string.format("att op 0x%02x -> %s\n", m.op,
+	    rsp and string.format("0x%02x", rsp:byte(1)) or "nothing"))
+	if rsp then
+		reply(handle, rsp)
 	end
 end
 

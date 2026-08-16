@@ -235,6 +235,83 @@ ok(er.reqop == att.OP_READ_REQ and er.handle == 0x21 and
 ok(att.fits(23, 20, 3) and not att.fits(23, 20, 4),
     "a response is bounded by the negotiated mtu")
 
+-- ---- gatt ----
+
+local gatt = require("ble.gatt")
+
+local db = gatt.new()
+local svc = db:service(uuid.parse("F47B5E2D-1234-5678-9abc-def012345678"), {
+	{ name = "rx", uuid = uuid.parse("F47B5E2E-1234-5678-9abc-def012345678"),
+	  props = gatt.WRITE | gatt.WRITE_NO_RSP },
+	{ name = "tx", uuid = uuid.parse("F47B5E2F-1234-5678-9abc-def012345678"),
+	  props = gatt.NOTIFY },
+})
+
+ok(svc.decl.handle == 1, "the service declaration takes handle 1")
+ok(svc.decl.last == 6, "and its group ends after the last descriptor")
+ok(#svc.chars == 2, "two characteristics")
+ok(svc.chars[2].cccd ~= nil, "and the notify one got a cccd")
+ok(svc.chars[1].cccd == nil, "while a write-only one did not")
+
+-- discover all primary services: the request the host actually sent.
+local rsp = db:request(string.pack("<BI2I2", att.OP_READ_BY_GROUP_REQ,
+    1, 0xffff) .. gatt.PRIMARY_SERVICE, 185)
+local d = att.decode(rsp)
+
+ok(d.op == att.OP_READ_BY_GROUP_RSP, "read by group type answers")
+ok(rsp:byte(2) == 20, "one entry: two handles and a 128-bit uuid")
+ok(string.unpack("<I2", rsp:sub(3)) == 1, "starting at the service handle")
+
+-- discover characteristics.
+local crsp = db:request(string.pack("<BI2I2", att.OP_READ_BY_TYPE_REQ,
+    1, 0xffff) .. gatt.CHARACTERISTIC, 185)
+
+ok(att.decode(crsp).op == att.OP_READ_BY_TYPE_RSP, "read by type answers")
+ok(crsp:byte(2) == 21, "an entry is handle, properties, value handle, uuid")
+
+-- a range with nothing in it is a refusal, not an empty list: a client
+-- walks the database by asking until it is told to stop.
+local none = db:request(string.pack("<BI2I2", att.OP_READ_BY_GROUP_REQ,
+    100, 0xffff) .. gatt.PRIMARY_SERVICE, 185)
+local nd = att.decode(none)
+
+ok(nd.op == att.OP_ERROR and nd.err == att.ERR_ATTR_NOT_FOUND,
+    "an empty range says attribute not found")
+
+-- writes, and what a subscription does.
+ok(gatt.notify(svc.chars[2], "hi") == nil, "nobody subscribed, so no notify")
+
+local cccd = svc.chars[2].cccd.handle
+local wr = db:request(string.pack("<BI2", att.OP_WRITE_REQ, cccd) ..
+    string.pack("<I2", gatt.CCCD_NOTIFY), 185)
+
+ok(att.decode(wr).op == att.OP_WRITE_RSP, "writing the cccd is answered")
+
+local note = gatt.notify(svc.chars[2], "hi")
+
+ok(note and att.decode(note).op == att.OP_NOTIFY, "and now it notifies")
+ok(att.decode(note).handle == svc.chars[2].value.handle,
+    "on the value handle, not the descriptor's")
+
+-- a write command is answered with silence, which is not the same as
+-- having nothing to say.
+local got
+svc.chars[1].value.write = function(_, v) got = v end
+ok(db:request(string.pack("<BI2", att.OP_WRITE_CMD,
+    svc.chars[1].value.handle) .. "ping", 185) == nil,
+    "a write command owes no response")
+ok(got == "ping", "but the handler saw it")
+
+local bad = db:request(string.pack("<BI2", att.OP_READ_REQ, 999), 185)
+
+ok(att.decode(bad).err == att.ERR_INVALID_HANDLE,
+    "reading a handle that is not there is refused")
+
+local unsup = db:request(string.char(0x16) .. "\1\0", 185)
+
+ok(att.decode(unsup).err == att.ERR_REQ_NOT_SUPPORTED,
+    "and an opcode we do not implement says so")
+
 -- ---- the trace format ----
 
 local btsnoop = require("ble.btsnoop")
