@@ -443,6 +443,14 @@ local repl_worker_src = [[
 	-- (no NIC, no ip task, or dns task never spawned).
 	_G.resolve = dns and dns.resolve or nil
 
+	-- the panel's input ports, named so this console can drive the
+	-- machine: tools/hostpanel.lua mints send rights from these and
+	-- types at the board over the serial line. A name and no new
+	-- authority -- they arrived in this console's own grant, and a
+	-- table is always defined so reading it is not a strict-global
+	-- error on a machine that has neither.
+	_G.panel = { ptr = ptrh, kbd = kbdh }
+
 
 	-- the console, handed to the launcher until you type exit. The
 	-- namespace is this proc's own, so the launcher sees a mount the

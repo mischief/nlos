@@ -118,11 +118,13 @@ end
 -- one short line rather than a formatted record per event: a drag of
 -- thirty points is one line of lua and one settle, not thirty.
 --
--- PTR and KBD are send rights minted from the receive rights the repl
--- was granted. Minting a send right from a right you hold is ordinary,
--- and it is what makes this need no new authority.
+-- PTR and KBD are send rights minted from the rights the repl holds,
+-- which is ordinary and is what makes this need no new authority.
+-- `panel` rather than sys.granted(): the repl is a proc init spawns, so
+-- its rights arrive in its grant message. What the kernel granted is
+-- init's, and this console's own table is empty.
 local SETUP = [[
-do local g = sys.granted()
+do local g = panel
 PTR = g.ptr and sys.sendright(g.ptr)
 KBD = g.kbd and sys.sendright(g.kbd)
 function P(x, y, b)
