@@ -381,6 +381,18 @@ ok(nh == walk.services[1].chars[2].value,
     "and it is the handle the client discovered")
 ok(needsack == false, "a notification wants no confirmation")
 
+-- an arriving pdu is only an answer if it says so: the peer is a
+-- client too. This is what a co2 sensor taught us by sending its own
+-- mtu request before answering ours.
+ok(att.kind(att.OP_MTU_REQ) == "request", "an mtu request is a request")
+ok(att.kind(att.OP_MTU_RSP) == "response", "and the response a response")
+ok(att.kind(att.OP_ERROR) == "response", "an error answers a request")
+ok(att.kind(att.OP_READ_BY_GROUP_REQ) == "request", "read by group asks")
+ok(att.kind(att.OP_READ_BY_GROUP_RSP) == "response", "and is answered")
+ok(att.kind(att.OP_NOTIFY) == "notify", "a notification is neither")
+ok(att.kind(att.OP_INDICATE) == "indicate", "nor an indication")
+ok(att.kind(att.OP_WRITE_CMD) == "command", "and a write command owes nothing")
+
 -- ---- advertising data ----
 
 local ad = require("ble.ad")
@@ -457,6 +469,8 @@ ok(cc.role == 1, "as the peripheral, which is what advertising makes us")
 local cop, cp = gap.connect(reports[1].addr, { timeout_ms = 4000 })
 
 ok(cop == 0x200d, "create connection")
+ok(string.unpack("<I2", cp:sub(14)) == 24,
+    "a connection interval counts in 1.25ms, not the scan unit")
 ok(cp:sub(7, 12) == reports[1].addr, "carries the peer address")
 
 -- ---- the trace format ----

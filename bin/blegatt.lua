@@ -62,9 +62,41 @@ local function writeout()
 	end
 end
 
--- everything the controller has said, sorted into what this is waiting
--- for. ATT responses are queued rather than handled, because what they
--- mean depends on what was asked.
+-- One reader of the event queue, and everything it finds is filed
+-- where its waiter will look. Two consumers would race: whichever
+-- drained first would throw away what the other was waiting for.
+local answers = {}		-- opcode -> the event that answered it
+local tosend = {}		-- att pdus this owes the peer
+
+-- The peer is a client too and sends requests of its own, so only a
+-- response answers what we asked. A request of theirs is answered
+-- here, because ignoring one stalls them until their timeout.
+function onatt(handle, pdu)
+	local kind = att.kind(pdu:byte(1) or 0)
+
+	if kind == "response" then
+		pending[#pending + 1] = pdu
+	elseif kind == "request" then
+		local m = att.decode(pdu)
+
+		if m and m.op == att.OP_MTU_REQ then
+			out(string.format("peer asked for mtu %d\n", m.mtu))
+			tosend[#tosend + 1] = att.mtursp(185)
+		else
+			tosend[#tosend + 1] = att.error(m and m.op or 0,
+			    m and m.handle or 0, att.ERR_REQ_NOT_SUPPORTED)
+		end
+	elseif kind == "notify" or kind == "indicate" then
+		local h2, v = gattc.update(pdu)
+
+		out(string.format("notify from handle %d: %d bytes\n",
+		    h2 or 0, #(v or "")))
+		if kind == "indicate" then
+			tosend[#tosend + 1] = att.confirm()
+		end
+	end
+end
+
 local function drain()
 	local ev = codec:next()
 
@@ -74,17 +106,42 @@ local function drain()
 			    ev.data)
 
 			if h and cid == l2cap.CID_ATT then
-				pending[#pending + 1] = payload
+				onatt(h, payload)
 			end
+		elseif ev.kind == "complete" or ev.kind == "status" then
+			answers[ev.opcode] = ev
 		elseif ev.kind == "le" and
-		    ev.subevent == gap.SUB_CONN_COMPLETE then
+		    (ev.subevent == gap.SUB_CONN_COMPLETE or
+		     ev.subevent == gap.SUB_ENHANCED_CONN_COMPLETE) then
+			-- both forms begin with the same eleven bytes; the
+			-- enhanced one only adds addresses after them.
 			conn = gap.connreport(ev.params)
 		elseif ev.kind == "event" and
 		    ev.code == gap.EVT_DISCONN_COMPLETE then
+			-- status, handle, reason. 0x13 is the peer choosing
+			-- to end it, 0x08 a supervision timeout, 0x3e a
+			-- connection that never really established.
+			local _, ch, why = string.unpack("<BI2B", ev.params)
+
+			out(string.format("disconnected: handle %d, reason 0x%02x\n",
+			    ch, why))
 			conn = nil
+		elseif ev.kind == "le" then
+			out(string.format("le subevent 0x%02x, %d bytes\n",
+			    ev.subevent, #ev.params))
+		elseif ev.kind == "event" then
+			out(string.format("event 0x%02x, %d bytes\n",
+			    ev.code, #ev.params))
 		end
 		ev = codec:next()
 	end
+end
+
+local function sendatt(pdu)
+	for _, f in ipairs(chans:frame(conn.handle, l2cap.CID_ATT, pdu)) do
+		codec:acl(f.handle, f.data, f.pb)
+	end
+	writeout()
 end
 
 local function pump(ms)
@@ -94,26 +151,32 @@ local function pump(ms)
 		codec:feed(m.data)
 	end
 	drain()
+
+	-- what the peer is owed goes out here rather than from inside the
+	-- reader, so nothing is sent while a packet is half decoded.
+	while conn and #tosend > 0 do
+		sendatt(table.remove(tosend, 1))
+	end
 end
 
 local function command(opcode, params, ms)
+	answers[opcode] = nil
 	codec:command(opcode, params)
 	writeout()
 
 	local deadline = sys.uptime_ms() + (ms or 3000)
 
 	while sys.uptime_ms() < deadline do
-		pump(deadline - sys.uptime_ms())
+		pump(math.min(200, deadline - sys.uptime_ms()))
 
-		local ev = codec:next()
+		local ev = answers[opcode]
 
-		while ev do
-			if (ev.kind == "complete" or ev.kind == "status") and
-			    ev.opcode == opcode then
-				writeout()
-				return ev
-			end
-			ev = codec:next()
+		if ev then
+			answers[opcode] = nil
+			-- a credit came back with it, so anything queued
+			-- behind this may go now.
+			writeout()
+			return ev
 		end
 	end
 	return nil
@@ -122,12 +185,25 @@ end
 -- one ATT request and the response to it. ATT is one outstanding
 -- request per connection, so waiting for the next arrival is right.
 local function transact(pdu, ms)
+	if not conn then
+		return nil, "not connected"
+	end
+
+	-- ATT carries no request id: one request is outstanding at a time
+	-- and the answer is whatever comes back next. So a reply to a
+	-- request that already timed out has to be dropped here, or the
+	-- next request will take it for its own.
+	if #pending > 0 then
+		out(string.format("dropping %d late response(s)\n", #pending))
+		pending = {}
+	end
+
 	for _, f in ipairs(chans:frame(conn.handle, l2cap.CID_ATT, pdu)) do
 		codec:acl(f.handle, f.data, f.pb)
 	end
 	writeout()
 
-	local deadline = sys.uptime_ms() + (ms or 5000)
+	local deadline = sys.uptime_ms() + (ms or 12000)
 
 	while sys.uptime_ms() < deadline do
 		if #pending > 0 then
@@ -161,9 +237,11 @@ local st = command(gap.connect(addr, { addr_type = random and
     gap.ADDR_RANDOM or gap.ADDR_PUBLIC, timeout_ms = 8000 }))
 
 if not st or st.status ~= 0 then
-	die(string.format("create connection: status 0x%02x",
-	    st and st.status or 0xff))
+	die(string.format("create connection: %s", st and
+	    string.format("status 0x%02x", st.status) or
+	    "the controller never answered the command"))
 end
+out(string.format("create connection accepted (%s)\n", st.kind))
 
 local deadline = sys.uptime_ms() + 10000
 
@@ -179,8 +257,9 @@ if conn.status ~= 0 then
 	die(string.format("connection failed: status 0x%02x", conn.status))
 end
 
-out(string.format("connected: handle %d, role %s\n", conn.handle,
-    conn.role == 0 and "central" or "peripheral"))
+out(string.format("connected: handle %d, role %s, interval %gms, timeout %gms\n",
+    conn.handle, conn.role == 0 and "central" or "peripheral",
+    conn.interval_ms, conn.timeout_ms))
 
 -- ask for a bigger mtu before discovery, since every response after
 -- this is bounded by it.

@@ -39,12 +39,20 @@ M.ADV_SCAN_IND = 0x02
 M.ADV_NONCONN_IND = 0x03
 M.SCAN_RSP = 0x04
 
--- units of 0.625ms, which is how every interval here is counted.
+-- Scanning and advertising count in 0.625ms; a connection interval
+-- counts in 1.25ms and a supervision timeout in 10ms. Three units for
+-- three kinds of interval, and using the wrong one is legal enough to
+-- be accepted and wrong enough to matter.
 local function units(ms)
 	return math.floor(ms / 0.625)
 end
 
+local function cunits(ms)
+	return math.floor(ms / 1.25)
+end
+
 M.units = units
+M.cunits = cunits
 
 -- Passive by default: an active scan asks each advertiser for a scan
 -- response, which doubles the radio traffic and tells a room full of
@@ -92,7 +100,7 @@ function M.connect(addr, opts)
 	return M.CREATE_CONN, string.pack("<I2I2BB", units(60), units(30),
 	    0x00, opts.addr_type or M.ADDR_PUBLIC) .. addr ..
 	    string.pack("<BI2I2I2I2I2I2", opts.own_addr or M.ADDR_PUBLIC,
-	    units(opts.min_ms or 30), units(opts.max_ms or 50),
+	    cunits(opts.min_ms or 30), cunits(opts.max_ms or 50),
 	    opts.latency or 0, (opts.timeout_ms or 4000) // 10, 0, 0)
 end
 
@@ -166,6 +174,11 @@ function M.connreport(params)
 		return nil
 	end
 	local status, handle, role, atype = string.unpack("<BI2BB", params)
+	-- the interval counts in 1.25ms and the timeout in 10ms, and both
+	-- are the peer's to choose: a sensor picks a slow one to save
+	-- power, which is what decides how long a round trip takes.
+	local interval, latency, timeout = string.unpack("<I2I2I2",
+	    params:sub(12))
 
 	return {
 		status = status,
@@ -173,6 +186,9 @@ function M.connreport(params)
 		role = role,		-- 0 central, 1 peripheral
 		addrtype = atype,
 		addr = params:sub(6, 11),
+		interval_ms = interval * 1.25,
+		latency = latency,
+		timeout_ms = timeout * 10,
 	}
 end
 

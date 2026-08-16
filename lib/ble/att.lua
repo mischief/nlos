@@ -38,6 +38,27 @@ M.ERR_UNLIKELY = 0x0e
 -- the default every connection starts at, until an exchange raises it.
 M.DEFAULT_MTU = 23
 
+-- What an opcode is, which decides who owes what. A connection carries
+-- both roles at once -- the peer is a client too, and sends requests of
+-- its own -- so an arriving PDU is only an answer if it says so.
+--
+-- Requests are even and responses odd from 0x01 to 0x19, which is how
+-- the specification numbers them; the rest are named outright.
+function M.kind(op)
+	if op == M.OP_NOTIFY then
+		return "notify"
+	elseif op == M.OP_INDICATE then
+		return "indicate"
+	elseif op == M.OP_CONFIRM then
+		return "confirm"
+	elseif op == M.OP_WRITE_CMD or (op & 0x40) ~= 0 then
+		return "command"
+	elseif op >= 0x01 and op <= 0x19 then
+		return (op % 2) == 1 and "response" or "request"
+	end
+	return "unknown"
+end
+
 -- ---- decode ----
 
 -- a PDU to a table carrying `op` and whatever that opcode defines.
