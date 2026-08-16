@@ -181,6 +181,14 @@ on the same lap it arrives, so the next lap simply pushes another.
 
 ## Other firmware behaviour worth knowing
 
+- **SNP's `Receive()` wants more room than a frame needs.** Given a
+  1514-byte buffer — 1500 of payload, 14 of header — OVMF answers
+  `EFI_BUFFER_TOO_SMALL` and leaves the frame on the card, because it
+  counts the fcs the card strips. A caller that reads any non-success
+  status as "nothing waiting" then loses every full-size frame and no
+  others, which reaches the far end as silence and comes back as a
+  retransmission, so it presents as a stall of minutes rather than as
+  loss. `FRAME_MAX` is 2048 and a refusal is counted and said once.
 - **`EFI_NO_MAPPING` is normal, not an error.** `Configure()`
   self-triggers DHCP but does not block for it, so a `listen` or `dial`
   immediately after boot fails with this status until a lease lands.
