@@ -604,12 +604,31 @@ function Cons:feed(c)
 	elseif st == "esc" then
 		if c == "[" then
 			self.state, self.parm = "csi", ""
+		elseif c == "]" or c == "P" or c == "_" or c == "^" or
+		    c == "X" then
+			-- a string sequence: OSC, DCS, APC, PM, SOS. The
+			-- payload is a title, a shell's prompt marking or
+			-- a clipboard, none of it glyphs -- and printed
+			-- rather than swallowed it fills the screen with
+			-- the far end's bookkeeping.
+			self.state = "string"
 		elseif c == "c" then
 			self:reset()
 			self.state = "ground"
 		else
 			self.state = "ground"	-- unhandled ESC x
 		end
+	elseif st == "string" then
+		-- BEL ends one, and so does ST (ESC \).
+		if c == "\7" then
+			self.state = "ground"
+		elseif c == "\27" then
+			self.state = "stringesc"
+		end
+	elseif st == "stringesc" then
+		-- ESC \ is the end; ESC anything else was a stray escape
+		-- inside the payload, which stays in the payload.
+		self.state = c == "\\" and "ground" or "string"
 	elseif st == "csi" then
 		local b = c:byte()
 

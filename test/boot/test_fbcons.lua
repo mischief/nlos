@@ -17,7 +17,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(16)
+tap.plan(18)
 
 tap.ok(caps_of.fb ~= nil, "boot payload holds the screen")
 if not caps_of.fb then
@@ -129,3 +129,16 @@ tap.ok(has(0, 1, 0xc0c0c0), "a full-width line is followed by the next row")
 con.write(HOME .. string.rep("C", con.cols) .. "\r\n" ..
     string.rep("C", con.cols) .. "\r\n\27[31mE\27[0m")
 tap.ok(has(0, 2, 0xcc0000), "two full-width lines take two rows")
+
+-- ---- a string sequence is swallowed, payload and all ----
+--
+-- A shell with prompt marking sends OSC on every prompt and every
+-- command. Printed rather than consumed, its bookkeeping is what fills
+-- the screen instead of the session.
+con.write(HOME .. "\27[2J" .. HOME)
+con.write("\27]3008;start=abc;user=someone;cwd=/home\7Z")
+tap.ok(has(0, 0, 0xc0c0c0), "the glyph after an OSC lands in column 0")
+
+con.write(HOME .. "\27[2J" .. HOME)
+con.write("\27]0;a title\27\\Y")
+tap.ok(has(0, 0, 0xc0c0c0), "and after one ended with ST")

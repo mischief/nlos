@@ -97,36 +97,31 @@ end
 local N = prog.ns()
 
 local function slurp(path)
-	local fd = N and N:open(path, "r")
-
-	if not fd then
-		return nil
+	if not N then
+		return nil, "no namespace"
 	end
-
-	local s = fd:read("a")
-
-	fd:close()
-	return s
+	return N:readfile(path)
 end
 
--- The key to authenticate with: the one named, else this machine's own
--- if `keygen` has made one, else a fresh one that nothing will accept
--- but our own sshd, which takes any key.
-local seed, pk
-local text = keyfile and (slurp(keyfile) or die(keyfile .. ": cannot read"))
-    or slurp(DEFAULTKEY)
+-- The key to authenticate with: the one named, else this machine's own,
+-- which keygen writes. There is no generated fallback -- a key made on
+-- the spot is in nobody's authorized_keys, so it can only produce
+-- "server rejected our key" while looking like it tried.
+local path = keyfile or DEFAULTKEY
+local text, why = slurp(path)
 
-if text then
-	local err
-
-	seed, err = keys.parse_private(text)
-	if not seed then
-		die((keyfile or DEFAULTKEY) .. ": " .. tostring(err))
-	end
-else
-	seed = rand(32)
+if not text then
+	die(path .. ": " .. why ..
+	    (keyfile and "" or " (keygen makes one)"))
 end
-pk = ed25519.publickey(seed)
+
+local seed, err = keys.parse_private(text)
+
+if not seed then
+	die(path .. ": " .. tostring(err))
+end
+
+local pk = ed25519.publickey(seed)
 
 -- ---- the transport ----
 

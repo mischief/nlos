@@ -40,16 +40,7 @@ local comment = arg[i] or "lua-os"
 local N = prog.ns() or die("no namespace")
 
 local function slurp(p)
-	local fd = N:open(p, "r")
-
-	if not fd then
-		return nil
-	end
-
-	local s = fd:read("a")
-
-	fd:close()
-	return s
+	return N:readfile(p)
 end
 
 -- writefile, not open: open finds a file, and this one is not there

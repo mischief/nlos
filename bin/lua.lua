@@ -86,16 +86,13 @@ end
 if arg[1] then
 	local path = arg[1]
 	local N = prog.ns()
-	local fd = N and N:open(path, "r")
+	local src, why = N and N:readfile(path)
 
-	if not fd then
-		io.stderr:write("lua: " .. path .. ": cannot open\n")
+	if not src then
+		io.stderr:write(("lua: %s: %s\n"):format(path,
+		    tostring(why or "no namespace")))
 		os.exit(1)
 	end
-
-	local src = fd:read("a")
-
-	fd:close()
 	-- the file's own arguments, numbered from one as a script expects,
 	-- with the script itself at zero.
 	local a = { [0] = path }
