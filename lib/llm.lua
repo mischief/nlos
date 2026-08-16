@@ -28,9 +28,11 @@ Client.__index = Client
 --   url              the API root, without a trailing slash
 --   key              the bearer token
 --   model            what to ask
+-- key is optional: a model served on the LAN wants no bearer, and
+-- sending an empty one is worse than sending none.
 function M.new(opts)
-	if not opts or not opts.key then
-		return nil, "llm: no api key"
+	if not opts then
+		return nil, "llm: no options"
 	end
 	return setmetatable({
 		net = opts.net,
@@ -51,11 +53,17 @@ function Client:conn()
 		return self.c
 	end
 
-	local host = self.url:match("^https?://([^/]+)")
-	local verify = self.verify or
-	    require("tlstcp").tofu(host:match("^[^:]+"))
-	local c, err = http.connect(self.net, self.dns, self.url,
-	    { rand = self.rand, verify = verify })
+	local host = self.url:match("^https?://([^/:]+)")
+	local opts = { rand = self.rand }
+
+	-- only where the scheme asks for it: requiring tlstcp loads the
+	-- whole handshake and the crypto under it, which is over a second
+	-- on a board, and a plain http endpoint never touches any of it.
+	if self.url:match("^https://") then
+		opts.verify = self.verify or require("tlstcp").tofu(host)
+	end
+
+	local c, err = http.connect(self.net, self.dns, self.url, opts)
 
 	if not c then
 		return nil, err
@@ -94,7 +102,8 @@ function Client:ask(input, extra)
 		method = "POST",
 		path = path .. "/responses",
 		headers = {
-			["Authorization"] = "Bearer " .. self.key,
+			["Authorization"] = self.key and
+			    ("Bearer " .. self.key) or nil,
 			["Content-Type"] = "application/json",
 			-- asked for outright: a streamed answer arrives as
 			-- events this cannot yet read, and a server that
@@ -123,29 +132,44 @@ function Client:ask(input, extra)
 	return decoded
 end
 
--- the assistant's text, pulled out of the output items. The spec's
--- output is a list of items, each with a list of content parts, and
--- what a caller usually wants is the text of the ones that carry it.
-function M.text(res)
+-- the parts of one kind, across every output item. The spec's output is
+-- a list of items and each carries a list of content parts, so what a
+-- caller wants is a kind rather than an item.
+local function parts(res, kind)
 	if type(res) ~= "table" or type(res.output) ~= "table" then
 		return nil
 	end
 
-	local parts = {}
+	local out = {}
 
 	for _, item in ipairs(res.output) do
 		if type(item.content) == "table" then
 			for _, p in ipairs(item.content) do
-				if type(p) == "table" and p.text then
-					parts[#parts + 1] = p.text
+				if type(p) == "table" and p.type == kind and
+				    p.text then
+					out[#out + 1] = p.text
 				end
 			end
 		end
 	end
-	if #parts == 0 then
+	if #out == 0 then
 		return nil
 	end
-	return table.concat(parts)
+	return table.concat(out)
+end
+
+-- the answer: output_text and nothing else. By type rather than by
+-- "has a text field", because a reasoning model emits a reasoning item
+-- whose parts carry text too, and taking everything puts the model's
+-- thinking in front of its answer. A local Qwen does that where
+-- gpt-5.4-mini did not, so one endpoint alone would not have shown it.
+function M.text(res)
+	return parts(res, "output_text")
+end
+
+-- what the model thought on the way, where it says so.
+function M.reasoning(res)
+	return parts(res, "reasoning_text")
 end
 
 -- say(input) -> text -- the whole of a simple turn.
