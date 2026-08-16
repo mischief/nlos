@@ -469,15 +469,106 @@ end
 -- of lending it.
 local CW, CH = font.size()
 local ROWH = 2 * CH + 6
+local HEADH = CH + 6
 local SELBG = 0x101418
 local SELNAME = 0xffffff
 local SELDESC = 0x8895a0
 local SELGONE = 0x505050	-- a program this machine has not got
-local SELROWS = APPH // ROWH
+local SELHEAD = 0x60707c
+local SELRULE = 0x2a3138
 
 local selecting = false
 local seloff = 0
 local wasfront = nil
+
+-- what the selector shows, as headings and entries in one list.
+-- Grouped by the entry's `category`, in the order the categories first
+-- appear in /etc/dio.lua, so the file still says what comes first.
+-- Headings only where there is more than one group: a single category
+-- is not a grouping, it is a title nobody asked for.
+local selrows = {}
+
+local function buildrows()
+	local order, members = {}, {}
+
+	for k, e in ipairs(catalog) do
+		local c = e.category or ""
+
+		if not members[c] then
+			members[c] = {}
+			order[#order + 1] = c
+		end
+		table.insert(members[c], k)
+	end
+
+	-- the unnamed group last wherever it first appeared: it is the
+	-- leftovers, and leftovers do not come first.
+	if members[""] and #order > 1 then
+		for i, c in ipairs(order) do
+			if c == "" then
+				table.remove(order, i)
+				order[#order + 1] = c
+				break
+			end
+		end
+	end
+
+	local heads = #order > 1
+
+	selrows = {}
+	for _, c in ipairs(order) do
+		if heads then
+			selrows[#selrows + 1] = { head = c ~= "" and c or
+			    "other" }
+		end
+		for _, k in ipairs(members[c]) do
+			selrows[#selrows + 1] = { k = k }
+		end
+	end
+end
+
+buildrows()
+
+local function rowheight(r)
+	return r.head and HEADH or ROWH
+end
+
+-- the rows that fit from seloff down, and where each one sits
+local function laidout()
+	local out = {}
+	local y = APPY
+
+	for i = seloff + 1, #selrows do
+		local h = rowheight(selrows[i])
+
+		if y + h > APPY + APPH then
+			break
+		end
+		out[#out + 1] = { i = i, y = y, h = h }
+		y = y + h
+	end
+	return out
+end
+
+-- the furthest this may be scrolled: the offset at which the last row
+-- still lands on the screen, so scrolling stops with the end in view
+-- rather than running the list off the top.
+local function selmost()
+	local y = 0
+	local most = #selrows
+
+	for i = #selrows, 1, -1 do
+		y = y + rowheight(selrows[i])
+		if y > APPH then
+			break
+		end
+		most = i - 1
+	end
+	if most < 0 then
+		most = 0
+	end
+	return most
+end
 
 -- text into the app area, clipped to what fits across it
 local function seltext(x, y, s, color, bg)
@@ -494,62 +585,66 @@ local function seltext(x, y, s, color, bg)
 	end
 end
 
-local function selrect(k)
-	local at = k - seloff
+local function drawentry(k, y)
+	local e = catalog[k]
+	local here = N:stat(e.cmd) ~= nil
+	local name = e.name or "?"
+	local n = 0
 
-	if at < 1 or at > SELROWS then
-		return nil
+	for _, a in pairs(apps) do
+		if a.entry == k then
+			n = n + 1
+		end
 	end
-	return { x = APPX, y = APPY + (at - 1) * ROWH, w = APPW, h = ROWH }
+	-- how many are already up, because "another one" and "the first
+	-- one" are different decisions.
+	if n > 0 then
+		name = ("%s  (%d running)"):format(name, n)
+	end
+	if not here then
+		name = name .. "  (missing)"
+	end
+
+	-- the entry's own colour, as a mark down the side: the same
+	-- colour its buttons wear in the tray.
+	screen.fill({ x = APPX + 2, y = y + 3, w = 3, h = ROWH - 6 },
+	    here and (e.color or 0x808080) or SELGONE)
+	seltext(APPX + 9, y + 2, name, here and SELNAME or SELGONE)
+	seltext(APPX + 9, y + 2 + CH, e.desc or e.cmd or "", SELDESC)
+end
+
+-- a heading, with a rule across the width under it: the name alone
+-- reads as another entry, and the rule is what says it divides.
+local function drawhead(name, y)
+	seltext(APPX + 6, y + 2, name, SELHEAD)
+	screen.fill({ x = APPX + 6, y = y + HEADH - 2,
+	    w = APPW - 12, h = 1 }, SELRULE)
 end
 
 local function drawselector()
 	screen.fill({ x = APPX, y = APPY, w = APPW, h = APPH }, SELBG, true)
 
-	for k = 1, #catalog do
-		local r = selrect(k)
+	for _, at in ipairs(laidout()) do
+		local r = selrows[at.i]
 
-		if r then
-			local e = catalog[k]
-			local here = N:stat(e.cmd) ~= nil
-			local name = e.name or "?"
-			local n = 0
-
-			for _, a in pairs(apps) do
-				if a.entry == k then
-					n = n + 1
-				end
-			end
-			-- how many are already up, because "another one" and
-			-- "the first one" are different decisions.
-			if n > 0 then
-				name = ("%s  (%d running)"):format(name, n)
-			end
-			if not here then
-				name = name .. "  (missing)"
-			end
-
-			-- the entry's own colour, as a mark down the side:
-			-- the same colour its buttons wear in the tray.
-			screen.fill({ x = r.x + 2, y = r.y + 3, w = 3,
-			    h = ROWH - 6 }, here and (e.color or 0x808080) or
-			    SELGONE)
-			seltext(r.x + 9, r.y + 2, name,
-			    here and SELNAME or SELGONE)
-			seltext(r.x + 9, r.y + 2 + CH, e.desc or e.cmd or "",
-			    SELDESC)
+		if r.head then
+			drawhead(r.head, at.y)
+		else
+			drawentry(r.k, at.y)
 		end
 	end
 end
 
--- which entry a point in the app area is on, while the selector is up
+-- which entry a point in the app area is on, while the selector is up.
+-- A heading is not one: touching it does nothing, rather than starting
+-- whatever happens to sit under the name.
 local function selectorat(x, y)
-	for k = 1, #catalog do
-		local r = selrect(k)
-
-		if r and x >= r.x and x < r.x + r.w and
-		    y >= r.y and y < r.y + r.h then
-			return k
+	if x < APPX or x >= APPX + APPW then
+		return nil
+	end
+	for _, at in ipairs(laidout()) do
+		if y >= at.y and y < at.y + at.h then
+			return selrows[at.i].k
 		end
 	end
 	return nil
@@ -1071,12 +1166,9 @@ thread.spawn(function()
 			-- is on the tray.
 			if iswheel then
 				if selecting then
-					local most = #catalog - SELROWS
+					local most = selmost()
 					local to = seloff + by
 
-					if most < 0 then
-						most = 0
-					end
 					if to < 0 then
 						to = 0
 					elseif to > most then

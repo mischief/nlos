@@ -28,6 +28,10 @@
 --	kind	"term" for the console stack, which takes a framebuffer
 --		and a keyboard rather than the program ABI. Anything else
 --		is an ordinary program.
+--	category
+--		which heading the launcher files it under. Groups appear
+--		in the order first named below. Entries naming none go
+--		under "other", last; all-one-category gets no headings.
 --	boot	start this one when dio starts, and the one the launcher
 --		starts another of. One entry at most.
 --
@@ -48,28 +52,29 @@ return {
 		-- machine comes up at a prompt rather than at a tray and
 		-- an empty rectangle.
 		{ name = "term", cmd = "/task/fbterm.lua", kind = "term",
-		  boot = true, label = ">", color = 0x0074d9,
+		  boot = true, label = ">", color = 0x0074d9, category = "shell",
 		  desc = "a shell, and everything run from one" },
 
-		{ name = "scribble", cmd = "/bin/scribble.lua",
+		{ name = "scribble", cmd = "/bin/scribble.lua", category = "toys",
 		  label = "S", color = 0x2ecc40,
 		  desc = "draw on the screen with a finger" },
-		{ name = "smiley", cmd = "/bin/smiley.lua",
+		{ name = "smiley", cmd = "/bin/smiley.lua", category = "toys",
 		  label = "O", color = 0xffdc00,
 		  desc = "a face, for testing the framebuffer" },
 		-- the radio. It reads and writes /net/wifi, which is a
 		-- mount rather than a capability, so it appears here on a
 		-- board that has one and does nothing on a board that
 		-- does not.
-		{ name = "wifi", cmd = "/bin/wifiui.lua",
+		{ name = "wifi", cmd = "/bin/wifiui.lua", category = "system",
 		  label = "W", color = 0x7fdbff, keys = true,
 		  desc = "join a network" },
 		-- the mesh. Keys, because a chat is typed, and the radio,
 		-- which is what ble = true above means.
 		{ name = "bitchat", cmd = "/bin/bitchatui.lua",
-		  label = "B", color = 0xb10dc9, keys = true, ble = true,
+		  category = "system", label = "B", color = 0xb10dc9,
+		  keys = true, ble = true,
 		  desc = "the bitchat mesh, over bluetooth" },
-		{ name = "clock", cmd = "/bin/clock.lua",
+		{ name = "clock", cmd = "/bin/clock.lua", category = "toys",
 		  label = "T", color = 0xff2418,
 		  desc = "the time; touch it to turn it over" },
 	},
