@@ -124,6 +124,117 @@ local raw = h7:next()
 ok(raw and raw.kind == "event" and raw.code == 0x02,
     "an event we do not read is handed up whole")
 
+-- ---- uuids ----
+
+local uuid = require("ble.uuid")
+
+ok(hex(uuid.short(0x2800)) == "0028", "an assigned number is little-endian")
+ok(uuid.tostring(uuid.short(0x2800)) == "2800", "and reads back big-endian")
+
+local long = uuid.parse("F47B5E2D-1234-5678-9abc-def012345678")
+
+ok(long and #long == 16, "a written uuid parses to 16 bytes")
+ok(uuid.tostring(long) == "f47b5e2d-1234-5678-9abc-def012345678",
+    "and round trips through the written form")
+ok(uuid.parse("2800") ~= nil, "a short one parses too")
+ok(uuid.parse("nonsense") == nil, "and a bad one does not")
+ok(uuid.eq(uuid.short(0x2800), uuid.parse("00002800-0000-1000-8000-00805f9b34fb")),
+    "a short uuid equals its expansion")
+ok(not uuid.eq(uuid.short(0x2800), uuid.short(0x2803)),
+    "and differs from another")
+
+-- ---- l2cap ----
+
+local l2cap = require("ble.l2cap")
+local lc = l2cap.new(27)
+
+local h, cid, payload = lc:acl(0x0040, l2cap.PB_FIRST,
+    string.pack("<I2I2", 2, l2cap.CID_ATT) .. "\2\3")
+
+ok(h == 0x0040 and cid == l2cap.CID_ATT, "a whole frame in one packet")
+ok(payload == "\2\3", "with its payload")
+
+-- the same frame, arriving in pieces.
+local whole = string.pack("<I2I2", 6, l2cap.CID_ATT) .. "abcdef"
+
+ok(lc:acl(0x0040, l2cap.PB_FIRST, whole:sub(1, 3)) == nil,
+    "a split header is not a frame yet")
+ok(lc:acl(0x0040, l2cap.PB_CONT, whole:sub(4, 7)) == nil,
+    "nor is a partial payload")
+local h2, c2, p2 = lc:acl(0x0040, l2cap.PB_CONT, whole:sub(8))
+
+ok(h2 == 0x0040 and c2 == l2cap.CID_ATT and p2 == "abcdef",
+    "and the last fragment completes it")
+
+-- two connections interleaving must not splice.
+lc:acl(0x0040, l2cap.PB_FIRST, whole:sub(1, 5))
+lc:acl(0x0041, l2cap.PB_FIRST, whole:sub(1, 5))
+local h3, _, p3 = lc:acl(0x0040, l2cap.PB_CONT, whole:sub(6))
+
+ok(h3 == 0x0040 and p3 == "abcdef", "one handle's fragments stay its own")
+ok(lc:acl(0x0041, l2cap.PB_CONT, whole:sub(6)) == 0x0041,
+    "and the other's complete separately")
+
+ok(select(2, lc:acl(0x0050, l2cap.PB_CONT, "junk")) ~= nil,
+    "a continuation with nothing to continue is refused")
+
+-- fragmentation out, bounded by what the controller holds.
+local small = l2cap.new(8)
+local frags = small:frame(0x0040, l2cap.CID_ATT, string.rep("x", 20))
+
+ok(#frags == 3, "24 bytes into 8-byte fragments is three packets")
+ok(frags[1].pb == l2cap.PB_FIRST, "the first says first")
+ok(frags[2].pb == l2cap.PB_CONT and frags[3].pb == l2cap.PB_CONT,
+    "and the rest say continuation")
+
+local back = l2cap.new(8)
+local rh, rc, rp
+
+for _, f in ipairs(frags) do
+	rh, rc, rp = back:acl(f.handle, f.pb, f.data)
+end
+ok(rp == string.rep("x", 20), "and they reassemble to what went in")
+
+lc:closed(0x0041)
+ok(select(2, lc:acl(0x0041, l2cap.PB_CONT, "x")) ~= nil,
+    "a closed connection forgets its half-read message")
+
+-- ---- att ----
+
+local att = require("ble.att")
+
+local mreq = att.decode("\2\5\2")
+
+ok(mreq and mreq.op == att.OP_MTU_REQ and mreq.mtu == 517,
+    "the exchange mtu request a peer actually sent us")
+ok(hex(att.mtursp(185)) == "03b900", "and the response we owe it")
+
+local wreq = att.decode(string.pack("<BI2", att.OP_WRITE_REQ, 0x0021) ..
+    "hello")
+
+ok(wreq and wreq.handle == 0x21 and wreq.value == "hello",
+    "a write request carries handle and value")
+
+local rbt = att.decode(string.pack("<BI2I2", att.OP_READ_BY_TYPE_REQ,
+    1, 0xffff) .. uuid.short(0x2803))
+
+ok(rbt and rbt.start == 1 and rbt.last == 0xffff, "read by type range")
+ok(uuid.eq(rbt.uuid, uuid.short(0x2803)), "and the type it asks for")
+
+ok(att.decode("\8\1\0\255\255\1\2\3") == nil,
+    "a uuid of an impossible width is refused")
+ok(att.decode("\2") == nil, "and so is a truncated request")
+ok(att.decode("") == nil, "and an empty pdu")
+
+local er = att.decode(att.error(att.OP_READ_REQ, 0x21,
+    att.ERR_INVALID_HANDLE))
+
+ok(er.reqop == att.OP_READ_REQ and er.handle == 0x21 and
+    er.err == att.ERR_INVALID_HANDLE, "an error response round trips")
+
+ok(att.fits(23, 20, 3) and not att.fits(23, 20, 4),
+    "a response is bounded by the negotiated mtu")
+
 -- ---- the trace format ----
 
 local btsnoop = require("ble.btsnoop")
