@@ -14,6 +14,7 @@ local gatt = require("ble.gatt")
 local gattc = require("ble.gattc")
 local gap = require("ble.gap")
 local ad = require("ble.ad")
+local uuid = require("ble.uuid")
 
 -- the spawn argument, where a service's capabilities arrive. Not
 -- sys.granted(), which is the kernel's own table and holds only what it
@@ -74,6 +75,25 @@ end
 
 local function activities()
 	return nconn + (advertising and 1 or 0) + (scanning and 1 or 0)
+end
+
+-- a client that has gone takes its services with it. sys.hungup says
+-- nobody else holds the port, which for a right this proc was handed
+-- means the program that gave it has exited.
+local function reap()
+	local kept = {}
+
+	for _, s in ipairs(services) do
+		if s.owner and sys.hungup(s.owner) then
+			db:remove(s)
+			sys.close(s.owner)
+			sys.log("blesrv: took back handles %d-%d",
+			    s.decl.handle, s.decl.last)
+		else
+			kept[#kept + 1] = s
+		end
+	end
+	services = kept
 end
 
 -- tell everyone who asked to hear about this kind of thing. A right
@@ -150,6 +170,17 @@ local function onatt(handle, pdu)
 				tell("write", { handle = handle,
 				    attr = m.handle, value = m.value })
 			end
+		end
+	elseif kind == "command" then
+		-- a write with no response, which is what a peer sending
+		-- data rather than asking a question uses. Nothing is owed
+		-- back, but the write still has to reach whoever serves it.
+		local m = att.decode(pdu)
+
+		db:request(pdu, c.mtu)
+		if m and m.handle then
+			tell("write", { handle = handle, attr = m.handle,
+			    value = m.value })
 		end
 	elseif kind == "notify" or kind == "indicate" then
 		local h, v = gattc.update(pdu)
@@ -404,7 +435,18 @@ function ops.serve(m)
 		return reply(m, { err = "serve needs a service and chars" })
 	end
 
+	-- a service belongs to the client that registered it. Without an
+	-- owner to outlive, every run of a program would add another copy
+	-- at new handles while a peer kept writing to the old ones.
+	local owner = type(m.port) == "table" and m.port.__right or nil
+
+	if not owner then
+		return reply(m, { err = "serve needs the port to own it" })
+	end
+
 	local svc = db:service(m.service, m.chars)
+
+	svc.owner = owner
 	local out = { start = svc.decl.handle, last = svc.decl.last,
 	    chars = {} }
 
@@ -470,6 +512,9 @@ while true do
 	})
 
 	if which == 2 then
+		-- a quiet moment is when a departed client's handles come
+		-- back, which is cheap and needs no timer of its own.
+		reap()
 		if m and m.data then
 			codec:feed(m.data)
 		end

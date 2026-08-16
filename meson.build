@@ -1612,6 +1612,12 @@ test('irc-protocol', lua_interp,
   timeout: 20,
 )
 
+test('bitchat-packet', lua_interp,
+  args: [files('test/host_bitchat.lua')],
+  protocol: 'tap',
+  timeout: 30,
+)
+
 test('zmodem-protocol', lua_interp,
   args: [files('test/host_zmodem.lua')],
   protocol: 'tap',

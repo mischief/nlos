@@ -84,6 +84,25 @@ function Db:service(u, chars)
 	return { decl = decl, chars = out }
 end
 
+-- drop a service and everything inside it. Handles are reused only
+-- when the database empties: a peer caches what it discovered, and
+-- reissuing a live handle to a different attribute would answer its
+-- next read with somebody else's value.
+function Db:remove(svc)
+	local first, last = svc.decl.handle, svc.decl.last
+	local kept = {}
+
+	for _, a in ipairs(self.attrs) do
+		if a.handle < first or a.handle > last then
+			kept[#kept + 1] = a
+		end
+	end
+	self.attrs = kept
+	if #kept == 0 then
+		self.next = 1
+	end
+end
+
 function Db:find(handle)
 	for _, a in ipairs(self.attrs) do
 		if a.handle == handle then

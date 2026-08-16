@@ -100,7 +100,7 @@ if what == "adv" then
 	-- the shape a chat wants: something to write at, something that
 	-- notifies back. Registered before advertising, so a peer that
 	-- connects immediately finds a database rather than an empty one.
-	local h = ask({ op = "serve",
+	local h = ask({ op = "serve", port = { __right = port },
 	    service = uuid.parse("F47B5E2D-1234-5678-9abc-def012345678"),
 	    chars = {
 		{ uuid = uuid.parse("F47B5E2E-1234-5678-9abc-def012345678"),
