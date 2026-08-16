@@ -7,7 +7,8 @@
 
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 
-package.path = scriptdir .. "/../lib/?.lua;" .. package.path
+package.path = scriptdir .. "/../lib/?.lua;" ..
+    scriptdir .. "/../lib/?/init.lua;" .. package.path
 
 local packet = require("bitchat.packet")
 
@@ -60,7 +61,8 @@ ok(dd.recipient == "RECIPNT1", "the recipient decodes")
 ok(dd.signature == string.rep("s", 64), "and the 64-byte signature")
 ok(dd.payload == "x", "with the payload between them")
 
--- refusals: a short packet, a version we do not know, and compression.
+-- refusals: a short packet, a version we do not know, and a payload
+-- that claims to be deflate and is not.
 ok(packet.decode("short") == nil, "a runt packet is refused")
 ok(select(2, packet.decode(string.rep("\0", 30))):match("version"),
     "and an unknown version says so")
@@ -69,7 +71,7 @@ local comp = packet.encode(p)
 
 comp = comp:sub(1, 11) .. string.char(packet.IS_COMPRESSED) .. comp:sub(13)
 ok(select(2, packet.decode(comp)):match("inflate"),
-    "a compressed payload is refused rather than handed up as rubbish")
+    "a payload that is not deflate says so rather than handing up rubbish")
 
 local trunc = raw:sub(1, #raw - 2)
 
@@ -103,6 +105,76 @@ local bigm = packet.decodemessage(packet.encodemessage({ id = "i",
     sender = "n", content = big }))
 
 ok(bigm and bigm.content == big, "content longer than 255 bytes")
+
+-- ---- padding, and what a signature covers ----
+
+local pkt = { type = packet.ANNOUNCE, ttl = 3, timestamp = 1234567890123,
+    sender = "SENDER01",
+    payload = packet.encodeannounce({ nickname = "n",
+	noisekey = string.rep("N", 32), signkey = string.rep("S", 32) }) }
+
+local plain = packet.encode(pkt)
+local padded = packet.encode(pkt, true)
+
+ok(#plain < 240, "an announce is small")
+ok(#padded == 256, "and pads to a whole block")
+ok(padded:sub(1, #plain) == plain, "the packet is unchanged by the pad")
+
+local n = padded:byte(#padded)
+
+ok(padded:sub(#padded - n + 1) == string.char(n):rep(n),
+    "every pad byte is the pad count")
+ok(packet.decode(padded).payload == pkt.payload,
+    "and the length field means a reader ignores it")
+
+-- a frame within 16 bytes of its block cannot be padded: the count
+-- would not fit in a byte, so it goes out at its own length.
+local tight = ("x"):rep(250)
+
+ok(packet.pad(tight) == tight, "a frame too close to the block is left")
+
+local si = packet.signinput(pkt)
+
+ok(#si == 256, "the signing input is padded too")
+ok(si:byte(3) == 0, "with the ttl zeroed, so a relay cannot break it")
+ok(si ~= padded, "which is not the packet as sent")
+ok(packet.signinput({ type = pkt.type, ttl = 99,
+    timestamp = pkt.timestamp, sender = pkt.sender,
+    payload = pkt.payload }) == si, "any ttl signs the same bytes")
+
+local an = packet.decodeannounce(pkt.payload)
+
+ok(an.nickname == "n", "an announce carries a nickname")
+ok(an.noisekey == string.rep("N", 32), "a noise key")
+ok(an.signkey == string.rep("S", 32), "and a signing key")
+
+-- ---- a compressed payload ----
+--
+-- Their encoder deflates a payload of 100 bytes or more that has any
+-- redundancy in it, and puts the original length in front.
+
+local deflate = require("zlib.deflate")
+local body = string.rep("the mesh relays this. ", 12)
+local squashed = string.pack(">I2", #body) .. deflate.compress(body)
+
+local cpkt = string.pack(">BBBI8BI2", 1, packet.MESSAGE, 5, 99,
+    packet.IS_COMPRESSED, #squashed) .. "SENDER01" .. squashed
+local cp = packet.decode(cpkt)
+
+ok(cp ~= nil, "a compressed packet decodes")
+ok(cp and cp.payload == body, "and the payload is what went in")
+ok(#squashed < #body, "which was smaller on the wire")
+
+local truncated = string.pack(">BBBI8BI2", 1, packet.MESSAGE, 5, 99,
+    packet.IS_COMPRESSED, 2) .. "SENDER01" .. "\0\10"
+
+ok(packet.decode(truncated) == nil, "a compressed payload with no body")
+
+local lying = string.pack(">BBBI8BI2", 1, packet.MESSAGE, 5, 99,
+    packet.IS_COMPRESSED, #squashed) .. "SENDER01" ..
+    string.pack(">I2", #body + 1) .. deflate.compress(body)
+
+ok(packet.decode(lying) == nil, "and one whose stated size disagrees")
 
 io.write("1.." .. count .. "\n")
 os.exit(failed == 0 and 0 or 1)

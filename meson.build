@@ -1618,6 +1618,14 @@ test('bitchat-packet', lua_interp,
   timeout: 30,
 )
 
+# deflate and inflate, against what gzip wrote rather than against
+# themselves. Shared with the ssh tree, where it is kept.
+test('zlib', lua_interp,
+  args: [files('test/host_zlib.lua')],
+  protocol: 'tap',
+  timeout: 60,
+)
+
 test('zmodem-protocol', lua_interp,
   args: [files('test/host_zmodem.lua')],
   protocol: 'tap',
