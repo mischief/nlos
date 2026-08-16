@@ -238,6 +238,7 @@ machine/ one services list per machine. The build installs the one it
          single name and no machine knows the others exist.
 tools/   host-side. builds and runs the image; never reaches the guest.
 test/    boot/ is guest payloads; the rest are host-side drivers.
+fonts/   the panel's glyphs, as the bdf they were made from.
 ```
 
 `lib/` is the half that can be checked, so test/boot/test_layout.lua
@@ -245,6 +246,14 @@ checks it: every module must require cleanly and yield a table. That
 catches a library that grew a side effect and a task that drifted into
 lib/, which is not hypothetical -- lib/idle.lua had been a proc all
 along, and blocks forever the moment anything requires it.
+
+## What is not ours
+
+`fonts/spleen-6x12.bdf` is Spleen, copyright (c) 2018-2024 Frederic
+Cambus, BSD 2-Clause — terms in [fonts/LICENSE](fonts/LICENSE). Its
+glyphs are compiled into every image, so that notice travels with a
+binary too. `include/sys/queue.h` is OpenBSD's, near-verbatim. Both are
+argued in AGENTS.md.
 
 ## Reading further
 

@@ -381,6 +381,12 @@ this is for — and depending on the host's copy means three toolchains
 can disagree about the scheduler's data structures. **This is the
 exception, argued; it is not licence to vendor the next thing.**
 
+`fonts/spleen-6x12.bdf` is the second exception, and a narrower one:
+bitmaps, not code. `tools/bdf2font.lua` compiles them into
+`src/font_spleen.h`, so nothing of anyone else's is built or run — and
+the generator is ours, which the python one in another repo was not.
+Keep the copyright notice on both.
+
 **No other third-party code.** Vanilla Lua 5.4 submodule, unpatched. Our own
 freestanding libc, `-nostdinc`, only compiler-provided headers. Hand
 PE header, self-relocation, plain binutils. Compiler builtins are
