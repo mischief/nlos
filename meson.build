@@ -485,6 +485,7 @@ socat_prog = find_program('socat', required: false)
 sshd_prog = find_program('sshd', required: false,
   dirs: ['/usr/sbin', '/usr/bin', '/sbin'])
 sshkeygen_prog = find_program('ssh-keygen', required: false)
+ssh_prog = find_program('ssh', required: false)
 if have_hostutil
   hostutil = shared_module('hostutil', 'test/hostutil.c',
     dependencies: lua54_dep,
@@ -1036,6 +1037,19 @@ if fw_network
       timeout: 150,
       env: hostenv,
     )
+
+    # task/sshd.lua, driven by a real ssh client: the session ends when
+    # the shell does, and a command reports the status it exited on.
+    # Nothing else covers the server half at all.
+    if ssh_prog.found() and sshkeygen_prog.found()
+      test('sshd-server', lua_interp,
+        args: [files('test/test_sshd.lua'), luaos_img,
+          files('test/boot/srvsshd.lua')],
+        protocol: 'tap',
+        timeout: 200,
+        env: hostenv,
+      )
+    endif
 
     # host-driven web terminal test: drives the browser shell as its
     # own javascript would. the only cover for the full chain -- http

@@ -390,7 +390,7 @@ local function session(connid)
 			cases = { pumpcases[1], pumpcases[2], { port = gettimer } }
 		end
 
-		local i, v = thread.alt(cases)
+		local i, v, alive = thread.alt(cases)
 
 		if i == 1 then
 			if v == nil then
@@ -399,7 +399,20 @@ local function session(connid)
 				inbuf = inbuf .. v
 			end
 		elseif i == 2 then
-			from_shell(v)
+			-- The console right was given away rather than
+			-- copied, so the shell holds the only one: it
+			-- hanging up is that proc gone. A shell that ends
+			-- properly says so first and this finds the channel
+			-- already closed, which leaves the crash.
+			if alive == false then
+				if chan then
+					srv:exit(chan, 1)
+					srv:close(chan)
+					chan = nil
+				end
+			else
+				from_shell(v)
+			end
 		else
 			-- the parked getch timed out: "" means "no key".
 			reply_getch("")
