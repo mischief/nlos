@@ -12,13 +12,12 @@
 -- concurrently; run one directly (not inthread()) and it just
 -- blocks the proc, same as dns.resolve() does today.
 --
--- v1 scope: HTTP/1.1, Connection: close (no keep-alive), no chunked
--- transfer-encoding (M.get reads until the peer closes, same as
--- curl -0 would; the server side reads exactly Content-Length bytes
--- of request body -- see read_request). https is lib/tlstcp, which
--- M.get wraps the transport in where the scheme says so. M.get itself only
--- ever issues GET, but M.serve's request parsing is method-agnostic
--- (POST bodies work, for lib/mcp.lua's JSON-RPC traffic).
+-- Scope: HTTP/1.1 with keep-alive, no chunked transfer-encoding in
+-- either direction -- a response carrying one is refused rather than
+-- guessed at, since a body of unknown length cannot be told from the
+-- next response on a connection that stays open. https is lib/tlstcp,
+-- wrapped in where the scheme says so. M.serve's request parsing is
+-- method-agnostic (POST bodies work, for lib/mcp.lua's JSON-RPC).
 
 local thread = require("los.thread")
 local ns = require("ns")
@@ -46,21 +45,169 @@ local function parse_ip(ip)
 	return tonumber(a), tonumber(b), tonumber(c), tonumber(d)
 end
 
--- responses are read until the peer closes, so without a ceiling a
--- large (or endless) response just grows until the proc hits its
--- mem_limit and dies. callers who genuinely want more can raise it.
+-- a ceiling on one response, since without it a large (or endless) one
+-- grows until the proc hits its mem_limit and dies. Callers who
+-- genuinely want more can raise it.
 M.MAXBODY = 1024 * 1024
 
--- returns {status=, headers=, body=} or nil, "reason"
-function M.get(tcp, dns, url, opts)
-	local host, port, path, scheme = parse_url(url)
+
+-- ---- a connection, reused ----
+-- A handshake costs seconds on a board where the network costs
+-- milliseconds, so a second request's cost is nearly all avoidable.
+-- This reads exactly Content-Length and keeps the socket; the one-shot
+-- below reads to EOF and must close. A read can return the head of the
+-- next response with the tail of this one, so the rest is kept.
+local Conn = {}
+
+Conn.__index = Conn
+
+-- bytes from the socket until `want(buf)` returns something
+function Conn:fill(want)
+	while true do
+		local at = want(self.buf)
+
+		if at then
+			return at
+		end
+		if self.dead then
+			return want(self.buf, true), "connection closed"
+		end
+
+		local data = self.tcp.recv(self.conn, 4096)
+
+		if not data or data == "" then
+			-- one more look: a body ended by the close is
+			-- complete, and `want` is what knows that.
+			self.dead = true
+			return want(self.buf, true), "closed early"
+		end
+		self.buf = self.buf .. data
+		if #self.buf > M.MAXBODY then
+			return nil, "response exceeds MAXBODY"
+		end
+	end
+end
+
+function Conn:request(req)
+	if self.dead then
+		return nil, "connection closed"
+	end
+
+	local body = req and req.body
+	local lines = {
+		((req and req.method) or "GET") .. " " ..
+		    ((req and req.path) or "/") .. " HTTP/1.1",
+		"Host: " .. self.host,
+		"User-Agent: lua-os",
+		-- said rather than assumed: 1.1 keeps a connection open
+		-- without being told, but a 1.0 hop in the middle does not.
+		"Connection: keep-alive",
+	}
+
+	for k, v in pairs((req and req.headers) or {}) do
+		lines[#lines + 1] = k .. ": " .. v
+	end
+	if body then
+		lines[#lines + 1] = "Content-Length: " .. #body
+	end
+	lines[#lines + 1] = ""
+	lines[#lines + 1] = ""
+
+	if not self.tcp.send(self.conn,
+	    table.concat(lines, "\r\n") .. (body or "")) then
+		self.dead = true
+		return nil, "send failed"
+	end
+
+	local at, ferr = self:fill(function(buf)
+		return buf:find("\r\n\r\n", 1, true)
+	end)
+
+	if not at then
+		return nil, ferr or "no response"
+	end
+
+	local head = self.buf:sub(1, at - 1)
+
+	self.buf = self.buf:sub(at + 4)
+
+	local statusline, headerblock = head:match("^(.-)\r\n(.*)$")
+
+	if not statusline then
+		statusline, headerblock = head, ""
+	end
+
+	local status = tonumber(statusline:match(" (%d%d%d)"))
+	local headers = {}
+
+	for k, v in headerblock:gmatch("([^:\r\n]+):[ \t]*([^\r\n]*)") do
+		headers[k:lower()] = v
+	end
+	if not status then
+		self.dead = true
+		return nil, "malformed response"
+	end
+
+	local len = tonumber(headers["content-length"] or "")
+	local rbody
+
+	if headers["transfer-encoding"] then
+		-- guessing where a chunked body ends would desynchronise
+		-- every later request on this connection.
+		self.dead = true
+		return nil, "transfer-encoding is not supported: " ..
+		    headers["transfer-encoding"]
+	elseif len then
+		local got = self:fill(function(buf, eof)
+			if #buf >= len then
+				return len
+			end
+			return eof and #buf or nil
+		end)
+
+		if not got or got < len then
+			self.dead = true
+			return nil, "body ended early"
+		end
+		rbody = self.buf:sub(1, len)
+		self.buf = self.buf:sub(len + 1)
+	else
+		-- no length and no encoding: the close is the terminator,
+		-- so this is the last response on this connection.
+		self:fill(function(_, eof) return eof and 0 or nil end)
+		rbody, self.buf = self.buf, ""
+		self.dead = true
+	end
+
+	-- the far end's word wins: reusing a socket it has closed is a
+	-- request sent into nothing.
+	if (headers["connection"] or ""):lower():find("close", 1, true) then
+		self.dead = true
+	end
+
+	return { status = status, headers = headers, body = rbody }
+end
+
+function Conn:alive()
+	return not self.dead
+end
+
+function Conn:close()
+	if self.conn then
+		self.tcp.close(self.conn)
+		self.conn = nil
+	end
+	self.dead = true
+end
+
+-- connect(tcp, dns, url, opts) -> conn -- one handshake, many requests.
+-- The url's path is ignored: each request names its own.
+function M.connect(tcp, dns, url, opts)
+	local host, port, _, scheme = parse_url(url)
+
 	if not host then
 		return nil, "bad url"
 	end
-
-	-- https is the same protocol over a different transport, so it is
-	-- the transport that changes and nothing below this line does.
-	-- opts carries the trust decision through to lib/tlstcp.
 	if scheme == "https" then
 		local ok, tlstcp = pcall(require, "tlstcp")
 
@@ -71,15 +218,15 @@ function M.get(tcp, dns, url, opts)
 		tcp = tlstcp.new(tcp, opts)
 	end
 
-	-- a dotted quad needs no resolver, and asking one to resolve
-	-- "1.2.3.4" just fails.
 	local a, b, c, d = parse_ip(host)
-	local named = a == nil		-- a name, rather than a dotted quad
+	local named = a == nil
 
 	if not a then
 		if not dns then
-			return nil, "no resolver, and host is not an ip: " .. host
+			return nil, "no resolver, and host is not an ip: " ..
+			    host
 		end
+
 		local ip = dns.resolve(host)
 
 		if not ip then
@@ -91,59 +238,30 @@ function M.get(tcp, dns, url, opts)
 		end
 	end
 
-	-- the name, not the address: it is what SNI carries and what a
-	-- pinning verifier keys on. A url naming an ip has none.
 	local conn, derr = tcp.dial(a, b, c, d, port, named and host or nil)
+
 	if not conn then
 		return nil, derr or "connect failed"
 	end
+	return setmetatable({ tcp = tcp, conn = conn, host = host,
+	    buf = "", dead = false }, Conn)
+end
 
-	local req = table.concat({
-		"GET " .. path .. " HTTP/1.1",
-		"Host: " .. host,
-		"User-Agent: lua-os",
-		"Connection: close",
-		"", "",
-	}, "\r\n")
-	if not tcp.send(conn, req) then
-		tcp.close(conn)
-		return nil, "send failed"
+-- one request over a connection of its own, which is what a caller
+-- after a single page wants. Several of them go through M.connect,
+-- and pay for the handshake once.
+function M.get(tcp, dns, url, opts)
+	local _, _, path = parse_url(url)
+	local conn, cerr = M.connect(tcp, dns, url, opts)
+
+	if not conn then
+		return nil, cerr
 	end
 
-	local chunks = {}
-	local total = 0
-	local truncated = false
+	local res, rerr = conn:request({ method = "GET", path = path })
 
-	while true do
-		local data = tcp.recv(conn, 4096)
-		if not data then
-			break
-		end
-		chunks[#chunks + 1] = data
-		total = total + #data
-		if total > M.MAXBODY then
-			truncated = true
-			break
-		end
-	end
-	tcp.close(conn)
-	if truncated then
-		return nil, "response exceeds MAXBODY (" .. M.MAXBODY .. ")"
-	end
-
-	local raw = table.concat(chunks)
-	local statusline, headerblock, body =
-	    raw:match("^(.-)\r\n(.-)\r\n\r\n(.*)$")
-	if not statusline then
-		return nil, "malformed response"
-	end
-	local status = tonumber(statusline:match(" (%d%d%d) "))
-	local headers = {}
-	for k, v in headerblock:gmatch("([^:\r\n]+):[ \t]*([^\r\n]*)") do
-		headers[k:lower()] = v
-	end
-
-	return { status = status, headers = headers, body = body }
+	conn:close()
+	return res, rerr
 end
 
 -- ---- server ----

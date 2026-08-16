@@ -462,6 +462,11 @@ local repl_worker_src = [[
 		require("dos").start({ ns = require("ns").current(),
 		    cons = consh, fb = fbh, ptr = ptrh,
 		    kbd = kbdh, net = tcph, seed = m.seed,
+		    -- the resolver, which this console holds and every
+		    -- program run from it needs: without it fetch, host
+		    -- and nettime take addresses and not names, while the
+		    -- same programs under the panel's terminal take both.
+		    dns = dnsh,
 		    udp = udph, power = powerh, dbg = dbgh, hci = hcih,
 		    ble = bleh },
 		    "lua-os. programs live in /bin; type exit to " ..
