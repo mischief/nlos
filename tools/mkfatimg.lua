@@ -53,8 +53,9 @@ local function excludefrom(path)
 	if not f then
 		die("cannot read " .. path)
 	end
-	for l in f:lines() do
-		l = l:gsub("%s+$", "")
+	for line in f:lines() do
+		local l = line:gsub("%s+$", "")
+
 		if l ~= "" then
 			skip[l] = true
 		end
