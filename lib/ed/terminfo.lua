@@ -225,38 +225,13 @@ function M:detect_size()
 		return
 	end
 
-	-- a console that counts its own cells answers directly -- the
-	-- framebuffer does, and it has no escape sequence to answer 6n with
-	-- anyway. Only a terminal that does not know its own size (a serial
-	-- line, an ssh session, a host xterm) needs the query below.
-	if self.tty.size then
-		local cols, rows = self.tty.size()
+	-- A console that counts its own cells answers directly, and one
+	-- that cannot asks the terminal -- both of which detectsize does,
+	-- so an editor and an ssh client measure the same way.
+	local cols, rows = self.tty.detectsize()
 
-		if cols and rows then
-			self.cols, self.rows = cols, rows
-			return
-		end
-	end
-
-	self:write(CSI .. "s" .. CSI .. "999;999H" .. CSI .. "6n" .. CSI .. "u")
-
-	local buf = {}
-
-	while true do
-		local c = self.tty.getch(SEQ_MS)
-
-		if c == "" or c == "R" then
-			break
-		end
-		buf[#buf + 1] = c
-	end
-
-	local resp = table.concat(buf)
-	local r, c = resp:match("%[(%d+);(%d+)")
-
-	if r and c then
-		self.rows = tonumber(r)
-		self.cols = tonumber(c)
+	if cols and rows then
+		self.cols, self.rows = cols, rows
 	end
 end
 

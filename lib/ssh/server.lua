@@ -573,6 +573,14 @@ function S:step()
       if want_reply then chan_reply(self, ch, true) end
       return { type = "pty", chan = ch, term = term, cols = cols, rows = rows }
 
+    elseif what == "window-change" then
+      -- RFC 4254 6.7, and it never wants a reply. A session that only
+      -- reads the size at pty-req lays out its next screen against the
+      -- window the client had when it connected.
+      local cols, rows = r:uint32(), r:uint32()
+
+      return { type = "winch", chan = ch, cols = cols, rows = rows }
+
     else
       -- env, signal, x11-req and the rest: refused, not silently dropped.
       if want_reply then chan_reply(self, ch, false) end

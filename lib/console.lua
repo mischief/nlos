@@ -77,7 +77,7 @@ Console.__index = Console
 -- waits for those, so what is not tty traffic is handed on rather than
 -- dropped.
 function M.new(backend, opts)
-	return setmetatable({
+	local c = setmetatable({
 		io = backend,
 		kbd = backend.keyport,
 		other = opts and opts.other,
@@ -99,6 +99,15 @@ function M.new(backend, opts)
 		-- of them has to keep a ring of its own.
 		history = {},
 	}, Console)
+
+	-- A backend that answers a query needs a way back into the input,
+	-- because that is where an answer goes: a program asking the
+	-- cursor position reads the reply as keystrokes. Only a backend
+	-- that draws has one to give.
+	if backend.setreply then
+		backend.setreply(function(s) c:queue(s) end)
+	end
+	return c
 end
 
 -- who to tell when the interrupt character is typed, or nobody when the

@@ -150,6 +150,7 @@ end
 -- Set once the shell channel is open: a keystroke before that has
 -- nowhere to go, and the protocol is mid-handshake.
 local sendkey = nil
+local termcols, termrows	-- measured before the readers start
 
 -- Wait for either source. Keystrokes go out from here rather than from
 -- their own thread, so that every packet is written by one of them.
@@ -195,13 +196,10 @@ local function readers()
 		end
 	end)
 
-	-- Raw for the whole session: the far end has the line editor, and
-	-- echoing here too would double every key. With a timeout, so the
-	-- end of the session reaches this thread -- a bare getch parks on
-	-- a reply port only a keystroke answers, and nobody types at a
-	-- session that has already failed, so the reactor would turn and
-	-- the proc live forever.
-	tty.rawon()
+	-- getch with a timeout, so the end of the session reaches this
+	-- thread: a bare one parks on a reply port only a keystroke
+	-- answers, and nobody types at a session that has already failed,
+	-- which leaves the reactor turning and the proc alive.
 	thread.spawn(function()
 		while not closed do
 			local k = tty.getch(200)
@@ -308,14 +306,12 @@ local function session()
 	if command then
 		ok, err = C:exec(ch, command)
 	else
-		local cols, rows = tty.size()
-
 		-- ansi, not xterm: eight colors, bold and reverse, and
 		-- cursor addressing are what lib/fbcons.lua renders.
 		-- xterm would promise an alternate screen and 256 colors
 		-- it drops, and a full-screen program would leave its
 		-- wreckage behind on the shell.
-		ok, err = C:pty(ch, cols or 80, rows or 24,
+		ok, err = C:pty(ch, termcols or 80, termrows or 24,
 		    os.getenv("TERM") or "ansi")
 		if ok then
 			ok, err = C:shell(ch)
@@ -351,6 +347,13 @@ end
 local why
 
 if interactive then
+	-- Measured here, before the keystroke reader exists: asking a
+	-- terminal its size is a query whose answer arrives as input, and
+	-- two readers would race for it. Raw mode has to be on for the
+	-- answer to come back unedited.
+	tty.rawon()
+	termcols, termrows = tty.detectsize()
+
 	thread.spawn(function()
 		readers()
 		why = finish(session())

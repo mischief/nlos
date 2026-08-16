@@ -17,6 +17,12 @@ local thread = require("los.thread")
 -- whether the program is a proc of its own or a coroutine in a shell --
 -- thread.recv adapts to either, where a client-side timer would need the
 -- scheduler and would race the console over who consumed the byte.
+
+-- how long to wait for the rest of the cursor report. The bytes of a
+-- real answer arrive together; this only elapses when nothing is
+-- listening at the other end of the line.
+local SEQ_MS = 50
+
 local M = {}
 
 function M.new(handle)
@@ -93,6 +99,37 @@ function M.new(handle)
 
 		return m and m.cols, m and m.rows
 	end
+	-- The size, asking the terminal itself where the console cannot
+	-- say. A serial line does not know what is on the far end of it,
+	-- but a terminal there answers 6n with the cursor position, and
+	-- the bottom right corner is the size. Raw mode is the caller's:
+	-- the reply arrives as input, and anything else reading keys at
+	-- the same moment will take it instead.
+	function t.detectsize()
+		local cols, rows = t.size()
+
+		if cols and rows then
+			return cols, rows
+		end
+
+		t.write("\27[s\27[999;999H\27[6n\27[u")
+
+		local buf = {}
+
+		while #buf < 32 do
+			local c = t.getch(SEQ_MS)
+
+			if c == nil or c == "" or c == "R" then
+				break
+			end
+			buf[#buf + 1] = c
+		end
+
+		local r, cc = table.concat(buf):match("%[(%d+);(%d+)")
+
+		return tonumber(cc), tonumber(r)
+	end
+
 	function t.close()
 		if replyport then
 			sys.close(replyport)

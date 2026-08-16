@@ -17,7 +17,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(18)
+tap.plan(20)
 
 tap.ok(caps_of.fb ~= nil, "boot payload holds the screen")
 if not caps_of.fb then
@@ -142,3 +142,20 @@ tap.ok(has(0, 0, 0xc0c0c0), "the glyph after an OSC lands in column 0")
 con.write(HOME .. "\27[2J" .. HOME)
 con.write("\27]0;a title\27\\Y")
 tap.ok(has(0, 0, 0xc0c0c0), "and after one ended with ST")
+
+-- ---- the cursor report, which is how a size is measured ----
+--
+-- A terminal that answers nothing cannot be measured: resize says it is
+-- not VT100-compatible and a remote shell lays out 80x24 whatever the
+-- panel is. The answer is input, so it arrives where keystrokes do.
+local answered = {}
+
+con.setreply(function(s) answered[#answered + 1] = s end)
+con.write(HOME .. "\27[6n")
+tap.is(table.concat(answered), "\27[1;1R", "6n answers the cursor position")
+
+answered = {}
+con.write("\27[999;999H\27[6n")
+tap.is(table.concat(answered),
+    ("\27[%d;%dR"):format(con.rows, con.cols),
+    "and parked at the far corner it answers the size")

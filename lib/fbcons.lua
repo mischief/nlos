@@ -535,6 +535,12 @@ function Cons:eraseline(mode)
 	end
 end
 
+-- Where an answer to a query goes. The console owns the input queue,
+-- so it hands this over when it takes the backend.
+function Cons:setreply(fn)
+	self.reply = fn
+end
+
 function Cons:reset()
 	self.lfg, self.lbg = self.deffg, self.defbg
 	self.bold, self.rev = false, false
@@ -578,6 +584,20 @@ function Cons:csi(final, parm)
 		-- silently shortens a line rather than failing loudly.
 		for _ = 1, atleast1(n) do
 			self:putc(self.lastch or " ")
+		end
+	elseif final == "n" then
+		-- a device status report, which is how anything measures a
+		-- terminal that will not say: 6 asks where the cursor is,
+		-- and a program that parked it at 999;999 reads the answer
+		-- as the size. The reply is input, not output -- it goes
+		-- back the way a keystroke comes.
+		if self.reply then
+			if n == 6 then
+				self.reply(("\27[%d;%dR"):format(
+				    self.row + 1, self.col + 1))
+			elseif n == 5 then
+				self.reply("\27[0n")
+			end
 		end
 	elseif final == "m" then
 		self:sgr(p)
@@ -763,6 +783,11 @@ function M.new(o)
 		end,
 		show = function()
 			self:show()
+		end,
+		-- where an answer to a query goes: the console hands this
+		-- over, because the input queue is the console's.
+		setreply = function(fn)
+			self:setreply(fn)
 		end,
 		keyport = o.keyport,
 		cols = self.cols,

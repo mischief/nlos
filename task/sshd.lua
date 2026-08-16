@@ -491,6 +491,11 @@ local function session(connid)
 			-- size is known by the time a program can ask for it.
 			if ev.type == "pty" then
 				ptycols, ptyrows = ev.cols, ev.rows
+			elseif ev.type == "winch" then
+				-- the window as it is now. A program asks
+				-- the console for the size when it draws,
+				-- so the next screen uses this one.
+				ptycols, ptyrows = ev.cols, ev.rows
 			elseif ev.type == "shell" then
 				chan = ev.chan
 
