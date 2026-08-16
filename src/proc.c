@@ -1324,6 +1324,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		lua_pushcfunction(p->L, luaopen_los_platform_wifi);
 		lua_setfield(p->L, -2, "los.platform.wifi");
 	}
+	if (priv & PRIV_HCI) {
+		lua_pushcfunction(p->L, luaopen_los_platform_hci);
+		lua_setfield(p->L, -2, "los.platform.hci");
+	}
 	if (priv & PRIV_BLK) {
 		lua_pushcfunction(p->L, luaopen_los_platform_blk);
 		lua_setfield(p->L, -2, "los.platform.blk");

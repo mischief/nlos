@@ -36,6 +36,7 @@ luaos_sources(kernel KERNEL_SRC)
 luaos_sources(lua LUA_SRC)
 
 set(PLATFORM_SRC
+    ${LUAOS_ROOT}/src/platform/esp32/ble.c
     ${LUAOS_ROOT}/src/platform/esp32/blk.c
     ${LUAOS_ROOT}/src/platform/esp32/console.c
     ${LUAOS_ROOT}/src/platform/esp32/drivers.c
@@ -74,6 +75,10 @@ idf_component_register(
             # esp_netif or lwip -- the frames go to lib/ip4.lua, and a
             # second network stack in the image is what that avoids.
             esp_wifi nvs_flash esp_event
+            # the bluetooth controller, in controller-only mode: what
+            # this gives is the VHCI pair, whole HCI packets in and
+            # out. Not NimBLE, for the reason lwip is absent above.
+            bt
             sdmmc esp_driver_sdspi esp_driver_spi esp_driver_gpio
 )
 
@@ -223,6 +228,7 @@ set(EMBED_FILES
     lib/client/wire.lua
     lib/dns.lua
     task/eth.lua
+    task/hci.lua
     task/ip.lua
     task/tcp4.lua
     task/dhcpd.lua

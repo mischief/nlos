@@ -100,3 +100,11 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 # is not on.
 CONFIG_PM_ENABLE=y
 CONFIG_PM_DFS_INIT_AUTO=y
+
+# The BLE controller, and no host stack: lib/ble is the host stack, and
+# NimBLE in the image is what it exists instead of. Controller-only
+# publishes the VHCI pair the bundled hosts themselves sit on, so
+# src/platform/esp32/ble.c moves whole HCI packets and nothing above.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_CONTROLLER_ONLY=y

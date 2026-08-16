@@ -341,6 +341,7 @@ enum {
 	PRIV_FB		= 1 << 7,
 	PRIV_BLK	= 1 << 8,
 	PRIV_FLASH	= 1 << 9,
+	PRIV_HCI	= 1 << 10,
 };
 
 /* does this cpu hold a given bucket, every bucket, or any bucket at

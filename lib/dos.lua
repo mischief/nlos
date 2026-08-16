@@ -165,6 +165,10 @@ function M.new(caps)
 		-- the debug capability, same terms again: it debugs any
 		-- proc on the machine, so a public session is given none.
 		dbg = caps.dbg,
+		-- the bluetooth controller, same terms: raw HCI is the
+		-- whole radio, so a session that arrives over a network
+		-- gets none.
+		hci = caps.hci,
 		-- where the exit notices of the programs this shell starts
 		-- arrive, and where the console sends the interrupt. A shell
 		-- in a proc of its own reads the mailbox, which is the
@@ -503,6 +507,11 @@ function Sh:spawn1(path, argv, streams)
 	-- is the authority, and a program that never asks is unaffected.
 	if self.dbg then
 		msg.dbg = { __right = self.dbg }
+	end
+	-- and the bluetooth controller, for bin/hcitool.lua and the host
+	-- stack above it. Same rule again.
+	if self.hci then
+		msg.hci = { __right = self.hci }
 	end
 	-- the pull flag rides BESIDE stdin, not inside it. a table carrying
 	-- __right is serialized as the right and nothing else (see

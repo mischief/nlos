@@ -719,6 +719,9 @@ function M.main()
 	-- the debug capability, if the launcher lent one. bin/dbg.lua is
 	-- the only program that asks.
 	ctx.dbg = ctx.dbg and ctx.dbg.__right or nil
+	-- the bluetooth controller, if the launcher lent one. bin/hcitool
+	-- and the host stack are what ask.
+	ctx.hci = ctx.hci and ctx.hci.__right or nil
 
 	local N, nerr = ns.restore(ctx.nsdesc)
 
@@ -944,6 +947,15 @@ function M.power()
 		return nil
 	end
 	return require("client.power").new(ctx.power)
+end
+
+-- the bluetooth controller, as the raw right rather than a client
+-- object: what talks to it is lib/ble, which is sans-io and takes a
+-- transport rather than making one.
+function M.hci()
+	local ctx = M.ctx
+
+	return ctx and ctx.hci or nil
 end
 
 return M

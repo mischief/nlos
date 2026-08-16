@@ -57,6 +57,18 @@ int	platform_have_esp(void);
  */
 int	platform_have_eth(void);
 
+/* is there a bluetooth controller to exchange HCI packets with? esp32
+ * only, where the radio does BLE beside wifi. Everything above HCI is
+ * Lua in lib/ble, so this hands over whole packets and no more.
+ */
+int	platform_have_hci(void);
+
+/* HCI packets taken from the controller since boot. The hci pump's edge
+ * detection, kept apart from platform_dev_irqs so a packet wakes the
+ * task that wants one.
+ */
+unsigned long platform_hci_irqs(void);
+
 /* is there a block device? microvm answers by probing for a virtio-blk;
  * efi always says no today, for want of an EFI_BLOCK_IO shim rather
  * than for want of a device -- see the comment on its

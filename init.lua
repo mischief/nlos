@@ -380,6 +380,8 @@ local repl_worker_src = [[
 	-- what reaches a boot service. The console gets it and dos
 	-- inherits it; nothing else is offered one.
 	local dbgh = m.dbg and m.dbg.__right
+	-- the bluetooth controller, where this machine has one.
+	local hcih = m.hci and m.hci.__right
 
 	-- pre-imported as bare globals (_G.x, not local x): the repl's
 	-- evaluate() loads each typed line as its own chunk via load(),
@@ -450,7 +452,7 @@ local repl_worker_src = [[
 		require("dos").start({ ns = require("ns").current(),
 		    cons = consh, fb = fbh, ptr = ptrh,
 		    kbd = kbdh, net = tcph, seed = m.seed,
-		    udp = udph, power = powerh, dbg = dbgh },
+		    udp = udph, power = powerh, dbg = dbgh, hci = hcih },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")
 	end
@@ -581,6 +583,11 @@ while true do
 	}
 	if caps_of.dbg then
 		grant.dbg = { __right = caps_of.dbg }
+	end
+	-- the bluetooth controller, where the machine has one. Raw HCI is
+	-- the whole radio, so this goes no further than the console.
+	if caps_of.hci then
+		grant.hci = { __right = caps_of.hci }
 	end
 	if avail.tcp then
 		grant.tcp = { __right = avail.tcp }

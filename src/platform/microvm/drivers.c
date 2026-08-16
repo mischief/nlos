@@ -496,6 +496,27 @@ platform_have_eth(void)
 	return present;
 }
 
+/* no bluetooth: qemu's microvm has no controller to give one, and
+ * nothing here emulates a radio. The module is still defined because
+ * proc.c names it on every platform.
+ */
+int
+platform_have_hci(void)
+{
+	return 0;
+}
+
+static const luaL_Reg hci_emptylib[] = { { NULL, NULL } };
+
+int luaopen_los_platform_hci(lua_State *L);
+
+int
+luaopen_los_platform_hci(lua_State *L)
+{
+	luaL_newlib(L, hci_emptylib);
+	return 1;
+}
+
 /* ---- los.platform.blk: virtio-blk, raw sectors ----
  *
  * Sectors and a capacity, and nothing above them: no partitions, no
@@ -836,4 +857,10 @@ luaopen_los_platform_wifi(lua_State *L)
 {
 	lua_newtable(L);
 	return 1;
+}
+
+unsigned long
+platform_hci_irqs(void)
+{
+	return 0;
 }

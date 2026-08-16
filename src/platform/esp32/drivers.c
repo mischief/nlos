@@ -25,6 +25,7 @@
 #include "touch.h"
 #include "lcd.h"
 #include "wifi.h"
+#include "ble.h"
 
 #include "efi.h"
 #include "esp32.h"
@@ -202,6 +203,21 @@ platform_have_eth(void)
 	 * that task is sent a "wifi" op naming an ssid.
 	 */
 	return esp_wifi_bringup() == 0;
+}
+
+int
+platform_have_hci(void)
+{
+	/* Up at probe time for the same reason the radio is: a controller
+	 * exists whether or not anything is advertising on it.
+	 */
+	return esp_ble_bringup() == 0;
+}
+
+unsigned long
+platform_hci_irqs(void)
+{
+	return esp_ble_irqs();
 }
 
 /* no blockdev (yet) */
@@ -451,6 +467,63 @@ int
 luaopen_los_platform_eth(lua_State *L)
 {
 	luaL_newlib(L, ethlib);
+	return 1;
+}
+
+/* ---- los.platform.hci: the bluetooth controller ----
+ *
+ * Whole HCI packets, H4 type byte included, the way a uart transport
+ * delivers them. Everything above is lib/ble.
+ */
+
+static int
+hci_send(lua_State *L)
+{
+	size_t n;
+	const char *data = luabuf_check(L, 1, &n);
+
+	lua_pushboolean(L, esp_ble_send_packet(data, n) == 0);
+	return 1;
+}
+
+static int
+hci_recv(lua_State *L)
+{
+	char buf[ESP_BLE_MAXPKT];
+	size_t n = esp_ble_recv_packet(buf, sizeof buf);
+
+	if (n == 0)
+		return 0;		/* nil: nothing waiting */
+	lua_pushlstring(L, buf, n);
+	return 1;
+}
+
+static int
+hci_stats(lua_State *L)
+{
+	lua_newtable(L);
+	lua_pushinteger(L, (lua_Integer)esp_ble_irqs());
+	lua_setfield(L, -2, "packets");
+	lua_pushinteger(L, (lua_Integer)esp_ble_drops());
+	lua_setfield(L, -2, "drops");
+	lua_pushinteger(L, (lua_Integer)esp_ble_sram_cost());
+	lua_setfield(L, -2, "sram");
+	return 1;
+}
+
+static const luaL_Reg hcilib[] = {
+	{ "send", hci_send },
+	{ "recv", hci_recv },
+	{ "stats", hci_stats },
+	{ NULL, NULL },
+};
+
+int luaopen_los_platform_hci(lua_State *L);
+
+int
+luaopen_los_platform_hci(lua_State *L)
+{
+	luaL_newlib(L, hcilib);
 	return 1;
 }
 

@@ -346,6 +346,28 @@ platform_have_eth(void)
 	return snp_init();
 }
 
+/* no bluetooth: the firmware publishes no HCI transport, and a usb
+ * dongle would want a usb stack we do not have. The module is still
+ * defined because proc.c names it on every platform; nothing reaches
+ * it, since platform_have_hci keeps the driver from spawning.
+ */
+int
+platform_have_hci(void)
+{
+	return 0;
+}
+
+static const luaL_Reg hci_emptylib[] = { { NULL, NULL } };
+
+int luaopen_los_platform_hci(lua_State *L);
+
+int
+luaopen_los_platform_hci(lua_State *L)
+{
+	luaL_newlib(L, hci_emptylib);
+	return 1;
+}
+
 /* los.platform.eth lives in snp.c on this platform: the firmware's
  * EFI_SIMPLE_NETWORK_PROTOCOL, with our own stack above it.
  */
@@ -686,4 +708,10 @@ luaopen_los_platform_wifi(lua_State *L)
 {
 	lua_newtable(L);
 	return 1;
+}
+
+unsigned long
+platform_hci_irqs(void)
+{
+	return 0;
 }

@@ -108,9 +108,11 @@ extern void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
  * machine with a quiet wire sleeps instead of asking.
  */
 static struct kport *ethport;
+static struct kport *hciport;
 
 static int have_p9;
 static int have_eth;
+static int have_hci;
 static int have_fb;
 static int have_blk;
 static int have_flash;
@@ -335,6 +337,27 @@ pump_eth(void)
 	ipclock_enter();
 	if (have_eth && ethport && !ethport->head)
 		port_push(ethport, (const unsigned char *)"N", 1, 0, 0);
+	ipclock_leave();
+}
+
+/* ---- hci pump ---- */
+
+/* the same wakeup pump_eth is, on its own counter: an HCI packet and an
+ * ethernet frame arrive by different paths, and one must not be woken
+ * for the other's traffic.
+ */
+static void
+pump_hci(void)
+{
+	static unsigned long seen;
+	unsigned long now = platform_hci_irqs();
+
+	if (now == seen)
+		return;
+	seen = now;
+	ipclock_enter();
+	if (have_hci && hciport && !hciport->head)
+		port_push(hciport, (const unsigned char *)"N", 1, 0, 0);
 	ipclock_leave();
 }
 
@@ -604,6 +627,7 @@ kernel_init(void)
 	serport = port_new();
 	diskport = port_new();
 	ethport = port_new();
+	hciport = port_new();
 	schedport = port_new();
 	clockport = port_new();
 	dbgport = port_new();
@@ -622,6 +646,7 @@ kernel_init(void)
 	serport->nrights++;
 	diskport->nrights++;
 	ethport->nrights++;
+	hciport->nrights++;
 	schedport->nrights++;
 	clockport->nrights++;
 	dbgport->nrights++;
@@ -635,6 +660,7 @@ kernel_init(void)
 	 * fall back to -- one stack, ours, on every platform.
 	 */
 	have_eth = platform_have_eth();
+	have_hci = platform_have_hci();
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
 	have_blk = platform_have_blk();
@@ -780,6 +806,15 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_ETH, .devport = ethport, .devrecv = 1,
 		  .what = "networking (raw ethernet)", .enabled = have_eth,
 		  .capname = "eth" },
+		/* the bluetooth controller, HCI packets and no more. Same
+		 * arrangement as the wire above it: this task owns the
+		 * transport, and GAP, L2CAP, ATT and GATT are Lua on the
+		 * far side of its port.
+		 */
+		{ .path = "/task/hci.lua", .chunkname = "=hci",
+		  .priv = PRIV_HCI, .devport = hciport, .devrecv = 1,
+		  .what = "bluetooth (raw hci)", .enabled = have_hci,
+		  .capname = "hci" },
 		/* ip, tcp and dhcp are not here. Each owns no device and
 		 * holds only a send right to the task below it, so they
 		 * come off the filesystem, started from a machine's
@@ -1405,6 +1440,7 @@ kernel_run(void)
 
 		expire_timers();
 		pump_eth();
+		pump_hci();
 		pump_keyboard();
 		pump_devkbd();
 		pump_devptr();
