@@ -736,6 +736,7 @@ lua_payload = files(
   # the client half as a program. Named ssh because that is what it is,
   # and it reaches a machine from a shell here rather than the reverse.
   'bin/ssh.lua',
+  'bin/keygen.lua',
   # tls 1.3 over the stack below, and the certificate parsing that says
   # who the peer is. Sans-io, like lib/ssh: the caller owns the socket.
   'lib/tls/wire.lua',

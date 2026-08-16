@@ -30,7 +30,11 @@ local function usage()
 	os.exit(2)
 end
 
-local port, keyfile, hostsfile = 22, nil, "/etc/ssh/known_hosts"
+-- /config is a flash partition of its own, so a key and the hosts it
+-- trusts survive reflashing the filesystem.
+local port, keyfile = 22, nil
+local hostsfile = "/config/known_hosts"
+local DEFAULTKEY = "/config/id_ed25519"
 local i = 1
 
 while arg[i] and arg[i]:sub(1, 1) == "-" and #arg[i] > 1 do
@@ -105,24 +109,24 @@ local function slurp(path)
 	return s
 end
 
--- The key to authenticate with. A fresh one where none was named: our
--- own sshd accepts any key, so `ssh host cmd` works with no setup, and
--- a server that checks will refuse it and say so.
+-- The key to authenticate with: the one named, else this machine's own
+-- if `keygen` has made one, else a fresh one that nothing will accept
+-- but our own sshd, which takes any key.
 local seed, pk
+local text = keyfile and (slurp(keyfile) or die(keyfile .. ": cannot read"))
+    or slurp(DEFAULTKEY)
 
-if keyfile then
-	local text = slurp(keyfile) or die(keyfile .. ": cannot read")
+if text then
 	local err
 
 	seed, err = keys.parse_private(text)
 	if not seed then
-		die(keyfile .. ": " .. tostring(err))
+		die((keyfile or DEFAULTKEY) .. ": " .. tostring(err))
 	end
-	pk = ed25519.publickey(seed)
 else
 	seed = rand(32)
-	pk = ed25519.publickey(seed)
 end
+pk = ed25519.publickey(seed)
 
 -- ---- the transport ----
 
@@ -196,12 +200,16 @@ local function readers()
 		end
 	end)
 
-	-- The terminal stays raw for the whole session: the far end has
-	-- the line editor, and echoing here too would double every key.
+	-- Raw for the whole session: the far end has the line editor, and
+	-- echoing here too would double every key. With a timeout, so the
+	-- end of the session reaches this thread -- a bare getch parks on
+	-- a reply port only a keystroke answers, and nobody types at a
+	-- session that has already failed, so the reactor would turn and
+	-- the proc live forever.
 	tty.rawon()
 	thread.spawn(function()
 		while not closed do
-			local k = tty.getch()
+			local k = tty.getch(200)
 
 			if k == nil then
 				keychan:close()
@@ -211,6 +219,7 @@ local function readers()
 				keychan:send(k)
 			end
 		end
+		keychan:close()
 	end)
 end
 
@@ -279,82 +288,84 @@ end
 
 local status = 0
 
+-- Every failure is a returned string, never an exit. Exiting from
+-- inside the reactor unwinds one coroutine and leaves the others
+-- parked, which is a proc that never dies and a terminal left raw.
 local function session()
-local ok, err = C:banner()
+	local ok, err = C:banner()
 
-if not ok then
-	die(tostring(err))
-end
+	if not ok then return "banner: " .. tostring(err) end
 
-ok, err = C:kex()
-if not ok then
-	die(tostring(err))
-end
+	ok, err = C:kex()
+	if not ok then return tostring(err) end
 
-ok, err = C:service("ssh-userauth")
-if not ok then
-	die(tostring(err))
-end
+	ok, err = C:service("ssh-userauth")
+	if not ok then return tostring(err) end
 
-ok, err = C:auth_publickey(user, seed, pk)
-if not ok then
-	die(tostring(err))
-end
+	ok, err = C:auth_publickey(user, seed, pk)
+	if not ok then return tostring(err) end
 
-local ch
+	local ch
 
-ch, err = C:session()
-if not ch then
-	die(tostring(err))
-end
+	ch, err = C:session()
+	if not ch then return tostring(err) end
 
-if command then
-	ok, err = C:exec(ch, command)
-else
-	local cols, rows = tty.size()
+	if command then
+		ok, err = C:exec(ch, command)
+	else
+		local cols, rows = tty.size()
 
-	-- ansi, not xterm: eight colors, bold and reverse, and cursor
-	-- addressing are what lib/fbcons.lua renders. Claiming xterm
-	-- promises an alternate screen and 256 colors it drops, and a
-	-- full-screen program would leave its wreckage on the shell.
-	ok, err = C:pty(ch, cols or 80, rows or 24,
-	    os.getenv("TERM") or "ansi")
-	if ok then
-		ok, err = C:shell(ch)
+		-- ansi, not xterm: eight colors, bold and reverse, and
+		-- cursor addressing are what lib/fbcons.lua renders.
+		-- xterm would promise an alternate screen and 256 colors
+		-- it drops, and a full-screen program would leave its
+		-- wreckage behind on the shell.
+		ok, err = C:pty(ch, cols or 80, rows or 24,
+		    os.getenv("TERM") or "ansi")
+		if ok then
+			ok, err = C:shell(ch)
+		end
+		-- Only now: a keystroke before this has no channel to ride.
+		sendkey = function(k) return C:data(ch, k) end
 	end
-	-- Only now: a keystroke before this has no channel to ride.
-	sendkey = function(k) return C:data(ch, k) end
-end
-if not ok then
-	die(tostring(err))
+	if not ok then return tostring(err) end
+
+	status, err = C:pump(ch, function(data, which)
+		unistd.write(which == "stderr" and 2 or 1, data)
+	end)
+	if not status then return tostring(err) end
+	return nil
 end
 
-status, err = C:pump(ch, function(data, which)
-	unistd.write(which == "stderr" and 2 or 1, data)
-end)
-
-closed = true
-if tty then
-	tty.rawoff()
-end
-C:disconnect_now("done")
-net.close(connid)
-
-if not status then
-	die(tostring(err))
-end
+-- Whatever happened, the connection goes and `closed` is set: that is
+-- what ends both readers, and what lets thread.run() return so this
+-- proc can exit at all.
+local function finish(why)
+	closed = true
+	pcall(function() C:disconnect_now("done") end)
+	net.close(connid)
+	if tty then
+		tty.rawoff()
+	end
+	return why
 end
 
 -- A shell needs the reactor its two readers run under; a command is
 -- plain calls and must not start one, since a session that already has
 -- a reactor turning cannot nest a second.
+local why
+
 if interactive then
 	thread.spawn(function()
 		readers()
-		session()
+		why = finish(session())
 	end)
 	thread.run()
 else
-	session()
+	why = finish(session())
+end
+
+if why then
+	die(why)
 end
 os.exit(status)
