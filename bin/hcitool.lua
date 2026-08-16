@@ -1,9 +1,6 @@
 -- hcitool: raw HCI, for a board with no host stack yet.
 --
---	hcitool reset            HCI_Reset, and the event it answers with
---	hcitool ver              the controller's version and manufacturer
---	hcitool addr             its public address
---	hcitool stats            packets, drops, and the SRAM it cost
+--	hcitool reset | ver | addr | stats
 --	hcitool adv [NAME]       go on the air as NAME, default lua-os
 --	hcitool noadv            stop
 
@@ -11,6 +8,7 @@ local unistd = require("posix.unistd")
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
+local hcilib = require("ble.hci")
 
 local function out(s)
 	unistd.write(1, s)
@@ -21,72 +19,15 @@ local function die(s)
 	os.exit(1)
 end
 
--- H4 packet types, as the transport prefixes them.
-local CMD = 0x01
-local EVT = 0x04
-
--- the events a command can come back as.
-local EVT_CMD_COMPLETE = 0x0e
-local EVT_CMD_STATUS = 0x0f
-
 local OPCODES = {
 	reset = 0x0c03,
 	ver = 0x1001,		-- Read Local Version Information
 	addr = 0x1009,		-- Read BD_ADDR
 }
 
-local LE_SET_ADV_PARAMS = 0x2006
-local LE_SET_ADV_DATA = 0x2008
-local LE_SET_ADV_ENABLE = 0x200a
-
--- a command packet: type, opcode little-endian, parameter length, and
--- the parameters. No command here takes any.
-local function command(op, params)
-	params = params or ""
-	return string.char(CMD, op & 0xff, (op >> 8) & 0xff, #params) ..
-	    params
-end
-
--- Command Complete carries the opcode it answers, so a reply is matched
--- rather than assumed: an unsolicited event can arrive between a
--- command and its answer, and taking the first packet would read one.
-local function match(pkt, op)
-	if #pkt < 4 or pkt:byte(1) ~= EVT then
-		return nil
-	end
-
-	local code = pkt:byte(2)
-
-	if code == EVT_CMD_COMPLETE then
-		if #pkt < 6 then
-			return nil
-		end
-		local said = pkt:byte(5) | (pkt:byte(6) << 8)
-
-		if said == op then
-			return pkt:sub(7)
-		end
-	elseif code == EVT_CMD_STATUS then
-		if #pkt < 7 then
-			return nil
-		end
-		local said = pkt:byte(6) | (pkt:byte(7) << 8)
-
-		if said == op then
-			return pkt:sub(4, 4)
-		end
-	end
-	return nil
-end
-
-local function hexbytes(s)
-	local o = {}
-
-	for i = 1, #s do
-		o[i] = string.format("%02x", s:byte(i))
-	end
-	return table.concat(o, " ")
-end
+local LE_SET_ADV_PARAMS = hcilib.opcode(hcilib.OGF_LE, 0x0006)
+local LE_SET_ADV_DATA = hcilib.opcode(hcilib.OGF_LE, 0x0008)
+local LE_SET_ADV_ENABLE = hcilib.opcode(hcilib.OGF_LE, 0x000a)
 
 local hci = prog.hci() or die("no bluetooth capability here")
 local what = arg[1] or "reset"
@@ -120,19 +61,33 @@ if not thread.recvtimeout(ack, 2000) then
 	die("the hci task would not register a listener")
 end
 
--- one command, and the event that answers it.
-local function ask(op, cmdparams)
-	local reply = sys.newport("hcitool.reply")
-	local rguard <close> = sys.owned(reply)
+-- the codec is sans-io, so this is the whole of the transport: what
+-- pull gives goes to the driver task, what the driver pushes is fed
+-- back. The same module drives a socket in test/host_ble.lua.
+local codec = hcilib.new()
 
-	sys.send(hci, { op = "send", data = command(op, cmdparams),
-	    reply = { __right = reply } })
+local function writeout()
+	local pkt = codec:pull()
 
-	local ans = thread.recvtimeout(reply, 2000)
+	while pkt do
+		local reply = sys.newport("hcitool.tx")
+		local rguard <close> = sys.owned(reply)
 
-	if not ans or not ans.ok then
-		die("the controller would not take the command")
+		sys.send(hci, { op = "send", data = pkt,
+		    reply = { __right = reply } })
+
+		local ans = thread.recvtimeout(reply, 2000)
+
+		if not ans or not ans.ok then
+			die("the controller would not take the command")
+		end
+		pkt = codec:pull()
 	end
+end
+
+local function ask(opcode, params)
+	codec:command(opcode, params)
+	writeout()
 
 	local deadline = sys.uptime_ms() + 2000
 
@@ -143,24 +98,31 @@ local function ask(op, cmdparams)
 			break
 		end
 		if m.data then
-			local got = match(m.data, op)
+			codec:feed(m.data)
+		end
 
-			if got then
-				return got
+		local ev = codec:next()
+
+		while ev do
+			if ev.kind == "complete" and ev.opcode == opcode then
+				-- a credit came back with it, so anything
+				-- queued behind this can go now.
+				writeout()
+				return ev
 			end
+			ev = codec:next()
 		end
 	end
 	die("no answer from the controller")
 end
 
--- a command whose whole answer is a status byte, which most of the LE
--- setup commands are.
-local function must(name, op, cmdparams)
-	local st = ask(op, cmdparams):byte(1)
+local function must(name, opcode, params)
+	local ev = ask(opcode, params)
 
-	if st ~= 0 then
-		die(string.format("%s: status 0x%02x", name, st))
+	if ev.status ~= 0 then
+		die(string.format("%s: status 0x%02x", name, ev.status))
 	end
+	return ev
 end
 
 if what == "adv" then
@@ -195,14 +157,10 @@ elseif what == "noadv" then
 	return
 end
 
-local op = OPCODES[what] or
+local opcode = OPCODES[what] or
     die("usage: hcitool [reset|ver|addr|stats|adv|noadv]")
-local params = ask(op)
-local status = params:byte(1)
-
-if status ~= 0 then
-	die(string.format("%s: controller said status 0x%02x", what, status))
-end
+local ev = must(what, opcode)
+local params = ev.params
 
 if what == "reset" then
 	out("reset: ok\n")
