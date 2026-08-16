@@ -540,6 +540,14 @@ at thousands of timers, and `MAXPROCS` is 32.
   suite passed while an ssh handshake took 139 seconds — the peer retransmits
   what was never taken, so loss presents as a stall. `test/test_http.lua`
   posts 64KB for this; a 1000-byte body passes either way.
+- **A program under a shell is a plain script, not a table with a main.**
+  `bin/` programs read `arg`, write with `unistd.write` and end with
+  `os.exit`. `prog.main` is the entry for a proc spawned directly, and
+  its first act is to receive the ctx message its spawner sends — which
+  `bin/dbg.lua` relies on to hold a target before its first line. A
+  program dos launched has already been given that ctx by `prog.run`, so
+  calling `prog.main` there parks it on its own port forever, before its
+  first statement, with no error and nothing in the log.
 - **`os.exit` from a spawned thread does not end the proc.** It unwinds
   one coroutine, leaving the siblings parked and `thread.run` turning,
   so a program that started readers lives forever holding its terminal.
