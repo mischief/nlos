@@ -40,6 +40,18 @@ local db = gatt.new()
 local conns = {}		-- handle -> connection
 local nconn = 0
 local advertising, scanning = false, false
+-- what advertising the app asked for, so it can be put back after a
+-- peer connects and the controller drops it.
+local advwant
+
+-- Links held at once. The controller's budget is MAXACT between links,
+-- the scan and the advertising set, and a mesh node that took all of it
+-- would leave nothing for a second program wanting the radio.
+local MAXLINKS = 3
+
+-- defined below, where the advertising commands are; the event loop
+-- above reaches it when a link comes or goes.
+local readvertise
 local watchers = {}		-- send rights, by what they asked to see
 local services = {}		-- registered services, in handle order
 
@@ -229,6 +241,7 @@ local function drain()
 				if r.role == 1 then
 					advertising = false
 				end
+				readvertise()
 				tell("link", { handle = r.handle,
 				    addr = gap.addrstr(r.addr),
 				    role = r.role, up = true })
@@ -245,6 +258,7 @@ local function drain()
 				nconn = nconn - 1
 			end
 			chans:closed(h)
+			readvertise()
 			tell("link", { handle = h, up = false, reason = why })
 		end
 		ev = codec:next()
@@ -304,14 +318,51 @@ function ops.watch(m)
 	reply(m, { ok = true })
 end
 
+-- advertise again after a link changed, while there is room for
+-- another. Declared before ops so the event loop can reach it.
+function readvertise()
+	if not advwant or advertising or nconn >= MAXLINKS then
+		return
+	end
+	if activities() >= MAXACT then
+		return
+	end
+
+	local body = ad.simple(advwant.name, advwant.service)
+
+	if not body then
+		return
+	end
+	command(gap.advenable(false))
+
+	local st = command(gap.advparams({}))
+
+	if not st or st.status ~= 0 then
+		return
+	end
+	command(gap.advdata(body))
+	st = command(gap.advenable(true))
+	advertising = st and st.status == 0
+end
+
 function ops.advertise(m)
 	if m.on == false then
+		advwant = nil
 		command(gap.advenable(false))
 		advertising = false
 		return reply(m, { ok = true })
 	end
+	-- kept, because advertising is not a state that stays put: the
+	-- controller drops it the moment a peer connects, and a mesh node
+	-- wants to be found again by the next one.
+	advwant = { name = m.name, service = m.service }
 	if not advertising and activities() >= MAXACT then
 		return reply(m, { err = "no activities left" })
+	end
+	-- asked for and remembered, but not started: readvertise puts it
+	-- up as soon as a link drops below the cap.
+	if nconn >= MAXLINKS then
+		return reply(m, { ok = false, err = "links full" })
 	end
 
 	local body, aerr = ad.simple(m.name, m.service)
@@ -469,8 +520,14 @@ function ops.notify(m)
 					return reply(m, { ok = false,
 					    err = "nobody subscribed" })
 				end
+				-- `except` is the link a relayed packet
+				-- arrived on: sending it back where it
+				-- came from is the loop a mesh has to
+				-- avoid.
 				for h in pairs(conns) do
-					sendatt(h, pdu)
+					if h ~= m.except then
+						sendatt(h, pdu)
+					end
 				end
 				return reply(m, { ok = true })
 			end

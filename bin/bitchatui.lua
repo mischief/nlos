@@ -18,6 +18,7 @@ local uuid = require("ble.uuid")
 local att = require("ble.att")
 local packet = require("bitchat.packet")
 local session = require("bitchat.session")
+local relay = require("bitchat.relay")
 local ed25519 = require("crypto.ed25519")
 local x25519 = require("crypto.x25519")
 local sha256 = require("crypto.sha256")
@@ -356,7 +357,12 @@ end
 
 -- ---- what arrives ----
 
-local seen = {}
+-- what has been through here already, and how many links we hold: a
+-- relay decision needs both.
+local R = relay.new({ me = myid, now = function()
+	return sys.uptime_ms() // 1000
+end })
+local nlinks = 0
 
 local function onhandshake(p)
 	if p.recipient ~= myid then
@@ -415,19 +421,43 @@ local function onencrypted(p)
 	end
 end
 
-local function onpacket(b)
+-- pass it on, if it is going anywhere. The bytes are relayed as they
+-- arrived but for the ttl, which is the one field outside the
+-- signature; anything else would invalidate it.
+local function forward(p, b, from)
+	local ttl, wait = R:decide(p, nlinks)
+
+	if not ttl then
+		return
+	end
+
+	-- waited out rather than sent at once: every node that heard this
+	-- would otherwise answer in the same instant, and they share one
+	-- channel.
+	thread.spawn(function()
+		thread.sleep(wait)
+
+		local out = b:sub(1, 2) .. string.char(ttl) .. b:sub(4)
+
+		ask({ op = "notify", attr = mychar, value = out,
+		    except = from })
+	end)
+end
+
+local function onpacket(b, from)
 	local p = packet.decode(b)
 
 	if not p or p.sender == myid then
 		return
 	end
 
-	local key = hex(p.sender) .. tostring(p.timestamp)
-
-	if seen[key] then
+	-- seen before this is relayed or shown: a copy that went round a
+	-- loop is the same packet, and the ttl it arrived with is not part
+	-- of what makes it one.
+	if R:seen(p) then
 		return
 	end
-	seen[key] = true
+	forward(p, b, from)
 
 	if p.type == packet.ANNOUNCE then
 		local a = packet.decodeannounce(p.payload)
@@ -540,9 +570,13 @@ while true do
 		if m.kind == "write" and m.attr == mycccd then
 			send(announce())
 		elseif m.kind == "write" or m.kind == "notify" then
-			onpacket(m.value or "")
+			-- the handle it arrived on, so a relay does not send
+			-- it back where it came from.
+			onpacket(m.value or "", m.handle)
 		elseif m.kind == "link" then
-			status = m.up and "linked" or "advertising"
+			nlinks = math.max(0, nlinks + (m.up and 1 or -1))
+			status = string.format("%d link%s", nlinks,
+			    nlinks == 1 and "" or "s")
 			paintbar()
 		end
 	end

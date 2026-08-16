@@ -1651,6 +1651,15 @@ test('zlib', lua_interp,
   timeout: 60,
 )
 
+# what a mesh passes on, and what stops at it.
+test('bitchat-relay', lua_interp,
+  args: [files('test/host_relay.lua')],
+  protocol: 'tap',
+  timeout: 30,
+  env: host_env,
+  depends: host_deps,
+)
+
 # the XX handshake both ends of a private message need.
 test('noise', lua_interp,
   args: [files('test/host_noise.lua')],
