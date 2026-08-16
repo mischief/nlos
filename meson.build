@@ -1046,7 +1046,7 @@ if fw_network
         args: [files('test/test_sshd.lua'), luaos_img,
           files('test/boot/srvsshd.lua')],
         protocol: 'tap',
-        timeout: 200,
+        timeout: 15,
         env: hostenv,
       )
     endif
