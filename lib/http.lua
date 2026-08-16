@@ -12,10 +12,10 @@
 -- concurrently; run one directly (not inthread()) and it just
 -- blocks the proc, same as dns.resolve() does today.
 --
--- Scope: HTTP/1.1 with keep-alive, no chunked transfer-encoding in
--- either direction -- a response carrying one is refused rather than
--- guessed at, since a body of unknown length cannot be told from the
--- next response on a connection that stays open. https is lib/tlstcp,
+-- Scope: HTTP/1.1 with keep-alive and chunked responses. A response in
+-- any other transfer-encoding is refused rather than guessed at, since
+-- a body of unknown length cannot be told from the next response on a
+-- connection that stays open. https is lib/tlstcp,
 -- wrapped in where the scheme says so. M.serve's request parsing is
 -- method-agnostic (POST bodies work, for lib/mcp.lua's JSON-RPC).
 
@@ -88,6 +88,73 @@ function Conn:fill(want)
 	end
 end
 
+-- a chunked body, reassembled. Each chunk is a hex length, the bytes,
+-- and a CRLF; a zero length ends it, and whatever trailers follow run
+-- to a blank line. Reading them is what keeps the connection usable:
+-- the alternative is not knowing where the next response starts.
+function Conn:chunked()
+	local parts, total = {}, 0
+
+	local function line()
+		local at = self:fill(function(buf)
+			return buf:find("\r\n", 1, true)
+		end)
+
+		if not at then
+			return nil
+		end
+
+		local s = self.buf:sub(1, at - 1)
+
+		self.buf = self.buf:sub(at + 2)
+		return s
+	end
+
+	while true do
+		local head = line()
+
+		if not head then
+			return nil, "chunk header truncated"
+		end
+
+		-- the length, up to any ";ext" the sender added
+		local n = tonumber(head:match("^%x+") or "", 16)
+
+		if not n then
+			return nil, "bad chunk length: " ..
+			    string.format("%q", head:sub(1, 16))
+		end
+		if n == 0 then
+			-- trailers, then the blank line that ends them
+			repeat
+				local t = line()
+
+				if not t then
+					return nil, "trailer truncated"
+				end
+			until t == ""
+			break
+		end
+
+		total = total + n
+		if total > M.MAXBODY then
+			return nil, "response exceeds MAXBODY"
+		end
+
+		-- the bytes plus the CRLF that follows them
+		local got = self:fill(function(buf)
+			return #buf >= n + 2 and n or nil
+		end)
+
+		if not got then
+			return nil, "chunk body truncated"
+		end
+		parts[#parts + 1] = self.buf:sub(1, n)
+		self.buf = self.buf:sub(n + 3)
+	end
+	return table.concat(parts)
+end
+
 function Conn:request(req)
 	if self.dead then
 		return nil, "connection closed"
@@ -151,12 +218,22 @@ function Conn:request(req)
 	local len = tonumber(headers["content-length"] or "")
 	local rbody
 
-	if headers["transfer-encoding"] then
-		-- guessing where a chunked body ends would desynchronise
-		-- every later request on this connection.
+	local te = (headers["transfer-encoding"] or ""):lower()
+
+	if te:find("chunked", 1, true) then
+		local body, cerr = self:chunked()
+
+		if not body then
+			self.dead = true
+			return nil, cerr
+		end
+		rbody = body
+	elseif te ~= "" then
+		-- another coding leaves the body's end unknown, and a body
+		-- whose end is unknown cannot be told from the next
+		-- response on a socket that stays open.
 		self.dead = true
-		return nil, "transfer-encoding is not supported: " ..
-		    headers["transfer-encoding"]
+		return nil, "transfer-encoding is not supported: " .. te
 	elseif len then
 		local got = self:fill(function(buf, eof)
 			if #buf >= len then
