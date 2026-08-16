@@ -143,6 +143,21 @@ ok(an.nickname == "n", "an announce carries a nickname")
 ok(an.noisekey == string.rep("N", 32), "a noise key")
 ok(an.signkey == string.rep("S", 32), "and a signing key")
 
+-- ---- how long a name may be ----
+--
+-- Not taste: a reader deflates a payload of 100 bytes or more before
+-- checking the signature, and the signature was over what was not
+-- deflated. The name is what varies, so the name is what is capped.
+local key32 = ("k"):rep(32)
+
+local function announcelen(n)
+	return #packet.encodeannounce({ nickname = ("x"):rep(n),
+	    noisekey = key32, signkey = key32 })
+end
+
+ok(announcelen(29) == 99, "a 29-byte name stays under the line")
+ok(announcelen(30) == 100, "and 30 reaches it")
+
 -- ---- a compressed payload ----
 --
 -- Their encoder deflates a payload of 100 bytes or more that has any

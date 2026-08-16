@@ -304,10 +304,16 @@ end
 
 local nick = (arg and arg[2]) or readnick()
 
+-- 29 bytes, which is not a taste: the announce carries the name beside
+-- two 32-byte keys, and at 30 the payload reaches 100. That is where a
+-- reader deflates before checking the signature, and it signed what was
+-- not deflated -- so a longer name is not truncated, it is unreadable.
+local MAXNICK = 29
+
 local function setnick(s)
 	s = s:gsub("^%s+", ""):gsub("%s+$", "")
-	if s == "" or #s > 32 then
-		return false, "a name is one to thirty-two bytes"
+	if s == "" or #s > MAXNICK then
+		return false, "a name is one to " .. MAXNICK .. " bytes"
 	end
 	nick = s
 	if N then
