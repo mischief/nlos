@@ -375,7 +375,11 @@ function ops.advertise(m)
 	local st = command(gap.advparams({}))
 
 	if not st or st.status ~= 0 then
-		return reply(m, { err = "advertising parameters refused" })
+		-- the controller's own code: which refusal it is decides
+		-- whether the parameters are wrong or the radio is busy.
+		return reply(m, { err = string.format(
+		    "advertising parameters refused (0x%02x)",
+		    st and st.status or 0xff) })
 	end
 	command(gap.advdata(body))
 	st = command(gap.advenable(true))

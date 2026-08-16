@@ -408,9 +408,27 @@ ok(f.flags == ad.FLAG_LE_GENERAL, "and the flags")
 ok(#f.uuids == 1 and uuid.eq(f.uuids[1], uuid.short(0x180f)),
     "and the service it offers")
 
+-- 31 bytes is the whole advertisement. A name that does not fit is
+-- shortened rather than refused: the specification has a type for
+-- exactly that, and a node nobody can see is worse than one whose name
+-- is cut. The whole name travels in what it says once connected.
 local big = ad.simple(string.rep("x", 40), uuid.short(0x180f))
 
-ok(big == nil, "a name that does not fit is refused, not trimmed")
+ok(big ~= nil and #big <= 31, "a long name still advertises")
+ok(ad.parse(big).name == string.rep("x", 22), "shortened to what fits")
+
+-- a 128-bit service takes 18 of the 31, which is what a mesh node
+-- advertises and where this first bit.
+local long128 = ad.simple("tdeck-2484",
+    uuid.parse("F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5C"))
+
+ok(long128 ~= nil and #long128 == 31, "and fits beside a 128-bit uuid")
+ok(ad.parse(long128).name == "tdeck-24", "with the name cut to the room")
+
+local nameless = ad.simple(nil,
+    uuid.parse("F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5C"))
+
+ok(nameless ~= nil and #nameless == 21, "a service alone is 21 bytes")
 
 -- a field claiming more than is there stops the walk rather than
 -- inventing one: the bytes after it are not a field.

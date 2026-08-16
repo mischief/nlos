@@ -355,7 +355,14 @@ for _, l in ipairs((ask({ op = "status" }).links) or {}) do
 	ask({ op = "disconnect", handle = l.handle })
 end
 
-ask({ op = "advertise", on = true, name = nick, service = SERVICE })
+-- a node nobody can see is a node that is not there, so this is worth
+-- saying rather than leaving to a status command.
+local adv = ask({ op = "advertise", on = true, name = nick,
+    service = SERVICE })
+
+if adv.err or adv.ok == false then
+	say("* not advertising: " .. tostring(adv.err or "refused"), WARN)
+end
 ask({ op = "scan", on = true })
 status = "advertising"
 
@@ -507,8 +514,19 @@ local function onadv(m)
 				-- is one wasted.
 				thread.sleep(200 + math.random(0, 1500))
 				if nlinks < LINKS then
-					ask({ op = "connect", addr = m.addr,
+					say("* dialing " .. m.addr, DIM)
+
+					-- the bytes the report carried, not
+					-- the string made of them: nothing
+					-- has to parse back what it printed.
+					local r = ask({ op = "connect",
+					    raw = m.raw, addr = m.addr,
 					    random = m.addrtype == 1 }, 15000)
+
+					if r.err then
+						say("* " .. m.addr .. ": " ..
+						    r.err, WARN)
+					end
 				end
 				dialing[m.addr] = nil
 			end)

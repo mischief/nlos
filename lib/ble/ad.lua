@@ -112,8 +112,25 @@ function M.simple(name, service)
 			data = service,
 		}
 	end
+	-- 31 bytes is the whole advertisement, and a 128-bit uuid takes 18
+	-- of them. What is left decides the name: shortened where it does
+	-- not fit, which is the type the specification has for exactly
+	-- this, and dropped only where nothing fits at all.
 	if name then
-		fields[#fields + 1] = { type = M.NAME, data = name }
+		local used = 0
+
+		for _, e in ipairs(fields) do
+			used = used + 2 + #e.data
+		end
+
+		local room = 31 - used - 2
+
+		if room >= #name then
+			fields[#fields + 1] = { type = M.NAME, data = name }
+		elseif room > 0 then
+			fields[#fields + 1] = { type = M.NAME_SHORT,
+			    data = name:sub(1, room) }
+		end
 	end
 	return M.encode(fields)
 end
