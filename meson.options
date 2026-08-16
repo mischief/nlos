@@ -69,3 +69,9 @@ option('boot_payload', type: 'string', value: 'init.lua',
 # as it was and this measures our C.
 option('ubsan', type: 'boolean', value: false,
   description: 'trap on undefined behaviour in the kernel C (not lua/)')
+
+# BlueZ's virtual controller, which the HCI tests exchange packets with.
+# It is a noinst program -- built only with ./configure --enable-testing
+# -- so it is rarely on PATH and usually has to be named outright.
+option('btvirt', type: 'string', value: 'btvirt',
+  description: 'path to bluez emulator/btvirt, for the ble tests')

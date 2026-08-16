@@ -482,6 +482,11 @@ have_hostutil = lua54_dep.found()
 sz_prog = find_program('lsz', 'sz', required: false)
 rz_prog = find_program('lrz', 'rz', required: false)
 socat_prog = find_program('socat', required: false)
+# BlueZ's virtual controller, for the HCI tests. Rarely on PATH: it is
+# a noinst program, built only with ./configure --enable-testing, so
+# -Dbtvirt=/path/to/emulator/btvirt is the usual way to name it. Absent,
+# the codec still runs and only the exchanges with a controller are lost.
+btvirt_prog = find_program(get_option('btvirt'), 'btvirt', required: false)
 sshd_prog = find_program('sshd', required: false,
   dirs: ['/usr/sbin', '/usr/bin', '/sbin'])
 sshkeygen_prog = find_program('ssh-keygen', required: false)
@@ -1611,6 +1616,24 @@ test('zmodem-protocol', lua_interp,
   protocol: 'tap',
   timeout: 60,
 )
+
+# lib/ble/hci.lua, sans-io like zmodem above it. The codec half needs
+# nothing; the rest spawns btvirt on a port of its own and exchanges
+# real packets with it, which is what checks our encoding against
+# somebody else's reading of the specification.
+if have_hostutil
+  ble_env = {'HOSTUTIL_SO': hostutil.full_path()}
+  if btvirt_prog.found()
+    ble_env += {'BTVIRT': btvirt_prog.full_path()}
+  endif
+  test('ble-hci', lua_interp,
+    args: [files('test/host_ble.lua')],
+    protocol: 'tap',
+    timeout: 60,
+    env: ble_env,
+    depends: hostutil,
+  )
+endif
 
 # a lazy require raises at first use, so a name that cannot resolve
 # waits in whatever branch first touches it. This fails the build here
