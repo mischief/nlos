@@ -1485,12 +1485,18 @@ if host_arch in ['x86_64', 'aarch64', 'riscv64']
   # reports the unprotected counter when they are not. That makes it a
   # test of the ordering and not of this host.
   #
-  # tsan is slow, so the iteration count is lower here. A race it finds
-  # is a property of the code, not of how long the test runs.
+  # tsan is slow, so the iteration count and the thread count are both
+  # fixed low here. A race it finds is a property of the code, not of
+  # how long the test runs or how many threads it runs on: it derives
+  # happens-before rather than witnessing an interleaving, and reports
+  # a relaxed ticket lock at two threads as readily as at eight. The
+  # threads matter to the clock instead -- each turn of a spin loop is
+  # an instrumented acquire, so cost per increment grows about a
+  # hundredfold from four threads to eight.
   #
   # The test is skipped, not failed, where libtsan is absent. It is a
   # toolchain component, not a source dependency.
-  tsan_args = ['-DNCPU=8', '-DNTHREAD=@0@'.format(nthread), '-DNITER=2000',
+  tsan_args = ['-DNCPU=8', '-DNTHREAD=4', '-DNITER=2000',
     '-fsanitize=thread', '-g']
   if cc.has_link_argument('-fsanitize=thread')
     lock_test_tsan = executable('lock_test_tsan',
