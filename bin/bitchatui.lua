@@ -235,6 +235,28 @@ local function retext()
 	F:settext(table.concat(parts, "\n"))
 end
 
+-- A line already said keeps the name it was said with, and a peer is
+-- often heard before its announce is: the first thing it says names it
+-- by its id. So what is written is revised when the name turns up.
+-- Only the eight hex digits an unknown peer is shown as are replaced.
+local function rename(id, nick)
+	local short = id:sub(1, 8)
+	local changed = false
+
+	for _, l in ipairs(lines) do
+		local s = l[1]:gsub(short, nick)
+
+		if s ~= l[1] then
+			l[1] = s
+			changed = true
+		end
+	end
+	if changed then
+		retext()
+		paintbody(true)
+	end
+end
+
 local function atbottom()
 	return F.top >= F:nlines() - F.rows
 end
@@ -720,15 +742,17 @@ local function onpacket(b, from)
 	if p.type == packet.ANNOUNCE then
 		local a = packet.decodeannounce(p.payload)
 		local id = hex(p.sender)
-
-		local isnew = not peers[id]
+		local was = peers[id] and peers[id].nick
 
 		peers[id] = { nick = a.nickname, noisekey = a.noisekey }
 		-- counted before it is drawn, or the bar reports the peers
 		-- there were rather than the ones there are.
-		if isnew then
+		if not was then
 			say("* " .. (a.nickname or "?") .. " is here", DIM)
 			paintbar()
+		end
+		if a.nickname and a.nickname ~= was then
+			rename(id, a.nickname)
 		end
 	elseif p.type == packet.MESSAGE then
 		say("<" .. whois(p.sender) .. "> " .. p.payload)
