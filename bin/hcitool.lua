@@ -4,6 +4,8 @@
 --	hcitool ver              the controller's version and manufacturer
 --	hcitool addr             its public address
 --	hcitool stats            packets, drops, and the SRAM it cost
+--	hcitool adv [NAME]       go on the air as NAME, default lua-os
+--	hcitool noadv            stop
 
 local unistd = require("posix.unistd")
 local prog = require("prog")
@@ -32,6 +34,10 @@ local OPCODES = {
 	ver = 0x1001,		-- Read Local Version Information
 	addr = 0x1009,		-- Read BD_ADDR
 }
+
+local LE_SET_ADV_PARAMS = 0x2006
+local LE_SET_ADV_DATA = 0x2008
+local LE_SET_ADV_ENABLE = 0x200a
 
 -- a command packet: type, opcode little-endian, parameter length, and
 -- the parameters. No command here takes any.
@@ -101,8 +107,6 @@ if what == "stats" then
 	return
 end
 
-local op = OPCODES[what] or die("usage: hcitool [reset|ver|addr|stats]")
-
 -- listen before commanding: the answer is an event pushed to a port,
 -- and one asked for after the fact has already gone.
 local port = sys.newport("hcitool.evt")
@@ -116,39 +120,84 @@ if not thread.recvtimeout(ack, 2000) then
 	die("the hci task would not register a listener")
 end
 
-local reply = sys.newport("hcitool.reply")
-local guard3 <close> = sys.owned(reply)
+-- one command, and the event that answers it.
+local function ask(op, cmdparams)
+	local reply = sys.newport("hcitool.reply")
+	local rguard <close> = sys.owned(reply)
 
-sys.send(hci, { op = "send", data = command(op),
-    reply = { __right = reply } })
+	sys.send(hci, { op = "send", data = command(op, cmdparams),
+	    reply = { __right = reply } })
 
-local ans = thread.recvtimeout(reply, 2000)
+	local ans = thread.recvtimeout(reply, 2000)
 
-if not ans or not ans.ok then
-	die("the controller would not take the command")
-end
-
-local deadline = sys.uptime_ms() + 2000
-local params
-
-while sys.uptime_ms() < deadline do
-	local m = thread.recvtimeout(port, deadline - sys.uptime_ms())
-
-	if not m then
-		break
+	if not ans or not ans.ok then
+		die("the controller would not take the command")
 	end
-	if m.data then
-		params = match(m.data, op)
-		if params then
+
+	local deadline = sys.uptime_ms() + 2000
+
+	while sys.uptime_ms() < deadline do
+		local m = thread.recvtimeout(port, deadline - sys.uptime_ms())
+
+		if not m then
 			break
 		end
-	end
-end
+		if m.data then
+			local got = match(m.data, op)
 
-if not params then
+			if got then
+				return got
+			end
+		end
+	end
 	die("no answer from the controller")
 end
 
+-- a command whose whole answer is a status byte, which most of the LE
+-- setup commands are.
+local function must(name, op, cmdparams)
+	local st = ask(op, cmdparams):byte(1)
+
+	if st ~= 0 then
+		die(string.format("%s: status 0x%02x", name, st))
+	end
+end
+
+if what == "adv" then
+	local name = arg[2] or "lua-os"
+
+	-- off first, and the answer ignored: parameters may not be set
+	-- while advertising is enabled -- the controller answers Command
+	-- Disallowed -- so running this twice would fail on the second.
+	ask(LE_SET_ADV_ENABLE, "\0")
+
+	-- 100ms to 150ms, connectable undirected, public address, all
+	-- three advertising channels, no filtering.
+	must("adv params", LE_SET_ADV_PARAMS,
+	    string.pack("<I2I2BBB", 0x00a0, 0x00f0, 0, 0, 0) ..
+	    string.rep("\0", 6) .. string.char(0x07, 0x00))
+
+	-- flags: general discoverable, no BR/EDR. Then the local name.
+	-- The data field is always 31 bytes however much is significant.
+	local ad = "\2\1\6" .. string.char(#name + 1, 0x09) .. name
+
+	if #ad > 31 then
+		die("name too long for one advertisement")
+	end
+	must("adv data", LE_SET_ADV_DATA,
+	    string.char(#ad) .. ad .. string.rep("\0", 31 - #ad))
+	must("adv enable", LE_SET_ADV_ENABLE, "\1")
+	out("advertising as '" .. name .. "'\n")
+	return
+elseif what == "noadv" then
+	must("adv disable", LE_SET_ADV_ENABLE, "\0")
+	out("advertising stopped\n")
+	return
+end
+
+local op = OPCODES[what] or
+    die("usage: hcitool [reset|ver|addr|stats|adv|noadv]")
+local params = ask(op)
 local status = params:byte(1)
 
 if status ~= 0 then
