@@ -76,7 +76,9 @@ end
 
 -- ---- what the program was lent ----
 
-local net = prog.ctx and prog.ctx.net
+-- prog.net(), not ctx.net: the context carries the raw right, and the
+-- wrapper is what has dial and recv on it.
+local net = prog.net()
 
 if not net then
 	die("no network capability")
@@ -132,33 +134,70 @@ if not connid then
 end
 
 local inbuf, closed = "", false
-local netchan = thread.chancreate(4)
-local keychan = command and nil or thread.chancreate(4)
 
--- One thread per source, because both of them answer on a reply port of
--- their own and neither can be waited on directly. Whichever speaks
--- first wakes the reader below.
-thread.spawn(function()
-	while not closed do
+-- A command needs no scheduler: nothing but the wire has anything to
+-- say, so the read is a plain call. A shell has to wait on the wire and
+-- the keyboard at once, and channels and alt want a reactor turning --
+-- which is what main() below starts.
+local interactive = command == nil
+local netchan = interactive and thread.chancreate(4) or nil
+local keychan = interactive and thread.chancreate(4) or nil
+local tty = interactive and prog.tty() or nil
+
+if interactive and not tty then
+	die("no terminal: give a command instead")
+end
+
+-- Set once the shell channel is open: a keystroke before that has
+-- nowhere to go, and the protocol is mid-handshake.
+local sendkey = nil
+
+-- Wait for either source. Keystrokes go out from here rather than from
+-- their own thread, so that every packet is written by one of them.
+local function pump()
+	if not interactive then
 		local data = net.recv(connid, 4096)
 
 		if data == nil or data == false then
-			netchan:close()
-			return
+			closed = true
+		else
+			inbuf = inbuf .. data
 		end
-		netchan:send(data)
+		return
 	end
-end)
 
--- Keystrokes, where there is a shell to type at. The terminal is raw
--- for the whole session: the far end has the line editor, and echoing
--- here as well would double every character.
-local tty = keychan and prog.tty()
+	local i, v = thread.alt({ { c = netchan, op = "recv" },
+	    { c = keychan, op = "recv" } })
 
-if keychan and not tty then
-	die("no terminal: use the command form")
+	if i == 1 then
+		if v == nil then
+			closed = true
+		else
+			inbuf = inbuf .. v
+		end
+	elseif v ~= nil and sendkey then
+		sendkey(v)
+	end
 end
-if keychan then
+
+-- One thread per source, started only where there is a reactor to run
+-- them: both answer on a reply port of their own, so neither can be
+-- waited on directly.
+local function readers()
+	thread.spawn(function()
+		while not closed do
+			local data = net.recv(connid, 4096)
+
+			if data == nil or data == false then
+				netchan:close()
+				return
+			end
+			netchan:send(data)
+		end
+	end)
+
+	-- The terminal stays raw for the whole session: the far end has
+	-- the line editor, and echoing here too would double every key.
 	tty.rawon()
 	thread.spawn(function()
 		while not closed do
@@ -173,32 +212,6 @@ if keychan then
 			end
 		end
 	end)
-end
-
--- Set once the shell channel is open: a keystroke before that has
--- nowhere to go, and the protocol is mid-handshake.
-local sendkey = nil
-
--- Wait for either source. Keystrokes go out from here rather than from
--- their own thread, so that every packet is written by this one.
-local function pump()
-	local cases = { { c = netchan, op = "recv" } }
-
-	if keychan then
-		cases[2] = { c = keychan, op = "recv" }
-	end
-
-	local i, v = thread.alt(cases)
-
-	if i == 1 then
-		if v == nil then
-			closed = true
-		else
-			inbuf = inbuf .. v
-		end
-	elseif v ~= nil and sendkey then
-		sendkey(v)
-	end
 end
 
 local conn = {
@@ -264,6 +277,9 @@ C.verify_host = function(hk)
 	return true
 end
 
+local status = 0
+
+local function session()
 local ok, err = C:banner()
 
 if not ok then
@@ -313,8 +329,6 @@ if not ok then
 	die(tostring(err))
 end
 
-local status
-
 status, err = C:pump(ch, function(data, which)
 	unistd.write(which == "stderr" and 2 or 1, data)
 end)
@@ -328,5 +342,19 @@ net.close(connid)
 
 if not status then
 	die(tostring(err))
+end
+end
+
+-- A shell needs the reactor its two readers run under; a command is
+-- plain calls and must not start one, since a session that already has
+-- a reactor turning cannot nest a second.
+if interactive then
+	thread.spawn(function()
+		readers()
+		session()
+	end)
+	thread.run()
+else
+	session()
 end
 os.exit(status)

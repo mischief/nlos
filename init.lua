@@ -449,7 +449,7 @@ local repl_worker_src = [[
 	local function startdos()
 		require("dos").start({ ns = require("ns").current(),
 		    cons = consh, fb = fbh, ptr = ptrh,
-		    kbd = kbdh, net = tcph,
+		    kbd = kbdh, net = tcph, seed = m.seed,
 		    udp = udph, power = powerh, dbg = dbgh },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")
@@ -570,10 +570,14 @@ while true do
 
 	sys.monitor(pid)
 
+	-- entropy as data, the way a service gets it: a program run from
+	-- this console draws from the launcher's generator, and tls and
+	-- ssh both refuse to run without one rather than weaken.
 	local grant = {
 		cons = { __right = caps_of.cons },
 		power = { __right = caps_of.power },
 		disk = { __right = caps_of.disk },
+		seed = rng and rng.bytes(32) or nil,
 	}
 	if caps_of.dbg then
 		grant.dbg = { __right = caps_of.dbg }
