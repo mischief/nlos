@@ -169,6 +169,10 @@ function M.new(caps)
 		-- whole radio, so a session that arrives over a network
 		-- gets none.
 		hci = caps.hci,
+		-- the bluetooth service, which is what a program that is
+		-- not a diagnostic should hold: blesrv arbitrates, raw hci
+		-- does not.
+		ble = caps.ble,
 		-- where the exit notices of the programs this shell starts
 		-- arrive, and where the console sends the interrupt. A shell
 		-- in a proc of its own reads the mailbox, which is the
@@ -512,6 +516,9 @@ function Sh:spawn1(path, argv, streams)
 	-- stack above it. Same rule again.
 	if self.hci then
 		msg.hci = { __right = self.hci }
+	end
+	if self.ble then
+		msg.ble = { __right = self.ble }
 	end
 	-- the pull flag rides BESIDE stdin, not inside it. a table carrying
 	-- __right is serialized as the right and nothing else (see

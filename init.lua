@@ -382,6 +382,8 @@ local repl_worker_src = [[
 	local dbgh = m.dbg and m.dbg.__right
 	-- the bluetooth controller, where this machine has one.
 	local hcih = m.hci and m.hci.__right
+	-- the bluetooth service, which blesrv publishes and init grants.
+	local bleh = m.ble and m.ble.__right
 
 	-- pre-imported as bare globals (_G.x, not local x): the repl's
 	-- evaluate() loads each typed line as its own chunk via load(),
@@ -452,7 +454,8 @@ local repl_worker_src = [[
 		require("dos").start({ ns = require("ns").current(),
 		    cons = consh, fb = fbh, ptr = ptrh,
 		    kbd = kbdh, net = tcph, seed = m.seed,
-		    udp = udph, power = powerh, dbg = dbgh, hci = hcih },
+		    udp = udph, power = powerh, dbg = dbgh, hci = hcih,
+		    ble = bleh },
 		    "lua-os. programs live in /bin; type exit to " ..
 		    "return to lua.\n")
 	end
@@ -596,6 +599,9 @@ while true do
 	-- capability on any platform.
 	if avail.ip then
 		grant.ip = { __right = avail.ip }
+	end
+	if avail.ble then
+		grant.ble = { __right = avail.ble }
 	end
 	if avail.dns then
 		grant.dns = { __right = avail.dns }

@@ -64,6 +64,13 @@ return {
 	{ path = "/task/timed.lua", caps = { "ip", "time" },
 	  optcaps = { "dns" } },
 
+	-- the bluetooth controller, which is a singleton: one advertising
+	-- set, one scan, one attribute database and a budget of ten
+	-- activities between them. Programs hold a right to this rather
+	-- than to raw hci, and bin/hcitool.lua is the exception that
+	-- proves it -- a diagnostic, granted the transport directly.
+	{ path = "/task/blesrv.lua", caps = { "hci" }, capname = "ble" },
+
 	-- No 9P export here. task/9pexport.lua ships to this board like
 	-- everything else under task/, and a machine with a disk runs it
 	-- from its own list -- but a handheld does not put its namespace

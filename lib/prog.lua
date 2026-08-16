@@ -722,6 +722,9 @@ function M.main()
 	-- the bluetooth controller, if the launcher lent one. bin/hcitool
 	-- and the host stack are what ask.
 	ctx.hci = ctx.hci and ctx.hci.__right or nil
+	-- the bluetooth service. What an ordinary program asks for: blesrv
+	-- arbitrates the controller, where hci above it is the raw radio.
+	ctx.ble = ctx.ble and ctx.ble.__right or nil
 
 	local N, nerr = ns.restore(ctx.nsdesc)
 
@@ -956,6 +959,15 @@ function M.hci()
 	local ctx = M.ctx
 
 	return ctx and ctx.hci or nil
+end
+
+-- the bluetooth service, which is what a program should ask for: one
+-- proc owns the controller and arbitrates it, and a client that held
+-- raw hci instead would fight the others for a singleton.
+function M.ble()
+	local ctx = M.ctx
+
+	return ctx and ctx.ble or nil
 end
 
 return M
