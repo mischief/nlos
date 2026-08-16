@@ -4,10 +4,11 @@
 --	    url = "https://api.openai.com/v1", key = ..., model = ... })
 --	local text, err = c:say("what is 2+2")
 
--- Stateless: every request carries the whole input, and nothing is kept
--- on the server. previous_response_id exists in the spec and would let
--- a client send one turn instead of all of them -- worth having on a
--- machine this size, and a separate thing from getting a turn to work.
+-- stateful = true holds the conversation on the server and sends one
+-- turn plus the id of the last, which is what keeps a long chat off a
+-- small machine: a transcript grows without bound and an id does not.
+-- Verified against api.openai.com; llama.cpp answers 400 and says it
+-- does not support previous_response_id, so it is opt-in.
 
 -- The connection is held between turns. A handshake is seconds on a
 -- board and milliseconds of that is the network, so a client that
@@ -42,6 +43,11 @@ function M.new(opts)
 		key = opts.key,
 		model = opts.model or "gpt-5.4-mini",
 		verify = opts.verify,
+		-- the server keeps the conversation and each turn names the
+		-- last. Not every endpoint has it -- llama.cpp answers 400,
+		-- saying so -- which is why it is asked for rather than
+		-- assumed.
+		stateful = opts.stateful,
 	}, Client)
 end
 
@@ -172,14 +178,41 @@ function M.reasoning(res)
 	return parts(res, "reasoning_text")
 end
 
--- say(input) -> text -- the whole of a simple turn.
+-- say(input) -> text, response -- one turn of a conversation.
+--
+-- Where the client was made stateful, the server is holding the
+-- conversation and what goes up is this turn plus the id of the last
+-- one. That is the whole of why it matters here: a transcript kept in
+-- this proc grows without limit, and an id does not.
 function Client:say(input, extra)
-	local res, err = self:ask(input, extra)
+	local e = extra
+
+	if self.stateful and self.last then
+		e = { previous_response_id = self.last }
+		for k, v in pairs(extra or {}) do
+			e[k] = v
+		end
+	end
+
+	local res, err = self:ask(input, e)
 
 	if not res then
 		return nil, err
 	end
+	self.last = res.id
 	return M.text(res) or "", res
+end
+
+-- start again, forgetting what the server is holding. The conversation
+-- is still there; this stops referring to it.
+function Client:reset()
+	self.last = nil
+end
+
+-- what the server is holding, if anything: an id, and the whole of what
+-- a stateful client has to keep across turns.
+function Client:mark()
+	return self.last
 end
 
 return M
