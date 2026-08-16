@@ -873,6 +873,10 @@ local function start(i)
 				-- that could use the radio.
 				ble = entry.ble and bleh and
 				    { __right = bleh } or nil,
+				-- entropy of its own, drawn from ours: a
+				-- program that makes a key needs one, and
+				-- two apps must not draw the same bytes.
+				seed = rng and rng.bytes(32) or nil,
 				stdout = cons and { __right = cons } or nil,
 				stderr = cons and { __right = cons } or nil,
 			})
