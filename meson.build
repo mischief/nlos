@@ -1579,6 +1579,16 @@ test('svc-start', lua_interp,
   depends: host_deps,
 )
 
+# lib/frame.lua's geometry, selection and utf8 offsets. The panel it is
+# for runs on a board and nothing under meson can draw, but where a
+# point lands and which bytes an edit moves are arithmetic -- and that
+# is where an off-by-one hides.
+test('frame-text', lua_interp,
+  args: [files('test/host_frame.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 test('mouse-queue', lua_interp,
   args: [files('test/host_mouse.lua')],
   protocol: 'tap',
