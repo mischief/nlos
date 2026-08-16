@@ -4,6 +4,7 @@
 --	tab        the peer list, and our fingerprint
 --	enter      send what is typed
 --	esc        leave
+--	/nick NAME what the mesh calls us, kept in /config
 
 -- A view over lib/bitchat and lib/noise. dio lends it the adapter
 -- because its /etc/dio.lua entry says ble = true.
@@ -280,7 +281,39 @@ local myid = sha256.new():update(noisepub):final():sub(1, 8)
 
 fingerprint = hex(sha256.new():update(noisepub):final()):upper()
 
-local nick = (arg and arg[2]) or "tdeck"
+-- ---- the name ----
+--
+-- Kept beside the key, so it survives a reflash. Derived from the key
+-- where there is none: two of the same board out of the box would
+-- otherwise both be "tdeck", and a mesh where two peers answer to one
+-- name is a mesh nobody can address.
+local NICKFILE = "/config/bitchat_nick"
+
+local function readnick()
+	local s = N and N:readfile(NICKFILE)
+
+	if s then
+		s = s:gsub("%s+$", "")
+		if s ~= "" then
+			return s
+		end
+	end
+	return "tdeck-" .. hex(myid):sub(1, 4)
+end
+
+local nick = (arg and arg[2]) or readnick()
+
+local function setnick(s)
+	s = s:gsub("^%s+", ""):gsub("%s+$", "")
+	if s == "" or #s > 32 then
+		return false, "a name is one to thirty-two bytes"
+	end
+	nick = s
+	if N then
+		N:writefile(NICKFILE, s)
+	end
+	return true
+end
 
 -- ---- the radio ----
 
@@ -484,6 +517,30 @@ end
 
 local function submit()
 	if typed == "" then
+		return
+	end
+
+	local name = typed:match("^/nick%s+(.+)$")
+
+	if name then
+		local ok, why = setnick(name)
+
+		if ok then
+			say("* you are " .. nick, DIM)
+			-- said again under the new name, so peers do not
+			-- carry the old one until the next timer.
+			send(announce())
+		else
+			say(why, WARN)
+		end
+		typed = ""
+		paintinput()
+		return
+	end
+	if typed:match("^/") then
+		say("* /nick NAME is the only command", WARN)
+		typed = ""
+		paintinput()
 		return
 	end
 
