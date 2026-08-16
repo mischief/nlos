@@ -72,8 +72,19 @@ decode(const char *s, size_t n, size_t *len)
 	return cp;
 }
 
-/* the glyph for a codepoint, or null where the font has none. Searched
- * rather than indexed: indexing would be 57K entries for 548 glyphs. */
+/* what a codepoint the font has no glyph for draws as: a hollow box,
+ * the convention for one that cannot be shown. Blank would be a space,
+ * and a reader cannot tell a space from a character that was dropped.
+ * Rows are left-aligned in the byte, as the generator packs them.
+ */
+static const uint8_t font_missing[FONT_H] = {
+	0x00, 0xfc, 0x84, 0x84, 0x84, 0x84,
+	0x84, 0x84, 0x84, 0x84, 0xfc, 0x00,
+};
+
+/* the glyph for a codepoint, or the box above where the font has none.
+ * Searched rather than indexed: indexing would be 57K entries for 548
+ * glyphs. */
 static const uint8_t *
 glyph(unsigned long cp)
 {
@@ -87,10 +98,20 @@ glyph(unsigned long cp)
 			hi = mid - 1;
 		else if (cp > r->last)
 			lo = mid + 1;
-		else
-			return font_glyphs[r->at + (cp - r->first)];
+		else {
+			const uint8_t *g = font_glyphs[r->at + (cp - r->first)];
+
+			return g ? g : font_missing;
+		}
 	}
-	return 0;
+
+	/* a control character is not a missing glyph: it is one nothing
+	 * draws, and a caller that pads with them wants the space it
+	 * asked for rather than a row of boxes.
+	 */
+	if (cp < 0x20 || cp == 0x7f)
+		return 0;
+	return font_missing;
 }
 
 /* font.render(s, fg, bg, wantbuf, fmt) -> pixels, w, h. fg and bg are
@@ -156,8 +177,8 @@ font_render(lua_State *L)
 
 	for (row = 0; row < FONT_H; row++) {
 		for (i = 0; i < ncell; i++) {
-			/* no glyph draws as background: the cell stays,
-			 * so the text keeps its shape. */
+			/* a control character draws as background: the
+			 * cell stays, so the text keeps its shape. */
 			uint8_t bits = cells[i] ? cells[i][row] : 0;
 
 			for (col = 0; col < FONT_W; col++) {

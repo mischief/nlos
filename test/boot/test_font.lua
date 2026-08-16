@@ -5,7 +5,7 @@
 -- BGRx layout fb.load consumes.
 local tap = require("tap")
 
-tap.plan(11)
+tap.plan(14)
 
 -- reachable without any capability. a proc that holds no PRIV can still
 -- turn a string into pixels; only putting them on a screen needs the fb
@@ -65,3 +65,33 @@ for i = 1, #pix, 4 do
 	if b == 0xff then sawfg = true elseif b == 0x00 then sawbg = true end
 end
 tap.ok(sawfg and sawbg, "a glyph has both ink and paper pixels")
+
+-- a codepoint the font has no glyph for draws a box rather than a
+-- blank, so a dropped character is visible as one. An emoji is the
+-- case that prompted it.
+local bone = font.render("\240\159\166\180", 0xffffff, 0x000000)
+
+tap.is(#bone, 6 * 12 * 4, "an unknown codepoint is still one cell")
+
+local ink = 0
+
+for i = 1, #bone, 4 do
+	if bone:byte(i) == 0xff then
+		ink = ink + 1
+	end
+end
+-- the box is the border of a 6x10 rectangle: 6 + 6 top and bottom,
+-- and two sides down the eight rows between them.
+tap.is(ink, 6 + 6 + 8 * 2, "and it is a hollow box")
+
+-- a control character is not a missing glyph: nothing draws, so a
+-- caller that pads with them gets the space it asked for.
+local nul = font.render("\0", 0xffffff, 0x000000)
+local nulink = 0
+
+for i = 1, #nul, 4 do
+	if nul:byte(i) == 0xff then
+		nulink = nulink + 1
+	end
+end
+tap.is(nulink, 0, "a control character draws nothing")
