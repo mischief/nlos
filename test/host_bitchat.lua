@@ -176,5 +176,95 @@ local lying = string.pack(">BBBI8BI2", 1, packet.MESSAGE, 5, 99,
 
 ok(packet.decode(lying) == nil, "and one whose stated size disagrees")
 
+-- ---- a private session ----
+
+local session = require("bitchat.session")
+
+-- a fixed draw, so a failure is the same failure twice.
+local function stubrand(seed)
+	local n = 0
+
+	return function(len)
+		n = n + 1
+		return string.char((seed + n) % 256):rep(len)
+	end
+end
+
+do
+	local a = session.new(("a"):rep(32), stubrand(10), true)
+	local b = session.new(("b"):rep(32), stubrand(20), false)
+
+	-- three messages, initiator first.
+	local m1 = a:handshake()
+
+	ok(#m1 == session.INIT_SIZE, "message 1 is a bare ephemeral key")
+
+	local m2 = b:handshake(m1)
+	local m3 = a:handshake(m2)
+
+	ok(m2 and m3, "the handshake runs to the third message")
+	ok(a:established(), "the initiator has keys after writing it")
+
+	local last = b:handshake(m3)
+
+	ok(last == nil, "and the responder has nothing more to send")
+	ok(b:established(), "but does have keys")
+
+	ok(a.peer == b.hs.spub and b.peer == a.hs.spub,
+	    "each side learned the other's static key")
+
+	-- a message, and what it looks like on the wire.
+	local body = session.encodeprivate({ id = "m1", content = "hello" })
+	local frame = a:encrypt(session.PRIVATE_MESSAGE, body)
+
+	ok(string.unpack(">I4", frame) == 0,
+	    "the first frame carries nonce zero, big-endian")
+
+	local t, got = b:decrypt(frame)
+
+	ok(t == session.PRIVATE_MESSAGE, "the payload says what it is")
+
+	local pm = session.decodeprivate(got)
+
+	ok(pm and pm.id == "m1" and pm.content == "hello",
+	    "and the message inside arrives")
+
+	-- the same frame twice must not be read twice.
+	ok(b:decrypt(frame) == nil, "a replayed frame is refused")
+
+	-- out of order is fine, because the nonce travels with it.
+	local f2 = a:encrypt(session.PRIVATE_MESSAGE, body)
+	local f3 = a:encrypt(session.PRIVATE_MESSAGE, body)
+
+	ok(string.unpack(">I4", f3) == 2, "the nonce counts up")
+	ok(b:decrypt(f3) ~= nil, "a later frame reads on its own")
+	ok(b:decrypt(f2) ~= nil, "and an earlier one still reads after it")
+
+	-- the responder answers on its own key.
+	local back = b:encrypt(session.PRIVATE_MESSAGE,
+	    session.encodeprivate({ id = "m2", content = "hi" }))
+	local t2, got2 = a:decrypt(back)
+
+	ok(t2 == session.PRIVATE_MESSAGE, "the responder can send too")
+	ok(session.decodeprivate(got2).content == "hi", "and it reads")
+
+	-- a flipped bit in the ciphertext is not a message.
+	local bad = a:encrypt(session.PRIVATE_MESSAGE, body)
+
+	bad = bad:sub(1, 5) .. string.char(bad:byte(6) ~ 0xff) .. bad:sub(7)
+	ok(b:decrypt(bad) == nil, "a tampered frame is refused")
+
+	-- and neither is one whose nonce was rewritten.
+	local moved = a:encrypt(session.PRIVATE_MESSAGE, body)
+
+	moved = string.pack(">I4", 999) .. moved:sub(5)
+	ok(b:decrypt(moved) == nil, "so is one moved to another nonce")
+end
+
+ok(session.decodeprivate("\0\2id") == nil, "a message with no content")
+ok(session.decodeprivate("\1\1x") == nil, "or no id")
+ok(session.encodeprivate({ id = "i", content = ("x"):rep(300) }) == nil,
+    "content longer than a byte holds is refused")
+
 io.write("1.." .. count .. "\n")
 os.exit(failed == 0 and 0 or 1)

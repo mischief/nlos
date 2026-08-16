@@ -13,6 +13,7 @@ local uuid = require("ble.uuid")
 local att = require("ble.att")
 local gattc = require("ble.gattc")
 local packet = require("bitchat.packet")
+local session = require("bitchat.session")
 local ed25519 = require("crypto.ed25519")
 local x25519 = require("crypto.x25519")
 local sha256 = require("crypto.sha256")
@@ -40,6 +41,10 @@ local CHAR = uuid.parse("A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D")
 -- /config survives a reflash, so a peer keeps its name across one.
 local KEYFILE = "/config/bitchat_id"
 
+-- prog.rand is the draw itself, not a generator to ask. An ephemeral
+-- key wants it too, so it is held rather than drawn once.
+local randbytes = prog.rand() or die("no entropy to make a key with")
+
 local function identity()
 	local raw = N:readfile(KEYFILE)
 
@@ -47,8 +52,6 @@ local function identity()
 		return raw
 	end
 
-	-- prog.rand is the draw itself, not a generator to ask.
-	local randbytes = prog.rand() or die("no entropy to make a key with")
 	local seed = randbytes(32)
 	local okw, werr = N:writefile(KEYFILE, seed)
 
@@ -154,6 +157,11 @@ ask({ op = "scan", on = true })
 local peers = {}		-- handle -> {addr, char, nick}
 local names = {}		-- peer id -> nickname, so an announce is said once
 local seen = {}			-- packet ids already relayed
+local sessions = {}		-- peer id -> a Noise session
+
+-- these answer private traffic and want to send, which needs the
+-- signing and the radio below.
+local onhandshake, onencrypted
 
 local function show(p)
 	if p.type == packet.ANNOUNCE then
@@ -175,14 +183,10 @@ local function show(p)
 	elseif p.type == packet.LEAVE then
 		out(string.format("* %s left\n", hex(p.sender)))
 	elseif p.type == packet.NOISE_HANDSHAKE then
-		out(string.format("~ %s wants a private session (%d bytes)\n",
-		    names[hex(p.sender)] or hex(p.sender), #p.payload))
+		onhandshake(p)
 		return "private"
 	elseif p.type == packet.NOISE_ENCRYPTED then
-		-- a private message, which needs the session this does not
-		-- negotiate. Its arrival is worth saying even unread.
-		out(string.format("~ %s said something private (%d bytes)\n",
-		    names[hex(p.sender)] or hex(p.sender), #p.payload))
+		onencrypted(p)
 		return "private"
 	end
 	return nil
@@ -233,6 +237,102 @@ end
 local function signed(p)
 	p.signature = ed25519.sign(signsec, packet.signinput(p))
 	return packet.encode(p)
+end
+
+-- ---- private sessions ----
+--
+-- A handshake and the messages after it are directed rather than
+-- broadcast, so both carry a recipient. Neither is signed: the session
+-- is what says who is speaking.
+local function directed(kind, to, body)
+	return packet.encode({ type = kind, ttl = 7, timestamp = now(),
+	    sender = myid, recipient = to, payload = body })
+end
+
+local function saypacket(b)
+	local n = ask({ op = "notify", attr = mychar, value = b })
+
+	if n.err or n.ok == false then
+		out("send failed: " .. tostring(n.err or "nobody listening") ..
+		    "\n")
+		return false
+	end
+	return true
+end
+
+local function whois(id)
+	return names[hex(id)] or hex(id)
+end
+
+function onhandshake(p)
+	if p.recipient ~= myid then
+		return		-- somebody else's, passing through
+	end
+
+	local id = hex(p.sender)
+	local s = sessions[id]
+
+	-- a bare ephemeral key is a fresh approach, so an earlier
+	-- half-built session is abandoned rather than fed a message it
+	-- cannot place.
+	if #p.payload == session.INIT_SIZE and (not s or not s:established())
+	    then
+		s = session.new(noisesec, randbytes, false)
+		sessions[id] = s
+		out(string.format("~ %s is opening a private session\n",
+		    whois(p.sender)))
+	end
+
+	if not s then
+		return
+	end
+
+	local reply, err = s:handshake(p.payload)
+
+	if err then
+		out("handshake failed: " .. tostring(err) .. "\n")
+		sessions[id] = nil
+		return
+	end
+	if reply then
+		saypacket(directed(packet.NOISE_HANDSHAKE, p.sender, reply))
+	end
+	if s:established() then
+		out(string.format("~ private session with %s\n",
+		    whois(p.sender)))
+	end
+end
+
+function onencrypted(p)
+	if p.recipient ~= myid then
+		return
+	end
+
+	local s = sessions[hex(p.sender)]
+
+	if not s or not s:established() then
+		out("~ encrypted traffic with no session to read it\n")
+		return
+	end
+
+	local kind, body = s:decrypt(p.payload)
+
+	if not kind then
+		out("~ could not read it: " .. tostring(body) .. "\n")
+		return
+	end
+
+	if kind == session.PRIVATE_MESSAGE then
+		local m = session.decodeprivate(body)
+
+		if m then
+			out(string.format("[%s] %s\n", whois(p.sender),
+			    m.content))
+		end
+	else
+		out(string.format("~ %s sent a 0x%02x, which we do not read\n",
+		    whois(p.sender), kind))
+	end
 end
 
 -- an announce of our own, so peers know a name for us.

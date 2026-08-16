@@ -535,6 +535,19 @@ if lua54_dep.found()
   host_env.append('LUA_CPATH',
     meson.current_build_dir() / '?.so', separator: ';')
   host_deps += buf_native_host
+
+  # the same primitives the guest preloads, so lib/crypto and what sits
+  # on it can be tested here rather than only on a board.
+  crypto_native_host = shared_module('crypto',
+    ['src/native_glue.c', 'test/hostcrypto.c', 'src/buf.c',
+     'test/hostbuf.c'],
+    name_prefix: '',
+    include_directories: include_directories('src'),
+    dependencies: lua54_dep,
+    native: true,
+    build_by_default: true,
+  )
+  host_deps += crypto_native_host
 endif
 
 # src/gefs_native.c built for the host, so the host test exercises the
@@ -1616,6 +1629,8 @@ test('bitchat-packet', lua_interp,
   args: [files('test/host_bitchat.lua')],
   protocol: 'tap',
   timeout: 30,
+  env: host_env,
+  depends: host_deps,
 )
 
 # deflate and inflate, against what gzip wrote rather than against
@@ -1624,6 +1639,15 @@ test('zlib', lua_interp,
   args: [files('test/host_zlib.lua')],
   protocol: 'tap',
   timeout: 60,
+)
+
+# the XX handshake both ends of a private message need.
+test('noise', lua_interp,
+  args: [files('test/host_noise.lua')],
+  protocol: 'tap',
+  timeout: 60,
+  env: host_env,
+  depends: host_deps,
 )
 
 test('zmodem-protocol', lua_interp,
