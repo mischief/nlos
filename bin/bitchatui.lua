@@ -496,11 +496,15 @@ local function onpacket(b, from)
 		local a = packet.decodeannounce(p.payload)
 		local id = hex(p.sender)
 
-		if not peers[id] then
+		local isnew = not peers[id]
+
+		peers[id] = { nick = a.nickname, noisekey = a.noisekey }
+		-- counted before it is drawn, or the bar reports the peers
+		-- there were rather than the ones there are.
+		if isnew then
 			say("* " .. (a.nickname or "?") .. " is here", DIM)
 			paintbar()
 		end
-		peers[id] = { nick = a.nickname, noisekey = a.noisekey }
 	elseif p.type == packet.MESSAGE then
 		say("<" .. whois(p.sender) .. "> " .. p.payload)
 	elseif p.type == packet.LEAVE then
