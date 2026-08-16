@@ -25,6 +25,8 @@
 --	run LUA             one line at the serial repl
 --	ask LUA             the same, and print what comes back
 --	shot FILE [ROWS]    read the screen back as a netpbm
+--	push FILE [DIR]     send a file to the flash volume, /bin by
+--	                    default -- an edit without a reflash
 --	sleep SECONDS       wait
 
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
@@ -130,6 +132,25 @@ while i <= #arg do
 		end
 		print(("%s: %s %dx%d, %d bytes"):format(out, st.kind, st.w,
 		    st.h, st.bytes))
+	elseif a == "push" then
+		local file = next_arg("a filename")
+		local dir = arg[i + 1]
+
+		-- a bare word is the directory; anything with a slash or a
+		-- dot is the next action's argument, not ours
+		if dir and not dir:match("^[%w%-]+$") then
+			dir = nil
+		end
+		if dir then
+			i = i + 1
+		end
+
+		local st, err = p:push(file, dir and ("/" .. dir) or "/bin")
+
+		if not st then
+			die("push: " .. tostring(err))
+		end
+		print(("%s: sent"):format(file))
 	elseif a == "cancel" then
 		-- for a line left mid-transfer: stop the sender and read
 		-- what it has already sent, so the next command lands at a

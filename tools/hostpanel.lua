@@ -422,6 +422,83 @@ function Panel:shot(out, rows)
 	return { kind = kind, w = w, h = h, bytes = #data }
 end
 
+-- push(file, dir) -- send a file to the board, over zmodem.
+--
+-- The mirror of shot: dos(), because what receives is bin/rz.lua and
+-- the launcher runs it. No "rz" is typed -- sz writes that word itself
+-- and the launcher takes it. A program on the flash volume is then an
+-- upload where the same edit in the firmware is a rebuild and a flash.
+function Panel:push(file, dir)
+	local fh = io.open(file, "rb")
+
+	if not fh then
+		return nil, "cannot read " .. tostring(file)
+	end
+	fh:close()
+
+	self:drain(3, 0.3)
+	self:say("dos()", 0.6)
+	if dir then
+		self:say("cd " .. dir, 0.4)
+	end
+
+	-- session: lrzsz sets the line raw and flushes it, and a child
+	-- without a controlling terminal gets EIO for both rather than
+	-- SIGTTOU.
+	local pid = self.hu.spawn({ "sz", "-q", "-b", file },
+	    { stdin = self.fd, stdout = self.fd, stderr = 2,
+	      session = true })
+
+	if not pid then
+		return nil, "cannot run sz (install lrzsz)"
+	end
+
+	local deadline = os.time() + 60
+	local code = nil
+
+	while os.time() < deadline do
+		code = self.hu.poll(pid)
+		if code then
+			break
+		end
+		nap(0.1)
+	end
+
+	if not code then
+		self.hu.kill(pid)
+		self:say("exit", 0.4)
+		return nil, "sz did not finish"
+	end
+
+	-- what the guest said about it, the way shot reads its sender's
+	-- complaint: a refused write and a full volume both look like a
+	-- transfer that simply ended out here.
+	local tail = {}
+	local stop = os.time() + 2
+
+	while os.time() < stop do
+		if not self.hu.readable(self.fd, 0.3) then
+			break
+		end
+
+		local c = self.f:read(1)
+
+		if not c then
+			break
+		end
+		tail[#tail + 1] = c
+	end
+	self:say("exit", 0.4)
+
+	local said = table.concat(tail)
+
+	if code ~= 0 then
+		return nil, "sz failed: " .. (said:match("rz: [^\r\n]+") or
+		    ("exit " .. tostring(code)))
+	end
+	return { bytes = nil, said = said }
+end
+
 function Panel:close()
 	self.f:close()
 end
