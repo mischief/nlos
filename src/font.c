@@ -3,9 +3,9 @@
  * fonts, so what text goes where stays in lua.
  */
 
-/* In C because the glyph table is 3072 bytes of .rodata, costing no
- * RAM; as lua strings it would be ~95 TString objects in every proc
- * that required it, out of the pool esp32 has least of.
+/* In C because the glyph table is .rodata, costing no RAM; as lua
+ * strings it would be a TString per glyph in every proc that required
+ * it, out of the pool esp32 has least of.
  */
 
 #include <stddef.h>
@@ -29,9 +29,75 @@ to565(lua_Unsigned c)
 	    ((c >> 3) & 0x001f));
 }
 
+/* one codepoint from utf8, and the bytes it took. Bad input is one
+ * byte and U+FFFD, so a damaged file still draws. */
+static unsigned long
+decode(const char *s, size_t n, size_t *len)
+{
+	unsigned char c = (unsigned char)s[0];
+	unsigned long cp;
+	size_t need, i;
+
+	if (c < 0x80) {
+		*len = 1;
+		return c;
+	}
+	if ((c & 0xe0) == 0xc0) {
+		need = 2;
+		cp = c & 0x1fu;
+	} else if ((c & 0xf0) == 0xe0) {
+		need = 3;
+		cp = c & 0x0fu;
+	} else if ((c & 0xf8) == 0xf0) {
+		need = 4;
+		cp = c & 0x07u;
+	} else {
+		*len = 1;
+		return 0xfffd;
+	}
+	if (n < need) {
+		*len = 1;
+		return 0xfffd;
+	}
+	for (i = 1; i < need; i++) {
+		unsigned char cc = (unsigned char)s[i];
+
+		if ((cc & 0xc0) != 0x80) {
+			*len = 1;
+			return 0xfffd;
+		}
+		cp = (cp << 6) | (cc & 0x3fu);
+	}
+	*len = need;
+	return cp;
+}
+
+/* the glyph for a codepoint, or null where the font has none. Searched
+ * rather than indexed: indexing would be 57K entries for 548 glyphs. */
+static const uint8_t *
+glyph(unsigned long cp)
+{
+	int lo = 0, hi = FONT_NRANGE - 1;
+
+	while (lo <= hi) {
+		int mid = (lo + hi) / 2;
+		const struct font_range *r = &font_ranges[mid];
+
+		if (cp < r->first)
+			hi = mid - 1;
+		else if (cp > r->last)
+			lo = mid + 1;
+		else
+			return font_glyphs[r->at + (cp - r->first)];
+	}
+	return 0;
+}
+
 /* font.render(s, fg, bg, wantbuf, fmt) -> pixels, w, h. fg and bg are
- * 0xRRGGBB; fmt is "bgrx" (the default) or "r5g6b5" -- the
- * destination's own format, so nothing converts on the way.
+ * 0xRRGGBB; fmt is "bgrx" (the default) or "r5g6b5", the destination's
+ * own format so nothing converts on the way. s is utf8 and the width
+ * is in cells: one codepoint is one cell, which holds for every glyph
+ * this font has.
  */
 static int
 font_render(lua_State *L)
@@ -43,11 +109,11 @@ font_render(lua_State *L)
 	int wantbuf = lua_toboolean(L, 4);
 	const char *fmt = luaL_optstring(L, 5, "bgrx");
 	int bpp = strcmp(fmt, "r5g6b5") == 0 ? 2 : 4;
-	size_t w = n * FONT_W;
-	size_t need = w * FONT_H * bpp;
+	size_t w, need;
 	luaL_Buffer b;
 	unsigned char *out;
-	size_t i, row, col;
+	size_t i, row, col, at, ncell;
+	const uint8_t *cells[256];
 
 	if (bpp == 4 && strcmp(fmt, "bgrx") != 0)
 		return luaL_error(L, "font.render: no such format: %s", fmt);
@@ -58,13 +124,23 @@ font_render(lua_State *L)
 		lua_pushinteger(L, FONT_H);
 		return 3;
 	}
-	/* a ceiling rather than trust: the caller decides the string, and
-	 * a long one would ask for a very large lua string on a machine
-	 * that has not got it. 256 columns is past any screen here.
-	 */
-	if (n > 256)
-		return luaL_error(L, "font.render: %d chars is too many",
-		    (int)n);
+
+	/* decoded once: the rows below run across the whole string, so
+	 * decoding inside them would decode each cell FONT_H times. */
+	for (at = 0, ncell = 0; at < n; ncell++) {
+		size_t len;
+		unsigned long cp;
+
+		if (ncell == 256)
+			return luaL_error(L,
+			    "font.render: more than 256 cells");
+		cp = decode(s + at, n - at, &len);
+		at += len;
+		cells[ncell] = glyph(cp);
+	}
+
+	w = ncell * FONT_W;
+	need = w * FONT_H * bpp;
 
 	/* a buffer where the caller asked for one. Every byte is written
 	 * below, so it is allocated rather than made: nothing to zero.
@@ -79,8 +155,10 @@ font_render(lua_State *L)
 	}
 
 	for (row = 0; row < FONT_H; row++) {
-		for (i = 0; i < n; i++) {
-			uint8_t bits = font8x16[(unsigned char)s[i]][row];
+		for (i = 0; i < ncell; i++) {
+			/* no glyph draws as background: the cell stays,
+			 * so the text keeps its shape. */
+			uint8_t bits = cells[i] ? cells[i][row] : 0;
 
 			for (col = 0; col < FONT_W; col++) {
 				/* the generator packs each row left-aligned
