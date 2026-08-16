@@ -482,6 +482,9 @@ have_hostutil = lua54_dep.found()
 sz_prog = find_program('lsz', 'sz', required: false)
 rz_prog = find_program('lrz', 'rz', required: false)
 socat_prog = find_program('socat', required: false)
+sshd_prog = find_program('sshd', required: false,
+  dirs: ['/usr/sbin', '/usr/bin', '/sbin'])
+sshkeygen_prog = find_program('ssh-keygen', required: false)
 if have_hostutil
   hostutil = shared_module('hostutil', 'test/hostutil.c',
     dependencies: lua54_dep,
@@ -990,6 +993,24 @@ if fw_network
       env: archenv + {'NET': '1'},
     )
   endforeach
+
+  # our ssh client against a real OpenSSH server, which the harness runs
+  # on a port of its own. The second implementation is the point: our
+  # two halves agreeing with each other proves neither.
+  #
+  # It is also what covers a full-size frame arriving from outside. A
+  # KEXINIT is over one segment, and a receive buffer a frame too small
+  # drops exactly that and nothing smaller -- so every other test here
+  # passed while ssh took two minutes.
+  if sshd_prog.found() and sshkeygen_prog.found()
+    test('net-sshclient', lua_interp,
+      args: [files('tools/sshclienttest.lua'), luaos_img,
+        files('test/boot/net_sshclient.lua')],
+      protocol: 'tap',
+      timeout: 120,
+      env: archenv + {'NET': '1'},
+    )
+  endif
 
   foreach t : shared_tests
     if t[2]

@@ -122,7 +122,7 @@ local function cleanup()
 	os.execute("rm -rf " .. quote(tmp))
 end
 
-print("1..13")
+print("1..14")
 
 local function main()
 	-- the guest prints this once listen() finally succeeds, which is
@@ -178,6 +178,18 @@ local function main()
 	-- not a blanket refusal
 	r = post("/echolen", string.rep("z", 1000))
 	ok(r.status == 200 and r.body == "1000", "a normal POST body -> " .. r.body)
+
+	-- and one of many segments, which is what makes the host send
+	-- full-size frames. A receive buffer a frame too small takes
+	-- everything under the mtu and drops exactly these, so the request
+	-- above passes either way and this one does not arrive at all --
+	-- see src/platform/efi/snp.c. The peer retransmits rather than
+	-- failing, so the shape of it is a timeout, not an error.
+	local big = 64 * 1024
+
+	r = post("/echolen", string.rep("z", big))
+	ok(r.status == 200 and r.body == tostring(big),
+	    "a 64KB POST body arrives whole -> " .. r.body)
 
 	-- ...and the attack: an enormous declared length must be refused on
 	-- the Content-Length alone, without reading it. this loop runs in
