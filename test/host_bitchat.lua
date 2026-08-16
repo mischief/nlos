@@ -77,34 +77,29 @@ local trunc = raw:sub(1, #raw - 2)
 
 ok(packet.decode(trunc) == nil, "a truncated payload is refused")
 
--- ---- the message inside ----
+-- ---- a public message ----
+--
+-- The payload is the text and nothing else: the reader takes the name
+-- from the sender's announce and derives an id from what it has. A
+-- structure here reaches the other side as the message.
 
-local m = packet.encodemessage({ id = "id1", sender = "nick",
-    content = "hello mesh", timestamp = 42 })
-local mm = packet.decodemessage(m)
+local pub = packet.decode(packet.encode({ type = packet.MESSAGE, ttl = 7,
+    timestamp = 42, sender = "SENDER01", payload = "hello mesh" }))
 
-ok(mm and mm.id == "id1", "a message id")
-ok(mm.sender == "nick", "its sender's nickname")
-ok(mm.content == "hello mesh", "and the content")
-ok(mm.timestamp == 42, "with a timestamp")
-ok(mm.private == false, "public by default")
+ok(pub.payload == "hello mesh", "the payload is the text")
+ok(pub.timestamp == 42, "and the time is the packet's, not the text's")
 
-local withid = packet.encodemessage({ id = "i", sender = "n",
-    content = "c", peerid = "PEERID01" })
+local utf8msg = "caf\xc3\xa9 \xe2\x98\x83"
 
-ok(packet.decodemessage(withid).peerid == "PEERID01",
-    "an optional peer id round trips")
+ok(packet.decode(packet.encode({ type = packet.MESSAGE, ttl = 1,
+    timestamp = 0, sender = "SENDER01", payload = utf8msg })).payload ==
+    utf8msg, "utf-8 survives the round trip")
 
-ok(packet.decodemessage("\0\0") == nil, "a runt message is refused")
-ok(packet.decodemessage(m:sub(1, #m - 3)) == nil,
-    "and one whose content is cut short")
+local long = string.rep("x", 400)
 
--- content is a 2-byte length, so it may be longer than a byte holds.
-local big = string.rep("x", 300)
-local bigm = packet.decodemessage(packet.encodemessage({ id = "i",
-    sender = "n", content = big }))
-
-ok(bigm and bigm.content == big, "content longer than 255 bytes")
+ok(packet.decode(packet.encode({ type = packet.MESSAGE, ttl = 1,
+    timestamp = 0, sender = "SENDER01", payload = long })).payload ==
+    long, "and text longer than a byte holds")
 
 -- ---- padding, and what a signature covers ----
 

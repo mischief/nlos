@@ -1,8 +1,8 @@
--- BitChat's wire format, from BinaryProtocol.swift and BitchatMessage.
+-- BitChat's wire format, from BinaryProtocol.swift.
 --
--- Two layers: an outer packet that the mesh relays by ttl, and a public
--- message inside it. Everything is big-endian, which is the one thing
--- here that differs from every other protocol in this tree.
+-- The outer packet the mesh relays by ttl. Everything is big-endian,
+-- which is the one thing here that differs from every other protocol
+-- in this tree.
 
 local inflate = require("zlib.inflate")
 
@@ -29,9 +29,7 @@ M.IS_COMPRESSED = 0x04
 
 -- ---- the outer packet ----
 
--- A packet, or nil and why. Compression is refused rather than
--- guessed at: the payload would be zlib, and inflating it is work this
--- does not do, so saying so beats handing up rubbish.
+-- A packet, or nil and why.
 function M.decode(b)
 	if #b < 21 then
 		return nil, "shorter than a header and a sender"
@@ -173,97 +171,12 @@ function M.signinput(p)
 	return M.encode(q, true)
 end
 
--- ---- a public message, inside a packet's payload ----
-
--- flags of the message itself, which are not the packet's.
-M.MSG_RELAY = 0x01
-M.MSG_PRIVATE = 0x02
-M.MSG_ORIGINAL_SENDER = 0x04
-M.MSG_RECIPIENT_NICK = 0x08
-M.MSG_SENDER_PEERID = 0x10
-M.MSG_MENTIONS = 0x20
-
-local function lenstr(b, at, width)
-	local n
-
-	if width == 1 then
-		n = b:byte(at)
-		at = at + 1
-	else
-		if #b < at + 1 then
-			return nil
-		end
-		n = string.unpack(">I2", b:sub(at))
-		at = at + 2
-	end
-	if not n or #b < at + n - 1 then
-		return nil
-	end
-	return b:sub(at, at + n - 1), at + n
-end
-
-function M.decodemessage(b)
-	if #b < 13 then
-		return nil, "too short for a message"
-	end
-
-	local flags = b:byte(1)
-	local ts = string.unpack(">I8", b:sub(2))
-	local at = 10
-	local id, sender, content
-
-	id, at = lenstr(b, at, 1)
-	if not id then
-		return nil, "truncated id"
-	end
-	sender, at = lenstr(b, at, 1)
-	if not sender then
-		return nil, "truncated sender"
-	end
-	content, at = lenstr(b, at, 2)
-	if not content then
-		return nil, "truncated content"
-	end
-
-	local m = {
-		id = id, sender = sender, content = content,
-		timestamp = ts,
-		relay = (flags & M.MSG_RELAY) ~= 0,
-		private = (flags & M.MSG_PRIVATE) ~= 0,
-	}
-
-	if (flags & M.MSG_ORIGINAL_SENDER) ~= 0 then
-		m.origin, at = lenstr(b, at, 1)
-	end
-	if (flags & M.MSG_RECIPIENT_NICK) ~= 0 then
-		m.to, at = lenstr(b, at, 1)
-	end
-	if (flags & M.MSG_SENDER_PEERID) ~= 0 then
-		m.peerid, at = lenstr(b, at, 1)
-	end
-	return m
-end
-
-function M.encodemessage(m)
-	local flags = 0
-
-	if m.relay then
-		flags = flags | M.MSG_RELAY
-	end
-	if m.peerid then
-		flags = flags | M.MSG_SENDER_PEERID
-	end
-
-	local out = string.pack(">BI8", flags, m.timestamp or 0) ..
-	    string.char(#m.id) .. m.id ..
-	    string.char(#m.sender) .. m.sender ..
-	    string.pack(">I2", #m.content) .. m.content
-
-	if m.peerid then
-		out = out .. string.char(#m.peerid) .. m.peerid
-	end
-	return out
-end
+-- ---- a public message ----
+--
+-- Its payload is the text and nothing else. The sender's name comes
+-- from the announce a peer already sent, and the wire carries no
+-- message id: a receiver derives one from sender, timestamp and text
+-- so that two copies of one message agree on it.
 
 -- an announce is type-length-value, not a bare name: the nickname is
 -- one field beside the two public keys a peer needs to be spoken to

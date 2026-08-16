@@ -161,7 +161,7 @@ local sessions = {}		-- peer id -> a Noise session
 
 -- these answer private traffic and want to send, which needs the
 -- signing and the radio below.
-local onhandshake, onencrypted
+local onhandshake, onencrypted, whois
 
 local function show(p)
 	if p.type == packet.ANNOUNCE then
@@ -175,11 +175,7 @@ local function show(p)
 			    a.noisekey and ", has a noise key" or ""))
 		end
 	elseif p.type == packet.MESSAGE then
-		local m = packet.decodemessage(p.payload)
-
-		if m then
-			out(string.format("<%s> %s\n", m.sender, m.content))
-		end
+		out(string.format("<%s> %s\n", whois(p.sender), p.payload))
 	elseif p.type == packet.LEAVE then
 		out(string.format("* %s left\n", hex(p.sender)))
 	elseif p.type == packet.NOISE_HANDSHAKE then
@@ -260,7 +256,7 @@ local function saypacket(b)
 	return true
 end
 
-local function whois(id)
+function whois(id)
 	return names[hex(id)] or hex(id)
 end
 
@@ -345,13 +341,11 @@ local function announce()
 		noisekey = noisepub, signkey = signpub }) })
 end
 
+-- the text alone: a reader takes the name from our announce, and
+-- derives an id from what it already has.
 local function say(text)
 	return signed({ type = packet.MESSAGE, ttl = 7, timestamp = now(),
-	    sender = myid,
-	    payload = packet.encodemessage({
-		id = hex(myid) .. tostring(sys.uptime_ms()),
-		sender = nick, content = text, timestamp = now(),
-	    }) })
+	    sender = myid, payload = text })
 end
 
 -- write a packet to every peer we hold a link to.

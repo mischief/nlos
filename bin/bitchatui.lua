@@ -381,11 +381,7 @@ local function onpacket(b)
 		end
 		peers[id] = { nick = a.nickname, noisekey = a.noisekey }
 	elseif p.type == packet.MESSAGE then
-		local m = packet.decodemessage(p.payload)
-
-		if m then
-			say("<" .. m.sender .. "> " .. m.content)
-		end
+		say("<" .. whois(p.sender) .. "> " .. p.payload)
 	elseif p.type == packet.LEAVE then
 		peers[hex(p.sender)] = nil
 		paintbar()
@@ -403,13 +399,10 @@ local function submit()
 		return
 	end
 
-	local body = packet.encodemessage({
-		id = hex(myid) .. tostring(sys.uptime_ms()),
-		sender = nick, content = typed, timestamp = now(),
-	})
-
+	-- the text alone: a reader takes the name from our announce, and
+	-- derives an id from what it already has.
 	if send(signed({ type = packet.MESSAGE, ttl = 7, timestamp = now(),
-	    sender = myid, payload = body })) then
+	    sender = myid, payload = typed })) then
 		say("<" .. nick .. "> " .. typed, MINE)
 	else
 		say("not sent: nobody is listening", WARN)
