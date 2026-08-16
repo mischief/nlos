@@ -104,11 +104,10 @@ end
 -- ---- what is on the screen ----
 
 -- lib/frame.lua holds the wrapping, the scroll and where a codepoint
--- lands. It takes one string, so the transcript is one -- and the colour
--- of a wrapped row is found from the byte offset the frame hands back.
+-- lands. It takes one string, so the transcript is one -- and it says
+-- which line a wrapped row came from, which is what keeps its colour.
 local F = frame.new(COLS, rows)
 local lines = {}		-- {text, color}, oldest first
-local starts = {}		-- where each line begins in the frame's text
 local shownrow = {}		-- what each row already shows
 local typed = ""
 local peers = {}		-- peer id -> {nick, noisekey, seen}
@@ -151,25 +150,6 @@ local function paintinput()
 		s = s:sub(utf8.offset(s, n - COLS + 1))
 	end
 	text(0, INPUT, s, FG, 0x181820)
-end
-
--- which message a wrapped row came from, so it keeps its colour. The
--- frame hands back the byte offset of the row it drew, and the messages
--- are in offset order, so this is a search rather than a scan.
-local function colorat(boff)
-	local lo, hi, at = 1, #starts, 1
-
-	while lo <= hi do
-		local mid = (lo + hi) // 2
-
-		if starts[mid] <= boff then
-			at = mid
-			lo = mid + 1
-		else
-			hi = mid - 1
-		end
-	end
-	return lines[at] and lines[at][2] or THEM
 end
 
 local function paintbody(all)
@@ -218,24 +198,22 @@ local function paintbody(all)
 		seen[i] = s
 		if shownrow[i] ~= s then
 			fill(0, y, W, ROWH, BG)
-			text(0, y, s, l and colorat(l.boff) or THEM)
+			-- a wrapped row keeps its message's colour: the
+			-- frame says which line it came from.
+			text(0, y, s, l and lines[l.line] and lines[l.line][2] or THEM)
 		end
 	end
 	shownrow = seen
 end
 
--- the transcript as the frame's one string, and where each message
--- begins in it. Rebuilt rather than appended to: the frame wraps what
--- it is given, and a bounded scrollback drops from the front anyway.
+-- the transcript as the frame's one string. Rebuilt rather than
+-- appended to: the frame wraps what it is given, and a bounded
+-- scrollback drops from the front anyway.
 local function retext()
 	local parts = {}
-	local off = 1
 
-	starts = {}
 	for i, l in ipairs(lines) do
-		starts[i] = off
 		parts[i] = l[1]
-		off = off + #l[1] + 1		-- the newline between them
 	end
 	F:settext(table.concat(parts, "\n"))
 end

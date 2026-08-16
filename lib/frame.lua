@@ -29,7 +29,7 @@ function M.new(cols, rows)
 		cols = math.max(1, cols or 1),
 		rows = math.max(1, rows or 1),
 		text = "",
-		lines = {},	-- wrapped: { boff, bend, coff, clen }
+		lines = {},	-- wrapped: { boff, bend, coff, clen, line }
 		top = 0,	-- first visible wrapped line, 0-based
 		p0 = 0,		-- selection, in codepoints
 		p1 = 0,
@@ -47,6 +47,11 @@ function Frame:wrap()
 	local lines = {}
 	local boff, coff, col = 1, 0, 0
 	local n = 0
+	-- which line of the text a row came from, counted by newlines. A
+	-- soft-wrapped row keeps its line's number, so a caller that holds
+	-- something per line -- a colour, a speaker -- can find it without
+	-- searching for the offset.
+	local ln = 1
 
 	-- broken before the codepoint that would not fit rather than
 	-- after the one that filled the line: the break needs the byte
@@ -56,7 +61,7 @@ function Frame:wrap()
 		n = n + 1
 		if col == self.cols and c ~= 10 then
 			lines[#lines + 1] = { boff = boff, bend = p - 1,
-			    coff = coff, clen = col, hard = false }
+			    coff = coff, clen = col, hard = false, line = ln }
 			boff = p
 			coff = coff + col
 			col = 0
@@ -66,10 +71,11 @@ function Frame:wrap()
 			-- is still a codepoint, so an offset lands on it
 			-- and the next line starts past it.
 			lines[#lines + 1] = { boff = boff, bend = p - 1,
-			    coff = coff, clen = col, hard = true }
+			    coff = coff, clen = col, hard = true, line = ln }
 			boff = p + 1
 			coff = coff + col + 1
 			col = 0
+			ln = ln + 1
 		else
 			col = col + 1
 		end
@@ -78,7 +84,7 @@ function Frame:wrap()
 	-- lines has nowhere to put a cursor.
 	if col > 0 or #lines == 0 or lines[#lines].hard then
 		lines[#lines + 1] = { boff = boff, bend = #t,
-		    coff = coff, clen = col, hard = false }
+		    coff = coff, clen = col, hard = false, line = ln }
 	end
 	self.lines = lines
 	self.nchars = n

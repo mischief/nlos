@@ -128,5 +128,17 @@ ok(f:show(0) == false, "an offset already on screen scrolls nothing")
 ok(f:show(8) == true, "one below it scrolls")
 ok(f:ptofchar(8) ~= nil, "and puts it on screen")
 
+
+-- which line of the text a row came from. A caller holding something
+-- per line -- a colour, a speaker -- finds it without searching.
+local g = frame.new(4, 10)
+
+g:settext("one\ntwosoverlong\nthree")
+eq(select(2, g:line(1)).line, 1, "the first row is line one")
+eq(select(2, g:line(2)).line, 2, "the second line follows it")
+eq(select(2, g:line(3)).line, 2, "and its wrapped tail is still line two")
+eq(select(2, g:line(4)).line, 2, "however far it wraps")
+eq(select(2, g:line(5)).line, 3, "the next hard break is line three")
+
 print("1.." .. n)
 os.exit(fails == 0 and 0 or 1)
