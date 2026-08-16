@@ -48,6 +48,11 @@ function M.new(opts)
 		-- saying so -- which is why it is asked for rather than
 		-- assumed.
 		stateful = opts.stateful,
+		-- the spec's shape: a flat { type = "function", name,
+		-- description, parameters }, with no nested function
+		-- object as chat/completions has.
+		tools = opts.tools,
+		instructions = opts.instructions,
 	}, Client)
 end
 
@@ -97,6 +102,13 @@ function Client:ask(input, extra)
 	end
 
 	local req = { model = self.model, input = input }
+
+	if self.tools then
+		req.tools = self.tools
+	end
+	if self.instructions then
+		req.instructions = self.instructions
+	end
 
 	for k, v in pairs(extra or {}) do
 		req[k] = v
@@ -176,6 +188,48 @@ end
 -- what the model thought on the way, where it says so.
 function M.reasoning(res)
 	return parts(res, "reasoning_text")
+end
+
+-- the tool calls in a response, as { call_id, name, arguments }. A call
+-- is an output item of its own rather than a content part, so it is not
+-- found the way text is.
+--
+-- arguments arrive as a json string, decoded here: every caller wants
+-- the table and none of them wants to find that out.
+function M.calls(res)
+	if type(res) ~= "table" or type(res.output) ~= "table" then
+		return {}
+	end
+
+	local out = {}
+
+	for _, item in ipairs(res.output) do
+		if type(item) == "table" and item.type == "function_call" then
+			local ok, args = pcall(json.decode,
+			    item.arguments or "{}")
+
+			out[#out + 1] = {
+				call_id = item.call_id,
+				name = item.name,
+				arguments = (ok and type(args) == "table") and
+				    args or {},
+				-- kept, since a model that sent junk is a
+				-- thing the tool should be able to say back
+				raw = item.arguments,
+			}
+		end
+	end
+	return out
+end
+
+-- what a tool's result looks like going back up. The spec feeds these
+-- as input items, not as a message with a "tool" role.
+function M.result(call_id, output)
+	return {
+		type = "function_call_output",
+		call_id = call_id,
+		output = tostring(output),
+	}
 end
 
 -- say(input) -> text, response -- one turn of a conversation.
