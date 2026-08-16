@@ -312,6 +312,84 @@ local unsup = db:request(string.char(0x16) .. "\1\0", 185)
 ok(att.decode(unsup).err == att.ERR_REQ_NOT_SUPPORTED,
     "and an opcode we do not implement says so")
 
+-- ---- advertising data ----
+
+local ad = require("ble.ad")
+
+local built = ad.simple("lua-os", uuid.short(0x180f))
+
+ok(built and #built == 15, "flags, a 16-bit service and a name")
+
+local f = ad.parse(built)
+
+ok(f.name == "lua-os", "the name reads back")
+ok(f.flags == ad.FLAG_LE_GENERAL, "and the flags")
+ok(#f.uuids == 1 and uuid.eq(f.uuids[1], uuid.short(0x180f)),
+    "and the service it offers")
+
+local big = ad.simple(string.rep("x", 40), uuid.short(0x180f))
+
+ok(big == nil, "a name that does not fit is refused, not trimmed")
+
+-- a field claiming more than is there stops the walk rather than
+-- inventing one: the bytes after it are not a field.
+local torn = "\2\1\6" .. "\20\9lua"
+
+ok(#ad.decode(torn) == 1, "a truncated field ends the list")
+ok(ad.parse(torn).flags == ad.FLAG_LE_GENERAL,
+    "and what came before it survives")
+ok(#ad.decode("\2\1\6\0\0\0") == 1, "padding to 31 bytes is not a field")
+
+local m = ad.parse("\5\255\1\2\3\4")
+
+ok(m.manufacturer == "\1\2\3\4", "manufacturer data is handed over whole")
+
+-- ---- gap ----
+
+local gap = require("ble.gap")
+
+ok(gap.units(100) == 160, "an interval is counted in 0.625ms units")
+
+local op, p = gap.scanparams({ interval_ms = 60, window_ms = 30 })
+
+ok(op == 0x200b and p:byte(1) == 0, "a passive scan by default")
+ok(string.unpack("<I2", p:sub(2)) == 96, "with the interval in units")
+
+local eop, ep = gap.scanenable(true, false)
+
+ok(eop == 0x200c and ep == "\1\0", "scan on, duplicates not filtered")
+
+-- one advertising report, as a controller delivers it.
+local rep = "\1" .. "\0\0" .. "\xaa\xbb\xcc\xdd\xee\xff" ..
+    string.char(#built) .. built .. "\xc5"
+local reports = gap.advreports(rep)
+
+ok(#reports == 1, "one report decoded")
+ok(gap.addrstr(reports[1].addr) == "ff:ee:dd:cc:bb:aa",
+    "the address reads high byte first")
+ok(reports[1].rssi == -59, "and the rssi is signed")
+ok(ad.parse(reports[1].data).name == "lua-os", "with its advertisement")
+
+ok(gap.parseaddr("ff:ee:dd:cc:bb:aa") == reports[1].addr,
+    "and a written address parses back to the wire")
+ok(gap.parseaddr("nope") == nil, "while a bad one does not")
+
+local trunc = gap.advreports("\2\0\0\xaa")
+
+ok(#trunc == 0, "a report shorter than its header is dropped")
+
+-- connection complete, in the form the board already showed us.
+local cc = gap.connreport("\0\1\0\1\0" .. "\xaa\xbb\xcc\xdd\xee\xff" ..
+    "\39\0\0\0\42\0\1")
+
+ok(cc.status == 0 and cc.handle == 1, "connection complete decoded")
+ok(cc.role == 1, "as the peripheral, which is what advertising makes us")
+
+local cop, cp = gap.connect(reports[1].addr, { timeout_ms = 4000 })
+
+ok(cop == 0x200d, "create connection")
+ok(cp:sub(7, 12) == reports[1].addr, "carries the peer address")
+
 -- ---- the trace format ----
 
 local btsnoop = require("ble.btsnoop")

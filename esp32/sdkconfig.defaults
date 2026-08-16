@@ -108,3 +108,8 @@ CONFIG_PM_DFS_INIT_AUTO=y
 CONFIG_BT_ENABLED=y
 CONFIG_BT_CONTROLLER_ENABLED=y
 CONFIG_BT_CONTROLLER_ONLY=y
+
+# Activities are connections, scans and advertising sets together, and
+# a mesh node wants several at once. 10 is the controller's ceiling and
+# each costs 828 bytes of internal SRAM, which is the scarce kind here.
+CONFIG_BT_CTRL_BLE_MAX_ACT=10
