@@ -459,6 +459,7 @@ function Cons:putc(c)
 		return		-- other C0 controls have no glyph here
 	end
 
+	self.lastch = c		-- what `rep` repeats
 	self:setcell(self.row, self.col, c)
 	self:dirtyspan(self.row, self.col, self.col + 1)
 	if self.col + 1 >= self.cols then
@@ -571,6 +572,13 @@ function Cons:csi(final, parm)
 		self:erasedisplay(n or 0)
 	elseif final == "K" then
 		self:eraseline(n or 0)
+	elseif final == "b" then
+		-- rep: the last glyph again, n times. terminfo's `ansi`
+		-- has it and ncurses emits it for a run, so dropping it
+		-- silently shortens a line rather than failing loudly.
+		for _ = 1, atleast1(n) do
+			self:putc(self.lastch or " ")
+		end
 	elseif final == "m" then
 		self:sgr(p)
 	elseif final == "s" then

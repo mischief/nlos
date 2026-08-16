@@ -172,7 +172,12 @@ function M.new(caps)
 		-- because the console owns the mailbox and forwards to it.
 		notices = caps.notices or sys.SELF,
 		coro = caps.coro or false,
-		env = caps.env or { PATH = caps.path or "/bin", HOME = "/" },
+		-- TERM says what this system's own terminal renders, which
+		-- lib/fbcons.lua bounds: eight colors, bold, reverse and
+		-- cursor addressing. A caller with a better one says so by
+		-- passing its own env.
+		env = caps.env or { PATH = caps.path or "/bin", HOME = "/",
+		    TERM = "ansi" },
 		cwd = "/",
 		status = 0,
 	}, Sh)
