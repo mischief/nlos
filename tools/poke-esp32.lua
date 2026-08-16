@@ -70,6 +70,15 @@ local p = hostpanel.open(port)
 -- command joined onto somebody's half-typed one.
 p:torepl()
 
+-- what a word may be instead of an argument, so an optional one knows
+-- where it ends.
+local actions = {}
+
+for _, a in ipairs({ "move", "tap", "press", "release", "drag", "wheel",
+    "type", "key", "run", "ask", "shot", "push", "cancel", "sleep" }) do
+	actions[a] = true
+end
+
 local i = 2
 
 local function next_arg(what)
@@ -136,9 +145,10 @@ while i <= #arg do
 		local file = next_arg("a filename")
 		local dir = arg[i + 1]
 
-		-- a bare word is the directory; anything with a slash or a
-		-- dot is the next action's argument, not ours
-		if dir and not dir:match("^[%w%-]+$") then
+		-- what follows is the directory unless it names an action,
+		-- since a directory may hold slashes and so cannot be told
+		-- from a path by its shape
+		if dir and actions[dir] then
 			dir = nil
 		end
 		if dir then

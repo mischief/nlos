@@ -14,6 +14,8 @@ local att = require("ble.att")
 local gattc = require("ble.gattc")
 local packet = require("bitchat.packet")
 local ed25519 = require("crypto.ed25519")
+local x25519 = require("crypto.x25519")
+local sha256 = require("crypto.sha256")
 
 local function out(s)
 	unistd.write(1, s)
@@ -57,12 +59,23 @@ local function identity()
 	return seed
 end
 
-local seed = identity()
-local pub = ed25519.publickey(seed)
+local function derive(seed, label)
+	return sha256.new():update(label):update(seed):final()
+end
 
--- the peer id is the first eight bytes of the public key, which is
--- what a sender field holds and what other peers know us by.
-local myid = pub:sub(1, 8)
+-- two keys from one stored seed, separated by their labels: a
+-- Curve25519 key to agree with and an Ed25519 key to sign with. A peer
+-- needs both before it will look at us.
+local seed = identity()
+local noisesec = derive(seed, "bitchat-noise-static")
+local noisepub = x25519.scalarmult_base(noisesec)
+local signsec = derive(seed, "bitchat-ed25519-signing")
+local signpub = ed25519.publickey(signsec)
+
+-- the peer id is the first eight bytes of the hash of the Curve25519
+-- key. A peer recomputes it from the announce and drops anything whose
+-- sender field disagrees, so this is not ours to choose.
+local myid = sha256.new():update(noisepub):final():sub(1, 8)
 
 local function hex(s)
 	return (s:gsub(".", function(c)
@@ -70,7 +83,14 @@ local function hex(s)
 	end))
 end
 
+-- the whole hash, not the eight bytes of it a peer id is: this is what
+-- another client shows for us, and comparing it is how two people check
+-- there is nobody in the middle.
+local fingerprint = hex(sha256.new():update(noisepub):final())
+
 out(string.format("bitchat: %s, peer %s\n", nick, hex(myid)))
+out(string.format("fingerprint %s\n", (fingerprint:upper():gsub(
+    "(%x%x%x%x)", "%1 "):gsub(" $", ""))))
 
 -- ---- the radio ----
 
@@ -112,6 +132,18 @@ local mychar = mine.handles.chars[1].value
 -- becomes possible rather than at the link.
 local mycccd = mine.handles.chars[1].cccd
 
+-- A link that predates this run is useless to us: the peer subscribed
+-- to the old service, and registering a new one resets that, so a
+-- notification would go nowhere. Dropping the link makes the peer
+-- reconnect and subscribe again, which is the path that works.
+local st = ask({ op = "status" })
+
+for _, l in ipairs(st.links or {}) do
+	out(string.format("dropping stale link %d (%s)\n", l.handle,
+	    l.addr or "?"))
+	ask({ op = "disconnect", handle = l.handle })
+end
+
 ask({ op = "advertise", on = true, name = nick, service = SERVICE })
 out("advertising, and listening\n")
 
@@ -142,11 +174,15 @@ local function show(p)
 		end
 	elseif p.type == packet.LEAVE then
 		out(string.format("* %s left\n", hex(p.sender)))
-	elseif p.type == packet.NOISE_HANDSHAKE or
-	    p.type == packet.NOISE_ENCRYPTED then
-		-- private traffic, which needs a handshake this does not
-		-- have. Counted rather than shown, so the mesh looks busy
-		-- rather than broken.
+	elseif p.type == packet.NOISE_HANDSHAKE then
+		out(string.format("~ %s wants a private session (%d bytes)\n",
+		    names[hex(p.sender)] or hex(p.sender), #p.payload))
+		return "private"
+	elseif p.type == packet.NOISE_ENCRYPTED then
+		-- a private message, which needs the session this does not
+		-- negotiate. Its arrival is worth saying even unread.
+		out(string.format("~ %s said something private (%d bytes)\n",
+		    names[hex(p.sender)] or hex(p.sender), #p.payload))
 		return "private"
 	end
 	return nil
@@ -177,23 +213,44 @@ local function onpacket(b)
 	end
 end
 
+-- unix milliseconds. A peer drops anything more than 15 minutes old,
+-- so uptime will not do: this needs the wall clock timed has set.
+local function now()
+	local t = os.time()
+
+	if not t then
+		die("no wall clock; a peer would call every packet stale")
+	end
+	return math.floor(t) * 1000
+end
+
+-- Sign and serialize; a peer ignores an announce carrying no signature.
+-- The signature covers the packet padded and with ttl zeroed, but the
+-- packet goes out at its own length: only Noise frames are padded, and
+-- a padded announce would not fit the link. A verifier re-encodes what
+-- it received, so a payload of 100 bytes or more would be deflated on
+-- its side and must be kept under that to agree.
+local function signed(p)
+	p.signature = ed25519.sign(signsec, packet.signinput(p))
+	return packet.encode(p)
+end
+
 -- an announce of our own, so peers know a name for us.
 local function announce()
-	-- an announce is TLV, not a bare name: a nickname beside the keys
-	-- a peer would need to speak privately later.
-	return packet.encode({ type = packet.ANNOUNCE, ttl = 3,
-	    timestamp = math.floor(sys.uptime_ms()), sender = myid,
+	-- all three fields are mandatory: a peer that cannot find the
+	-- nickname and both keys stops parsing and never sees us.
+	return signed({ type = packet.ANNOUNCE, ttl = 3, timestamp = now(),
+	    sender = myid,
 	    payload = packet.encodeannounce({ nickname = nick,
-		signkey = pub }) })
+		noisekey = noisepub, signkey = signpub }) })
 end
 
 local function say(text)
-	return packet.encode({ type = packet.MESSAGE, ttl = 7,
-	    timestamp = math.floor(sys.uptime_ms()), sender = myid,
+	return signed({ type = packet.MESSAGE, ttl = 7, timestamp = now(),
+	    sender = myid,
 	    payload = packet.encodemessage({
 		id = hex(myid) .. tostring(sys.uptime_ms()),
-		sender = nick, content = text,
-		timestamp = math.floor(sys.uptime_ms()),
+		sender = nick, content = text, timestamp = now(),
 	    }) })
 end
 
@@ -207,9 +264,22 @@ local function broadcast(b)
 	end
 end
 
-local deadline = sys.uptime_ms() + 60000
+local deadline = sys.uptime_ms() + 180000
+local nextannounce = 0
 
 while sys.uptime_ms() < deadline do
+	-- announce on a timer as well as on subscribe. A peer that
+	-- subscribed before we asked would otherwise never hear one.
+	if sys.uptime_ms() >= nextannounce then
+		nextannounce = sys.uptime_ms() + 10000
+		local n = ask({ op = "notify", attr = mychar,
+		    value = announce() })
+
+		if not (n.err or n.ok == false) then
+			out("announced\n")
+		end
+	end
+
 	local m = thread.recvtimeout(port, 1000)
 
 	if m and m.kind == "adv" then
