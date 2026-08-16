@@ -370,6 +370,16 @@ platform_kbd_read(void)
  * sends pointer input to the PS/2 mouse, and the firmware's usb driver
  * is not serviced while this kernel runs.
  */
+/* whether the mouse answered, which the pointer entry points below read
+ * on every machine -- so it sits outside the guard. */
+static int ps2ok;
+
+/* The controller is a pc device reached through port space, and the arm
+ * and riscv virt machines have neither. There the firmware's absolute
+ * pointer is the only pointer there is.
+ */
+#if defined(__x86_64__)
+
 #define I8042_DATA	0x60
 #define I8042_STATUS	0x64
 #define I8042_CMD	0x64
@@ -393,7 +403,6 @@ outb(unsigned short port, unsigned char v)
 	__asm__ volatile ("outb %0, %1" : : "a" (v), "Nd" (port));
 }
 
-static int ps2ok;
 static int ps2x, ps2y;		/* where we have accumulated to */
 static int ps2mid;		/* and whether that has a starting point */
 static int ps2wheel;		/* four bytes a packet, not three */
@@ -556,6 +565,25 @@ ps2_read(int *x, int *y, int *buttons)
 	}
 	return 1;
 }
+
+#else
+
+static int
+ps2_init(void)
+{
+	return 0;
+}
+
+static int
+ps2_read(int *x, int *y, int *buttons)
+{
+	(void)x;
+	(void)y;
+	(void)buttons;
+	return 0;
+}
+
+#endif
 
 /* absolute position from the firmware, for a machine with a touch panel
  * or a tablet. It is the fallback: qemu leaves it EFI_NOT_READY forever
