@@ -312,6 +312,75 @@ local unsup = db:request(string.char(0x16) .. "\1\0", 185)
 ok(att.decode(unsup).err == att.ERR_REQ_NOT_SUPPORTED,
     "and an opcode we do not implement says so")
 
+-- ---- gatt client ----
+
+local gattc = require("ble.gattc")
+
+-- driven against our own server. Two halves of ours agreeing proves
+-- consistency, not correctness -- but this server is the one host
+-- bluez discovered, so what it answers is known to be right.
+local walk = gattc.walk()
+local turns = 0
+
+while not walk:done() and turns < 20 do
+	local req = walk:next()
+
+	if not req then
+		break
+	end
+	local rsp = db:request(req, 185)
+
+	assert(rsp, "the server owed a response to " .. tostring(req:byte(1)))
+	local okw, werr = walk:feed(rsp)
+
+	assert(okw, tostring(werr))
+	turns = turns + 1
+end
+
+ok(walk:done(), "the walk finishes")
+ok(#walk.services == 1, "one service found")
+ok(uuid.eq(walk.services[1].uuid,
+    uuid.parse("F47B5E2D-1234-5678-9abc-def012345678")),
+    "and it is the one the database serves")
+ok(#walk.services[1].chars == 2, "with both characteristics")
+ok(walk.services[1].chars[2].cccd ~= nil,
+    "and the notify one's descriptor was found")
+ok(walk.services[1].chars[1].cccd == nil,
+    "while the write-only one has none")
+ok(walk.services[1].chars[2].props & gatt.NOTIFY ~= 0,
+    "properties came back with them")
+
+-- the pieces alone, without the walk.
+local sreq = gattc.services(1)
+
+ok(sreq:byte(1) == att.OP_READ_BY_GROUP_REQ, "a services request")
+ok(select(2, gattc.services_result(att.error(att.OP_READ_BY_GROUP_REQ, 1,
+    att.ERR_ATTR_NOT_FOUND))) == "done",
+    "attribute not found ends a walk rather than failing it")
+ok(select(2, gattc.services_result(att.error(att.OP_READ_BY_GROUP_REQ, 1,
+    att.ERR_READ_NOT_PERMITTED))) ~= "done",
+    "while another error is an error")
+
+local sub = gattc.subscribe(walk.services[1].chars[2].cccd)
+local subm = att.decode(sub)
+
+ok(subm.op == att.OP_WRITE_REQ and subm.value == "\1\0",
+    "subscribing writes 0001 to the descriptor")
+
+-- and the server accepts it, which closes the loop.
+ok(att.decode(db:request(sub, 185)).op == att.OP_WRITE_RSP,
+    "which the server answers")
+
+-- gatt.notify takes the SERVER's entry, whose `value` is an attribute;
+-- the client's characteristic of the same name holds a handle number.
+local nh, nv, needsack = gattc.update(gatt.notify(svc.chars[2], "hello"))
+
+ok(nh == svc.chars[2].value.handle and nv == "hello",
+    "a notification decodes to handle and value")
+ok(nh == walk.services[1].chars[2].value,
+    "and it is the handle the client discovered")
+ok(needsack == false, "a notification wants no confirmation")
+
 -- ---- advertising data ----
 
 local ad = require("ble.ad")
