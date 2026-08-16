@@ -22,9 +22,12 @@ return {
 	{ path = "/task/tcp4.lua", capname = "tcp", caps = { "ip" } },
 	{ path = "/task/dhcpd.lua", capname = "dhcpd", caps = { "ip" } },
 	{ from = "dhcpd", mount = "/net" },
+	-- names, so a payload may reach a host by one. ns = false for the
+	-- reason machine/*/services.lua gives: it opens no file.
+	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },
 	{ path = "/task/boottest.lua", name = "boottest",
 	  optcaps = { "cons", "power", "disk", "esp", "flash", "blk",
-	      "eth", "ip", "tcp", "dhcpd", "fb", "kbd", "ptr", "dbg",
+	      "eth", "ip", "tcp", "dhcpd", "dns", "fb", "kbd", "ptr", "dbg",
 	      "wire", "time", "sched" } },
 }
 ]]

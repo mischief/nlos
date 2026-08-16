@@ -217,6 +217,37 @@ else
   boot_payload = get_option('boot_payload')
 
   embed_files = [
+    # tls, and the closure it pulls in. This machine has no disk, so a
+    # guest that is to reach an https server has to carry the whole
+    # stack in the image -- and being able to is what makes microvm the
+    # quick way to work on anything that talks to the network.
+    'lib/tlstcp.lua',
+    'lib/tls/client.lua',
+    'lib/tls/conn.lua',
+    'lib/tls/hello.lua',
+    'lib/tls/keys.lua',
+    'lib/tls/record.lua',
+    'lib/tls/server.lua',
+    'lib/tls/tofu.lua',
+    'lib/tls/wire.lua',
+    'lib/x509/cert.lua',
+    'lib/x509/der.lua',
+    # named only through a table in tls/tofu.lua, so a dependency
+    # scan does not see them: the signature algorithm picks one.
+    'lib/crypto/sha384.lua',
+    'lib/crypto/aead.lua',
+    'lib/crypto/bignum.lua',
+    'lib/crypto/ed25519.lua',
+    'lib/crypto/field25519.lua',
+    'lib/crypto/hkdf.lua',
+    'lib/crypto/hmac.lua',
+    'lib/crypto/p256.lua',
+    'lib/crypto/rsa.lua',
+    'lib/crypto/sha512.lua',
+    'lib/crypto/util.lua',
+    'lib/crypto/x25519.lua',
+    'lib/json.lua',
+    'lib/llm.lua',
     'lib/console.lua',
     'lib/fbcons.lua',
     'task/cons.lua',
