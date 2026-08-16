@@ -4,7 +4,8 @@
 --	tab        the peer list, and our fingerprint
 --	enter      send what is typed
 --	esc        leave
---	/help      the commands; /nick sets what the mesh calls us
+--	/msg NAME  talk to one person; /mesh goes back to everyone
+--	/help      the rest of the commands
 
 -- A view over lib/bitchat and lib/noise. dio lends it the adapter
 -- because its /etc/dio.lua entry says ble = true.
@@ -118,6 +119,10 @@ local sessions = {}		-- peer id -> a Noise session
 local showpeers = false
 local visible = true
 local status = "starting"
+-- who what is typed goes to: nil is the mesh, everyone at once. The
+-- prompt says which, because the difference between saying a thing to
+-- one person and to a room is not one to leave to memory.
+local target = nil
 -- the whole hash of our static key, which is what another client shows
 -- for us and what two people compare to know nobody is between them.
 local fingerprint = ""
@@ -143,7 +148,14 @@ local function paintinput()
 	end
 	fill(0, INPUT, W, ROWH, 0x181820)
 
-	local s = "> " .. typed
+	local who = "#mesh"
+
+	if target then
+		who = "@" .. ((peers[target] and peers[target].nick) or
+		    target:sub(1, 8))
+	end
+
+	local s = who .. "> " .. typed
 	local n = utf8.len(s)
 
 	-- the tail, so a long line shows what is being typed rather than
@@ -152,7 +164,9 @@ local function paintinput()
 	if n and n > COLS then
 		s = s:sub(utf8.offset(s, n - COLS + 1))
 	end
-	text(0, INPUT, s, FG, 0x181820)
+	-- the private line is coloured as private traffic is, so the
+	-- difference is visible without reading the name.
+	text(0, INPUT, s, target and PRIV or FG, 0x181820)
 end
 
 local function paintbody(all)
@@ -362,12 +376,23 @@ for _, l in ipairs((ask({ op = "status" }).links) or {}) do
 end
 
 -- a node nobody can see is a node that is not there, so this is worth
--- saying rather than leaving to a status command.
-local adv = ask({ op = "advertise", on = true, name = nick,
-    service = SERVICE })
+-- saying rather than leaving to a status command. Tried again on the
+-- announce timer: the controller disallows the command while a link is
+-- still going down, and that settles a moment later.
+local advertised = false
 
-if adv.err or adv.ok == false then
-	say("* not advertising: " .. tostring(adv.err or "refused"), WARN)
+local function advertise()
+	local r = ask({ op = "advertise", on = true, name = nick,
+	    service = SERVICE })
+
+	advertised = not (r.err or r.ok == false)
+	return advertised, r.err
+end
+
+local adv, adverr = advertise()
+
+if not adv then
+	say("* not advertising: " .. tostring(adverr or "refused"), WARN)
 end
 ask({ op = "scan", on = true })
 status = "advertising"
@@ -550,6 +575,52 @@ end
 -- ---- what arrives ----
 
 
+-- what was typed at a peer before there was a session to carry it. A
+-- handshake is three messages and a radio, so a private line cannot be
+-- written the moment it is asked for.
+local waiting = {}		-- peer id -> queued text
+
+-- a peer id is held as hex because it is a table key and a thing to
+-- print; the wire wants the eight bytes back.
+local function unhex(s)
+	return (s:gsub("%x%x", function(c)
+		return string.char(tonumber(c, 16))
+	end))
+end
+
+local function sendprivate(id, text)
+	local s = sessions[id]
+
+	if not s or not s:established() then
+		return false
+	end
+
+	local body = session.encodeprivate({
+		id = hex(myid) .. tostring(sys.uptime_ms()), content = text })
+	local frame, why = s:encrypt(session.PRIVATE_MESSAGE, body)
+
+	if not frame then
+		say("* " .. tostring(why), WARN)
+		return false
+	end
+	send(packet.encode({ type = packet.NOISE_ENCRYPTED, ttl = 7,
+	    timestamp = now(), sender = myid, recipient = unhex(id),
+	    payload = frame }))
+	return true
+end
+
+local function flushprivate(id)
+	local queued = waiting[id]
+
+	waiting[id] = nil
+	for _, text in ipairs(queued or {}) do
+		if sendprivate(id, text) then
+			say("[you -> " .. (peers[id] and peers[id].nick or
+			    id:sub(1, 8)) .. "] " .. text, PRIV)
+		end
+	end
+end
+
 local function onhandshake(p)
 	if p.recipient ~= myid then
 		return
@@ -582,6 +653,7 @@ local function onhandshake(p)
 	if s:established() then
 		say("* private session with " .. whois(p.sender), PRIV)
 		paintbar()
+		flushprivate(id)
 	end
 end
 
@@ -602,7 +674,11 @@ local function onencrypted(p)
 		local m = session.decodeprivate(body)
 
 		if m then
-			say("[" .. whois(p.sender) .. "] " .. m.content, PRIV)
+			-- said to us alone rather than to the room, and the
+			-- line says so: <name> is everyone, [name -> you] is
+			-- this one person.
+			say("[" .. whois(p.sender) .. " -> you] " .. m.content,
+			    PRIV)
 		end
 	end
 end
@@ -673,7 +749,7 @@ end
 -- A table rather than a chain of matches: the list is the help, so one
 -- cannot be added without saying what it does.
 local commands = {}
-local order = { "nick", "who", "clear", "help" }
+local order = { "msg", "mesh", "nick", "who", "clear", "help" }
 
 commands.nick = {
 	takes = "NAME", what = "what the mesh calls us",
@@ -687,6 +763,86 @@ commands.nick = {
 		-- said again at once, so a peer holding the old name does
 		-- not show it until the next timer.
 		send(announce())
+	end,
+}
+
+-- a peer by name, or by the front of its id. Names come from an
+-- announce and are what a person has to go on.
+local function findpeer(who)
+	who = who:lower()
+	for id, p in pairs(peers) do
+		if (p.nick or ""):lower() == who then
+			return id
+		end
+	end
+	for id in pairs(peers) do
+		if id:sub(1, #who) == who then
+			return id
+		end
+	end
+	return nil
+end
+
+-- to whoever is being addressed, opening the line first where there is
+-- none. A handshake is three messages across a radio, so what was typed
+-- waits rather than being refused.
+local function totarget(text)
+	local id = target
+	local who = (peers[id] and peers[id].nick) or id:sub(1, 8)
+	local s = sessions[id]
+
+	if s and s:established() then
+		if sendprivate(id, text) then
+			say("[you -> " .. who .. "] " .. text, PRIV)
+		else
+			say("* could not send to " .. who, WARN)
+		end
+		return
+	end
+
+	waiting[id] = waiting[id] or {}
+	waiting[id][#waiting[id] + 1] = text
+	if s then
+		return say("* still opening a line to " .. who, DIM)
+	end
+
+	s = session.new(noisesec, randbytes, true)
+	sessions[id] = s
+	send(packet.encode({ type = packet.NOISE_HANDSHAKE, ttl = 7,
+	    timestamp = now(), sender = myid, recipient = unhex(id),
+	    payload = s:handshake() }))
+	say("* opening a private line to " .. who, DIM)
+end
+
+commands.msg = {
+	takes = "NAME [TEXT]", what = "talk to one person; no text switches",
+	run = function(rest)
+		local who, text = rest:match("^(%S+)%s+(.+)$")
+
+		who = who or rest:match("^(%S+)$")
+
+		local id = who and findpeer(who)
+
+		if not id then
+			return say("* no peer called " .. tostring(who), WARN)
+		end
+		target = id
+		paintinput()
+		if text then
+			totarget(text)
+		else
+			say("* talking to " .. (peers[id].nick or who) ..
+			    "; /mesh to go back", DIM)
+		end
+	end,
+}
+
+commands.mesh = {
+	what = "back to everyone",
+	run = function()
+		target = nil
+		paintinput()
+		say("* talking to the mesh", DIM)
 	end,
 }
 
@@ -755,6 +911,9 @@ local function submit()
 	if said:match("^/") then
 		return docommand(said)
 	end
+	if target then
+		return totarget(said)
+	end
 
 	-- the text alone: a reader takes the name from our announce, and
 	-- derives an id from what it already has.
@@ -804,6 +963,9 @@ while true do
 		-- a peer that subscribed before we asked would otherwise
 		-- never hear one.
 		send(announce())
+		if not advertised and advertise() then
+			say("* advertising", DIM)
+		end
 		cases[3].port = sys.timer(10000)
 	elseif which == 1 and type(m) == "string" then
 		if not mouse.parse(m) then
