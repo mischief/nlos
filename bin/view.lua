@@ -9,14 +9,15 @@
 -- launcher was asked to open it -- which is the whole point of dio
 -- carrying the path in argv rather than inventing a protocol.
 
--- Bytes that are not text are shown as dots rather than refused: a
--- reader that will not open a file cannot say what is in it, and the
--- first line of a binary is often the answer being looked for.
+-- Text is utf8 and is not sanitised: los.font draws a codepoint it has
+-- no glyph for as a blank cell, so a binary opened here shows its shape
+-- rather than being refused, and nothing has to guess what is text.
 
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
 local mouse = require("mouse")
+local frame = require("frame")
 local font = require("los.font")
 
 local N = prog.ns()
@@ -60,36 +61,29 @@ end
 -- ---- the file ----
 
 local body, err = N and N:readfile(path)
-local lines = {}
 
+-- tabs first: the renderer draws one cell per codepoint, so a tab is a
+-- glyph rather than a stop and a source file comes out ragged.
 if body then
-	-- tabs first: the renderer draws one cell per byte, so a tab is a
-	-- glyph rather than a stop and a source file comes out ragged.
 	body = body:gsub("\t", "    ")
-	for l in (body .. "\n"):gmatch("([^\n]*)\n") do
-		l = l:gsub("[^\32-\126]", ".")
-		-- folded, not clipped: a long line is content, and a
-		-- reader that hides it is worse than one that wraps it.
-		if l == "" then
-			lines[#lines + 1] = ""
-		end
-		while #l > 0 do
-			lines[#lines + 1] = l:sub(1, COLS)
-			l = l:sub(COLS + 1)
-		end
-	end
 else
-	lines[1] = "cannot read: " .. tostring(err)
+	body = "cannot read: " .. tostring(err)
 end
+
+-- lib/frame.lua holds the wrapping, the scroll and where a point lands.
+-- Folded rather than clipped: a long line is content, and a reader that
+-- hides it is worse than one that wraps it.
+local F = frame.new(COLS, (H - TOP) // ROWH)
+
+F:settext(body)
 
 -- ---- drawing ----
 
-local off = 0
 local visible = true
 local shown = {}
 
 local function rows()
-	return (H - TOP) // ROWH
+	return F.rows
 end
 
 local function draw(all)
@@ -109,32 +103,20 @@ local function draw(all)
 	local seen = {}
 
 	for i = 1, rows() do
-		local l = lines[off + i]
+		local l = F:line(i) or ""
 		local y = TOP + (i - 1) * ROWH
 
-		seen[i] = l or ""
-		if shown[i] ~= seen[i] then
+		seen[i] = l
+		if shown[i] ~= l then
 			fb.fill({ x = 0, y = y, w = W, h = ROWH }, BG, true)
-			text(MARGIN, y, seen[i])
+			text(MARGIN, y, l)
 		end
 	end
 	shown = seen
 end
 
 local function scroll(by)
-	local most = #lines - rows()
-	local to = off + by
-
-	if most < 0 then
-		most = 0
-	end
-	if to < 0 then
-		to = 0
-	elseif to > most then
-		to = most
-	end
-	if to ~= off then
-		off = to
+	if F:scroll(by) then
 		draw(false)
 	end
 end
