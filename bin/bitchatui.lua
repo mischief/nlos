@@ -13,6 +13,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local mouse = require("mouse")
 local font = require("los.font")
+local frame = require("frame")
 local uuid = require("ble.uuid")
 local att = require("ble.att")
 local packet = require("bitchat.packet")
@@ -55,6 +56,26 @@ local COLS = W // FW
 
 -- ---- drawing ----
 
+-- the first n codepoints, which is not the first n bytes: cutting a
+-- utf8 sequence in half draws a box where a character was.
+local function head(s, n)
+	local len = utf8.len(s)
+
+	-- a sequence still being typed arrives a byte at a time, so the
+	-- string is briefly not utf8 at all. Cut bytes then: it is one
+	-- frame, and the alternative is drawing nothing.
+	if not len then
+		return #s > n and s:sub(1, n) or s
+	end
+	if len <= n then
+		return s
+	end
+
+	local at = utf8.offset(s, n + 1)
+
+	return at and s:sub(1, at - 1) or s
+end
+
 local function text(x, y, s, fg, bg)
 	s = tostring(s or "")
 	if s == "" then
@@ -66,9 +87,7 @@ local function text(x, y, s, fg, bg)
 	if room < 1 then
 		return
 	end
-	if #s > room then
-		s = s:sub(1, room)
-	end
+	s = head(s, room)
 
 	local px, w, h = font.render(s, fg or FG, bg or BG, true, FMT)
 
@@ -84,8 +103,13 @@ end
 
 -- ---- what is on the screen ----
 
+-- lib/frame.lua holds the wrapping, the scroll and where a codepoint
+-- lands. It takes one string, so the transcript is one -- and the colour
+-- of a wrapped row is found from the byte offset the frame hands back.
+local F = frame.new(COLS, rows)
 local lines = {}		-- {text, color}, oldest first
-local scroll = 0		-- rows back from the end
+local starts = {}		-- where each line begins in the frame's text
+local shownrow = {}		-- what each row already shows
 local typed = ""
 local peers = {}		-- peer id -> {nick, noisekey, seen}
 local sessions = {}		-- peer id -> a Noise session
@@ -118,22 +142,45 @@ local function paintinput()
 	fill(0, INPUT, W, ROWH, 0x181820)
 
 	local s = "> " .. typed
+	local n = utf8.len(s)
+
 	-- the tail, so a long line shows what is being typed rather than
-	-- what was typed first.
-	if #s > COLS then
-		s = s:sub(#s - COLS + 1)
+	-- what was typed first. In codepoints: cutting bytes would split
+	-- a sequence and draw a box for the character it halved.
+	if n and n > COLS then
+		s = s:sub(utf8.offset(s, n - COLS + 1))
 	end
 	text(0, INPUT, s, FG, 0x181820)
 end
 
--- the message area, from `scroll` rows back. One row is one line: no
--- wrapping, because a wrapped line makes a row and a line different
--- things and every index here would have to know which it meant.
-local function paintbody()
+-- which message a wrapped row came from, so it keeps its colour. The
+-- frame hands back the byte offset of the row it drew, and the messages
+-- are in offset order, so this is a search rather than a scan.
+local function colorat(boff)
+	local lo, hi, at = 1, #starts, 1
+
+	while lo <= hi do
+		local mid = (lo + hi) // 2
+
+		if starts[mid] <= boff then
+			at = mid
+			lo = mid + 1
+		else
+			hi = mid - 1
+		end
+	end
+	return lines[at] and lines[at][2] or THEM
+end
+
+local function paintbody(all)
 	if not visible then
 		return
 	end
-	fill(0, TOP, W, INPUT - TOP, BG)
+
+	if showpeers or all then
+		fill(0, TOP, W, INPUT - TOP, BG)
+		shownrow = {}
+	end
 
 	if showpeers then
 		local y = TOP
@@ -158,28 +205,61 @@ local function paintbody()
 		return
 	end
 
-	local last = #lines - scroll
-	local first = math.max(1, last - rows + 1)
+	-- only the rows whose text changed: a message appends one line, so
+	-- a repaint is one row rather than the whole body. A row costs
+	-- 111ms on this panel.
+	local seen = {}
 
-	for i = first, last do
-		local l = lines[i]
+	for i = 1, rows do
+		local s, l = F:line(i)
+		local y = TOP + (i - 1) * ROWH
 
-		if l then
-			text(0, TOP + (i - first) * ROWH, l[1], l[2])
+		s = s or ""
+		seen[i] = s
+		if shownrow[i] ~= s then
+			fill(0, y, W, ROWH, BG)
+			text(0, y, s, l and colorat(l.boff) or THEM)
 		end
 	end
+	shownrow = seen
+end
+
+-- the transcript as the frame's one string, and where each message
+-- begins in it. Rebuilt rather than appended to: the frame wraps what
+-- it is given, and a bounded scrollback drops from the front anyway.
+local function retext()
+	local parts = {}
+	local off = 1
+
+	starts = {}
+	for i, l in ipairs(lines) do
+		starts[i] = off
+		parts[i] = l[1]
+		off = off + #l[1] + 1		-- the newline between them
+	end
+	F:settext(table.concat(parts, "\n"))
+end
+
+local function atbottom()
+	return F.top >= F:nlines() - F.rows
 end
 
 local function say(s, color)
+	local stick = atbottom()
+
 	lines[#lines + 1] = { s, color or THEM }
-	-- a bounded scrollback: this is a handheld, and the whole list is
-	-- redrawn when it moves.
+	-- a bounded scrollback: this is a handheld, and the text is built
+	-- again whenever it changes.
 	while #lines > 200 do
 		table.remove(lines, 1)
 	end
-	if scroll == 0 then
-		paintbody()
+	retext()
+	-- follow the end unless the reader has scrolled back, which is
+	-- what makes a busy mesh readable rather than jumping.
+	if stick then
+		F:scroll(F:nlines())
 	end
+	paintbody()
 end
 
 -- ---- identity ----
@@ -420,14 +500,14 @@ local function onwin(state)
 	if visible then
 		fill(0, 0, W, H, BG)
 		paintbar()
-		paintbody()
+		paintbody(true)
 		paintinput()
 	end
 end
 
 fill(0, 0, W, H, BG)
 paintbar()
-paintbody()
+paintbody(true)
 paintinput()
 say("bitchat as " .. nick, DIM)
 -- one now, since the timer below does not fire for ten seconds.
@@ -461,15 +541,17 @@ while true do
 				paintinput()
 			elseif m == "\t" then
 				showpeers = not showpeers
-				paintbody()
+				paintbody(true)
 			elseif m == "\27[A" then
-				scroll = math.min(scroll + 1,
-				    math.max(0, #lines - rows))
+				F:scroll(-1)
 				paintbody()
 			elseif m == "\27[B" then
-				scroll = math.max(0, scroll - 1)
+				F:scroll(1)
 				paintbody()
-			elseif #m == 1 and m >= " " then
+			elseif m:byte(1) >= 0x20 and m:byte(1) ~= 0x7f then
+				-- a whole character, which is one to four
+				-- bytes: what arrives is a keystroke, not a
+				-- byte of one.
 				typed = typed .. m
 				paintinput()
 			end

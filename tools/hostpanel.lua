@@ -132,7 +132,13 @@ function P(x, y, b)
 	    sys.uptime_ms()))
 end
 function K(s)
-	for i = 1, #s do sys.send(KBD, s:sub(i, i)) end
+	local at = 1
+	while at <= #s do
+		local b = s:byte(at)
+		local n = b < 0x80 and 1 or b < 0xe0 and 2 or b < 0xf0 and 3 or 4
+		sys.send(KBD, s:sub(at, at + n - 1))
+		at = at + n
+	end
 end
 function DRAG(x0, y0, x1, y1, n, ms)
 	for i = 0, n do
