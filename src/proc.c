@@ -501,8 +501,10 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	/* growth only, and the test is what makes it so: gc_owed is
 	 * unsigned, so adding a shrink wraps it to near SIZE_MAX.
 	 */
-	if (nsize > real_osize)
+	if (nsize > real_osize) {
 		p->gc_owed += nsize - real_osize;
+		p->gc_idle_owed += nsize - real_osize;
+	}
 	return q;
 }
 
@@ -540,8 +542,39 @@ gc_step_k(lua_State *L)
 {
 	int kb = (int)lua_tointeger(L, lua_upvalueindex(1));
 
-	lua_gc(L, LUA_GCSTEP, kb);
+	if (kb == 0)
+		lua_gc(L, LUA_GCCOLLECT);
+	else
+		lua_gc(L, LUA_GCSTEP, kb);
 	return 0;
+}
+
+/* one collector call, protected: a step of kb kilobytes, or a whole
+ * cycle where kb is 0. Errors are reported and swallowed -- the caller
+ * is the scheduler, and a proc that cannot collect is not a machine
+ * fault.
+ */
+static void
+gc_protected(struct kproc *p, lua_State *L, size_t kb)
+{
+	/* lua turns this back into bytes as an l_mem, which is 32 bits wide
+	 * on esp32. Too large a step overflows it to a negative debt, and
+	 * the collector reads that as credit and does nothing.
+	 */
+	if (kb > GCSTEP_MAX_KB)
+		kb = GCSTEP_MAX_KB;
+
+	lua_pushinteger(L, (lua_Integer)kb);
+	lua_pushcclosure(L, gc_step_k, 1);
+	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+		const char *e = lua_tostring(L, -1);
+		char b[256];
+
+		snprintf(b, sizeof b, "lua: %s: gc: %s", p->name,
+		    e ? e : "?");
+		kernel_log(b);
+		lua_pop(L, 1);
+	}
 }
 
 /* run the collector for one proc, at the one place it is allowed to.
@@ -574,24 +607,24 @@ gc_step(struct kproc *p, lua_State *L, int mark)
 	if (mark)
 		trace_mark(p, "<gc>");
 
-	/* lua turns this back into bytes as an l_mem, which is 32 bits wide
-	 * on esp32. Too large a step overflows it to a negative debt, and
-	 * the collector reads that as credit and does nothing.
-	 */
-	if (kb > GCSTEP_MAX_KB)
-		kb = GCSTEP_MAX_KB;
+	gc_protected(p, L, kb);
+}
 
-	lua_pushinteger(L, (lua_Integer)kb);
-	lua_pushcclosure(L, gc_step_k, 1);
-	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-		const char *e = lua_tostring(L, -1);
-		char b[256];
+/* collect a parked proc, which nothing else will: gc_step runs at a
+ * dispatch point. kernel_run claims the proc as dispatch does. A whole
+ * cycle rather than a step, because an object that dies during an
+ * incremental cycle is swept by the next one -- so lua reporting a
+ * cycle finished is not a report that nothing is left, and a parked
+ * proc holds that remainder forever. Idle is what pays for the cycle. */
+void
+gc_idle_collect(struct kproc *p)
+{
+	if (!p->L)
+		return;
 
-		snprintf(b, sizeof b, "lua: %s: gc: %s", p->name,
-		    e ? e : "?");
-		kernel_log(b);
-		lua_pop(L, 1);
-	}
+	p->gc_owed = 0;
+	p->gc_idle_owed = 0;
+	gc_protected(p, p->L, 0);
 }
 
 /* tear down a proc's state.

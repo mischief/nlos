@@ -18,6 +18,11 @@ unsigned long long uptime_ms(void);
 extern unsigned long long quantum_cycles;
 extern unsigned long long uart_drain_cycles;
 
+/* the slice in milliseconds, as a variable so that a caller outside
+ * timer.c reads the platform's own QUANTUM_MS rather than the default.
+ */
+extern const unsigned quantum_ms;
+
 /* set the wall clock from unix seconds. */
 void	kernel_settime(long long unix_s);
 

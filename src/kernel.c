@@ -1065,6 +1065,15 @@ run_proc(struct kproc *p)
  */
 #define QUIET_SWEEP_LAPS 100
 
+/* how long a proc must sit parked before its collector is run where it
+ * lies, and the floor under that in quanta. An rpc takes more than one
+ * lap and sometimes more than one round trip, so the wait has to clear
+ * a whole exchange rather than a scheduling gap -- otherwise a client
+ * is collected between two messages of its own conversation.
+ */
+#define GCIDLE_MS	50
+#define GCIDLE_QUANTA	8
+
 /* the watchdog window, and how often the lap pushes it back. Four pets
  * per window, so three consecutive misses are needed for a reset.
  */
@@ -1125,6 +1134,10 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 			if (p->oncpu)
 				platform_abort("proc dispatched on two cpus");
 			p->oncpu = me->idx + 1;
+			/* a proc that runs is not a proc that has parked.
+			 * Stamped here rather than where it blocks, so a
+			 * proc yielding round a loop keeps pushing it out. */
+			p->gc_idle_ms = uptime_ms();
 			i++;
 		}
 		me->current = p;
@@ -1153,6 +1166,61 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 		prev = p;
 	}
 	return ran;
+}
+
+/* how much a parked proc must have allocated since it was last
+ * collected whole for the collect to be worth taking. Below this the
+ * cycle costs more than it can return, and the procs that park most
+ * often -- a client between two requests -- allocate least.
+ */
+#define GCIDLE_MIN	(64 * 1024)
+
+/* collect the procs that have parked, which nothing else will: gc_step
+ * runs at a dispatch point. Per lap rather than on a quiet machine,
+ * because the proc that most needs collecting is often parked while
+ * the rest of the machine is busy. A proc is claimed as dispatch claims
+ * one: this is a resume of its finalizers. */
+static void
+gc_idle_sweep(struct cpu *me)
+{
+	unsigned long long now = uptime_ms();
+	unsigned long long wait = GCIDLE_MS;
+
+	/* a platform whose quantum is coarse gets the same guarantee in
+	 * its own units: the wait must outlast a slice however long one
+	 * is here, or a proc merely descheduled looks parked.
+	 */
+	if (wait < (unsigned long long)quantum_ms * GCIDLE_QUANTA)
+		wait = (unsigned long long)quantum_ms * GCIDLE_QUANTA;
+
+	for (int i = 0; i < prochigh; i++) {
+		struct kproc *p;
+
+		lock(&schedlock);
+		p = procv[i];
+		/* BLOCKED and nothing else: a corpse must not run a
+		 * finalizer, a HATCHING proc has no chunk yet, and a
+		 * runnable one is about to reset its own clock.
+		 */
+		if (!p || p->status != BLOCKED || p->oncpu || p->frozen ||
+		    p->onq || p->gc_idle_owed < GCIDLE_MIN ||
+		    now - p->gc_idle_ms < wait) {
+			unlock(&schedlock);
+			continue;
+		}
+		p->oncpu = me->idx + 1;
+		me->current = p;
+		unlock(&schedlock);
+
+		gc_idle_collect(p);
+
+		lock(&schedlock);
+		me->current = 0;
+		p->oncpu = 0;
+		if (p->status == READY && !p->onq)
+			rq_add(donq, p);
+		unlock(&schedlock);
+	}
 }
 
 /* one lap of dispatch on one cpu: both phases, then the drain and the
@@ -1366,11 +1434,17 @@ kernel_run(void)
 		 */
 		ran = dispatch_lap(me);
 
+		/* the parked procs, then a quiet machine's chunks. Both
+		 * are here rather than anywhere else in the lap because
+		 * this is a safe point: no lock is held and no C local
+		 * holds anything reachable only from lua.
+		 */
+		gc_idle_sweep(me);
+
 		/* a quiet machine gives its heap back: the large-block
 		 * cache is held against a next request that is not coming.
 		 * Once per spell, since the sweep walks the free lists and
-		 * would find nothing twice. No lua runs here, so unlike
-		 * gc_step this needs no safe point.
+		 * would find nothing twice.
 		 */
 		if (ran) {
 			quiet_laps = 0;

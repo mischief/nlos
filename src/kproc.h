@@ -244,6 +244,18 @@ struct kproc {
 	 * lua's GCdebt. growth only: a free is not a reason to collect.
 	 */
 	size_t gc_owed;
+	/* bytes asked for since this proc was last collected whole, which
+	 * is what says an idle collect has anything to find. Separate from
+	 * gc_owed because a step zeroes that one and frees only part of
+	 * what it accounted for.
+	 */
+	size_t gc_idle_owed;
+	/* when this proc last ran, for deciding it has really parked
+	 * rather than paused. Milliseconds and not laps: a lap is
+	 * microseconds under load and a tick when idle, so a lap count
+	 * means a different wait on a busy machine than on a quiet one.
+	 */
+	unsigned long long gc_idle_ms;
 	char name[32];		/* from chunkname, for ps/debugging */
 	/* scheduling feedback. cputime/reds are raw accumulators; cpu is
 	 * the decaying fair-share estimate derived from them.

@@ -52,6 +52,7 @@ static int clock_ready;
 
 unsigned long long uart_drain_cycles = 1;
 unsigned long long quantum_cycles;
+const unsigned quantum_ms = QUANTUM_MS;
 
 /* the clock half of calibration, separate so it can run first: until it
  * has, there is no clock to stamp a log line with. The epoch is taken

@@ -69,6 +69,12 @@ void	trace_mark(struct kproc *p, const char *what);
 /* one collector step for a proc, at a point where nothing is held. */
 void	gc_step(struct kproc *p, lua_State *L, int mark);
 
+/* collect a proc the scheduler is not running. The caller must hold the
+ * proc the way dispatch does -- oncpu set, cpu_self()->current set --
+ * because this runs that proc's finalizers.
+ */
+void	gc_idle_collect(struct kproc *p);
+
 /* charge pooled buffer bytes against a proc's memory cap. */
 int	kbuf_charge(lua_State *L, size_t n);
 void	kbuf_uncharge(lua_State *L, size_t n);
