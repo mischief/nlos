@@ -109,8 +109,16 @@ os.execute("cp " .. q(arch.FW_VARS) .. " " .. q(tmp .. "/vars.fd"))
 -- arch.lua actually selected kvm -- which it does only for a native
 -- guest -- since under tcg there is nothing to fix.
 local pin = ""
+local want = os.getenv("LUAOS_PIN")
 
-if arch.MACHINE:find("kvm", 1, true) and have("taskset") and have("nproc") then
+if want == "" then
+	want = nil		-- set but empty is not a choice of cpu
+end
+if want == "off" then
+	pin = ""
+elseif want then
+	pin = "taskset -c " .. want
+elseif arch.MACHINE:find("kvm", 1, true) and have("taskset") and have("nproc") then
 	local nproc = tonumber(popen_line("nproc"))
 	local pid = getpid()
 
@@ -182,8 +190,10 @@ if rc ~= 0 then
 	for _, line in ipairs(lines) do
 		print("# " .. line)
 	end
+	-- An empty trace here is a guest that never reached our binary,
+	-- which is the wedge the pinning above exists for.
+	print("# serial log kept at " .. tmp .. "/serial.log")
 	print("not ok - boottest harness (qemu rc=" .. rc .. ")")
-	cleanup()
 	os.exit(1)
 end
 
