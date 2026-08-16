@@ -274,6 +274,7 @@ struct kproc {
 	unsigned int calls[NSYSCALL];
 	unsigned int brokeseq;	/* death order, so the cap reaps the oldest */
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
+	int exiting;		/* sys.exit(); the dispatch loop ends it */
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
 	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
 	int priv;		/* PRIV_*; only PRIV_BOOT keeps raw file access */

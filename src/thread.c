@@ -692,6 +692,24 @@ fault_report(lua_State *L)
 	return 0;
 }
 
+/* thread.exit(): end this thread, as plan 9's threadexit does. The
+ * address is the sentinel; resume_one reads it and counts the thread
+ * finished rather than faulted, which is the whole difference between
+ * this and error("done").
+ */
+static const char exitkey;
+
+static int
+l_thread_exit(lua_State *L)
+{
+	if (!lua_isyieldable(L)) {
+		return luaL_error(L, "thread.exit: not in a thread; "
+		    "sys.exit ends a proc");
+	}
+	lua_pushlightuserdata(L, (void *)&exitkey);
+	return lua_error(L);
+}
+
 /* Report a thread that raised.
  *
  * Protected: no print, or a traceback that cannot allocate, would
@@ -744,7 +762,8 @@ resume_one(lua_State *L, struct sched *s, int ci)
 	if (st != LUA_YIELD) {
 		s->nthreads--;
 		clearkey(L, s->parked, ci);
-		if (st != LUA_OK)
+		if (st != LUA_OK && !(lua_type(co, -1) == LUA_TLIGHTUSERDATA &&
+		    lua_touserdata(co, -1) == (void *)&exitkey))
 			fault(L, co);
 		/* and now it really does read as dead, so a duplicate ring
 		 * entry is dropped rather than counted a second time
@@ -2626,6 +2645,7 @@ static const luaL_Reg threadlib[] = {
 	{ "giveright", l_giveright },
 	{ "rpc", l_rpc },
 	{ "_park", l_park_table },
+	{ "exit", l_thread_exit },
 	{ "run", l_run },
 	{ "_ready", l_ready },
 	{ "inthread", l_inthread },

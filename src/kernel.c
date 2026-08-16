@@ -990,6 +990,15 @@ run_proc(struct kproc *p)
 			uart_poll();
 			last_uart_drain = platform_ticks();
 		}
+		/* sys.exit, taken at the yield after it: a proc parking
+		 * counts, so threads still waiting on ports do not keep a
+		 * proc that has said it is done.
+		 */
+		if (p->exiting) {
+			run_atexit(p);
+			proc_kill(p, 0);
+			break;
+		}
 		if (rc == LUA_YIELD) {
 			lua_pop(p->co, nres);
 			/* before the READY test: a stop leaves the queue

@@ -347,6 +347,16 @@ end
 -- descriptors. so the program's _ENV carries its own require, which
 -- answers for the sliver and delegates everything else.
 
+-- End the proc, where this program is the proc. Unwinding ends the
+-- coroutine it is called from, so a program that spawned threads leaves
+-- them parked and the proc alive; sys.exit says the whole proc is done.
+-- A coroutine stage must never: the proc belongs to its launcher.
+local function exitproc(ctx)
+	if ctx.ownproc and sys.exit then
+		sys.exit(ctx.status or 0)
+	end
+end
+
 local function install(ctx)
 	local fds = newfds(ctx)
 	local G = setmetatable({}, { __index = _G })
@@ -380,6 +390,7 @@ local function install(ctx)
 		-- belongs to the launcher hosting it. this is the one seam
 		-- between the two modes that is not a stream.
 		ctx.setexit(tonumber(code) or 0)
+		exitproc(ctx)
 		error(M.EXIT, 0)
 	end
 
@@ -728,6 +739,9 @@ function M.main()
 		ns.setcurrent(N)
 	end
 	ctx.setexit = setexit(ctx, sys.setexit)
+	-- this program IS the proc, which is what lets os.exit end it from
+	-- a thread. M.corun does not set it, and must not.
+	ctx.ownproc = true
 	return M.run(ctx)
 end
 

@@ -1362,6 +1362,22 @@ api_setexit(lua_State *L)
 	return 0;
 }
 
+/* sys.exit(code|"why"): end this proc, wherever it is called from.
+ * Unwinding ends one coroutine, leaving a done thread's siblings parked
+ * and the proc alive. The dispatch loop reads the flag rather than this
+ * freeing the state it runs in, which sys.kill refuses for the same
+ * reason -- and this is a plain exit, not the corpse a kill leaves.
+ */
+static int
+api_exit(lua_State *L)
+{
+	struct kproc *p = self(L);
+
+	api_setexit(L);
+	p->exiting = 1;
+	return 0;
+}
+
 /* sys.set_priority(pid, weight): a policy knob, not the scheduler. It
  * writes a clamped integer that the dispatch loop reads every lap, so
  * no lua runs inside a scheduling decision and a crashing policy proc
@@ -2324,6 +2340,7 @@ static const luaL_Reg kapi[] = {
 	{ "settime", api_settime },
 	{ "timer", api_timer },
 	{ "setexit", api_setexit },
+	{ "exit", api_exit },
 	{ "hungup", api_hungup },
 	{ NULL, NULL }
 };

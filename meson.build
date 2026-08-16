@@ -934,7 +934,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'procfs', 'buf', 'mnt', 'readonly', 'session', 'runq', 'ninep_selfmount', 'p9stream', 'p9flush', 'chanstress', 'torture', 'generator', 'sync', 'readline', 'mntconc',
               'ports',
               'font', 'fb', 'fbproxy', 'fbwin', 'fbprog', 'fbcons',
-              'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill',
+              'nohook', 'preempt', 'idle', 'stack', 'broke', 'kill', 'exit',
               'replyright', 'rightsundo', 'procpriv', 'portlimit', 'trace',
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'serialize', 'mntshare', 'althup', 'dio', 'ninepc',
