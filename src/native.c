@@ -2071,7 +2071,7 @@ bn_mont_mul(uint8_t *out, const uint8_t *a, const uint8_t *b,
  * Field elements are in Montgomery form throughout.
  */
 
-#define P256_K 8                        /* 32 bytes, 8 limbs of 32 bits */
+#define EC_K 8                          /* 32 bytes, 8 limbs of 32 bits */
 
 static const uint8_t p256_p_be[32] = {
 	0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x01,
@@ -2110,10 +2110,10 @@ static const uint8_t p256_gy_be[32] = {
 
 /* One modulus and what Montgomery arithmetic over it needs. */
 struct bn_mod {
-	uint32_t m[P256_K];
+	uint32_t m[EC_K];
 	uint32_t n0;                    /* -m^-1 mod 2^32 */
-	uint32_t r2[P256_K];            /* R^2 mod m, so `enter` is a mul */
-	uint32_t one[P256_K];           /* 1 in Montgomery form */
+	uint32_t r2[EC_K];            /* R^2 mod m, so `enter` is a mul */
+	uint32_t one[EC_K];           /* 1 in Montgomery form */
 };
 
 /* The inverse of an odd limb modulo 2^32, by Newton iteration: each
@@ -2135,7 +2135,7 @@ static void
 bn_mod_add(uint32_t *out, const uint32_t *a, const uint32_t *b,
     const uint32_t *m, size_t k)
 {
-	uint32_t t[P256_K], r[P256_K];
+	uint32_t t[EC_K], r[EC_K];
 	uint32_t carry = bn_add(t, a, b, k);
 	uint32_t borrow = bn_sub(r, t, m, k);
 	size_t i;
@@ -2153,7 +2153,7 @@ static void
 bn_mod_sub(uint32_t *out, const uint32_t *a, const uint32_t *b,
     const uint32_t *m, size_t k)
 {
-	uint32_t t[P256_K], r[P256_K];
+	uint32_t t[EC_K], r[EC_K];
 	size_t i;
 
 	if (bn_sub(t, a, b, k) != 0) {
@@ -2169,31 +2169,31 @@ bn_mod_sub(uint32_t *out, const uint32_t *a, const uint32_t *b,
 static void
 bn_mod_init(struct bn_mod *mod, const uint8_t *bytes)
 {
-	uint32_t r2[P256_K];
+	uint32_t r2[EC_K];
 	size_t i;
 
-	bn_unpack(mod->m, bytes, P256_K);
+	bn_unpack(mod->m, bytes, EC_K);
 	mod->n0 = (uint32_t)(0u - bn_inv_limb(mod->m[0]));
 
 	/* R^2 mod m by doubling 1 twice as many times as R has bits.
 	 * A division would need a divide routine this file does without.
 	 */
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < EC_K; i++)
 		r2[i] = 0;
 	r2[0] = 1;
-	for (i = 0; i < 2 * 32 * P256_K; i++)
-		bn_mod_add(r2, r2, r2, mod->m, P256_K);
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < 2 * 32 * EC_K; i++)
+		bn_mod_add(r2, r2, r2, mod->m, EC_K);
+	for (i = 0; i < EC_K; i++)
 		mod->r2[i] = r2[i];
 
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < EC_K; i++)
 		mod->one[i] = 0;
 	mod->one[0] = 1;
 	{
-		uint32_t t[P256_K + 2];
+		uint32_t t[EC_K + 2];
 
 		bn_mont_mul_limbs(mod->one, mod->one, mod->r2, mod->m,
-		    mod->n0, P256_K, t);
+		    mod->n0, EC_K, t);
 	}
 }
 
@@ -2201,9 +2201,9 @@ static void
 bn_mod_mul(const struct bn_mod *mod, uint32_t *out, const uint32_t *a,
     const uint32_t *b)
 {
-	uint32_t t[P256_K + 2];
+	uint32_t t[EC_K + 2];
 
-	bn_mont_mul_limbs(out, a, b, mod->m, mod->n0, P256_K, t);
+	bn_mont_mul_limbs(out, a, b, mod->m, mod->n0, EC_K, t);
 }
 
 static void
@@ -2215,10 +2215,10 @@ bn_mod_enter(const struct bn_mod *mod, uint32_t *out, const uint32_t *a)
 static void
 bn_mod_leave(const struct bn_mod *mod, uint32_t *out, const uint32_t *a)
 {
-	uint32_t one[P256_K];
+	uint32_t one[EC_K];
 	size_t i;
 
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < EC_K; i++)
 		one[i] = 0;
 	one[0] = 1;
 	bn_mod_mul(mod, out, a, one);
@@ -2232,11 +2232,11 @@ static void
 bn_mod_exp(const struct bn_mod *mod, uint32_t *out, const uint32_t *a,
     const uint8_t *e, size_t elen)
 {
-	uint32_t acc[P256_K];
+	uint32_t acc[EC_K];
 	size_t i, j;
 	int bit, started = 0;
 
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < EC_K; i++)
 		acc[i] = mod->one[i];
 
 	for (i = 0; i < elen; i++) {
@@ -2250,100 +2250,155 @@ bn_mod_exp(const struct bn_mod *mod, uint32_t *out, const uint32_t *a,
 			if (started) {
 				bn_mod_mul(mod, acc, acc, a);
 			} else {
-				for (j = 0; j < P256_K; j++)
+				for (j = 0; j < EC_K; j++)
 					acc[j] = a[j];
 				started = 1;
 			}
 		}
 	}
 
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < EC_K; i++)
 		out[i] = acc[i];
 }
 
 /* A point in Jacobian coordinates, in Montgomery form. */
-struct p256_pt {
-	uint32_t x[P256_K];
-	uint32_t y[P256_K];
-	uint32_t z[P256_K];
+struct ec_pt {
+	uint32_t x[EC_K];
+	uint32_t y[EC_K];
+	uint32_t z[EC_K];
 };
 
-/* Everything the curve needs, built once. */
-static struct {
+/* A short Weierstrass curve over a 256-bit prime, built once. Two of
+ * them below: P-256, whose a is -3, and secp256k1, whose a is 0. The
+ * point formulas are shared and `a_zero` is the only place they differ.
+ */
+struct ec_curve {
 	int ready;
 	struct bn_mod p;                /* the field */
 	struct bn_mod n;                /* the order */
-	uint32_t b[P256_K];             /* the curve's b, Montgomery form */
-	struct p256_pt g;               /* the generator */
-} p256;
+	uint32_t b[EC_K];               /* the curve's b, Montgomery form */
+	struct ec_pt g;                 /* the generator */
+	int a_zero;                     /* a = 0, rather than a = -3 */
+};
+
+static struct ec_curve p256;
 
 static int
-p256_is_zero(const uint32_t *a)
+ec_is_zero(const uint32_t *a)
 {
 	size_t i;
 	uint32_t d = 0;
 
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < EC_K; i++)
 		d |= a[i];
 	return d == 0;
 }
 
 static int
-p256_eq(const uint32_t *a, const uint32_t *b)
+ec_eq(const uint32_t *a, const uint32_t *b)
 {
 	size_t i;
 	uint32_t d = 0;
 
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < EC_K; i++)
 		d |= a[i] ^ b[i];
 	return d == 0;
 }
 
 static void
-p256_copy(uint32_t *out, const uint32_t *a)
+ec_copy(uint32_t *out, const uint32_t *a)
 {
 	size_t i;
 
-	for (i = 0; i < P256_K; i++)
+	for (i = 0; i < EC_K; i++)
 		out[i] = a[i];
+}
+
+/* Build a curve from its constants, once. */
+static void
+ec_init(struct ec_curve *c, const uint8_t *pbe, const uint8_t *nbe,
+    const uint8_t *bbe, const uint8_t *gxbe, const uint8_t *gybe, int a_zero)
+{
+	uint32_t t[EC_K];
+
+	if (c->ready)
+		return;
+
+	bn_mod_init(&c->p, pbe);
+	bn_mod_init(&c->n, nbe);
+
+	bn_unpack(t, bbe, EC_K);
+	bn_mod_enter(&c->p, c->b, t);
+
+	bn_unpack(t, gxbe, EC_K);
+	bn_mod_enter(&c->p, c->g.x, t);
+	bn_unpack(t, gybe, EC_K);
+	bn_mod_enter(&c->p, c->g.y, t);
+	ec_copy(c->g.z, c->p.one);
+
+	c->a_zero = a_zero;
+	c->ready = 1;
 }
 
 static void
 p256_init(void)
 {
-	uint32_t t[P256_K];
-
-	if (p256.ready)
-		return;
-
-	bn_mod_init(&p256.p, p256_p_be);
-	bn_mod_init(&p256.n, p256_n_be);
-
-	bn_unpack(t, p256_b_be, P256_K);
-	bn_mod_enter(&p256.p, p256.b, t);
-
-	bn_unpack(t, p256_gx_be, P256_K);
-	bn_mod_enter(&p256.p, p256.g.x, t);
-	bn_unpack(t, p256_gy_be, P256_K);
-	bn_mod_enter(&p256.p, p256.g.y, t);
-	p256_copy(p256.g.z, p256.p.one);
-
-	p256.ready = 1;
+	ec_init(&p256, p256_p_be, p256_n_be, p256_b_be, p256_gx_be,
+	    p256_gy_be, 0);
 }
 
-#define FMUL(o, a, b) bn_mod_mul(&p256.p, (o), (a), (b))
-#define FADD(o, a, b) bn_mod_add((o), (a), (b), p256.p.m, P256_K)
-#define FSUB(o, a, b) bn_mod_sub((o), (a), (b), p256.p.m, P256_K)
+#define FMUL(o, a, b) bn_mod_mul(&c->p, (o), (a), (b))
+#define FADD(o, a, b) bn_mod_add((o), (a), (b), c->p.m, EC_K)
+#define FSUB(o, a, b) bn_mod_sub((o), (a), (b), c->p.m, EC_K)
 
-/* Doubling, with a = -3 (the "dbl-2001-b" formulas). */
+/* Doubling: "dbl-2001-b" where a is -3, "dbl-2009-l" where a is 0. */
 static void
-p256_double(struct p256_pt *o, const struct p256_pt *a)
+ec_double(const struct ec_curve *c, struct ec_pt *o, const struct ec_pt *a)
 {
-	uint32_t delta[P256_K], gamma[P256_K], beta[P256_K], alpha[P256_K];
-	uint32_t t1[P256_K], t2[P256_K];
+	uint32_t delta[EC_K], gamma[EC_K], beta[EC_K], alpha[EC_K];
+	uint32_t t1[EC_K], t2[EC_K];
 
-	if (p256_is_zero(a->z)) {
+	if (ec_is_zero(a->z)) {
 		*o = *a;
+		return;
+	}
+
+	if (c->a_zero) {
+		uint32_t aa[EC_K], bb[EC_K], cc[EC_K], dd[EC_K], ee[EC_K];
+
+		FMUL(aa, a->x, a->x);           /* A = X^2 */
+		FMUL(bb, a->y, a->y);           /* B = Y^2 */
+		FMUL(cc, bb, bb);               /* C = B^2 */
+
+		FADD(t1, a->x, bb);
+		FMUL(t1, t1, t1);
+		FSUB(t1, t1, aa);
+		FSUB(t1, t1, cc);
+		FADD(dd, t1, t1);               /* D = 2((X+B)^2 - A - C) */
+
+		FADD(ee, aa, aa);
+		FADD(ee, ee, aa);               /* E = 3A */
+		FMUL(t1, ee, ee);               /* F = E^2 */
+
+		FADD(t2, dd, dd);
+		FSUB(t2, t1, t2);               /* X3 = F - 2D */
+
+		FADD(t1, cc, cc);
+		FADD(t1, t1, t1);
+		FADD(t1, t1, t1);               /* 8C */
+		FSUB(cc, dd, t2);
+		FMUL(cc, ee, cc);
+		FSUB(bb, cc, t1);               /* Y3 = E(D - X3) - 8C */
+
+		/* Z3 last of the reads, because o and a may be the same
+		 * point: nothing may be written until a is finished with.
+		 */
+		FMUL(t1, a->y, a->z);
+		FADD(aa, t1, t1);               /* Z3 = 2YZ */
+
+		ec_copy(o->x, t2);
+		ec_copy(o->y, bb);
+		ec_copy(o->z, aa);
 		return;
 	}
 
@@ -2377,19 +2432,22 @@ p256_double(struct p256_pt *o, const struct p256_pt *a)
 	FSUB(o->y, t1, t2);
 }
 
-/* Addition of two Jacobian points ("add-2007-bl"). */
+/* Addition of two Jacobian points ("add-2007-bl"), which holds for any
+ * a: the curve enters only through the doubling it falls back to.
+ */
 static void
-p256_add(struct p256_pt *o, const struct p256_pt *a, const struct p256_pt *b)
+ec_add(const struct ec_curve *c, struct ec_pt *o, const struct ec_pt *a,
+    const struct ec_pt *b)
 {
-	uint32_t z1z1[P256_K], z2z2[P256_K], u1[P256_K], u2[P256_K];
-	uint32_t s1[P256_K], s2[P256_K], h[P256_K], i[P256_K], j[P256_K];
-	uint32_t r[P256_K], v[P256_K], t1[P256_K];
+	uint32_t z1z1[EC_K], z2z2[EC_K], u1[EC_K], u2[EC_K];
+	uint32_t s1[EC_K], s2[EC_K], h[EC_K], i[EC_K], j[EC_K];
+	uint32_t r[EC_K], v[EC_K], t1[EC_K];
 
-	if (p256_is_zero(a->z)) {
+	if (ec_is_zero(a->z)) {
 		*o = *b;
 		return;
 	}
-	if (p256_is_zero(b->z)) {
+	if (ec_is_zero(b->z)) {
 		*o = *a;
 		return;
 	}
@@ -2403,19 +2461,19 @@ p256_add(struct p256_pt *o, const struct p256_pt *a, const struct p256_pt *b)
 	FMUL(s2, b->y, a->z);
 	FMUL(s2, s2, z1z1);
 
-	if (p256_eq(u1, u2)) {
+	if (ec_eq(u1, u2)) {
 		/* The same point, or two that cancel. */
-		if (!p256_eq(s1, s2)) {
+		if (!ec_eq(s1, s2)) {
 			size_t k;
 
-			for (k = 0; k < P256_K; k++) {
+			for (k = 0; k < EC_K; k++) {
 				o->x[k] = 0;
 				o->z[k] = 0;
 			}
-			p256_copy(o->y, p256.p.one);
+			ec_copy(o->y, c->p.one);
 			return;
 		}
-		p256_double(o, a);
+		ec_double(c, o, a);
 		return;
 	}
 
@@ -2445,51 +2503,54 @@ p256_add(struct p256_pt *o, const struct p256_pt *a, const struct p256_pt *b)
 	FMUL(o->z, t1, h);
 }
 
-/* y^2 = x^3 - 3x + b, in Montgomery form. */
+/* y^2 = x^3 + ax + b, in Montgomery form. */
 static int
-p256_on_curve(const uint32_t *x, const uint32_t *y)
+ec_on_curve(const struct ec_curve *c, const uint32_t *x, const uint32_t *y)
 {
-	uint32_t lhs[P256_K], rhs[P256_K], t[P256_K];
+	uint32_t lhs[EC_K], rhs[EC_K], t[EC_K];
 
 	FMUL(rhs, x, x);
 	FMUL(rhs, rhs, x);
-	FADD(t, x, x);
-	FADD(t, t, x);
-	FSUB(rhs, rhs, t);
-	FADD(rhs, rhs, p256.b);
+	if (!c->a_zero) {
+		FADD(t, x, x);
+		FADD(t, t, x);
+		FSUB(rhs, rhs, t);
+	}
+	FADD(rhs, rhs, c->b);
 	FMUL(lhs, y, y);
-	return p256_eq(lhs, rhs);
+	return ec_eq(lhs, rhs);
 }
 
 /* An uncompressed SEC 1 point, 0x04 then X then Y. */
 static int
-p256_point(struct p256_pt *o, const uint8_t *s, size_t len)
+p256_point(struct ec_pt *o, const uint8_t *s, size_t len)
 {
-	uint32_t x[P256_K], y[P256_K];
+	const struct ec_curve *c = &p256;
+	uint32_t x[EC_K], y[EC_K];
 
 	if (len != 65 || s[0] != 0x04)
 		return 0;
 
-	bn_unpack(x, s + 1, P256_K);
-	bn_unpack(y, s + 33, P256_K);
+	bn_unpack(x, s + 1, EC_K);
+	bn_unpack(y, s + 33, EC_K);
 
 	/* Both coordinates must be reduced already. */
 	{
-		uint32_t scratch[P256_K];
+		uint32_t scratch[EC_K];
 
-		if (bn_sub(scratch, x, p256.p.m, P256_K) == 0)
+		if (bn_sub(scratch, x, p256.p.m, EC_K) == 0)
 			return 0;
-		if (bn_sub(scratch, y, p256.p.m, P256_K) == 0)
+		if (bn_sub(scratch, y, p256.p.m, EC_K) == 0)
 			return 0;
 	}
 
 	bn_mod_enter(&p256.p, o->x, x);
 	bn_mod_enter(&p256.p, o->y, y);
-	p256_copy(o->z, p256.p.one);
+	ec_copy(o->z, p256.p.one);
 
-	if (p256_is_zero(o->x) && p256_is_zero(o->y))
+	if (ec_is_zero(o->x) && ec_is_zero(o->y))
 		return 0;
-	return p256_on_curve(o->x, o->y);
+	return ec_on_curve(c, o->x, o->y);
 }
 
 /*
@@ -2497,22 +2558,22 @@ p256_point(struct p256_pt *o, const uint8_t *s, size_t len)
  * scalars with the four combinations precomputed.
  */
 static void
-p256_double_scalar_mul(struct p256_pt *o, const uint8_t *u1,
-    const uint8_t *u2, const struct p256_pt *q)
+ec_double_scalar_mul(const struct ec_curve *c, struct ec_pt *o,
+    const uint8_t *u1, const uint8_t *u2, const struct ec_pt *q)
 {
-	struct p256_pt tab[4], acc;
+	struct ec_pt tab[4], acc;
 	size_t i, k;
 	int bit, started = 0;
 
-	for (k = 0; k < P256_K; k++) {
+	for (k = 0; k < EC_K; k++) {
 		tab[0].x[k] = 0;
 		tab[0].y[k] = 0;
 		tab[0].z[k] = 0;
 	}
-	p256_copy(tab[0].y, p256.p.one);
-	tab[1] = p256.g;
+	ec_copy(tab[0].y, c->p.one);
+	tab[1] = c->g;
 	tab[2] = *q;
-	p256_add(&tab[3], &p256.g, q);
+	ec_add(c, &tab[3], &c->g, q);
 	acc = tab[0];
 
 	for (i = 0; i < 32; i++) {
@@ -2521,11 +2582,11 @@ p256_double_scalar_mul(struct p256_pt *o, const uint8_t *u1,
 			    (((u2[i] >> bit) & 1) << 1);
 
 			if (started)
-				p256_double(&acc, &acc);
+				ec_double(c, &acc, &acc);
 			if (idx == 0)
 				continue;
 			if (started) {
-				p256_add(&acc, &acc, &tab[idx]);
+				ec_add(c, &acc, &acc, &tab[idx]);
 			} else {
 				acc = tab[idx];
 				started = 1;
@@ -2533,6 +2594,74 @@ p256_double_scalar_mul(struct p256_pt *o, const uint8_t *u1,
 		}
 	}
 	*o = acc;
+}
+
+/* k * q, most significant bit first. Not constant time: the branch is on
+ * a bit of the scalar, which for signing is secret. The header of
+ * ssh/crypto/secp256k1.lua says what that does and does not cost.
+ */
+static void
+ec_mul(const struct ec_curve *c, struct ec_pt *o, const uint8_t *k,
+    const struct ec_pt *q)
+{
+	struct ec_pt acc;
+	size_t i, j;
+	int bit, started = 0;
+
+	for (j = 0; j < EC_K; j++) {
+		acc.x[j] = 0;
+		acc.z[j] = 0;
+	}
+	ec_copy(acc.y, c->p.one);
+
+	for (i = 0; i < 32; i++) {
+		for (bit = 7; bit >= 0; bit--) {
+			if (started)
+				ec_double(c, &acc, &acc);
+			if (((k[i] >> bit) & 1) == 0)
+				continue;
+			if (started) {
+				ec_add(c, &acc, &acc, q);
+			} else {
+				acc = *q;
+				started = 1;
+			}
+		}
+	}
+	*o = acc;
+}
+
+/* The affine coordinates as big-endian bytes, or 0 for the point at
+ * infinity. One inversion, by Fermat, which is where the exponent comes
+ * from: p - 2, and every prime here ends in an odd byte above 2, so the
+ * subtraction cannot borrow.
+ */
+static int
+ec_affine(const struct ec_curve *c, uint8_t x[32], uint8_t y[32],
+    const struct ec_pt *pt)
+{
+	uint32_t zinv[EC_K], t[EC_K], z2[EC_K];
+	uint8_t exp[32];
+
+	if (ec_is_zero(pt->z))
+		return 0;
+
+	bn_pack(exp, c->p.m, EC_K);
+	exp[31] -= 2;
+	bn_mod_exp(&c->p, zinv, pt->z, exp, 32);
+
+	FMUL(z2, zinv, zinv);
+	FMUL(t, pt->x, z2);
+	bn_mod_leave(&c->p, t, t);
+	bn_pack(x, t, EC_K);
+
+	if (y != NULL) {
+		FMUL(t, z2, zinv);
+		FMUL(t, pt->y, t);
+		bn_mod_leave(&c->p, t, t);
+		bn_pack(y, t, EC_K);
+	}
+	return 1;
 }
 
 /*
@@ -2543,9 +2672,10 @@ static int
 p256_verify(const uint8_t *pub, size_t publen, const uint8_t *hash,
     size_t hashlen, const uint8_t *rb, const uint8_t *sb)
 {
-	struct p256_pt q, point;
-	uint32_t r[P256_K], s[P256_K], e[P256_K];
-	uint32_t w[P256_K], u1[P256_K], u2[P256_K], zinv[P256_K], x[P256_K];
+	const struct ec_curve *c = &p256;
+	struct ec_pt q, point;
+	uint32_t r[EC_K], s[EC_K], e[EC_K];
+	uint32_t w[EC_K], u1[EC_K], u2[EC_K], zinv[EC_K], x[EC_K];
 	uint8_t u1b[32], u2b[32], xb[32], exp[32];
 	size_t i;
 
@@ -2556,16 +2686,16 @@ p256_verify(const uint8_t *pub, size_t publen, const uint8_t *hash,
 	if (!p256_point(&q, pub, publen))
 		return 0;
 
-	bn_unpack(r, rb, P256_K);
-	bn_unpack(s, sb, P256_K);
-	if (p256_is_zero(r) || p256_is_zero(s))
+	bn_unpack(r, rb, EC_K);
+	bn_unpack(s, sb, EC_K);
+	if (ec_is_zero(r) || ec_is_zero(s))
 		return 0;
 	{
-		uint32_t scratch[P256_K];
+		uint32_t scratch[EC_K];
 
-		if (bn_sub(scratch, r, p256.n.m, P256_K) == 0)
+		if (bn_sub(scratch, r, p256.n.m, EC_K) == 0)
 			return 0;
-		if (bn_sub(scratch, s, p256.n.m, P256_K) == 0)
+		if (bn_sub(scratch, s, p256.n.m, EC_K) == 0)
 			return 0;
 	}
 
@@ -2573,12 +2703,12 @@ p256_verify(const uint8_t *pub, size_t publen, const uint8_t *hash,
 	 * one conditional subtraction is enough. No borrow out means the
 	 * subtraction was the one wanted.
 	 */
-	bn_unpack(e, hash, P256_K);
+	bn_unpack(e, hash, EC_K);
 	{
-		uint32_t scratch[P256_K];
+		uint32_t scratch[EC_K];
 
-		if (bn_sub(scratch, e, p256.n.m, P256_K) == 0)
-			p256_copy(e, scratch);
+		if (bn_sub(scratch, e, p256.n.m, EC_K) == 0)
+			ec_copy(e, scratch);
 	}
 
 	/* w = s^-1 mod n, by Fermat: the order is prime. */
@@ -2596,11 +2726,11 @@ p256_verify(const uint8_t *pub, size_t publen, const uint8_t *hash,
 	bn_mod_mul(&p256.n, u2, u2, w);
 	bn_mod_leave(&p256.n, u2, u2);
 
-	bn_pack(u1b, u1, P256_K);
-	bn_pack(u2b, u2, P256_K);
+	bn_pack(u1b, u1, EC_K);
+	bn_pack(u2b, u2, EC_K);
 
-	p256_double_scalar_mul(&point, u1b, u2b, &q);
-	if (p256_is_zero(point.z))
+	ec_double_scalar_mul(c, &point, u1b, u2b, &q);
+	if (ec_is_zero(point.z))
 		return 0;
 
 	/* Back to affine: one inversion, at the end. */
@@ -2611,17 +2741,202 @@ p256_verify(const uint8_t *pub, size_t publen, const uint8_t *hash,
 	FMUL(x, zinv, zinv);
 	FMUL(x, point.x, x);
 	bn_mod_leave(&p256.p, x, x);
-	bn_pack(xb, x, P256_K);
+	bn_pack(xb, x, EC_K);
 
 	/* The comparison is modulo the order, and p is larger than n, so
 	 * one subtraction reduces it.
 	 */
-	bn_unpack(x, xb, P256_K);
+	bn_unpack(x, xb, EC_K);
 	{
-		uint32_t scratch[P256_K];
+		uint32_t scratch[EC_K];
 
-		if (bn_sub(scratch, x, p256.n.m, P256_K) == 0)
-			p256_copy(x, scratch);
+		if (bn_sub(scratch, x, p256.n.m, EC_K) == 0)
+			ec_copy(x, scratch);
 	}
-	return p256_eq(x, r);
+	return ec_eq(x, r);
+}
+
+/* ---- secp256k1 and BIP 340 ---------------------------------------
+ *
+ * The scalar multiplications, and nothing above them: tagged hashes,
+ * nonce derivation and the length checks stay in the Lua this agrees
+ * with. Not constant time, and mul_g and ecdh take a secret scalar.
+ */
+
+static const uint8_t k1_p_be[32] = {
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xfc, 0x2f
+};
+
+static const uint8_t k1_n_be[32] = {
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+	0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b,
+	0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41
+};
+
+static const uint8_t k1_b_be[32] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7
+};
+
+static const uint8_t k1_gx_be[32] = {
+	0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac,
+	0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b, 0x07,
+	0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9,
+	0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98
+};
+
+static const uint8_t k1_gy_be[32] = {
+	0x48, 0x3a, 0xda, 0x77, 0x26, 0xa3, 0xc4, 0x65,
+	0x5d, 0xa4, 0xfb, 0xfc, 0x0e, 0x11, 0x08, 0xa8,
+	0xfd, 0x17, 0xb4, 0x48, 0xa6, 0x85, 0x54, 0x19,
+	0x9c, 0x47, 0xd0, 0x8f, 0xfb, 0x10, 0xd4, 0xb8
+};
+
+/* (p + 1) / 4, which takes a square root: p is 3 mod 4. */
+static const uint8_t k1_sqrt_be[32] = {
+	0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xbf, 0xff, 0xff, 0x0c
+};
+
+static struct ec_curve k1;
+
+static void
+k1_init(void)
+{
+	ec_init(&k1, k1_p_be, k1_n_be, k1_b_be, k1_gx_be, k1_gy_be, 1);
+}
+
+/* 1 when a is under the modulus m, both unpacked. */
+static int
+ec_below(const uint32_t *a, const uint32_t *m)
+{
+	uint32_t scratch[EC_K];
+
+	return bn_sub(scratch, a, m, EC_K) != 0;
+}
+
+/* The point with this x and an even y, or 0 for an x that is not one.
+ * BIP 340 3: a public key is 32 bytes and the y is implied.
+ */
+static int
+k1_lift_x(struct ec_pt *o, const uint8_t xb[32])
+{
+	const struct ec_curve *c = &k1;
+	uint32_t x[EC_K], t[EC_K], y[EC_K];
+	uint8_t yb[32];
+
+	bn_unpack(x, xb, EC_K);
+	if (!ec_below(x, c->p.m))
+		return 0;
+
+	bn_mod_enter(&c->p, o->x, x);
+	FMUL(t, o->x, o->x);
+	FMUL(t, t, o->x);
+	FADD(t, t, c->b);                       /* x^3 + 7 */
+
+	bn_mod_exp(&c->p, y, t, k1_sqrt_be, 32);
+	FMUL(o->y, y, y);
+	if (!ec_eq(o->y, t))
+		return 0;
+
+	/* The even root: y and p - y differ in the last bit, p being odd. */
+	bn_mod_leave(&c->p, o->y, y);
+	bn_pack(yb, o->y, EC_K);
+	if ((yb[31] & 1) != 0)
+		bn_mod_sub(y, c->p.m, y, c->p.m, EC_K);
+
+	ec_copy(o->y, y);
+	ec_copy(o->z, c->p.one);
+	return 1;
+}
+
+/* k * G, as x then y, for a scalar in 1 .. n-1. Returns 0 for a scalar
+ * out of that range, which is a secret key that is not one.
+ */
+static int
+k1_mul_g(uint8_t out[64], const uint8_t k[32])
+{
+	const struct ec_curve *c = &k1;
+	struct ec_pt r;
+	uint32_t d[EC_K];
+
+	k1_init();
+	bn_unpack(d, k, EC_K);
+	if (ec_is_zero(d) || !ec_below(d, c->n.m))
+		return 0;
+
+	ec_mul(c, &r, k, &c->g);
+	return ec_affine(c, out, out + 32, &r);
+}
+
+/* The x of k * lift_x(pub), which is what NIP-44 hands to HKDF. */
+static int
+k1_ecdh(uint8_t out[32], const uint8_t k[32], const uint8_t pub[32])
+{
+	const struct ec_curve *c = &k1;
+	struct ec_pt q, r;
+	uint32_t d[EC_K];
+
+	k1_init();
+	bn_unpack(d, k, EC_K);
+	if (ec_is_zero(d) || !ec_below(d, c->n.m))
+		return 0;
+	if (!k1_lift_x(&q, pub))
+		return 0;
+
+	ec_mul(c, &r, k, &q);
+	return ec_affine(c, out, NULL, &r);
+}
+
+/*
+ * The half of BIP 340 4.2 that is arithmetic: R = s*G - e*P, with R
+ * required to have an even y and the x the signature claims. The
+ * challenge e arrives already reduced, computed by the caller from the
+ * tagged hash.
+ */
+static int
+k1_verify(const uint8_t pub[32], const uint8_t e[32], const uint8_t rb[32],
+    const uint8_t sb[32])
+{
+	const struct ec_curve *c = &k1;
+	struct ec_pt p_, r;
+	uint32_t t[EC_K];
+	uint8_t rx[32], ry[32];
+	size_t i;
+
+	k1_init();
+
+	bn_unpack(t, sb, EC_K);
+	if (!ec_below(t, c->n.m))
+		return 0;
+	bn_unpack(t, e, EC_K);
+	if (!ec_below(t, c->n.m))
+		return 0;
+	bn_unpack(t, rb, EC_K);
+	if (!ec_below(t, c->p.m))
+		return 0;
+
+	if (!k1_lift_x(&p_, pub))
+		return 0;
+
+	/* -P, so the subtraction is the addition Shamir's trick does. */
+	bn_mod_sub(p_.y, c->p.m, p_.y, c->p.m, EC_K);
+
+	ec_double_scalar_mul(c, &r, sb, e, &p_);
+	if (!ec_affine(c, rx, ry, &r))
+		return 0;
+	if ((ry[31] & 1) != 0)
+		return 0;
+
+	for (i = 0; i < 32; i++) {
+		if (rx[i] != rb[i])
+			return 0;
+	}
+	return 1;
 }

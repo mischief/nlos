@@ -242,10 +242,12 @@ else
     'lib/crypto/hkdf.lua',
     'lib/crypto/hmac.lua',
     'lib/crypto/p256.lua',
+    'lib/crypto/secp256k1.lua',
     'lib/crypto/rsa.lua',
     'lib/crypto/sha512.lua',
     'lib/crypto/util.lua',
     'lib/crypto/x25519.lua',
+    'lib/bech32.lua',
     'lib/json.lua',
     'lib/llm.lua',
     'lib/agent.lua',
@@ -787,6 +789,7 @@ lua_payload = files(
   'lib/crypto/aead.lua',
   'lib/crypto/bignum.lua',
   'lib/crypto/p256.lua',
+  'lib/crypto/secp256k1.lua',
   'lib/crypto/rsa.lua',
   'lib/ssh/wire.lua',
   'lib/ssh/msg.lua',
@@ -851,6 +854,7 @@ lua_payload = files(
   'lib/llm.lua',
   'lib/agent.lua',
   'task/idle.lua',
+  'lib/bech32.lua',
   'lib/json.lua',
   'lib/mcp.lua',
   'lib/mnt.lua',
@@ -1017,7 +1021,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
-              'dbgread', 'dbgcap', 'dbglib', 'dbghole']
+              'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

@@ -505,6 +505,54 @@ l_p256_verify(lua_State *L)
 	return 1;
 }
 
+/* secp256k1_mul_g(scalar) -> 64 bytes, x then y, or nil for a scalar
+ * that is zero or at the order.
+ */
+static int
+l_secp256k1_mul_g(lua_State *L)
+{
+	const uint8_t *k = checkbytes(L, 1, 32, "scalar");
+	uint8_t out[64];
+
+	if (!k1_mul_g(out, k)) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushlstring(L, (const char *)out, sizeof out);
+	return 1;
+}
+
+/* secp256k1_ecdh(scalar, xonly_pubkey) -> the shared x, or nil */
+static int
+l_secp256k1_ecdh(lua_State *L)
+{
+	const uint8_t *k = checkbytes(L, 1, 32, "scalar");
+	const uint8_t *pub = checkbytes(L, 2, 32, "public key");
+	uint8_t out[32];
+
+	if (!k1_ecdh(out, k, pub)) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushlstring(L, (const char *)out, sizeof out);
+	return 1;
+}
+
+/* secp256k1_verify(pubkey, e, r, s) -> boolean, the arithmetic half of
+ * BIP 340 4.2. The caller computes the challenge e.
+ */
+static int
+l_secp256k1_verify(lua_State *L)
+{
+	const uint8_t *pub = checkbytes(L, 1, 32, "public key");
+	const uint8_t *e = checkbytes(L, 2, 32, "challenge");
+	const uint8_t *r = checkbytes(L, 3, 32, "r");
+	const uint8_t *s = checkbytes(L, 4, 32, "s");
+
+	lua_pushboolean(L, k1_verify(pub, e, r, s));
+	return 1;
+}
+
 static const luaL_Reg funcs[] = {
 	{ "x25519", l_x25519 },
 	{ "ed25519_publickey", l_ed25519_publickey },
@@ -524,6 +572,9 @@ static const luaL_Reg funcs[] = {
 	{ "bignum_addm", l_bignum_addm },
 	{ "bignum_subm", l_bignum_subm },
 	{ "p256_verify", l_p256_verify },
+	{ "secp256k1_mul_g", l_secp256k1_mul_g },
+	{ "secp256k1_ecdh", l_secp256k1_ecdh },
+	{ "secp256k1_verify", l_secp256k1_verify },
 	{ NULL, NULL }
 };
 
