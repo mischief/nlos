@@ -25,6 +25,7 @@
 --	key NAME            enter, esc, tab, backspace, space, intr
 --	run LUA             one line at the serial repl
 --	ask LUA             the same, and print what comes back
+--	sh CMD              a command line at the shell, and its output
 --	shot FILE [ROWS]    read the screen back as a netpbm
 --	push FILE [DIR]     send a file to the flash volume, /bin by
 --	                    default -- an edit without a reflash
@@ -65,18 +66,21 @@ end
 
 local p = hostpanel.open(port)
 
--- to the lua prompt, since what this types is lua. The bare newline on
--- the way matters too: the console may be mid-line from whatever last
--- touched this port, and a stray prompt is easier to live with than a
--- command joined onto somebody's half-typed one.
-p:torepl()
+-- A bare line first: the console may be mid-line from whatever last
+-- touched this port, and a stray prompt beats a command joined onto
+-- somebody's half-typed one. Which prompt each action wants is the
+-- action's own business.
+-- and back to the shell: the board keeps whatever prompt the last
+-- session left, so a new one cannot assume which it is at.
+p:say("")
+p:todos()
 
 -- what a word may be instead of an argument, so an optional one knows
 -- where it ends.
 local actions = {}
 
 for _, a in ipairs({ "move", "tap", "press", "release", "drag", "wheel",
-    "type", "key", "run", "ask", "shot", "push", "cancel", "sleep" }) do
+    "type", "key", "run", "ask", "sh", "shot", "push", "cancel", "sleep" }) do
 	actions[a] = true
 end
 
@@ -124,9 +128,14 @@ while i <= #arg do
 			die(err)
 		end
 	elseif a == "run" then
+		p:tolua()
 		p:say(next_arg("a lua line"), 0.5)
 	elseif a == "ask" then
+		p:tolua()
 		print(p:ask(next_arg("a lua line")))
+	elseif a == "sh" then
+		p:todos()
+		print(p:ask(next_arg("a command line")))
 	elseif a == "shot" then
 		local out = next_arg("a filename")
 		local rows = tonumber(arg[i + 1])

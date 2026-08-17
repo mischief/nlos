@@ -69,14 +69,31 @@ function Panel:say(line, settle)
 	return self
 end
 
--- torepl() -- get to the lua prompt, wherever the console was.
+-- tolua()/todos() -- move between the shell and a lua prompt.
 --
--- The console comes up in the launcher, which answers a lua line with
--- "not found". exit returns to the repl from there and is a word that
--- does nothing at the repl, so this lands in the same place either way
--- and needs to know neither. Panel:shot types dos() for the mirror.
-function Panel:torepl()
-	return self:say(""):say("exit")
+-- The console is the shell. `lua` is a program in it, so a session that
+-- types lua enters one and leaves by exiting it -- and one that runs a
+-- program has to be back at the shell first. Which of the two we are at
+-- is tracked rather than re-derived: the prompts share a line with
+-- whatever else printed, so matching them is not reliable.
+function Panel:tolua()
+	if not self.inlua then
+		self:say(""):say("lua", 0.6)
+		self.inlua = true
+		self.ready = false	-- a new prompt holds no helpers
+	end
+	return self
+end
+
+-- eof, not a word: bin/lua leaves its prompt when readline answers nil,
+-- and os.exit inside it is caught by the same handler that reports an
+-- error in a typed chunk.
+function Panel:todos()
+	self.f:write("\4")
+	self.f:flush()
+	nap(0.5)
+	self.inlua = false
+	return self
 end
 
 -- ask(line) -- type a line and collect what comes back.
@@ -152,6 +169,7 @@ end
 ]]
 
 function Panel:setup()
+	self:tolua()
 	if self.ready then
 		return self
 	end
@@ -307,7 +325,7 @@ function Panel:shot(out, rows)
 	-- session goes through dos and comes back. dos blocks while it
 	-- runs, which is what keeps the shell off the console during the
 	-- transfer.
-	self:say("dos()", 0.6)
+	self:todos()
 	self:say(("shot %s%s"):format(tmp, rows and (" " .. rows) or ""),
 	    0.5)
 
@@ -448,7 +466,7 @@ function Panel:push(file, dir)
 	fh:close()
 
 	self:drain(3, 0.3)
-	self:say("dos()", 0.6)
+	self:todos()
 	if dir then
 		self:say("cd " .. dir, 0.4)
 	end
