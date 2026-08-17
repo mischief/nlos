@@ -140,9 +140,10 @@ sys.send(cons, { op = "rawon" })
 -- screen, and the only way out is a reset. A screenshot is worth less
 -- than the machine.
 --
--- A whole T-Deck screen measured about 7 seconds at 37KB/s, so this is
--- room for a busy machine rather than for a slow one.
-local BUDGET_MS = 30000
+-- A whole T-Deck screen is 225KB and leaves at about 5.5KB/s, so it
+-- needs the better part of a minute. Room for a busy machine on top of
+-- that, rather than for a slow one.
+local BUDGET_MS = 90000
 local started = sys.uptime_ms()
 
 local function overbudget()

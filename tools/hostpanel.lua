@@ -326,7 +326,7 @@ function Panel:shot(out, rows)
 	-- purpose. The guest is the one holding the console, so it must be
 	-- the one that gives up first; a host that quits earlier only
 	-- leaves a sender pushing pixels at nobody.
-	local deadline = os.time() + 35
+	local deadline = os.time() + 100
 	local rc
 
 	while os.time() < deadline do
