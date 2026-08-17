@@ -179,8 +179,17 @@ function ops.alloc(m, space)
 
 	local id = space.nextid
 
+	-- the screen's format where the caller named none: an image is
+	-- allocated to be drawn here, and one in another layout costs
+	-- twice the memory on a 16-bit panel and a conversion to reach it.
+	local fmt = m.fmt
+
+	if not fmt then
+		fmt = (space.win and space.win.fmt) or platform.mode().format
+	end
+
 	space.nextid = id + 1
-	space.images[id] = md().image(w, h, m.color, m.fmt)
+	space.images[id] = md().image(w, h, m.color, fmt)
 	return id
 end
 
