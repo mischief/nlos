@@ -371,14 +371,44 @@ local function already(id)
 end
 
 -- ---- keys ----
+--
+-- Made on first run and kept on /config, as bitchat's is, so a reflash
+-- does not change who this board is. Written as an nsec rather than as
+-- the raw 32 bytes: this is the one key here a person may want to carry
+-- to another client, and nsec is the form every one of them reads.
+
+local fresh = false
+
+local function makekey()
+	if not rand then return nil, "no entropy" end
+
+	local sec, err = nostr.genkey(rand)
+
+	if not sec then return nil, err end
+
+	local ok, werr = N:writefile(KEYFILE, nostr.nsec(sec) .. "\n")
+
+	-- an unwritable /config is worth saying so: the key still works
+	-- for this run, and is gone at the next boot.
+	if not ok then return sec, werr or "could not be saved" end
+	return sec
+end
 
 local key = N:readfile(KEYFILE)
+local keyerr
 
 if key then
 	seckey = nostr.seckey(key)
-	if seckey then
-		pubkey = nostr.pubkey(seckey)
+	if not seckey then
+		keyerr = KEYFILE .. " is not a key"
 	end
+else
+	seckey, keyerr = makekey()
+	fresh = seckey ~= nil
+end
+
+if seckey then
+	pubkey = nostr.pubkey(seckey)
 end
 
 local savedurl = N:readfile(RELAYFILE)
@@ -656,7 +686,7 @@ end
 
 local function post(what)
 	if not seckey then
-		say("no key: put an nsec in " .. KEYFILE, WARN)
+		say("no key: " .. (keyerr or "none"), WARN)
 		return
 	end
 	if not relay or not relay:alive() then
@@ -697,9 +727,12 @@ paintbody(true)
 paintinput()
 
 if seckey then
+	if fresh then
+		say("made a new identity, kept in " .. KEYFILE, DIM)
+	end
 	say("posting as " .. (nostr.npub(pubkey) or "?"):sub(1, 20) .. "..", DIM)
 else
-	say("no key in " .. KEYFILE .. ", so this reads only.", DIM)
+	say("no key (" .. (keyerr or "none") .. "), so this reads only.", WARN)
 end
 say("touch the relay name to connect.", DIM)
 

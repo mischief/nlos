@@ -9,7 +9,7 @@ local sha1 = require("crypto.sha1")
 local base64 = require("ssh.base64")
 local tap = require("tap")
 
-tap.plan(12)
+tap.plan(15)
 
 local EV = {
 	id = "4376c65d2f232afbe9b882a35baa4f6fe8667c4e684749af565f981833ed6a65",
@@ -64,6 +64,34 @@ tap.ok(nostr.serialize(tricky):find("\\u0001", 1, true) ~= nil,
 
 -- ---- keys ----
 tap.is(nostr.seckey(nostr.nsec(sec)), sec, "an nsec round trips")
+
+-- genkey, against entropy this test chooses, so what it does with a bad
+-- draw is checked rather than left to luck.
+local draws = {}
+local function feed(...)
+	draws = { ... }
+	local at = 0
+
+	return function(n)
+		at = at + 1
+		return draws[at] or ("\1"):rep(n)
+	end
+end
+
+local made = nostr.genkey(feed())
+
+tap.ok(made ~= nil and #made == 32 and nostr.pubkey(made) ~= nil,
+    "genkey makes a key the curve accepts")
+
+-- zero and the order itself are the two scalars that are not keys, and
+-- a generator that returned either would make an identity that cannot sign
+local order = nostr.unhex(
+    "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+
+tap.is(nostr.genkey(feed(("\0"):rep(32), order, ("\7"):rep(32))),
+    ("\7"):rep(32), "and redraws past zero and past the order")
+
+tap.ok(nostr.genkey(nil) == nil, "with no entropy it makes nothing")
 
 -- ---- sha1, which the websocket handshake needs ----
 tap.is(base64.encode(sha1.hash("dGhlIHNhbXBsZSBub25jZQ==" ..

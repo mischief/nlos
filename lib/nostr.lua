@@ -70,6 +70,23 @@ end
 --------------------------------------------------------------------------
 -- keys
 
+-- genkey(rand) -> 32 bytes, or nil and why.
+--
+-- rand is the caller's entropy, as everywhere else here. A draw outside
+-- the curve's order is redrawn rather than reduced: reducing would bias
+-- the low end, and the odds of one draw landing there are near enough to
+-- nothing that the loop almost never turns twice.
+function M.genkey(rand)
+  if type(rand) ~= "function" then return nil, "no entropy" end
+  for _ = 1, 8 do
+    local sec = rand(32)
+    if type(sec) == "string" and #sec == 32 and secp.pubkey(sec) then
+      return sec
+    end
+  end
+  return nil, "no usable key in eight draws"
+end
+
 -- seckey(s) -> 32 bytes, from an nsec or from hex.
 function M.seckey(s)
   s = tostring(s or ""):gsub("%s+", "")
