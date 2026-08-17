@@ -214,6 +214,14 @@ local line = {
 		if took > slowread then
 			slowread = took
 		end
+		-- where in the stream a wait happened, which is what says
+		-- whether it is the handshake, the window or the end.
+		if took > 1000 then
+			sys.log("shot: read waited %dms for %s, asked %s, " ..
+			    "%d bytes sent", took,
+			    type(d) == "string" and (#d .. "B") or "nothing",
+			    tostring(ms), nout)
+		end
 
 		if type(d) ~= "string" or d == "" then
 			return nil
@@ -244,9 +252,10 @@ local drove = sys.uptime_ms()
 -- three things a transfer does was slow. A run whose numbers are ordinary
 -- while the host saw a long one puts the delay outside this proc.
 sys.log("shot: setup %dms drive %dms | write %dms/%d read %dms/%d " ..
-    "worst %dms | bands %dms/%d | %d bytes",
+    "worst %dms | bands %dms/%d | %d bytes, window %s flags %s",
     ready - began, drove - ready, twrite, nwrite, tread, nread,
-    slowread, tband, nband, nout)
+    slowread, tband, nband, nout, tostring(m.rxbufsize),
+    tostring(m.rxflags))
 
 sys.send(cons, { op = "rawoff" })
 sys.send(cons, { op = "write", data = ("shot: %s %s %d bytes\n"):format(

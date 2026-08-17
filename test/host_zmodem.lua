@@ -37,7 +37,7 @@ local function diag(s)
 	io.write("# " .. tostring(s) .. "\n")
 end
 
-io.write("1..16\n")
+io.write("1..23\n")
 
 -- ---- deterministic filler ----
 --
@@ -268,6 +268,70 @@ do
 	end
 	ok(tx.state == "error" and tx.err == "no receiver",
 	    "a sender with no receiver stops trying")
+end
+
+-- ---- escaping is what the receiver asked for ----
+--
+-- Control characters are escaped until the peer's ZRINIT says whether
+-- it needs that. A body of NULs is the case that shows it: every byte
+-- doubles under ESCCTL and none of them has to.
+
+local function wire(rxopts)
+	local body = string.rep("\0", 8192)
+	local tx = zmodem.sender({ name = "nul.bin", data = body })
+	local rx = zmodem.receiver(rxopts)
+	local sent = 0
+	local now, steps = 0, 0
+
+	while (tx.state == "running" or rx.state == "running") and
+	    steps < 1000000 do
+		steps = steps + 1
+		tx:run(now)
+
+		local oa = tx:pull()
+
+		rx:run(now)
+
+		local ob = rx:pull()
+
+		if oa then
+			sent = sent + #oa
+			rx:feed(oa)
+		end
+		if ob then
+			tx:feed(ob)
+		end
+		if not oa and not ob then
+			now = now + 1000
+		end
+	end
+	return sent, tx, rx, body
+end
+
+do
+	local loud, txl, rxl, body = wire(nil)
+	local quiet, txq, rxq = wire({ escctl = false })
+
+	ok(txl.state == "done" and rxl.state == "done",
+	    "a receiver asking for escctl gets its transfer")
+	ok(txq.state == "done" and rxq.state == "done",
+	    "and so does one that does not ask")
+	ok(rxl.result[1].data == body and rxq.result[1].data == body,
+	    "both deliver the same bytes")
+
+	ok(txl.escall, "the sender escapes everything when asked")
+	ok(not txq.escall, "and stops once the peer says it need not")
+	ok(quiet < loud // 2 + 2048,
+	    ("a body of nuls costs %d bytes rather than %d"):format(quiet,
+	    loud))
+
+	-- escctl = true is a caller overriding the peer, which a line that
+	-- is known to eat control characters needs.
+	local forced = zmodem.sender({ name = "x", data = "y" },
+	    { escctl = true })
+
+	forced.escall = false
+	ok(forced.escforce, "a sender told to escape says so whatever the peer asks")
 end
 
 os.exit(failed > 0 and 1 or 0)

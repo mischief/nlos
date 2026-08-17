@@ -1214,13 +1214,17 @@ local function sendbody(m)
 	local bufsize = sbyte(rx, 1) | (sbyte(rx, 2) << 8)
 	local use32 = m.crc32 and (rxflags & CANFC32) ~= 0
 
+	-- kept because what the far end asked for decides how a transfer
+	-- behaves: a window makes the sender stop for an ack, and escall
+	-- decides how many bytes a body becomes.
+	m.rxbufsize, m.rxflags = bufsize, rxflags
 	m.crc32 = use32
-	-- the receiver's demand, not a preference: a receiver in ESCCTL
-	-- mode throws away unescaped control characters, so this is the
-	-- one negotiated field that can only be turned on.
-	if rxflags & ESCCTL ~= 0 then
-		m.escall = true
-	end
+	-- What the receiver asked for, now that it has said. The frames
+	-- before this went out escaped because nothing was known then;
+	-- the body need not be, and on a screenshot -- 91% of whose bytes
+	-- are control characters once a dark pixel is widened -- escaping
+	-- everything is twice the wire.
+	m.escall = m.escforce or (rxflags & ESCCTL) ~= 0
 
 	for _, file in ipairs(m.tosend) do
 		local ok, err = sendfile(m, file, use32, bufsize)
@@ -1262,11 +1266,13 @@ local function newmach(body, opts)
 		blocksize = opts.blocksize or 8192,
 		outmax = opts.outmax or 32768,
 		crc32 = opts.crc32 ~= false,
-		-- default on: correct against any peer, including one that
-		-- was told to escape from its own command line. Turn it off
-		-- for a line that is known clean -- a port, a socket -- and
-		-- get the 25% back.
+		-- on until the peer has said otherwise: nothing is known
+		-- about it before its ZRINIT, and one in ESCCTL mode drops
+		-- unescaped control bytes. A sender narrows this to what
+		-- was asked for once it has read those flags.
 		escall = opts.escctl ~= false,
+		-- escctl = true asks for it whatever the peer says
+		escforce = opts.escctl == true,
 		sink = opts.sink,
 		-- a body reader that PARKS. See Mach:want: it makes the read
 		-- a request the driver answers from outside the coroutine,
