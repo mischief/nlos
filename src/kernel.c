@@ -231,6 +231,13 @@ logput(const char *s, size_t n)
  * synchronous path -- so display order and real order differ, and only
  * the stamps recover it.
  */
+/* whether a diagnostic is echoed to the console as well as kept. Off
+ * while the console carries something that is not text: a transfer
+ * reads every byte as protocol, so a line about dhcp lands in the
+ * middle of a file. The ring keeps it either way.
+ */
+int logmirror = 1;
+
 void
 kernel_log(const char *s)
 {
@@ -239,7 +246,8 @@ kernel_log(const char *s)
 	int n = snprintf(buf, sizeof buf, "[%5llu.%03llu] %s\n", ms / 1000,
 	    ms % 1000, s);
 
-	kputs(buf);
+	if (logmirror)
+		kputs(buf);
 	logput(buf, n < 0 ? 0 : (size_t)n >= sizeof buf ? sizeof buf - 1 :
 	    (size_t)n);
 }

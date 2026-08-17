@@ -610,6 +610,11 @@ function Console:serve()
 			if io.raw then
 				io.raw(m.op == "rawon")
 			end
+			-- and a diagnostic stops being echoed here, for the
+			-- same reason: every byte on this line is protocol
+			-- now, so a line about dhcp lands in the middle of
+			-- a file. sys.dmesg still has it afterwards.
+			sys.logmirror(not self.raw)
 		elseif m.op == "getch" then
 			-- "" rather than nil on a timeout: sys.send carries one
 			-- value and a reader wants to tell "nothing yet" from a

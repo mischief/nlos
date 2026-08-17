@@ -26,6 +26,11 @@ unsigned long long kernel_cyc_per_ms(void);
  */
 void	kernel_log(const char *s);
 
+/* 1 while a diagnostic is echoed to the console as well as kept. The
+ * console task clears it while the line carries a transfer.
+ */
+extern int logmirror;
+
 int	kernel_init(void);
 int	kernel_spawn_file(const char *path);	/* returns pid or -1 */
 int	kernel_spawn_buffer(const char *code, size_t len);

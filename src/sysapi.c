@@ -810,9 +810,25 @@ api_log(lua_State *L)
 	/* a truncated line still ends one, or the next runs into it */
 	if (buf[len - 1] != '\n')
 		buf[len - 1] = '\n';
-	kputs(buf);
+	if (logmirror)
+		kputs(buf);
 	logput(buf, len);
 	return 0;
+}
+
+/* sys.logmirror(on) -- whether a diagnostic also goes to the console.
+ * Answers what it was, so a caller can put it back. The console task
+ * clears it while the line carries a transfer; nothing else should.
+ */
+static int
+api_logmirror(lua_State *L)
+{
+	int was = logmirror;
+
+	if (lua_gettop(L) > 0)
+		logmirror = lua_toboolean(L, 1);
+	lua_pushboolean(L, was);
+	return 1;
 }
 
 static int
@@ -2334,6 +2350,7 @@ static const luaL_Reg kapi[] = {
 	{ "ticks", api_ticks },
 	{ "uptime_ms", api_uptime_ms },
 	{ "log", api_log },
+	{ "logmirror", api_logmirror },
 	{ "dmesg", api_dmesg },
 	{ "loginfo", api_loginfo },
 	{ "time", api_time },
