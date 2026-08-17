@@ -1,9 +1,10 @@
 -- agentui: a model on the panel, with the machine as its tools.
 --
---	enter        send what is typed
---	esc          leave
---	touch the bar   show what the tools did, and hide it again
---	trackball    scroll the transcript
+--	enter             send what is typed
+--	esc               leave
+--	touch the name    the next model, and a new conversation
+--	touch the bar     show what the tools did, and hide it again
+--	trackball         scroll the transcript
 
 -- The shape is bin/bitchatui.lua's, and for the same reasons: one
 -- frame holds the transcript, a line at the bottom holds what is being
@@ -48,7 +49,16 @@ local net = prog.net() or die("no network: /etc/dio.lua must say net = true")
 -- on the port is keys and window state.
 local ptr = prog.mouse()
 
-local MODEL = "gpt-5.4-mini"
+-- cheapest first, since that is the one to come back to. Touching the
+-- name in the bar takes the next one.
+local MODELS = {
+	"gpt-5.4-mini",
+	"gpt-5.4-nano",
+	"gpt-5.4",
+	"gpt-5.5",
+}
+local mi = 1
+local MODEL = MODELS[mi]
 local KEYFILE = "/config/openai.key"
 
 -- what to say on top of lib/agent.lua's description of the machine.
@@ -145,12 +155,21 @@ local function wrapped(s, cols)
 	return out
 end
 
+-- how far along the bar the model name reaches, so the pointer knows
+-- which half of the bar was touched.
+local namew = 0
+
 local function paintbar()
 	if not visible then
 		return
 	end
+
+	local name = "[" .. MODEL .. "]"
+
+	namew = #name * FW
 	fill(0, 0, W, ROWH, 0x202028)
-	text(0, 0, MODEL .. "  " .. status, DIM, 0x202028)
+	text(0, 0, name, FG, 0x202028)
+	text(namew + FW, 0, status, DIM, 0x202028)
 end
 
 local function paintinput()
@@ -286,6 +305,20 @@ local A = agent.new({
 	end,
 })
 
+-- the next model, and a fresh conversation with it: the thread so far
+-- is a response id the server holds against the model that made it.
+local function nextmodel()
+	if busy then
+		return
+	end
+	mi = mi % #MODELS + 1
+	MODEL = MODELS[mi]
+	client.model = MODEL
+	client:reset()
+	paintbar()
+	say("model is " .. MODEL .. ", and this is a new conversation", DIM)
+end
+
 local function submit()
 	local what = typed
 
@@ -342,8 +375,8 @@ paintbody(true)
 paintinput()
 
 if key then
-	say("ask it something. touch the bar above for", DIM)
-	say("what the tools did.", DIM)
+	say("ask it something. touch the name for another", DIM)
+	say("model, or the bar for what the tools did.", DIM)
 else
 	say("no key found in " .. KEYFILE, WARN)
 	say("write one there and start this again.", DIM)
@@ -414,9 +447,15 @@ local function pointer()
 			return
 		end
 		if b and (b & BUT1) ~= 0 and y < ROWH and not down then
-			showtools = not showtools
-			paintbody(true)
-			paintbar()
+			-- the name is one button and the rest of the bar
+			-- is another
+			if x < namew then
+				nextmodel()
+			else
+				showtools = not showtools
+				paintbody(true)
+				paintbar()
+			end
 		end
 		if b then
 			down = (b & BUT1) ~= 0
