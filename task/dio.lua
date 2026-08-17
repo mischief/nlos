@@ -514,7 +514,16 @@ local wasfront = nil
 -- is not a grouping, it is a title nobody asked for.
 local selrows = {}
 
-local function buildrows()
+-- the groups, in the order the categories first appear. Built once:
+-- the catalogue does not change while this runs.
+local groups = {}
+
+-- which group is open. One at a time, so the list is as long as one
+-- category rather than as long as the machine: what was two taps and a
+-- scroll is two taps and no scroll.
+local selopen = nil
+
+local function buildgroups()
 	local order, members = {}, {}
 
 	for k, e in ipairs(catalog) do
@@ -539,20 +548,34 @@ local function buildrows()
 		end
 	end
 
-	local heads = #order > 1
+	groups = {}
+	for _, c in ipairs(order) do
+		groups[#groups + 1] = { cat = c,
+		    name = c ~= "" and c or "other", keys = members[c] }
+	end
+	selopen = selopen or (groups[1] and groups[1].cat)
+end
+
+local function buildrows()
+	-- one group is not a grouping, it is a title nobody asked for, so
+	-- a machine with one category shows the entries and no heads.
+	local heads = #groups > 1
 
 	selrows = {}
-	for _, c in ipairs(order) do
+	for _, g in ipairs(groups) do
 		if heads then
-			selrows[#selrows + 1] = { head = c ~= "" and c or
-			    "other" }
+			selrows[#selrows + 1] = { head = g.name, cat = g.cat,
+			    open = g.cat == selopen }
 		end
-		for _, k in ipairs(members[c]) do
-			selrows[#selrows + 1] = { k = k }
+		if not heads or g.cat == selopen then
+			for _, k in ipairs(g.keys) do
+				selrows[#selrows + 1] = { k = k }
+			end
 		end
 	end
 end
 
+buildgroups()
 buildrows()
 
 local function rowheight(r)
@@ -611,9 +634,20 @@ local function seltext(x, y, s, color, bg)
 	end
 end
 
+-- whether the program is there, asked once when the list opens rather
+-- than on every paint: a stat costs milliseconds on a board, and a
+-- scroll would pay for one per row it moved past.
+local present = {}
+
+local function lookup()
+	for k, e in ipairs(catalog) do
+		present[k] = N:stat(e.cmd) ~= nil
+	end
+end
+
 local function drawentry(k, y)
 	local e = catalog[k]
-	local here = N:stat(e.cmd) ~= nil
+	local here = present[k]
 	local name = e.name or "?"
 	local n = 0
 
@@ -631,6 +665,10 @@ local function drawentry(k, y)
 		name = name .. "  (missing)"
 	end
 
+	-- the row's own background, so a scroll repaints the rows it
+	-- moved and not the whole area behind them.
+	screen.fill({ x = APPX, y = y, w = APPW, h = ROWH }, SELBG)
+
 	-- the entry's own colour, as a mark down the side: the same
 	-- colour its buttons wear in the tray.
 	screen.fill({ x = APPX + 2, y = y + 3, w = 3, h = ROWH - 6 },
@@ -640,40 +678,60 @@ local function drawentry(k, y)
 end
 
 -- a heading, with a rule across the width under it: the name alone
--- reads as another entry, and the rule is what says it divides.
-local function drawhead(name, y)
-	seltext(APPX + 6, y + 2, name, SELHEAD)
+-- reads as another entry, and the rule is what says it divides. The
+-- mark says whether touching it opens the group or shuts it.
+local function drawhead(r, y)
+	screen.fill({ x = APPX, y = y, w = APPW, h = HEADH }, SELBG)
+	seltext(APPX + 6, y + 2, (r.open and "- " or "+ ") .. r.head,
+	    SELHEAD)
 	screen.fill({ x = APPX + 6, y = y + HEADH - 2,
 	    w = APPW - 12, h = 1 }, SELRULE)
 end
 
+-- Every row paints its own background, so what this clears is only what
+-- the rows do not reach. A full-area fill is the whole panel's worth of
+-- pixels and was being paid on each step of a scroll.
 local function drawselector()
-	screen.fill({ x = APPX, y = APPY, w = APPW, h = APPH }, SELBG, true)
+	local end_ = APPY
 
 	for _, at in ipairs(laidout()) do
 		local r = selrows[at.i]
 
 		if r.head then
-			drawhead(r.head, at.y)
+			drawhead(r, at.y)
 		else
 			drawentry(r.k, at.y)
 		end
+		end_ = at.y + at.h
+	end
+	if end_ < APPY + APPH then
+		screen.fill({ x = APPX, y = end_, w = APPW,
+		    h = APPY + APPH - end_ }, SELBG)
 	end
 end
 
--- which entry a point in the app area is on, while the selector is up.
--- A heading is not one: touching it does nothing, rather than starting
--- whatever happens to sit under the name.
+-- the row a point in the app area is on, while the selector is up. A
+-- heading is a row like any other here: touching one opens its group.
 local function selectorat(x, y)
 	if x < APPX or x >= APPX + APPW then
 		return nil
 	end
 	for _, at in ipairs(laidout()) do
 		if y >= at.y and y < at.y + at.h then
-			return selrows[at.i].k
+			return selrows[at.i]
 		end
 	end
 	return nil
+end
+
+-- open a group, or shut the open one. The offset goes back to the top:
+-- the list under it is a different length, and where it was scrolled to
+-- means nothing in the new one.
+local function selgroup(cat)
+	selopen = (selopen ~= cat) and cat or nil
+	seloff = 0
+	buildrows()
+	drawselector()
 end
 
 -- ---- one window each, and one of them in front ----
@@ -1059,6 +1117,10 @@ local function opensel()
 	end
 	selecting = true
 	seloff = 0
+	-- asked here rather than per paint: what is installed can change
+	-- between one opening and the next, and does not while one is up.
+	lookup()
+	buildrows()
 	drawselector()
 	drawplus()
 end
@@ -1288,10 +1350,12 @@ thread.spawn(function()
 				-- pointer too: nothing is in front to give
 				-- it to. Its wheel is handled above.
 				if pressed and not down then
-					local k = selectorat(x, y)
+					local r = selectorat(x, y)
 
-					if k then
-						pick(k)
+					if r and r.k then
+						pick(r.k)
+					elseif r and r.cat then
+						selgroup(r.cat)
 					end
 				end
 			elseif front and apps[front] and apps[front].mouse then

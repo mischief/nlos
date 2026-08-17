@@ -30,8 +30,10 @@
 --		is an ordinary program.
 --	category
 --		which heading the launcher files it under. Groups appear
---		in the order first named below. Entries naming none go
---		under "other", last; all-one-category gets no headings.
+--		in the order first named below, one open at a time, and
+--		the first is what opens. Entries naming none go under
+--		"other", last; all-one-category gets no headings.
+--		An entry whose program is absent greys as "(missing)".
 --	boot	start this one when dio starts, and the one the launcher
 --		starts another of. One entry at most.
 --
@@ -55,67 +57,93 @@ return {
 		  boot = true, label = ">", color = 0x0074d9, category = "shell",
 		  desc = "a shell, and everything run from one" },
 
-		{ name = "scribble", cmd = "/bin/scribble.lua", category = "toys",
-		  label = "S", color = 0x2ecc40,
-		  desc = "draw on the screen with a finger" },
-		{ name = "smiley", cmd = "/bin/smiley.lua", category = "toys",
-		  label = "O", color = 0xffdc00,
-		  desc = "a face, for testing the framebuffer" },
-		-- the radio. It reads and writes /net/wifi, which is a
-		-- mount rather than a capability, so it appears here on a
-		-- board that has one and does nothing on a board that
-		-- does not.
-		{ name = "wifi", cmd = "/bin/wifiui.lua", category = "system",
-		  label = "W", color = 0x7fdbff, keys = true,
-		  desc = "join a network" },
-		-- the mesh. Keys, because a chat is typed, and the radio,
-		-- which is what ble = true above means.
-		{ name = "bitchat", cmd = "/bin/bitchatui.lua",
-		  category = "system", label = "B", color = 0xb10dc9,
-		  keys = true, ble = true,
-		  desc = "the bitchat mesh, over bluetooth" },
-		-- notes off the relays. Keys to type one, net to reach a
-		-- relay; the identity is an nsec on /config, not here.
-		{ name = "nostr", cmd = "/bin/nostrui.lua",
-		  category = "system", label = "N", color = 0x8e44ad,
-		  keys = true, net = true,
-		  desc = "read and post notes over nostr" },
-		-- a model, with this machine as its tools. Keys because it
-		-- is typed at, and net because it talks to a server -- the
-		-- key it uses is on /config, not in the image.
-		{ name = "agent", cmd = "/bin/agentui.lua",
-		  category = "system", label = "?", color = 0x2ecc40,
-		  keys = true, net = true,
-		  desc = "ask a model, and let it use the machine" },
-		-- what the machine is and what it is holding. Reads only,
-		-- so it needs nothing granted; the controls it is named
-		-- for are the TODOs in its own header.
-		{ name = "settings", cmd = "/bin/settings.lua",
-		  category = "system", label = "=", color = 0xaaaaaa,
-		  keys = true, desc = "memory, network and uptime" },
 		-- the namespace. `opens` is the one entry given the door,
 		-- since it is the one that asks dio to open what was
 		-- touched; `handles = dir` is what a directory opens in,
 		-- so opening one from anywhere lands back here.
 		{ name = "files", cmd = "/bin/files.lua",
-		  category = "system", label = "/", color = 0xff851b,
+		  category = "files", label = "/", color = 0xff851b,
 		  keys = true, opens = true, handles = { "dir" },
 		  desc = "the namespace, and what is in it" },
 		{ name = "view", cmd = "/bin/view.lua",
-		  category = "system", label = "T", color = 0x39cccc,
+		  category = "files", label = "T", color = 0x39cccc,
 		  keys = true,
 		  -- what claims a file. Last of the three, so a rule
 		  -- above it wins: this is the fallback, not the choice.
 		  handles = { "%.lua$", "%.txt$", "%.md$", "%.csv$",
 		    "%.conf$", "^[^.]*$" },
 		  desc = "read a file" },
+		{ name = "edit", cmd = "/bin/editui.lua",
+		  category = "files", label = "E", color = 0xff7f0e,
+		  keys = true, desc = "change a file, not only read one" },
+
+		-- the radio. It reads and writes /net/wifi, which is a
+		-- mount rather than a capability, so it appears here on a
+		-- board that has one and does nothing on a board that
+		-- does not.
+		{ name = "wifi", cmd = "/bin/wifiui.lua", category = "net",
+		  label = "W", color = 0x7fdbff, keys = true,
+		  desc = "join a network" },
+		-- a model, with this machine as its tools. Keys because it
+		-- is typed at, and net because it talks to a server -- the
+		-- key it uses is on /config, not in the image.
+		{ name = "agent", cmd = "/bin/agentui.lua",
+		  category = "net", label = "?", color = 0x2ecc40,
+		  keys = true, net = true,
+		  desc = "ask a model, and let it use the machine" },
+		{ name = "web", cmd = "/bin/webui.lua", category = "net",
+		  label = "@", color = 0x1f77b4, keys = true, net = true,
+		  desc = "fetch a page and read it" },
+
+		-- the mesh. Keys, because a chat is typed, and the radio,
+		-- which is what ble = true above means.
+		{ name = "bitchat", cmd = "/bin/bitchatui.lua",
+		  category = "chat", label = "B", color = 0xb10dc9,
+		  keys = true, ble = true,
+		  desc = "the bitchat mesh, over bluetooth" },
+		-- notes off the relays. Keys to type one, net to reach a
+		-- relay; the identity is an nsec on /config, not here.
+		{ name = "nostr", cmd = "/bin/nostrui.lua",
+		  category = "chat", label = "N", color = 0x8e44ad,
+		  keys = true, net = true,
+		  desc = "read and post notes over nostr" },
+		{ name = "irc", cmd = "/bin/ircui.lua", category = "chat",
+		  label = "I", color = 0xd62728, keys = true, net = true,
+		  desc = "a channel, over lib/irc" },
+
 		-- keys as well as the pointer: the ball is the controller,
 		-- and wasd is what a board without one is played on.
-		{ name = "2048", cmd = "/bin/2048.lua", category = "toys",
+		{ name = "2048", cmd = "/bin/2048.lua", category = "games",
 		  label = "2", color = 0xedc22e, keys = true,
 		  desc = "slide the tiles together" },
+		{ name = "mines", cmd = "/bin/mines.lua", category = "games",
+		  label = "M", color = 0x4a90d9, keys = true,
+		  desc = "touch reveals, the ball flags" },
+		{ name = "sokoban", cmd = "/bin/sokoban.lua",
+		  category = "games", label = "K", color = 0x8b5a2b,
+		  keys = true, desc = "push every crate onto a mark" },
+
+		{ name = "scribble", cmd = "/bin/scribble.lua",
+		  category = "toys", label = "S", color = 0x2ecc40,
+		  desc = "draw on the screen with a finger" },
+		{ name = "smiley", cmd = "/bin/smiley.lua", category = "toys",
+		  label = "O", color = 0xffdc00,
+		  desc = "a face, for testing the framebuffer" },
 		{ name = "clock", cmd = "/bin/clock.lua", category = "toys",
 		  label = "T", color = 0xff2418,
 		  desc = "the time; touch it to turn it over" },
+
+		-- what the machine is and what it is holding. Reads only,
+		-- so it needs nothing granted; the controls it is named
+		-- for are the TODOs in its own header.
+		{ name = "settings", cmd = "/bin/settings.lua",
+		  category = "system", label = "=", color = 0xaaaaaa,
+		  keys = true, desc = "memory, network and uptime" },
+		{ name = "procs", cmd = "/bin/procsui.lua",
+		  category = "system", label = "P", color = 0x9467bd,
+		  keys = true, desc = "what is running, and what it holds" },
+		{ name = "log", cmd = "/bin/logui.lua", category = "system",
+		  label = "L", color = 0x7f7f7f, keys = true,
+		  desc = "the kernel ring, as it fills" },
 	},
 }
