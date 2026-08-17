@@ -282,8 +282,26 @@ end
 
 -- ---- identity ----
 
-local KEYFILE = "/config/bitchat_id"
+local CONF = "/config/bitchat"
+local KEYFILE = CONF .. "/id"
+local NICKFILE = CONF .. "/nick"
 local randbytes = prog.rand() or die("no entropy")
+
+-- /config is empty on a freshly reamed partition, so the directory is
+-- made on the way to the first write rather than assumed.
+local function conf()
+	if not N then
+		return false
+	end
+	if not N:stat(CONF) then
+		local f = N:create(CONF, "rw", true)
+
+		if f then
+			f:close()
+		end
+	end
+	return N:stat(CONF) ~= nil
+end
 
 local function identity()
 	local raw = N and N:readfile(KEYFILE)
@@ -294,7 +312,7 @@ local function identity()
 
 	local seed = randbytes(32)
 
-	if N then
+	if conf() then
 		N:writefile(KEYFILE, seed)
 	end
 	return seed
@@ -325,7 +343,6 @@ fingerprint = hex(sha256.new():update(noisepub):final()):upper()
 -- where there is none: two of the same board out of the box would
 -- otherwise both be "tdeck", and a mesh where two peers answer to one
 -- name is a mesh nobody can address.
-local NICKFILE = "/config/bitchat_nick"
 
 local function readnick()
 	local s = N and N:readfile(NICKFILE)
@@ -353,7 +370,7 @@ local function setnick(s)
 		return false, "a name is one to " .. MAXNICK .. " bytes"
 	end
 	nick = s
-	if N then
+	if conf() then
 		N:writefile(NICKFILE, s)
 	end
 	return true

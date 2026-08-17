@@ -5,7 +5,7 @@
 --   > wifi -s                   say what is saved
 --   > wifi -l                   what is in range
 --
--- Writes /config/wifi.lua, which init joins at startup, and
+-- Writes /config/wifi/networks.lua, which init joins at startup, and
 -- joins now through /net/wifi/ctl where the namespace has it. Without
 -- that mount it still saves, and says so.
 --
@@ -28,7 +28,7 @@ local N = assert(prog.ns(), "wifi: no namespace")
 -- /config is the partition a reflash does not write, so a network saved
 -- there survives one. A machine without that volume keeps its network
 -- in /etc, and loses it the next time the filesystem is rebuilt.
-local CONF = N:stat("/config") and "/config/wifi.lua" or "/etc/wifi.lua"
+local CONF = N:stat("/config") and "/config/wifi/networks.lua" or "/etc/wifi.lua"
 
 local function out(s)
 	unistd.write(1, s)

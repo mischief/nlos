@@ -6,7 +6,7 @@
 --	/net/wifi/ctl		join, forget, leave, scan -- one field a line
 --
 -- Which network to be on is decided here and nowhere else: this proc
--- holds the nic and keeps /config/wifi.lua. A program writes ctl.
+-- holds the nic and keeps /config/wifi/networks.lua. A program writes ctl.
 --
 -- task/eth.lua owns the device and holds los.platform.wifi. Handing a
 -- program that right to pick a network would carry the whole NIC with
@@ -141,7 +141,7 @@ end
 
 local wificfg = require("wificfg")
 local ns = require("ns")
-local CFG = "/config/wifi.lua"
+local CFG = "/config/wifi/networks.lua"
 local FALLBACK = "/etc/wifi.lua"
 
 local function known()
@@ -160,6 +160,14 @@ local function save(list)
 
 	if not N then
 		return nil, dev.Eio
+	end
+	-- /config is empty on a freshly reamed partition
+	if not N:stat("/config/wifi") then
+		local d = N:create("/config/wifi", "rw", true)
+
+		if d then
+			d:close()
+		end
 	end
 	if not N:writefile(CFG, wificfg.format(list)) then
 		return nil, dev.Eio

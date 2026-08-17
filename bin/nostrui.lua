@@ -44,8 +44,24 @@ local dns = prog.dns()
 local rand = prog.rand()
 local ptr = prog.mouse()
 
-local KEYFILE = "/config/nostr.key"		-- an nsec, or hex
-local RELAYFILE = "/config/nostr.relay"		-- one wss:// url
+-- a directory of our own, because this keeps more than one file
+local CONF = "/config/nostr"
+local KEYFILE = CONF .. "/key"			-- an nsec, or hex
+local RELAYFILE = CONF .. "/relay"		-- one wss:// url
+local IGNOREFILE = CONF .. "/ignore"		-- an author a line
+
+-- /config is empty on a freshly reamed partition, so the directory is
+-- made on the way to the first write rather than assumed.
+local function conf()
+	if not N:stat(CONF) then
+		local f = N:create(CONF, "rw", true)
+
+		if f then
+			f:close()
+		end
+	end
+	return N:stat(CONF) ~= nil
+end
 local RELAY = "wss://relay.damus.io"
 local WANT = 12					-- events per fetch
 
@@ -385,6 +401,8 @@ local function makekey()
 	local sec, err = nostr.genkey(rand)
 
 	if not sec then return nil, err end
+
+	conf()
 
 	local ok, werr = N:writefile(KEYFILE, nostr.nsec(sec) .. "\n")
 

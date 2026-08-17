@@ -39,7 +39,8 @@ local CHAR = uuid.parse("A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D")
 -- ---- identity ----
 --
 -- /config survives a reflash, so a peer keeps its name across one.
-local KEYFILE = "/config/bitchat_id"
+local CONF = "/config/bitchat"
+local KEYFILE = CONF .. "/id"
 
 -- prog.rand is the draw itself, not a generator to ask. An ephemeral
 -- key wants it too, so it is held rather than drawn once.
@@ -53,6 +54,16 @@ local function identity()
 	end
 
 	local seed = randbytes(32)
+
+	-- /config is empty on a freshly reamed partition
+	if not N:stat(CONF) then
+		local f = N:create(CONF, "rw", true)
+
+		if f then
+			f:close()
+		end
+	end
+
 	local okw, werr = N:writefile(KEYFILE, seed)
 
 	if not okw then

@@ -1,6 +1,6 @@
 -- keygen: an ssh-ed25519 key of this machine's own.
 --
---	keygen                    -> /config/id_ed25519 and .pub
+--	keygen                    -> /config/ssh/id_ed25519 and .pub
 --	keygen -f /sd/mykey       somewhere else
 --	keygen -y -f FILE         print the public line of a key you have
 
@@ -18,7 +18,7 @@ local function die(s)
 	os.exit(1)
 end
 
-local path, pubonly = "/config/id_ed25519", false
+local path, pubonly = "/config/ssh/id_ed25519", false
 local i = 1
 
 while arg[i] and arg[i]:sub(1, 1) == "-" and #arg[i] > 1 do
@@ -73,6 +73,18 @@ end
 local rand = prog.rand() or die("no entropy: this shell was given no seed")
 local seed = rand(32)
 local pk = ed25519.publickey(seed)
+
+-- the directory the default path lives in, which a freshly reamed
+-- /config has not got. A named path is the caller's to have made.
+local dir = path:match("^(.*)/[^/]+$")
+
+if dir and dir ~= "" and not N:stat(dir) then
+	local d = N:create(dir, "rw", true)
+
+	if d then
+		d:close()
+	end
+end
 
 spit(path, keys.write_private(seed, pk, comment, rand))
 spit(path .. ".pub", keys.public_line(pk, comment))

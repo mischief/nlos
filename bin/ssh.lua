@@ -33,8 +33,8 @@ end
 -- /config is a flash partition of its own, so a key and the hosts it
 -- trusts survive reflashing the filesystem.
 local port, keyfile = 22, nil
-local hostsfile = "/config/known_hosts"
-local DEFAULTKEY = "/config/id_ed25519"
+local hostsfile = "/config/ssh/known_hosts"
+local DEFAULTKEY = "/config/ssh/id_ed25519"
 local i = 1
 
 while arg[i] and arg[i]:sub(1, 1) == "-" and #arg[i] > 1 do

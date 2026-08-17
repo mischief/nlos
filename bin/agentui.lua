@@ -73,7 +73,7 @@ local function chatty(id)
 	    not id:find("transcribe") and not id:find("tts") and
 	    not id:find("%-%d%d%d%d%-%d%d%-%d%d$")
 end
-local KEYFILE = "/config/openai.key"
+local KEYFILE = "/config/openai/key"
 
 -- what to say on top of lib/agent.lua's description of the machine.
 -- Short answers, because the screen is 53 columns and a paragraph is
