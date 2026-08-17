@@ -144,10 +144,11 @@ function M.portstream(h)
 	return setmetatable({ h = h, replyport = nil }, PortStream)
 end
 
-function PortStream:write(data)
-	sys.send(self.h, { op = "write", data = data })
-	return #data
-end
+-- writing is the same operation in both directions: only reading differs
+-- between a stream that is drained and one that is asked. Shared rather
+-- than repeated, so a full queue parks here too instead of dropping the
+-- write and reporting it as sent.
+PortStream.write = PipeStream.write
 
 function PortStream:read(_)
 	if not self.replyport then

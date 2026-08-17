@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(32)
+tap.plan(34)
 
 local N = ns.new()
 
@@ -328,5 +328,58 @@ tap.is(catst, 0, "and so did the reading stage")
 -- whichever started second holding the other's arguments.
 tap.is(rawget(_G, "arg"), nil,
     "neither stage leaked its arg into the hosting proc")
+
+-- ---- a pull stream's write parks rather than drops ----
+--
+-- Only reading differs between the two port streams, so a write that
+-- reports bytes it never sent is the same defect in either. The queue
+-- is filled first: the write below has nowhere to go until the reader
+-- takes something off.
+local full = sys.newport("test_prog.full")
+local fullsend = sys.sendright(full)
+local chunk = string.rep("x", 8192)
+
+-- "full" means this message does not fit, not that the queue is shut:
+-- a small one still would. So the write below is the same size as what
+-- filled the queue, and is refused for as long as the queue is.
+while sys.send(fullsend, { op = "write", data = chunk }) do
+end
+
+local tail = string.rep("t", 8192)
+local wrote, arrived, tried
+
+thread.spawn(function()
+	-- the flag and the send are one step: nothing yields between them,
+	-- so the drain below cannot make room before the write is tried.
+	tried = true
+	wrote = prog.portstream(fullsend):write(tail)
+end)
+
+-- recvtimeout, not recv: a write that was dropped leaves nothing to
+-- wait for, and this has to fail rather than hang. The yield is what
+-- keeps the drain from making room before the write is tried.
+thread.spawn(function()
+	while not tried do
+		thread.yield()
+	end
+	while true do
+		local m = thread.recvtimeout(full, 2000)
+
+		if not m then
+			return
+		end
+		if m.data == tail then
+			arrived = true
+			return
+		end
+	end
+end)
+thread.run()
+
+tap.is(wrote, #tail, "a pull stream's write reports what it sent")
+tap.ok(arrived, "and a full queue parks the write instead of dropping it")
+
+sys.close(fullsend)
+sys.close(full)
 
 tap.done()
