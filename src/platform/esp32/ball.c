@@ -1,12 +1,7 @@
 /* the T-Deck's trackball, driven as a scroll wheel.
  *
- * The ball reports rotation as pulses on four pins, one per direction.
- * Only the two vertical ones are used, and they become plan 9's wheel
- * buttons: 8 for up, 16 for down. That is a decision about what the
- * hardware is for rather than a limitation -- a pointer is already
- * here, absolute and under your finger, and what the panel lacks is a
- * way to move a page without covering it. A scroll wheel is the thing
- * every list, pager and document already knows how to be driven by.
+ * Four pins, one per direction. Vertical is plan 9's wheel, 8 and 16.
+ * Horizontal has no plan 9 bits and follows x11's buttons 6 and 7.
  *
  * Counted in an interrupt rather than polled. A pulse is short and a
  * fast spin makes many, so a 10ms poll would see a fraction of them;
@@ -48,7 +43,7 @@
 #define TB_THRESHOLD	3
 
 static int probed, present;
-static volatile unsigned upn, downn;
+static volatile unsigned upn, downn, leftn, rightn;
 static int held;
 
 /* one counter per direction, incremented per falling edge. Nothing
@@ -58,17 +53,28 @@ static int held;
 static void IRAM_ATTR
 ball_isr(void *arg)
 {
-	if ((int)(intptr_t)arg == TB_UP)
+	switch ((int)(intptr_t)arg) {
+	case TB_UP:
 		upn++;
-	else
+		break;
+	case TB_DOWN:
 		downn++;
+		break;
+	case TB_LEFT:
+		leftn++;
+		break;
+	default:
+		rightn++;
+		break;
+	}
 }
 
 int
 esp_ball_present(void)
 {
 	gpio_config_t rot = {
-		.pin_bit_mask = (1ULL << TB_UP) | (1ULL << TB_DOWN),
+		.pin_bit_mask = (1ULL << TB_UP) | (1ULL << TB_DOWN) |
+		    (1ULL << TB_LEFT) | (1ULL << TB_RIGHT),
 		.mode = GPIO_MODE_INPUT,
 		.pull_up_en = GPIO_PULLUP_ENABLE,
 		.intr_type = GPIO_INTR_NEGEDGE,
@@ -94,12 +100,11 @@ esp_ball_present(void)
 		return 0;
 	if (gpio_isr_handler_add(TB_DOWN, ball_isr, (void *)TB_DOWN) != ESP_OK)
 		return 0;
-
-	/* left and right are wired and deliberately unread: this is a
-	 * wheel, and a wheel has one axis.
-	 */
-	(void)TB_LEFT;
-	(void)TB_RIGHT;
+	if (gpio_isr_handler_add(TB_LEFT, ball_isr, (void *)TB_LEFT) != ESP_OK)
+		return 0;
+	if (gpio_isr_handler_add(TB_RIGHT, ball_isr,
+	    (void *)TB_RIGHT) != ESP_OK)
+		return 0;
 
 	present = 1;
 	return 1;
@@ -141,6 +146,18 @@ esp_ball_take(int *wheel, int *button)
 	if (downn >= TB_THRESHOLD) {
 		downn -= TB_THRESHOLD;
 		*wheel = BALL_DOWN;
+		*button = held ? BALL_BUTTON : 0;
+		return 1;
+	}
+	if (leftn >= TB_THRESHOLD) {
+		leftn -= TB_THRESHOLD;
+		*wheel = BALL_LEFT;
+		*button = held ? BALL_BUTTON : 0;
+		return 1;
+	}
+	if (rightn >= TB_THRESHOLD) {
+		rightn -= TB_THRESHOLD;
+		*wheel = BALL_RIGHT;
 		*button = held ? BALL_BUTTON : 0;
 		return 1;
 	}

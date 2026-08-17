@@ -199,10 +199,13 @@ function Panel:drag(x0, y0, x1, y1, steps, ms)
 	    0.4 + (steps or 12) * (ms or 40) / 1000)
 end
 
--- the wheel, as plan 9 numbers it: 8 up, 16 down. The trackball is
--- where these come from on a T-Deck.
+-- the wheel: 8 up and 16 down as plan 9 numbers it, 32 left and 64
+-- right as x11 does. The trackball is where these come from on a
+-- T-Deck.
+local WHEEL = { up = 8, down = 16, left = 32, right = 64 }
+
 function Panel:wheel(dir, n, x, y)
-	local b = (dir == "down") and 16 or 8
+	local b = WHEEL[dir] or WHEEL.up
 
 	self:setup()
 	for _ = 1, n or 1 do

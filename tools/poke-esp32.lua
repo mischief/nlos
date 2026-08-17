@@ -19,7 +19,8 @@
 --	press X,Y           down and stay down
 --	release X,Y         up
 --	drag X0,Y0 X1,Y1    a stroke, button held along the way
---	wheel up|down [N]   the wheel, or a T-Deck's trackball
+--	wheel up|down|left|right [N]
+--	                    the wheel, or a T-Deck's trackball
 --	type TEXT           keystrokes at the panel's keyboard
 --	key NAME            enter, esc, tab, backspace, space, intr
 --	run LUA             one line at the serial repl

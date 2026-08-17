@@ -13,9 +13,12 @@ local sys = require("los.sys")
 local M = {}
 
 -- Buttons: 1, 2 and 4 are buttons, 8 and 16 a wheel. A device with one
--- contact reports 1 or 0.
+-- contact reports 1 or 0. plan 9 names no bits for a second wheel axis,
+-- so the horizontal pair follows x11's buttons 6 and 7.
 M.WHEELUP = 8
 M.WHEELDOWN = 16
+M.WHEELLEFT = 32
+M.WHEELRIGHT = 64
 
 function M.format(x, y, b, ms)
 	return ("m%12d%12d%12d%12d"):format(x, y, b, ms or sys.uptime_ms())
@@ -35,10 +38,12 @@ function M.parse(rec)
 	return tonumber(x), tonumber(y), tonumber(b), tonumber(ms)
 end
 
+M.WHEEL = M.WHEELUP | M.WHEELDOWN | M.WHEELLEFT | M.WHEELRIGHT
+
 function M.iswheel(rec)
 	local _, _, b = M.parse(rec)
 
-	return b ~= nil and (b & (M.WHEELUP | M.WHEELDOWN)) ~= 0
+	return b ~= nil and (b & M.WHEEL) ~= 0
 end
 
 -- ---- the half that has the pointer ----

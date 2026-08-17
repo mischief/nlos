@@ -8,6 +8,11 @@
  */
 #define BALL_UP		8
 #define BALL_DOWN	16
+/* the other axis. plan 9 names no bits for it, so these follow x11,
+ * where horizontal scroll is buttons 6 and 7.
+ */
+#define BALL_LEFT	32
+#define BALL_RIGHT	64
 /* the ball's press is button 1, the same as a tap.
  *
  * They are different devices and that is not a difference a program
@@ -23,8 +28,8 @@ int esp_ball_present(void);
 
 /* one pending event, or 0.
  *
- * *wheel is BALL_UP or BALL_DOWN for a click and 0 otherwise, *button
- * is BALL_BUTTON while the ball is held. Clicks are counted by the
+ * *wheel is one of the four click bits and 0 otherwise, *button is
+ * BALL_BUTTON while the ball is held. Clicks are counted by the
  * interrupt and handed out one per call, so a fast scroll arrives as
  * several records rather than as one that lost the rest.
  */

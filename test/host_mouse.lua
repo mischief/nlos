@@ -67,6 +67,21 @@ ok(mouse.iswheel(mouse.format(0, 0, mouse.WHEELUP, 0)),
 ok(not mouse.iswheel(mouse.format(0, 0, 1, 0)),
     "a click does not")
 
+-- the horizontal pair, which plan 9 does not name and x11 does.
+for _, b in ipairs({ mouse.WHEELLEFT, mouse.WHEELRIGHT }) do
+	ok(mouse.iswheel(mouse.format(0, 0, b, 0)),
+	    "a sideways click is a wheel record too")
+end
+is(mouse.WHEELLEFT | mouse.WHEELRIGHT, 96, "and 32 and 64 are its bits")
+
+-- a reader that knows only the vertical pair must not see one in the
+-- other axis: the bits are what tells them apart.
+is(mouse.WHEELLEFT & (mouse.WHEELUP | mouse.WHEELDOWN), 0,
+    "left is none of the wheel bits that came before it")
+is(mouse.WHEELRIGHT & (mouse.WHEELUP | mouse.WHEELDOWN), 0,
+    "nor is right")
+is(mouse.WHEEL, 120, "and the four together are one mask")
+
 -- ---- the queue ----
 --
 -- Motion coalesces by replacing the tail, so a reader that is behind
