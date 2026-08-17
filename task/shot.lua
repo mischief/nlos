@@ -80,21 +80,32 @@ local size = #header + H * stride
 -- fb task narrows the answer where it does not. Doing it here instead
 -- was a string.char per pixel -- 2.7 seconds for a 320x240 screen, a
 -- third of the transfer, for bytes the driver already had.
-local cached, cachedy = nil, -1
+-- A band rather than a row: one unload of sixteen rows costs about what
+-- three single rows cost, and the transfer walks them in order anyway.
+-- Sixteen is 15KB held, which is affordable beside zmodem's own buffer.
+local BAND = 16
+local cached, cachedat, cachedn = nil, -1, 0
 
-local function row(y)
-	if y ~= cachedy then
+local function band(y)
+	if y < cachedat or y >= cachedat + cachedn then
+		local n = math.min(BAND, H - y)
 		local r = rpc(fb, fbport, { op = "unload", fmt = "rgb",
-		    r = { x = 0, y = y, w = W, h = 1 } })
+		    r = { x = 0, y = y, w = W, h = n } })
 
 		if not (r and r.ok) then
-			error("unload row " .. y .. ": " ..
+			error("unload rows " .. y .. "+" .. n .. ": " ..
 			    tostring(r and r.err), 0)
 		end
-		cached = r.ok
-		cachedy = y
+		cached, cachedat, cachedn = r.ok, y, n
 	end
-	return cached
+	return cached, cachedat
+end
+
+-- one row out of whichever band holds it
+local function row(y)
+	local b, at = band(y)
+
+	return b:sub((y - at) * stride + 1, (y - at + 1) * stride)
 end
 
 local function readat(off, n)
