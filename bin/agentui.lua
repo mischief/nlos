@@ -108,6 +108,43 @@ local toolog = {}
 local down = false		-- the pointer, so a press acts once
 local BUT1 = 1			-- a click, from the panel or the ball
 
+-- rows per scroll step. One row at a time reads as slow, because what
+-- a step costs is the repaint rather than the step.
+local SCROLL = 4
+
+-- s as rows of at most cols, breaking hard at the margin and at a
+-- newline. Codepoints, not bytes: cutting mid-sequence draws a box for
+-- the character it halved. Text that is not utf8 falls back to bytes,
+-- because a tool may return anything.
+local function wrapped(s, cols)
+	local out = {}
+
+	for line in (tostring(s) .. "\n"):gmatch("([^\n]*)\n") do
+		local n = utf8.len(line)
+
+		if n == nil then
+			for i = 1, #line, cols do
+				out[#out + 1] = line:sub(i, i + cols - 1)
+			end
+		elseif n == 0 then
+			out[#out + 1] = ""
+		else
+			local i = 1
+
+			while i <= n do
+				local j = math.min(i + cols - 1, n)
+				local a = utf8.offset(line, i)
+				local b = j < n and utf8.offset(line, j + 1) - 1
+				    or #line
+
+				out[#out + 1] = line:sub(a, b)
+				i = j + 1
+			end
+		end
+	end
+	return out
+end
+
 local function paintbar()
 	if not visible then
 		return
@@ -151,7 +188,7 @@ local function paintbody(all)
 			if y + ROWH > INPUT then
 				break
 			end
-			text(0, y, toolog[i]:sub(1, COLS), TOOL)
+			text(0, y, toolog[i], TOOL)
 			y = y + ROWH
 		end
 		return
@@ -226,15 +263,19 @@ local A = agent.new({
 	client = client,
 	caps = {},
 	ns = N,
-	-- two lines, because one row is 53 columns: a call and its result
-	-- on the same row leaves nothing of the result.
+	-- the call on its own rows and the result on its own, wrapped
+	-- rather than cut: a call and its result on one 53-column row
+	-- leaves nothing of the result.
 	trace = function(call, out)
-		toolog[#toolog + 1] = ("%s %s"):format(call.name,
-		    (call.raw or ""):gsub("%s+", " "))
-		toolog[#toolog + 1] = "  -> " ..
-		    out:gsub("%s+", " ")
+		local function add(s)
+			for _, l in ipairs(wrapped(s, COLS)) do
+				toolog[#toolog + 1] = l
+			end
+		end
 
-		while #toolog > 100 do
+		add(("%s %s"):format(call.name, call.raw or ""))
+		add(out)
+		while #toolog > 200 do
 			table.remove(toolog, 1)
 		end
 		status = call.name
@@ -346,10 +387,10 @@ local function ui()
 				showtools = not showtools
 				paintbody(true)
 			elseif m == "\27[A" then
-				F:scroll(-1)
+				F:scroll(-SCROLL)
 				paintbody()
 			elseif m == "\27[B" then
-				F:scroll(1)
+				F:scroll(SCROLL)
 				paintbody()
 			elseif m:byte(1) >= 0x20 and m:byte(1) ~= 0x7f then
 				typed = typed .. m
@@ -382,10 +423,10 @@ local function pointer()
 		end
 		-- the trackball, which is the wheel here
 		if b and (b & mouse.WHEELUP) ~= 0 then
-			F:scroll(-1)
+			F:scroll(-SCROLL)
 			paintbody()
 		elseif b and (b & mouse.WHEELDOWN) ~= 0 then
-			F:scroll(1)
+			F:scroll(SCROLL)
 			paintbody()
 		end
 	end
