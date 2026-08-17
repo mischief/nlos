@@ -49,15 +49,18 @@ local net = prog.net() or die("no network: /etc/dio.lua must say net = true")
 -- on the port is keys and window state.
 local ptr = prog.mouse()
 
--- what to show before the server has been asked, cheapest first. The
--- picker replaces this with the endpoint's own list the first time it
--- is opened, so the choice is what the account actually has.
+-- what to show before the server has been asked. The picker replaces
+-- this with the endpoint's own list when it is first opened.
+--
+-- The first is the default, and it is capable rather than cheap:
+-- reading a tree and reporting on it is what this is for, and a small
+-- model answers that thinly.
 local MODELS = {
+	"gpt-5.6-luna",
+	"gpt-5.5",
+	"gpt-5.4",
 	"gpt-5.4-mini",
 	"gpt-5.4-nano",
-	"gpt-5.4",
-	"gpt-5.5",
-	"gpt-5.6-luna",
 }
 local MODEL = MODELS[1]
 
