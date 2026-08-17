@@ -7,7 +7,7 @@ local espfs = require("espfs")
 local procfs = require("procfs")
 local tap = require("tap")
 
-tap.plan(15)
+tap.plan(17)
 
 local N = ns.new()
 
@@ -64,6 +64,20 @@ local stack = N:readfile("/proc/" .. pid .. "/stack")
 tap.ok(stack:find("in inner") ~= nil,
     "stack shows the lua frame it is wedged in")
 tap.ok(stack:find("(main)", 1, true) ~= nil, "and the frames below it")
+
+-- NS:open answers a chan, whose read takes a byte count. A format is
+-- io's word, and one passed here used to reach the backend and fail as
+-- arithmetic on a string.
+local sf = N:open("/proc/" .. pid .. "/stack", "r")
+local whole = sf:read(65536)
+
+tap.ok(whole:find("in inner") ~= nil, "a chan read takes a count")
+
+local bad, baderr = sf:read("a")
+
+tap.ok(bad == nil and tostring(baderr):find("count must be a number") ~= nil,
+    "and says so for a format: " .. tostring(baderr))
+sf:close()
 
 local mem = N:readfile("/proc/" .. pid .. "/mem")
 

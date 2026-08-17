@@ -100,8 +100,18 @@ end
 
 -- ---- the dev interface, at a position ----
 
+-- n is a byte count, not a format: a chan is the layer below io, and
+-- "a" or "l" belong to nsio's File. Saying so here keeps a format from
+-- reaching a backend, where it surfaces as arithmetic on a string.
 function Chan:read(n)
-	local ok, res = pcall(self.B.read, self.h, self.pos, n or 4096)
+	n = n or 4096
+	if type(n) ~= "number" then
+		return nil, ("read: count must be a number, not %s (%s)")
+		    :format(type(n), tostring(n))
+	end
+	n = math.tointeger(n) or math.floor(n)
+
+	local ok, res = pcall(self.B.read, self.h, self.pos, n)
 
 	if not ok then
 		return nil, res
