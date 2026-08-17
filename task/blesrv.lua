@@ -171,7 +171,7 @@ local function onatt(handle, pdu)
 			c.mtu = math.min(m.mtu, 185)
 			sendatt(handle, att.mtursp(185))
 		else
-			local rsp = db:request(pdu, c.mtu)
+			local rsp = db:request(pdu, c.mtu, c.subs)
 
 			if rsp then
 				sendatt(handle, rsp)
@@ -189,7 +189,7 @@ local function onatt(handle, pdu)
 		-- back, but the write still has to reach whoever serves it.
 		local m = att.decode(pdu)
 
-		db:request(pdu, c.mtu)
+		db:request(pdu, c.mtu, c.subs)
 		if m and m.handle then
 			tell("write", { handle = handle, attr = m.handle,
 			    value = m.value })
@@ -233,7 +233,10 @@ local function drain()
 			local r = gap.connreport(ev.params)
 
 			if r and r.status == 0 then
-				conns[r.handle] = { addr = r.addr,
+				-- subs is this link's own: a descriptor
+				-- written on one link says nothing about
+				-- what another asked for.
+				conns[r.handle] = { addr = r.addr, subs = {},
 				    role = r.role, mtu = att.DEFAULT_MTU }
 				nconn = nconn + 1
 				-- advertising stops when a peer connects,
@@ -518,22 +521,24 @@ function ops.notify(m)
 	for _, svc in ipairs(services) do
 		for _, c in ipairs(svc.chars) do
 			if c.value.handle == m.attr then
-				local pdu = gatt.notify(c, m.value)
+				local sent = 0
 
-				if not pdu then
-					return reply(m, { ok = false,
-					    err = "nobody subscribed" })
-				end
-				-- `except` is the link a relayed packet
-				-- arrived on: sending it back where it
-				-- came from is the loop a mesh has to
-				-- avoid.
-				for h in pairs(conns) do
-					if h ~= m.except then
-						sendatt(h, pdu)
+				-- built per link, because whether one is
+				-- owed a notification is that link's own
+				-- answer. `except` is where a relayed
+				-- packet arrived, and is the one place it
+				-- must not go back to.
+				for h, conn in pairs(conns) do
+					local pdu = h ~= m.except and
+					    gatt.notify(c, m.value, conn.subs)
+
+					if pdu and sendatt(h, pdu) then
+						sent = sent + 1
 					end
 				end
-				return reply(m, { ok = true })
+				return reply(m, { ok = sent > 0, sent = sent,
+				    err = sent == 0 and "nobody subscribed" or
+				    nil })
 			end
 		end
 	end

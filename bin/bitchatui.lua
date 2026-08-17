@@ -462,7 +462,10 @@ local function emit(b, except)
 	local r = ask({ op = "notify", attr = mychar, value = b,
 	    except = except })
 
-	if not (r.err or r.ok == false) then
+	-- how many links took it, not whether the call worked: a
+	-- notification nobody subscribed to reaches nobody, and saying so
+	-- is the difference between quiet and broken.
+	if (r.sent or 0) > 0 then
 		any = true
 	end
 	for h, value in pairs(outbound) do

@@ -73,7 +73,6 @@ function Db:service(u, chars)
 
 		if (props & M.NOTIFY) ~= 0 or (props & M.INDICATE) ~= 0 then
 			entry.cccd = add(self, M.CCCD, "\0\0")
-			entry.cccd.subscribed = 0
 		end
 		entry.name = c.name
 		out[#out + 1] = entry
@@ -219,7 +218,7 @@ local function readh(db, m, mtu)
 	return att.readrsp(v:sub(1, mtu - 1))
 end
 
-local function writeh(db, m)
+local function writeh(db, m, subs)
 	local a = db:find(m.handle)
 
 	if not a then
@@ -231,12 +230,14 @@ local function writeh(db, m)
 	end
 
 	if uuid.eq(a.uuid, M.CCCD) then
-		-- subscribing: two bytes saying notify, indicate or
-		-- neither, kept per attribute rather than per connection
-		-- because one link is all this serves.
-		a.value = m.value
-		a.subscribed = #m.value >= 2 and
-		    string.unpack("<I2", m.value) or 0
+		-- Subscribing, and it belongs to the link that asked: two
+		-- peers on one database subscribe separately, and a
+		-- notification is owed only to whoever asked for it.
+		-- `subs` is that link's table, held by the caller.
+		if subs then
+			subs[a.handle] = #m.value >= 2 and
+			    string.unpack("<I2", m.value) or 0
+		end
 	elseif a.write then
 		a.write(a, m.value)
 	else
@@ -247,7 +248,7 @@ end
 
 -- a request in, the response out, or nil where none is owed -- which
 -- is a write command, and is not the same as having nothing to say.
-function Db:request(pdu, mtu)
+function Db:request(pdu, mtu, subs)
 	local m, why = att.decode(pdu)
 
 	mtu = mtu or att.DEFAULT_MTU
@@ -265,11 +266,11 @@ function Db:request(pdu, mtu)
 	elseif m.op == att.OP_READ_REQ then
 		return readh(self, m, mtu)
 	elseif m.op == att.OP_WRITE_REQ then
-		local err = writeh(self, m)
+		local err = writeh(self, m, subs)
 
 		return err or att.writersp()
 	elseif m.op == att.OP_WRITE_CMD then
-		writeh(self, m)
+		writeh(self, m, subs)
 		return nil
 	elseif m.op == att.OP_MTU_REQ then
 		return nil, "mtu is the caller's to answer"
@@ -277,15 +278,18 @@ function Db:request(pdu, mtu)
 	return att.error(m.op, m.handle or 0, att.ERR_REQ_NOT_SUPPORTED)
 end
 
--- a notification for a characteristic, or nil where nobody subscribed.
+-- A notification for one link, or nil where that link did not ask.
 -- Silence is the right answer then: an unsubscribed notification is a
--- packet the client is entitled to ignore, and some will disconnect.
-function M.notify(entry, value)
-	if not entry.cccd or entry.cccd.subscribed == 0 then
+-- packet the client may ignore, and some disconnect over it. `subs` is
+-- what that link wrote to the descriptor.
+function M.notify(entry, value, subs)
+	local want = entry.cccd and subs and subs[entry.cccd.handle] or 0
+
+	if want == 0 then
 		return nil
 	end
 	entry.value.value = value
-	if (entry.cccd.subscribed & M.CCCD_INDICATE) ~= 0 then
+	if (want & M.CCCD_INDICATE) ~= 0 then
 		return att.indicate(entry.value.handle, value)
 	end
 	return att.notify(entry.value.handle, value)

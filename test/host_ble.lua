@@ -278,20 +278,41 @@ local nd = att.decode(none)
 ok(nd.op == att.OP_ERROR and nd.err == att.ERR_ATTR_NOT_FOUND,
     "an empty range says attribute not found")
 
--- writes, and what a subscription does.
-ok(gatt.notify(svc.chars[2], "hi") == nil, "nobody subscribed, so no notify")
+-- Writes, and what a subscription does. A subscription belongs to the
+-- link that asked: two peers share one database and neither is owed
+-- what the other asked for, so the caller holds a table per link.
+local one, two = {}, {}
+
+ok(gatt.notify(svc.chars[2], "hi", one) == nil,
+    "nobody subscribed, so no notify")
 
 local cccd = svc.chars[2].cccd.handle
 local wr = db:request(string.pack("<BI2", att.OP_WRITE_REQ, cccd) ..
-    string.pack("<I2", gatt.CCCD_NOTIFY), 185)
+    string.pack("<I2", gatt.CCCD_NOTIFY), 185, one)
 
 ok(att.decode(wr).op == att.OP_WRITE_RSP, "writing the cccd is answered")
 
-local note = gatt.notify(svc.chars[2], "hi")
+local note = gatt.notify(svc.chars[2], "hi", one)
 
 ok(note and att.decode(note).op == att.OP_NOTIFY, "and now it notifies")
 ok(att.decode(note).handle == svc.chars[2].value.handle,
     "on the value handle, not the descriptor's")
+
+-- the link that asked for nothing is owed nothing, which is what a
+-- second peer on the same database gets.
+ok(gatt.notify(svc.chars[2], "hi", two) == nil,
+    "and the other link is not notified")
+
+db:request(string.pack("<BI2", att.OP_WRITE_REQ, cccd) ..
+    string.pack("<I2", gatt.CCCD_NOTIFY), 185, two)
+ok(gatt.notify(svc.chars[2], "hi", two) ~= nil, "until it asks too")
+
+-- unsubscribing is one link's business as well.
+db:request(string.pack("<BI2", att.OP_WRITE_REQ, cccd) ..
+    string.pack("<I2", 0), 185, one)
+ok(gatt.notify(svc.chars[2], "hi", one) == nil, "one link can stop")
+ok(gatt.notify(svc.chars[2], "hi", two) ~= nil,
+    "without stopping the other")
 
 -- a write command is answered with silence, which is not the same as
 -- having nothing to say.
@@ -367,13 +388,17 @@ local subm = att.decode(sub)
 ok(subm.op == att.OP_WRITE_REQ and subm.value == "\1\0",
     "subscribing writes 0001 to the descriptor")
 
--- and the server accepts it, which closes the loop.
-ok(att.decode(db:request(sub, 185)).op == att.OP_WRITE_RSP,
+-- and the server accepts it, which closes the loop. The link doing the
+-- subscribing brings its own table, as a connection would.
+local link = {}
+
+ok(att.decode(db:request(sub, 185, link)).op == att.OP_WRITE_RSP,
     "which the server answers")
 
 -- gatt.notify takes the SERVER's entry, whose `value` is an attribute;
 -- the client's characteristic of the same name holds a handle number.
-local nh, nv, needsack = gattc.update(gatt.notify(svc.chars[2], "hello"))
+local nh, nv, needsack = gattc.update(gatt.notify(svc.chars[2], "hello",
+    link))
 
 ok(nh == svc.chars[2].value.handle and nv == "hello",
     "a notification decodes to handle and value")
