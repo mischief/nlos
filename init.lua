@@ -446,8 +446,7 @@ local repl_worker_src = [[
 		    dns = dnsh,
 		    udp = udph, power = powerh, dbg = dbgh, hci = hcih,
 		    ble = bleh },
-		    "lua-os. programs live in /bin; type exit to " ..
-		    "return to lua.\n")
+		    "lua-os. programs live in /bin; `lua` is a prompt.\n")
 	end
 
 	-- dos(): back to the launcher from the repl. Like halt it needs
@@ -517,12 +516,24 @@ local repl_worker_src = [[
 	-- answers and a lua prompt calls an undefined global. The repl is
 	-- what is left when there is nothing to launch -- no /bin, or a
 	-- root that never mounted -- and it is what you repair that from.
+	-- and it is only that. Leaving the shell starts it again: `lua` is
+	-- the program for a prompt, lent what the shell was lent. A shell
+	-- that exits at once three times cannot run -- an eof reads that
+	-- way -- and is not a person typing exit.
 	local dosok, doserr = pcall(startdos)
+	local quick = 0
+
+	while dosok and quick < 3 do
+		local at = sys.uptime_ms()
+
+		dosok, doserr = pcall(startdos)
+		quick = (sys.uptime_ms() - at < 200) and quick + 1 or 0
+	end
 
 	if not dosok then
 		print("dos: " .. tostring(doserr) .. " -- the lua repl instead")
-		rescuewords()
 	end
+	rescuewords()
 
 	while true do
 		local line = thread.readline(consh, "> ")
