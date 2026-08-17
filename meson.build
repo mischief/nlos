@@ -1665,6 +1665,14 @@ test('mouse-queue', lua_interp,
   depends: host_deps,
 )
 
+# the 2048 board. No screen and no clock in it, and the rand is given,
+# so a whole game is played with the luck chosen.
+test('slide-board', lua_interp,
+  args: [files('test/host_slide.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # lib/dhcp.lua's options, built by hand. A server offers what it is
 # configured to offer, so the ones this machine's server does not send
 # are reachable here and nowhere else.

@@ -109,6 +109,11 @@ return {
 		  handles = { "%.lua$", "%.txt$", "%.md$", "%.csv$",
 		    "%.conf$", "^[^.]*$" },
 		  desc = "read a file" },
+		-- keys as well as the pointer: the ball is the controller,
+		-- and wasd is what a board without one is played on.
+		{ name = "2048", cmd = "/bin/2048.lua", category = "toys",
+		  label = "2", color = 0xedc22e, keys = true,
+		  desc = "slide the tiles together" },
 		{ name = "clock", cmd = "/bin/clock.lua", category = "toys",
 		  label = "T", color = 0xff2418,
 		  desc = "the time; touch it to turn it over" },
