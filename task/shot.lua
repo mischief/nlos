@@ -80,32 +80,21 @@ local size = #header + H * stride
 -- fb task narrows the answer where it does not. Doing it here instead
 -- was a string.char per pixel -- 2.7 seconds for a 320x240 screen, a
 -- third of the transfer, for bytes the driver already had.
--- A band rather than a row: one unload of sixteen rows costs about what
--- three single rows cost, and the transfer walks them in order anyway.
--- Sixteen is 15KB held, which is affordable beside zmodem's own buffer.
-local BAND = 16
-local cached, cachedat, cachedn = nil, -1, 0
+local cached, cachedy = nil, -1
 
-local function band(y)
-	if y < cachedat or y >= cachedat + cachedn then
-		local n = math.min(BAND, H - y)
+local function row(y)
+	if y ~= cachedy then
 		local r = rpc(fb, fbport, { op = "unload", fmt = "rgb",
-		    r = { x = 0, y = y, w = W, h = n } })
+		    r = { x = 0, y = y, w = W, h = 1 } })
 
 		if not (r and r.ok) then
-			error("unload rows " .. y .. "+" .. n .. ": " ..
+			error("unload row " .. y .. ": " ..
 			    tostring(r and r.err), 0)
 		end
-		cached, cachedat, cachedn = r.ok, y, n
+		cached = r.ok
+		cachedy = y
 	end
-	return cached, cachedat
-end
-
--- one row out of whichever band holds it
-local function row(y)
-	local b, at = band(y)
-
-	return b:sub((y - at) * stride + 1, (y - at + 1) * stride)
+	return cached
 end
 
 local function readat(off, n)
@@ -151,10 +140,9 @@ sys.send(cons, { op = "rawon" })
 -- screen, and the only way out is a reset. A screenshot is worth less
 -- than the machine.
 --
--- A whole T-Deck screen is 225KB and leaves at about 5.5KB/s, so it
--- needs the better part of a minute. Room for a busy machine on top of
--- that, rather than for a slow one.
-local BUDGET_MS = 90000
+-- A whole T-Deck screen measured about 7 seconds at 37KB/s, so this is
+-- room for a busy machine rather than for a slow one.
+local BUDGET_MS = 30000
 local started = sys.uptime_ms()
 
 local function overbudget()

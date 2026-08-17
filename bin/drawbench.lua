@@ -155,16 +155,4 @@ else
 	out("no server-side image: alloc refused\n")
 end
 
--- reading the screen back, which is what a screenshot is made of: one
--- row at a time, as task/shot.lua asks for it.
-bench("unload 80 rows one by one", 80, function()
-	for y = 0, 79 do
-		fb.unload({ x = 0, y = y, w = W, h = 1 }, "rgb")
-	end
-end)
-
-bench("unload 80 rows in one call", 1, function()
-	fb.unload({ x = 0, y = 0, w = W, h = 80 }, "rgb")
-end)
-
 fb.fill(memdraw.rect(0, 0, W, H), 0x000000, true)
