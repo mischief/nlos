@@ -999,6 +999,13 @@ local function start(i, openarg)
 				-- that could use the radio.
 				ble = entry.ble and bleh and
 				    { __right = bleh } or nil,
+				-- the stack and the resolver, on the same
+				-- terms: an app that talks to a server says
+				-- so, and one that does not cannot.
+				net = entry.net and tcp and
+				    { __right = tcp } or nil,
+				dns = entry.net and dnsh and
+				    { __right = dnsh } or nil,
 				-- entropy of its own, drawn from ours: a
 				-- program that makes a key needs one, and
 				-- two apps must not draw the same bytes.

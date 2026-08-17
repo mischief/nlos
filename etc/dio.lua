@@ -74,6 +74,13 @@ return {
 		  category = "system", label = "B", color = 0xb10dc9,
 		  keys = true, ble = true,
 		  desc = "the bitchat mesh, over bluetooth" },
+		-- a model, with this machine as its tools. Keys because it
+		-- is typed at, and net because it talks to a server -- the
+		-- key it uses is on /config, not in the image.
+		{ name = "agent", cmd = "/bin/agentui.lua",
+		  category = "system", label = "?", color = 0x2ecc40,
+		  keys = true, net = true,
+		  desc = "ask a model, and let it use the machine" },
 		-- what the machine is and what it is holding. Reads only,
 		-- so it needs nothing granted; the controls it is named
 		-- for are the TODOs in its own header.
