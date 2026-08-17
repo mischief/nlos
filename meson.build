@@ -248,6 +248,10 @@ else
     'lib/crypto/util.lua',
     'lib/crypto/x25519.lua',
     'lib/bech32.lua',
+    'lib/nostr.lua',
+    'lib/nostrrelay.lua',
+    'lib/websocket.lua',
+    'lib/crypto/sha1.lua',
     'lib/json.lua',
     'lib/llm.lua',
     'lib/agent.lua',
@@ -855,6 +859,10 @@ lua_payload = files(
   'lib/agent.lua',
   'task/idle.lua',
   'lib/bech32.lua',
+  'lib/nostr.lua',
+  'lib/nostrrelay.lua',
+  'lib/websocket.lua',
+  'lib/crypto/sha1.lua',
   'lib/json.lua',
   'lib/mcp.lua',
   'lib/mnt.lua',
@@ -1021,7 +1029,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
-              'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1']
+              'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],

@@ -74,6 +74,12 @@ return {
 		  category = "system", label = "B", color = 0xb10dc9,
 		  keys = true, ble = true,
 		  desc = "the bitchat mesh, over bluetooth" },
+		-- notes off the relays. Keys to type one, net to reach a
+		-- relay; the identity is an nsec on /config, not here.
+		{ name = "nostr", cmd = "/bin/nostrui.lua",
+		  category = "system", label = "N", color = 0x8e44ad,
+		  keys = true, net = true,
+		  desc = "read and post notes over nostr" },
 		-- a model, with this machine as its tools. Keys because it
 		-- is typed at, and net because it talks to a server -- the
 		-- key it uses is on /config, not in the image.
