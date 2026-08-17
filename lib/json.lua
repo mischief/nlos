@@ -232,8 +232,13 @@ local ESCAPES = {
 	["\r"] = "\\r", ["\t"] = "\\t", ["\b"] = "\\b", ["\f"] = "\\f",
 }
 
+-- every control character, not just the ones with a short name: a raw
+-- byte below 0x20 inside a string is what a strict parser rejects, and
+-- a tool that read a file is how one gets here.
 local function encode_string(s)
-	return '"' .. s:gsub('[\\"\n\r\t\b\f]', ESCAPES) .. '"'
+	return '"' .. s:gsub('[\0-\31\\"]', function(c)
+		return ESCAPES[c] or ("\\u%04x"):format(c:byte())
+	end) .. '"'
 end
 
 local function encode_array(t)

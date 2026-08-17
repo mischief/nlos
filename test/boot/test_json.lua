@@ -1,7 +1,7 @@
 local json = require("json")
 local tap = require("tap")
 
-tap.plan(16)
+tap.plan(18)
 
 -- ---- decode: scalars ----
 tap.is(json.decode("42"), 42, "integer")
@@ -14,6 +14,15 @@ tap.is(json.decode("null"), json.null, "null maps to the sentinel")
 -- ---- decode: escapes ----
 tap.is(json.decode('"a\\nb"'), "a\nb", "\\n escape")
 tap.is(json.decode('"\\u0041"'), "A", "\\u escape (BMP)")
+
+-- ---- encode: control characters ----
+-- a raw byte below 0x20 inside a string is what a strict parser
+-- rejects, and a tool that read a file is how one arrives here.
+local ctl = "a\0b\1c\27d\11e"
+local enc = json.encode({ k = ctl })
+
+tap.ok(enc:find("[\0-\31]") == nil, "no raw control byte survives encode")
+tap.is(json.decode(enc).k, ctl, "and the string round trips whole")
 
 -- ---- decode: structure ----
 local o = json.decode('{"a":1,"b":[2,3]}')

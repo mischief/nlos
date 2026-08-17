@@ -392,6 +392,30 @@ function M.new(opts)
 	return a
 end
 
+-- valid utf8, because a json string must be one: a file read by a tool
+-- may hold a byte that is not text, and the server refuses the whole
+-- request for it rather than the one string.
+local function text8(s)
+	s = tostring(s)
+	if utf8.len(s) then
+		return s
+	end
+
+	local out, i = {}, 1
+
+	while i <= #s do
+		local ok, bad = utf8.len(s, i)
+
+		if ok then
+			out[#out + 1] = s:sub(i)
+			break
+		end
+		out[#out + 1] = s:sub(i, bad - 1) .. "?"
+		i = bad + 1
+	end
+	return table.concat(out)
+end
+
 function Agent:dispatch(call)
 	local fn = Agent[call.name]
 
@@ -410,7 +434,7 @@ function Agent:dispatch(call)
 	if not ok then
 		return "tool error: " .. tostring(res)
 	end
-	return res
+	return text8(res)
 end
 
 -- run(prompt) -> text, or nil plus why.
