@@ -74,7 +74,7 @@ CFG
 # shared ./OVMF_VARS.fd in whatever directory you happened to run from.
 vars=$(mktemp -t luaos-vars.XXXXXX)
 trap 'rm -f "$vars" "$svccfg"' EXIT HUP INT TERM
-cp %s "$vars"
+cp --sparse=always %s "$vars" 2>/dev/null || cp %s "$vars"
 
 # not exec: the trap has to survive to clean the varstore up
 %s -nographic %s %s %s -snapshot \
@@ -86,8 +86,8 @@ cp %s "$vars"
 	-drive if=pflash,format=raw,readonly=on,file=%s \
 	-drive if=pflash,format=raw,file="$vars" \
 	-drive %s,file=%s
-]], services_cfg, q(arch.FW_VARS), arch.QEMU, arch.MACHINE, arch.VIDEO,
-    arch.RNG, web_port, arch.NIC, arch.wire_args("null"), q(arch.FW_CODE),
-    arch.BLK, q(img))
+]], services_cfg, q(arch.FW_VARS), q(arch.FW_VARS), arch.QEMU, arch.MACHINE,
+    arch.VIDEO, arch.RNG, web_port, arch.NIC, arch.wire_args("null"),
+    q(arch.FW_CODE), arch.BLK, q(img))
 
 os.exit(os.execute(sh) and 0 or 1)

@@ -32,7 +32,7 @@ if not display then
 end
 
 if not io.open("OVMF_VARS.fd", "rb") then
-	os.execute("cp " .. q(arch.FW_VARS) .. " OVMF_VARS.fd")
+	arch.copyvars("OVMF_VARS.fd")
 end
 
 local cmd = table.concat({

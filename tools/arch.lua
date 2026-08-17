@@ -206,4 +206,32 @@ function M.wire_args(kind, path)
 	    ",server=on,wait=off -device pci-serial,chardev=wire"
 end
 
+-- copyvars(dst) -- the guest's own writable varstore.
+--
+-- Every caller that boots the image needs one, because pflash is
+-- written by the firmware and the packaged file is read-only. It is a
+-- copy rather than a share for the same reason: two guests writing one
+-- varstore is two guests writing one varstore.
+--
+-- Sparse, because on aarch64 that file is 64MiB of zeroes -- every page
+-- of it -- and meson runs four boot tests at once. Copied whole that is
+-- 256MiB live and ~8.7GB moved across a suite, for a varstore whose
+-- real contents are a few KB the firmware writes itself.
+--
+-- Not truncate, which would be byte-identical for that blank file and
+-- is the obvious shortcut: OVMF_VARS can name an enrolled varstore
+-- instead (AAVMF_VARS.ms.fd is 784645 nonzero bytes of secure boot
+-- keys), and a blank one boots fine while quietly not being the thing
+-- under test. Reading to find out costs what the copy costs, so the
+-- copy stays and only the holes are skipped.
+--
+-- --sparse is GNU; the plain cp behind it is for the BSDs, where the
+-- cost is a full-size file and nothing else changes.
+function M.copyvars(dst)
+	local from, to = M.quote(M.FW_VARS), M.quote(dst)
+
+	return os.execute(("cp --sparse=always %s %s 2>/dev/null || cp %s %s")
+	    :format(from, to, from, to))
+end
+
 return M

@@ -16,7 +16,7 @@ local img = arg[1]
 local payload = here .. "/test/boot/fetch_mcp.lua"
 
 if not io.open("OVMF_VARS.fd", "rb") then
-	os.execute("cp " .. q(arch.FW_VARS) .. " OVMF_VARS.fd")
+	arch.copyvars("OVMF_VARS.fd")
 end
 
 local cmd = table.concat({

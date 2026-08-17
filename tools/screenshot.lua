@@ -53,7 +53,7 @@ end
 local tmp = assert(popen_line("mktemp -d"), "mktemp -d failed")
 local serial = tmp .. "/serial.log"
 
-os.execute("cp " .. q(arch.FW_VARS) .. " " .. q(tmp .. "/vars.fd"))
+arch.copyvars(tmp .. "/vars.fd")
 
 -- no -display none: the display device has to exist for there to be
 -- anything to dump. "none" here is the *host window*, not the guest's

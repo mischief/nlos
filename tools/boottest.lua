@@ -79,7 +79,7 @@ local function cleanup()
 	os.execute("rm -rf " .. q(tmp))
 end
 
-os.execute("cp " .. q(arch.FW_VARS) .. " " .. q(tmp .. "/vars.fd"))
+arch.copyvars(tmp .. "/vars.fd")
 
 -- pin the guest to ONE host cpu.
 --
