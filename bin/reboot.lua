@@ -1,4 +1,4 @@
--- reboot: restart the machine.
+-- reboot: sync the volumes, then restart the machine.
 --
 --   > reboot          restart
 --   > reboot -w       a warm reset, where the firmware distinguishes one
@@ -20,10 +20,35 @@
 
 local unistd = require("posix.unistd")
 local prog = require("prog")
+local ns = require("ns")
 
 local function die(s)
 	unistd.write(2, "reboot: " .. s .. "\n")
 	os.exit(1)
+end
+
+-- A fat volume's cache is write-back and a tick commits it every few
+-- seconds, so a reset on its own throws away whatever was written in
+-- between. Every mount that answers to a ctl file is told to sync;
+-- one that has no such file is not a volume with anything to lose.
+local function syncvolumes()
+	local N = ns.current()
+	local n = 0
+
+	for _, m in ipairs((N and N.mounts) or {}) do
+		local at = m.prefix or ""
+
+		if at == "/" then
+			at = ""
+		end
+
+		local path = at .. "/ctl"
+
+		if N:stat(path) and pcall(N.writefile, N, path, "sync") then
+			n = n + 1
+		end
+	end
+	return n
 end
 
 local mode = "cold"
@@ -44,8 +69,13 @@ if not power then
 	die("no power capability: this shell was not given one")
 end
 
-unistd.write(1, (mode == "shutdown" and "powering off" or "rebooting")
-    .. "...\n")
+-- before anything is said about resetting: the sync is the part that
+-- must happen, and a machine that cannot say so still commits.
+local synced = syncvolumes()
+
+unistd.write(1, ("%s... (%d volume%s synced)\n"):format(
+    mode == "shutdown" and "powering off" or "rebooting",
+    synced, synced == 1 and "" or "s"))
 
 -- the message and the reset go to one mailbox and are handled in the
 -- order they are sent, so the stall lands first. It is what gives the
