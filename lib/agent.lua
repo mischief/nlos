@@ -371,7 +371,10 @@ end
 --   client   an llm client, made stateful where the endpoint has it
 --   caps     sys.granted(), for what a spawned program is lent
 --   ns       the namespace, defaulting to this proc's
---   turns    how many tool rounds before giving up
+--   turns    how many tool rounds before answering from what it has.
+--            Reading a tree one file at a time spends these fast, so
+--            the bound is high enough for that and exists only to stop
+--            a loop that will not end.
 function M.new(opts)
 	opts = opts or {}
 
@@ -380,7 +383,7 @@ function M.new(opts)
 		caps = opts.caps or {},
 		ns = opts.ns or ns.current(),
 		cwd = opts.cwd or "/",
-		turns = opts.turns or 8,
+		turns = opts.turns or 32,
 		limit = opts.limit or 8192,
 		trace = opts.trace,
 	}, Agent)
@@ -452,7 +455,26 @@ function Agent:run(prompt)
 		end
 		self.client.last = res.id
 	end
-	return nil, ("gave up after %d rounds of tool calls"):format(self.turns)
+
+	-- out of rounds, but not out of an answer: ask once more with the
+	-- tools closed off, so the work already done is reported rather
+	-- than thrown away.
+	local extra = { tool_choice = "none" }
+
+	if self.client.stateful and self.client.last then
+		extra.previous_response_id = self.client.last
+	end
+
+	res, err = self.client:ask(("You have used all %d tool rounds. " ..
+	    "Answer now from what you have found, and say what is still " ..
+	    "unchecked."):format(self.turns), extra)
+	if not res then
+		return nil, ("stopped after %d rounds of tool calls: %s")
+		    :format(self.turns, tostring(err))
+	end
+	self.client.last = res.id
+	return llm.text(res) or
+	    ("stopped after %d rounds of tool calls"):format(self.turns), res
 end
 
 return M
