@@ -634,20 +634,25 @@ local function seltext(x, y, s, color, bg)
 	end
 end
 
--- whether the program is there, asked once when the list opens rather
--- than on every paint: a stat costs milliseconds on a board, and a
--- scroll would pay for one per row it moved past.
+-- whether the program is there. A stat costs milliseconds on a board,
+-- so it is asked once per row that is actually drawn and kept until the
+-- list is next opened: only the group on the screen is paid for, and a
+-- scroll over rows already seen pays nothing.
 local present = {}
 
-local function lookup()
-	for k, e in ipairs(catalog) do
-		present[k] = N:stat(e.cmd) ~= nil
+local function here(k)
+	local v = present[k]
+
+	if v == nil then
+		v = N:stat(catalog[k].cmd) ~= nil
+		present[k] = v
 	end
+	return v
 end
 
 local function drawentry(k, y)
 	local e = catalog[k]
-	local here = present[k]
+	local here = here(k)
 	local name = e.name or "?"
 	local n = 0
 
@@ -1117,9 +1122,10 @@ local function opensel()
 	end
 	selecting = true
 	seloff = 0
-	-- asked here rather than per paint: what is installed can change
-	-- between one opening and the next, and does not while one is up.
-	lookup()
+	-- forgotten here, not asked here: what is installed can change
+	-- between one opening and the next, and the rows that are drawn
+	-- ask for themselves.
+	present = {}
 	buildrows()
 	drawselector()
 	drawplus()
