@@ -12,6 +12,12 @@ local rpc = require("client.rpc")
 local requester = rpc.requester
 local sendwait = rpc.sendwait
 
+-- how long to wait for the screen to answer. Far above any real op --
+-- a round trip is about a millisecond on the board -- so nothing slow
+-- trips it, and a client that waited for ever instead would hang with
+-- half a window painted and no way back.
+local DEADLINE = 10000
+
 local M = {}
 
 function M.new(handle, chunk)
@@ -45,10 +51,13 @@ function M.new(handle, chunk)
 			return nil, why
 		end
 
-		local r = thread.recv(replyport)
+		local r, why = thread.recvtimeout(replyport, DEADLINE)
 
 		sys.close(sr)
 		sys.close(replyport)
+		if type(r) ~= "table" then
+			return nil, why or "no reply"
+		end
 		if r.err then
 			return nil, r.err
 		end

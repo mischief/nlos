@@ -430,6 +430,21 @@ local function reap()
 	end
 end
 
+-- answer one client, and never wait on it.
+--
+-- This loop serves every window on the machine, so blocking for room in
+-- one client's queue lets one app stop the screen for all of them. A
+-- reply that will not fit is dropped and said out loud, and the client's
+-- own deadline is what turns that into an error rather than a hang.
+local function respond(h, msg)
+	local ok, why = sys.send(h, msg)
+
+	if not ok then
+		sys.log(("fb: dropped a reply: %s"):format(tostring(why)))
+	end
+	return ok
+end
+
 while true do
 	local i, m = sys.alt(ports)
 
@@ -440,12 +455,12 @@ while true do
 
 		if space.win and GLASS[m.op] then
 			if reply then
-				sys.send(reply, { err = m.op ..
+				respond(reply, { err = m.op ..
 				    ": the screen is not a window's to touch" })
 			end
 		elseif not fn then
 			if reply then
-				sys.send(reply,
+				respond(reply,
 				    { err = "no such op: " .. tostring(m.op) })
 			end
 		else
@@ -456,9 +471,9 @@ while true do
 
 			if reply then
 				if ok then
-					sys.send(reply, { ok = res })
+					respond(reply, { ok = res })
 				else
-					sys.send(reply, { err = tostring(res) })
+					respond(reply, { err = tostring(res) })
 				end
 			end
 			-- the session's own send right, surplus once the

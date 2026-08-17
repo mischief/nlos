@@ -12,7 +12,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(35)
+tap.plan(36)
 
 tap.ok(caps_of.fb ~= nil, "boot payload was granted fb")
 if not caps_of.fb then
@@ -299,5 +299,26 @@ tap.ok(not ok and tostring(err):find("bytes"),
 ok, err = fb.fill(memdraw.rect(mode.w, mode.h, 8, 8), memdraw.white, true)
 tap.ok(not ok and tostring(err):find("off a"),
     "a rectangle off the screen is refused: " .. tostring(err))
+
+-- ---- a client that stops reading must not stop the screen ----
+--
+-- One loop serves every window on the machine. Waiting for room in a
+-- client's queue would let any app freeze the panel for all of them, so
+-- an undeliverable reply is dropped. The port below is never read, which
+-- is what a wedged or dying app looks like from here.
+local deaf = sys.newport("test_fb.deaf")
+local deafsend = sys.sendright(deaf)
+
+for _ = 1, 400 do
+	sys.send(fb.handle, { op = "mode", reply = { __right = deafsend } })
+end
+
+local still = fb.mode()
+
+tap.ok(type(still) == "table" and still.w == mode.w,
+    "the screen answers after a client stopped reading its replies")
+
+sys.close(deafsend)
+sys.close(deaf)
 
 tap.done()

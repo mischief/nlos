@@ -107,14 +107,41 @@ M.sendwait = sendwait
 --
 -- Only "full" retries. "dead" and "hungup" are answers, not conditions
 -- to wait out.
-local function requester(target)
+-- `ms` bounds the wait for a reply, giving nil plus "timeout" where a
+-- server dropped one. Not the default: an op on a slow volume takes as
+-- long as it takes. Pass it where a hang is the worse outcome.
+--
+-- A late reply is drained first. Read as the answer to the next
+-- request, it would leave every later op returning the one before it.
+local function requester(target, ms)
 	return function(extra)
 		local reply, send = thread.replyport()
 
+		-- tryrecv answers false on an empty queue, not nil: testing
+		-- for nil here would never end.
+		if ms then
+			while sys.tryrecv(reply) do
+			end
+		end
 		extra.reply = { __right = send }
 
 		while true do
-			local result, why = thread.call(target, extra, reply)
+			local result, why
+
+			if ms then
+				local ok, serr = sendwait(target, extra)
+
+				if not ok then
+					return nil, serr
+				end
+				result, why = thread.recvtimeout(reply, ms)
+				if result == nil and why == "timeout" then
+					return nil, "timeout"
+				end
+				return result, why
+			end
+
+			result, why = thread.call(target, extra, reply)
 
 			if why ~= "full" then
 				-- includes the ordinary success case, where
