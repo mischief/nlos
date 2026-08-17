@@ -269,8 +269,42 @@ local function say(s, color)
 	paintbody()
 end
 
+-- s as rows of at most cols, broken at the margin and at a newline.
+-- Codepoints, not bytes: cutting mid-sequence draws a box for the
+-- character it halved.
+local function wrapped(s, cols)
+	local out = {}
+
+	for line in (tostring(s) .. "\n"):gmatch("([^\n]*)\n") do
+		local n = utf8.len(line)
+
+		if n == nil then
+			for i = 1, #line, cols do
+				out[#out + 1] = line:sub(i, i + cols - 1)
+			end
+		elseif n == 0 then
+			out[#out + 1] = ""
+		else
+			local i = 1
+
+			while i <= n do
+				local j = math.min(i + cols - 1, n)
+				local a = utf8.offset(line, i)
+				local b = j < n and utf8.offset(line, j + 1) - 1
+				    or #line
+
+				out[#out + 1] = line:sub(a, b)
+				i = j + 1
+			end
+		end
+	end
+	return out
+end
+
 local function note(s)
-	relaylog[#relaylog + 1] = plain(s):sub(1, COLS)
+	for _, l in ipairs(wrapped(plain(s), COLS)) do
+		relaylog[#relaylog + 1] = l
+	end
 	while #relaylog > 100 do
 		table.remove(relaylog, 1)
 	end
@@ -433,9 +467,32 @@ end
 -- where the time goes, reported at the end because guessing was wrong:
 -- signatures are a fifth of it, and the relay and the panel are the
 -- rest.
+-- A subscription outlives its EOSE: the relay keeps sending what
+-- matches, so this loop runs until the connection goes rather than
+-- until the stored events run out. Nothing reads the socket otherwise,
+-- and the notes pile up in it unread.
+local metasub, metaseq = nil, 0
+
+local function askmeta()
+	if metasub or not next(wanted) then
+		return
+	end
+
+	local ask = {}
+
+	for pub in pairs(wanted) do
+		ask[#ask + 1] = pub
+		wanted[pub] = nil
+	end
+	metaseq = metaseq + 1
+	metasub = "m" .. metaseq
+	relay:req(metasub, { kinds = { 0 }, authors = ask })
+end
+
 local function drain(t0)
 	local shown, vms, first = 0, 0, nil
 	local nms, sms = 0, 0
+	local told = false
 
 	while true do
 		local n0 = sys.uptime_ms()
@@ -455,7 +512,7 @@ local function drain(t0)
 			return
 		end
 
-		if what == "event" and a == "m" then
+		if what == "event" and a == metasub then
 			-- a profile, verified like anything else: a name
 			-- shown for somebody else's key is the whole of
 			-- what an impersonator wants.
@@ -502,42 +559,41 @@ local function drain(t0)
 			local s0 = sys.uptime_ms()
 
 			shown = shown + 1
-			status = ("%d notes"):format(shown)
+			status = ("%d notes%s"):format(shown,
+			    told and ", live" or "")
 			paintbar()
 			show(b, body)
 			sms = sms + (sys.uptime_ms() - s0)
-		elseif what == "eose" then
-			local all = sys.uptime_ms() - t0
-
-			status = ("%d notes"):format(shown)
-			paintbar()
-			note(("%d notes in %d ms: %d verifying, %d the rest")
-			    :format(shown, all, vms, all - vms))
-			sys.log(("nostr: %d notes, %d ms: %d verify, " ..
-			    "%d relay, %d draw, first %d ms")
-			    :format(shown, all, vms, nms - vms, sms,
-			    first or -1))
-
-			-- the names, now that it is known whose they
-			-- are. A second pass rather than a filter on the
-			-- first: who wrote a note is not known until the
-			-- note arrives.
-			if a ~= "m" then
-				local ask = {}
-
-				for pub in pairs(wanted) do
-					ask[#ask + 1] = pub
-				end
-				if #ask > 0 then
-					status = ("%d notes, naming")
-					    :format(shown)
-					paintbar()
-					relay:req("m", { kinds = { 0 },
-					    authors = ask })
-					goto continue
-				end
+			-- a stranger who turned up after the first pass
+			-- still deserves a name
+			if told then
+				askmeta()
 			end
-			return
+		elseif what == "eose" then
+			if a == metasub then
+				-- the names asked for have arrived; a
+				-- profile the relay lacks never will
+				relay:close_sub(metasub)
+				metasub = nil
+			elseif not told then
+				local all = sys.uptime_ms() - t0
+
+				-- the backlog is in; what follows is
+				-- live, so the input line stops waiting
+				told = true
+				busy = false
+				paintinput()
+				note(("%d notes in %d ms: %d verifying, " ..
+				    "%d the rest")
+				    :format(shown, all, vms, all - vms))
+				sys.log(("nostr: %d notes, %d ms: %d " ..
+				    "verify, %d relay, %d draw, first %d ms")
+				    :format(shown, all, vms, nms - vms,
+				    sms, first or -1))
+			end
+			status = ("%d notes, live"):format(shown)
+			paintbar()
+			askmeta()
 		elseif what == "notice" then
 			note("notice: " .. tostring(a))
 		elseif what == "ok" then
@@ -555,7 +611,10 @@ local function drain(t0)
 end
 
 local function connect()
-	if busy then
+	-- one at a time, and not a second while the first is still up:
+	-- the subscription stays open, so being connected is the normal
+	-- state rather than a step that finishes.
+	if busy or (relay and relay:alive()) then
 		return
 	end
 	busy = true
