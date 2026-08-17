@@ -203,6 +203,11 @@ function M.verify(pubkey, hash, r, s)
   return true
 end
 
+-- the lua verifier, held before anything can replace it: M.pure is M
+-- itself when there is no C module, and assigning M.verify below would
+-- otherwise leave no way to reach this one.
+local lua_verify = M.verify
+
 M.pure = M
 
 -- The C verifier, when it is there. The whole verification crosses,
@@ -244,7 +249,10 @@ if ok and type(native) == "table" and native.p256_verify then
     return false, "signature does not verify"
   end
 
-  M.native.pure = M
+  -- a table of its own rather than M, which is about to lose its
+  -- verify to the C one. Everything else is still M's.
+  M.pure = setmetatable({ verify = lua_verify }, { __index = M })
+  M.native.pure = M.pure
   M.verify = M.native.verify
 end
 
