@@ -4,6 +4,7 @@
 --
 --	up/down or the trackball   choose
 --	enter                      join, asking for a passphrase if it wants one
+--	f                          forget a saved network
 --	r                          scan again
 --	q                          leave
 --
@@ -126,6 +127,26 @@ local function join(ssid, psk)
 	    "join\n" .. ssid .. "\n" .. ((psk and psk ~= "") and psk or ""))
 end
 
+local function forget(ssid)
+	return N:writefile("/net/wifi/ctl", "forget\n" .. ssid .. "\n")
+end
+
+-- what wifisrv has saved. Read rather than kept: it is the one that
+-- writes them, and joining from here is what changes the list.
+local function known()
+	local txt = N:readfile("/net/wifi/known") or ""
+	local out = {}
+
+	for line in txt:gmatch("[^\n]+") do
+		local ssid = line:match("^%S+ (.*)$")
+
+		if ssid and ssid ~= "" then
+			out[ssid] = true
+		end
+	end
+	return out
+end
+
 -- ---- the keyboard ----
 --
 -- Whichever of the two this was started under: a tty from a shell, and
@@ -176,6 +197,7 @@ end
 -- ---- the screen ----
 
 local aps, sel, top = {}, 1, 1
+local saved = {}		-- ssid -> true, what wifisrv has written down
 local msg = "scanning..."
 -- dio keeps no pixels for an app that is not in front, so what is drawn
 -- behind another one is thrown away. Skipping it is not an optimisation
@@ -204,6 +226,9 @@ local function paintrow(k)
 	if not ap then
 		return
 	end
+	-- a mark on the ones this machine will join on its own, which is
+	-- the difference between a network in range and one it knows.
+	text(2, y, saved[ap.ssid] and "*" or " ", OK, bg)
 	text(8, y, ap.ssid, FG, bg)
 	text(W - 8 - 9 * FW, y, bars(ap.rssi), FG, bg)
 	text(W - 8 - 4 * FW, y, ap.open and "open" or " psk",
@@ -355,6 +380,9 @@ local function activate()
 		paint()
 		return
 	end
+	-- wifisrv writes it down as part of joining, so what is saved has
+	-- changed and the marks beside the rows are stale.
+	saved = known()
 	for _ = 1, 20 do
 		refresh()
 		if st.state == "joined" then
@@ -377,7 +405,8 @@ local function rescan()
 	paintmsg()
 	fb.sync()
 	aps, sel, top = scan(), 1, 1
-	msg = #aps .. " networks  enter join  r scan  q quit"
+	saved = known()
+	msg = #aps .. " networks  enter join  f forget  q quit"
 	refresh()
 	paint()
 end
@@ -390,6 +419,19 @@ local function onkey(k)
 		return false
 	elseif k == "r" then
 		rescan()
+	elseif k == "f" then
+		local ap = aps[sel]
+
+		if ap and saved[ap.ssid] then
+			forget(ap.ssid)
+			saved = known()
+			msg = "forgot " .. ap.ssid
+			paintrow(sel)
+			paintmsg()
+		elseif ap then
+			msg = ap.ssid .. " is not saved"
+			paintmsg()
+		end
 	elseif k == "k" or k == "\27[A" then
 		sel = math.max(1, sel - 1)
 		repoint(was)

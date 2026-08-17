@@ -77,13 +77,6 @@ return {
 		  category = "files", label = "E", color = 0xff7f0e,
 		  keys = true, desc = "change a file, not only read one" },
 
-		-- the radio. It reads and writes /net/wifi, which is a
-		-- mount rather than a capability, so it appears here on a
-		-- board that has one and does nothing on a board that
-		-- does not.
-		{ name = "wifi", cmd = "/bin/wifiui.lua", category = "net",
-		  label = "W", color = 0x7fdbff, keys = true,
-		  desc = "join a network" },
 		-- a model, with this machine as its tools. Keys because it
 		-- is typed at, and net because it talks to a server -- the
 		-- key it uses is on /config, not in the image.
@@ -133,6 +126,13 @@ return {
 		  label = "T", color = 0xff2418,
 		  desc = "the time; touch it to turn it over" },
 
+		-- the radio. It reads and writes /net/wifi, which is a
+		-- mount rather than a capability, so it appears here on a
+		-- board that has one and does nothing on a board that
+		-- does not.
+		{ name = "wifi", cmd = "/bin/wifiui.lua", category = "system",
+		  label = "W", color = 0x7fdbff, keys = true,
+		  desc = "join a network" },
 		-- what the machine is and what it is holding. Reads only,
 		-- so it needs nothing granted; the controls it is named
 		-- for are the TODOs in its own header.

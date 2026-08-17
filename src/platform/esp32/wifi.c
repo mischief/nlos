@@ -245,6 +245,16 @@ esp_wifi_connect_to(const char *ssid, const char *psk)
 		strncpy((char *)cfg.sta.password, psk,
 		    sizeof cfg.sta.password - 1);
 
+	/* One name may be several access points. Scanning every channel
+	 * and sorting by signal associates to the nearest of them rather
+	 * than the first heard; the retry count is what moves on to the
+	 * next when the nearest will not take us. Which NETWORK to join
+	 * is decided above this, from a list this layer never sees.
+	 */
+	cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+	cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+	cfg.sta.failure_retry_cnt = 2;
+
 	strncpy(lastssid, ssid, sizeof lastssid - 1);
 	lastssid[sizeof lastssid - 1] = 0;
 

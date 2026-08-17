@@ -158,6 +158,11 @@ set(EMBED_FILES
     lib/blkfs.lua
     task/blksrv.lua
 
+    # the networks task/wifisrv.lua joins from. A service is started
+    # before it can reach the partition, so a module only on luafs is
+    # one it cannot require.
+    lib/wificfg.lua
+
     # the filesystem on the flash partition, and so a bootstrap
     # dependency: nothing can be read off luafs until this is running,
     # which includes every program in /bin. gefs/io.lua is here for its

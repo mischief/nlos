@@ -41,7 +41,9 @@ return {
 	-- network without being handed the NIC. Before the panel, because
 	-- `mount` is inherited by what starts after it and the panel's
 	-- programs are what read it.
-	{ path = "/task/wifisrv.lua", caps = { "eth" }, ns = false,
+	-- with a namespace, unlike the services around it: this one keeps
+	-- /config/wifi.lua, so it opens files as well as serving them.
+	{ path = "/task/wifisrv.lua", caps = { "eth" },
 	  mount = "/net/wifi" },
 
 	-- the panel, the keyboard and the pointer, as the machine's own

@@ -175,33 +175,10 @@ print("")
 -- dhcpd keeps the description made above, without /net: it serves /net,
 -- and a namespace holding a mount to itself is a loop to be walked.
 
--- the network a radio is on: { ssid = "labratory", psk = "..." }.
---
--- Read here because task/eth.lua owns the radio but is a kernel driver
--- with no namespace. /config survives a reflash; a machine whose
--- interface is a cable has neither file and does nothing.
-if caps_of.eth then
-	local where = "/config/wifi.lua"
-	local src = rootns:readfile(where)
-
-	if not src then
-		where = "/etc/wifi.lua"
-		src = rootns:readfile(where)
-	end
-	if src then
-		local wok, conf = pcall(function()
-			return assert(load(src, "=" .. where, "t", {}))()
-		end)
-
-		if wok and type(conf) == "table" and conf.ssid then
-			sys.send(caps_of.eth, { op = "wifi", how = "connect",
-			    ssid = conf.ssid, psk = conf.psk })
-			sys.log("wifi: joining %s", conf.ssid)
-		else
-			sys.log("wifi: %s: %s", where, tostring(conf))
-		end
-	end
-end
+-- Which network the radio is on is task/wifisrv.lua's, and only its:
+-- it holds the nic, reads /config/wifi.lua, joins, and rejoins when the
+-- link goes. Joining from here as well would leave two procs retuning
+-- one radio from two copies of the same file.
 
 -- what this machine has: the kernel's own grants to start with, and
 -- below, everything /etc/services.lua started as well, under the name

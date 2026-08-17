@@ -2,7 +2,11 @@
 --
 --	/net/wifi/status	what it is associated to
 --	/net/wifi/scan		what is in range; reading one runs one
---	/net/wifi/ctl		join, leave, scan -- one field a line
+--	/net/wifi/known		the networks saved, in order of preference
+--	/net/wifi/ctl		join, forget, leave, scan -- one field a line
+--
+-- Which network to be on is decided here and nowhere else: this proc
+-- holds the nic and keeps /config/wifi.lua. A program writes ctl.
 --
 -- task/eth.lua owns the device and holds los.platform.wifi. Handing a
 -- program that right to pick a network would carry the whole NIC with
@@ -60,16 +64,36 @@ local SCANWAIT = 6000
 local FRESH = 15 * 1000
 local last, lastat = nil, nil
 
+-- The radio runs one scan at a time, and this proc has several threads
+-- that want one: a panel reading the file, and the loop below keeping
+-- the link up. A second caller waits for the one in flight and takes
+-- its result rather than asking the radio for a scan it will refuse.
+local scanning = false
+
 local function scan()
 	local now = sys.uptime_ms()
 
 	if last and lastat and now - lastat < FRESH then
 		return last
 	end
+	if scanning then
+		local wait = now + SCANWAIT
+
+		while scanning and sys.uptime_ms() < wait do
+			thread.sleep(100)
+		end
+		if last then
+			return last
+		end
+		return nil, "a scan was already running"
+	end
+
+	scanning = true
 
 	local r = ask({ how = "scan_begin" })
 
 	if not r or not r.ok then
+		scanning = false
 		return nil, dev.Eio
 	end
 
@@ -84,9 +108,11 @@ local function scan()
 
 		if t and t.aps then
 			last, lastat = t.aps, sys.uptime_ms()
+			scanning = false
 			return last
 		end
 	end
+	scanning = false
 	return nil, "scan timed out"
 end
 
@@ -107,6 +133,46 @@ local function scantext()
 		-- so a reader splits the first two off and keeps the rest.
 		out[#out + 1] = ("%d %s %s"):format(ap.rssi or -127,
 		    ap.open and "open" or "psk", ap.ssid or "")
+	end
+	return table.concat(out, "\n") .. (#out > 0 and "\n" or "")
+end
+
+-- ---- the networks this machine knows ----
+
+local wificfg = require("wificfg")
+local ns = require("ns")
+local CFG = "/config/wifi.lua"
+local FALLBACK = "/etc/wifi.lua"
+
+local function known()
+	local N = ns.current()
+
+	if not N then
+		return {}
+	end
+	return wificfg.parse(N:readfile(CFG) or N:readfile(FALLBACK))
+end
+
+-- /config is the writable one; /etc rides on the image and is where a
+-- board that was flashed with a network but never told one comes from.
+local function save(list)
+	local N = ns.current()
+
+	if not N then
+		return nil, dev.Eio
+	end
+	if not N:writefile(CFG, wificfg.format(list)) then
+		return nil, dev.Eio
+	end
+	return true
+end
+
+local function knowntext()
+	local out = {}
+
+	for _, n in ipairs(known()) do
+		out[#out + 1] = ("%s %s"):format(n.psk and "psk" or "open",
+		    n.ssid)
 	end
 	return table.concat(out, "\n") .. (#out > 0 and "\n" or "")
 end
@@ -145,6 +211,12 @@ local function control(msg)
 		last, lastat = nil, nil	-- the next read runs a fresh one
 		return true
 	end
+	if verb == "forget" then
+		if not ssid or ssid == "" then
+			return nil, "forget wants an ssid"
+		end
+		return save(wificfg.forget(known(), ssid))
+	end
 	if verb ~= "join" then
 		return nil, "unknown control message"
 	end
@@ -154,6 +226,11 @@ local function control(msg)
 	if psk == "" then
 		psk = nil
 	end
+
+	-- saved before the radio is told, and first in the list: a join
+	-- that is not written down is one the next boot has forgotten,
+	-- and choosing a network is what saying "prefer this" looks like.
+	save(wificfg.remember(known(), ssid, psk))
 
 	local r = ask({ how = "connect", ssid = ssid, psk = psk })
 
@@ -171,6 +248,7 @@ end
 local files = {
 	status = statustext,
 	scan = scantext,
+	known = knowntext,
 	ctl = function() return "" end,
 }
 
@@ -261,5 +339,91 @@ local function backend()
 
 	return B
 end
+
+-- ---- staying joined ----
+--
+-- A link that is up is left alone. Moving to whatever is loudest would
+-- put a machine on a phone in somebody's pocket the moment it walked
+-- past, so only a link that is down is a reason to choose again.
+local IDLE = 20 * 1000		-- between looks while the link is up
+-- and while it is not. Longer than a scan is fresh for, so the loop
+-- takes a new one rather than reading its own cached one forever, and
+-- rare enough that somebody reading the file is not queued behind it.
+local RETRY = 20 * 1000
+
+local function joined()
+	local r = ask({ how = "status" })
+	local st = r and r.ok
+
+	return type(st) == "table" and st.state == "joined", st
+end
+
+-- the first network, without waiting for a scan: association starts
+-- seconds sooner, and the loop below picks another if it is not here.
+local function first()
+	local list = known()
+
+	if list[1] then
+		sys.log("wifi: joining %s, %d known", list[1].ssid, #list)
+		ask({ how = "connect", ssid = list[1].ssid,
+		    psk = list[1].psk })
+	end
+end
+
+thread.spawn(function()
+	first()
+
+	local complained = false
+
+	while true do
+		local up, st = joined()
+
+		if up then
+			complained = false
+			thread.sleep(IDLE)
+			goto continue
+		end
+		if st and st.state == "joining" then
+			thread.sleep(RETRY)
+			goto continue
+		end
+
+		do
+			local list = known()
+
+			if #list == 0 then
+				thread.sleep(IDLE)
+				goto continue
+			end
+
+			-- whatever the last scan saw, its own or a reader's.
+			-- Clearing it here would make every pass retune the
+			-- radio and leave a panel reading the file empty
+			-- handed.
+			local pick, rssi = wificfg.pick(list, scan() or {})
+
+			if not pick then
+				-- once per outage, not every five seconds:
+				-- this goes to the same console a transfer
+				-- uses.
+				if not complained then
+					sys.log("wifi: none of %d known " ..
+					    "networks in range", #list)
+					complained = true
+				end
+				thread.sleep(RETRY)
+				goto continue
+			end
+
+			sys.log("wifi: joining %s at %d dBm", pick.ssid, rssi)
+			complained = false
+			ask({ how = "connect", ssid = pick.ssid,
+			    psk = pick.psk })
+			thread.sleep(RETRY)
+		end
+
+		::continue::
+	end
+end)
 
 srv.main(backend)

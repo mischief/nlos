@@ -1673,6 +1673,14 @@ test('slide-board', lua_interp,
   timeout: 20,
 )
 
+# the known networks. What a scan saw is a table, so choosing one is
+# tested without a radio.
+test('wifi-config', lua_interp,
+  args: [files('test/host_wificfg.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # lib/dhcp.lua's options, built by hand. A server offers what it is
 # configured to offer, so the ones this machine's server does not send
 # are reachable here and nowhere else.
