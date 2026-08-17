@@ -220,11 +220,12 @@ write_all(const char *s, size_t n)
 	 * clock for giving up.
 	 *
 	 * The floor is set by the reader, not by the link: a host between
-	 * reads leaves the buffer full for as long as its scheduler says.
-	 * 50ms is inside that, which is why a sender fast enough to fill
-	 * 4KB in the gap started losing bytes to it.
+	 * reads leaves the buffer full for as long as its scheduler says,
+	 * and 500ms is still inside that. Going quiet there costs a
+	 * dropped byte, a crc failure, a rewind and ten seconds, so raw
+	 * mode waits five and the transfer's budget ends a hopeless one.
 	 */
-	const int patience = rawmode ? 50 : 5;	/* x10ms */
+	const int patience = rawmode ? 500 : 5;	/* x10ms */
 
 	if (!usb_serial_jtag_is_connected())
 		return;
@@ -248,7 +249,13 @@ write_all(const char *s, size_t n)
 		} else if (detached) {
 			return;
 		} else if (++idle > patience) {
-			detached = true;	/* nobody reading */
+			/* Only cooked output gives up on its reader for
+			 * good. Raw mode has one by definition, and
+			 * latching there drops on the first full buffer
+			 * ever after -- a rewind each time, until a reboot.
+			 */
+			if (!rawmode)
+				detached = true;
 			return;
 		}
 	}
