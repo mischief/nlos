@@ -1,6 +1,6 @@
 -- nostrui: a nostr client on the panel.
 --
---	enter            publish what is typed
+--	enter            publish what is typed, or /quiet to filter
 --	esc              leave
 --	touch the relay  connect, or connect again after a drop
 --	touch the bar    show what the relay said
@@ -97,6 +97,8 @@ local down = false
 local relay, seckey, pubkey
 local busy = false
 local url = RELAY
+local quiet = true		-- the open feed is mostly machines
+local hidden = 0
 
 -- punctuation this font does not have. A note from the wider internet
 -- is full of it, and Spleen draws a box for every one.
@@ -112,6 +114,57 @@ local function plain(s)
 	return (tostring(s):gsub("[\194-\244][\128-\191]*", FOLD))
 end
 
+-- ---- what a stranger sent ----
+
+-- Note text comes from strangers. Control bytes are dropped, since the
+-- panel has no use for them and a run of newlines would otherwise let
+-- one note claim the whole screen.
+local function sanitize(s)
+	s = tostring(s):gsub("[\1-\8\11\12\14-\31\127]", "")
+	s = s:gsub("\n\n\n+", "\n\n")
+	return s
+end
+
+-- A relay's open feed is mostly machines. These judge the content
+-- alone, so they can run before the signature: deciding not to spend
+-- 233ms on a note is not the same as believing it.
+local HEXRUN, PROSEMIN, WORDSMIN = 64, 40, 3
+
+local function hexrun(s)
+	local run = 0
+
+	for i = 1, #s do
+		local c = s:byte(i)
+
+		if (c >= 48 and c <= 57) or (c >= 97 and c <= 102) then
+			run = run + 1
+			if run >= HEXRUN then
+				return true
+			end
+		else
+			run = 0
+		end
+	end
+	return false
+end
+
+-- Prose has words in it. Bytes over 0x7f count as letters, so a script
+-- that does not space its words is not mistaken for machine output.
+local function prosepoor(s)
+	if #s < PROSEMIN then
+		return false
+	end
+
+	local words = 0
+
+	for w in s:gmatch("[%a\128-\255]+") do
+		if #w >= 3 then
+			words = words + 1
+		end
+	end
+	return words < WORDSMIN
+end
+
 local function paintbar()
 	if not visible then
 		return
@@ -119,9 +172,15 @@ local function paintbar()
 
 	local host = url:match("^wss?://([^/]+)") or url
 
+	local right = status
+
+	if hidden > 0 then
+		right = ("%s  %d %s"):format(status, hidden,
+		    quiet and "hidden" or "noisy")
+	end
 	fill(0, 0, W, ROWH, 0x202028)
 	text(0, 0, "[" .. host .. "]", FG, 0x202028)
-	text((#host + 3) * FW, 0, status, DIM, 0x202028)
+	text((#host + 3) * FW, 0, right, DIM, 0x202028)
 end
 
 local function paintinput()
@@ -224,6 +283,58 @@ local function scroll(by)
 	paintbody()
 end
 
+-- Machines repeat themselves and post on a metronome; people do
+-- neither. This keys on the author, so it runs only after the
+-- signature: judging an unverified pubkey would let anyone silence
+-- anyone by forging notes in their name.
+local RECENT, RATEWIN, RATEMAX = 4, 60, 10
+local who = {}
+
+local function flooding(pub, content, now)
+	local n = who[pub]
+
+	if not n then
+		n = { seen = {}, at = 1, start = now, count = 0 }
+		who[pub] = n
+	end
+
+	local repeated = false
+
+	for _, h in ipairs(n.seen) do
+		if h == content then
+			repeated = true
+		end
+	end
+	n.seen[n.at] = content
+	n.at = n.at % RECENT + 1
+
+	if now - n.start >= RATEWIN then
+		n.start, n.count = now, 0
+	end
+	n.count = n.count + 1
+	return repeated or n.count > RATEMAX
+end
+
+-- every relay carries the same note, and a reconnect asks again. Ids
+-- already shown are remembered by a prefix; a collision would take
+-- deliberate effort.
+local shownid = {}
+local nshown = 0
+
+local function already(id)
+	local k = id:sub(1, 16)
+
+	if shownid[k] then
+		return true
+	end
+	if nshown > 512 then
+		shownid, nshown = {}, 0
+	end
+	shownid[k] = true
+	nshown = nshown + 1
+	return false
+end
+
 -- ---- keys ----
 
 local key = N:readfile(KEYFILE)
@@ -249,11 +360,11 @@ end
 -- one event onto the screen: who said it, then what they said. The
 -- author is an npub, shortened, because 63 characters is more than the
 -- screen has and the tail is the part that differs.
-local function show(ev)
-	local who = nostr.npub(nostr.unhex(ev.pubkey)) or ev.pubkey
+local function show(ev, body)
+	local np = nostr.npub(nostr.unhex(ev.pubkey)) or ev.pubkey
 
-	say(who:sub(1, 12) .. ".." .. who:sub(-6), WHO)
-	say(ev.content)
+	say(np:sub(1, 12) .. ".." .. np:sub(-6), WHO)
+	say(body or ev.content)
 	say("")
 end
 
@@ -283,21 +394,44 @@ local function drain(t0)
 		end
 
 		if what == "event" then
+			local body = sanitize(tostring(b.content or ""))
+
+			-- before the signature, and deliberately: not
+			-- spending 233ms on a payload blob is a decision
+			-- about cost, not about whether to believe it.
+			if quiet and (hexrun(body) or prosepoor(body)) then
+				hidden = hidden + 1
+				paintbar()
+				goto continue
+			end
+			if already(tostring(b.id or "")) then
+				goto continue
+			end
+
 			local v0 = sys.uptime_ms()
 			local ok, why = nostr.verify(b)
 
 			vms = vms + (sys.uptime_ms() - v0)
-			if ok then
-				local s0 = sys.uptime_ms()
-
-				shown = shown + 1
-				status = ("%d notes"):format(shown)
-				paintbar()
-				show(b)
-				sms = sms + (sys.uptime_ms() - s0)
-			else
+			if not ok then
 				note("bad event: " .. tostring(why))
+				goto continue
 			end
+
+			-- the author is worth trusting only now
+			if quiet and flooding(b.pubkey, body,
+			    math.tointeger(b.created_at) or 0) then
+				hidden = hidden + 1
+				paintbar()
+				goto continue
+			end
+
+			local s0 = sys.uptime_ms()
+
+			shown = shown + 1
+			status = ("%d notes"):format(shown)
+			paintbar()
+			show(b, body)
+			sms = sms + (sys.uptime_ms() - s0)
 		elseif what == "eose" then
 			local all = sys.uptime_ms() - t0
 
@@ -322,6 +456,7 @@ local function drain(t0)
 			note("closed: " .. tostring(b))
 			return
 		end
+		::continue::
 	end
 end
 
@@ -465,7 +600,18 @@ local function ui()
 				paintinput()
 			end
 		elseif type(m) == "string" then
-			if m == "\r" or m == "\n" then
+			-- typed rather than touched: the bar is two
+			-- buttons already, and this is rare enough that
+			-- it can afford a command.
+			if typed == "/quiet" and (m == "\r" or m == "\n") then
+				quiet = not quiet
+				typed = ""
+				say(("quiet is %s, %d held back so far")
+				    :format(quiet and "on" or "off", hidden),
+				    DIM)
+				paintbar()
+				paintinput()
+			elseif m == "\r" or m == "\n" then
 				local what = typed
 
 				typed = ""
