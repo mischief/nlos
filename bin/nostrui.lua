@@ -20,6 +20,7 @@ local thread = require("los.thread")
 local mouse = require("mouse")
 local font = require("los.font")
 local frame = require("frame")
+local json = require("json")
 local nostr = require("nostr")
 local nostrrelay = require("nostrrelay")
 
@@ -360,12 +361,73 @@ end
 -- one event onto the screen: who said it, then what they said. The
 -- author is an npub, shortened, because 63 characters is more than the
 -- screen has and the tail is the part that differs.
-local function show(ev, body)
-	local np = nostr.npub(nostr.unhex(ev.pubkey)) or ev.pubkey
+-- ---- who wrote it ----
 
-	say(np:sub(1, 12) .. ".." .. np:sub(-6), WHO)
+-- A name is kind 0, which arrives later than the notes it labels. Until
+-- it does, an author is an npub with its middle taken out; the tail is
+-- the part that differs, so both ends are kept.
+local names = {}
+local wanted = {}
+
+local function label(pub)
+	if names[pub] then
+		return names[pub]
+	end
+
+	local np = nostr.npub(nostr.unhex(pub)) or pub
+
+	return np:sub(1, 12) .. ".." .. np:sub(-6)
+end
+
+-- the lines already on the screen carry the author they name, so a name
+-- that arrives after them can be written in where the npub was.
+local function relabel(pub)
+	local touched = false
+
+	for _, l in ipairs(lines) do
+		if l.pub == pub then
+			l[1] = plain(label(pub))
+			touched = true
+		end
+	end
+	if touched then
+		retext()
+		paintbody(true)
+	end
+end
+
+local function show(ev, body)
+	say(label(ev.pubkey), WHO)
+	lines[#lines].pub = ev.pubkey
 	say(body or ev.content)
 	say("")
+	if not names[ev.pubkey] then
+		wanted[ev.pubkey] = true
+	end
+end
+
+-- what a profile calls itself. The content is JSON inside JSON, and a
+-- relay will hand over whatever an author put there, so this takes only
+-- a name and takes it as text.
+local function learn(ev)
+	local ok, meta = pcall(json.decode, ev.content or "")
+
+	if not ok or type(meta) ~= "table" then
+		return
+	end
+
+	local name = meta.display_name or meta.name
+
+	if type(name) ~= "string" or name == "" then
+		return
+	end
+	name = sanitize(name):gsub("[\n\r]", " "):sub(1, 24)
+	if name == "" then
+		return
+	end
+	names[ev.pubkey] = name
+	wanted[ev.pubkey] = nil
+	relabel(ev.pubkey)
 end
 
 -- where the time goes, reported at the end because guessing was wrong:
@@ -393,7 +455,19 @@ local function drain(t0)
 			return
 		end
 
-		if what == "event" then
+		if what == "event" and a == "m" then
+			-- a profile, verified like anything else: a name
+			-- shown for somebody else's key is the whole of
+			-- what an impersonator wants.
+			local v0 = sys.uptime_ms()
+			local ok = nostr.verify(b)
+
+			vms = vms + (sys.uptime_ms() - v0)
+			if ok and math.tointeger(b.kind) == 0 then
+				learn(b)
+			end
+			goto continue
+		elseif what == "event" then
 			local body = sanitize(tostring(b.content or ""))
 
 			-- before the signature, and deliberately: not
@@ -443,6 +517,26 @@ local function drain(t0)
 			    "%d relay, %d draw, first %d ms")
 			    :format(shown, all, vms, nms - vms, sms,
 			    first or -1))
+
+			-- the names, now that it is known whose they
+			-- are. A second pass rather than a filter on the
+			-- first: who wrote a note is not known until the
+			-- note arrives.
+			if a ~= "m" then
+				local ask = {}
+
+				for pub in pairs(wanted) do
+					ask[#ask + 1] = pub
+				end
+				if #ask > 0 then
+					status = ("%d notes, naming")
+					    :format(shown)
+					paintbar()
+					relay:req("m", { kinds = { 0 },
+					    authors = ask })
+					goto continue
+				end
+			end
 			return
 		elseif what == "notice" then
 			note("notice: " .. tostring(a))
