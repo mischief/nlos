@@ -44,6 +44,10 @@ end
 
 local net = prog.net() or die("no network: /etc/dio.lua must say net = true")
 
+-- the pointer is its own handle, not events on the port: what arrives
+-- on the port is keys and window state.
+local ptr = prog.mouse()
+
 local MODEL = "gpt-5.4-mini"
 local KEYFILE = "/config/openai.key"
 
@@ -102,6 +106,7 @@ local status = "ready"
 local showtools = false
 local toolog = {}
 local down = false		-- the pointer, so a press acts once
+local BUT1 = 1			-- a click, from the panel or the ball
 
 local function paintbar()
 	if not visible then
@@ -221,12 +226,14 @@ local A = agent.new({
 	client = client,
 	caps = {},
 	ns = N,
+	-- two lines, because one row is 53 columns: a call and its result
+	-- on the same row leaves nothing of the result.
 	trace = function(call, out)
-		local one = ("%s %s -> %s"):format(call.name,
-		    (call.raw or ""):gsub("%s+", " "):sub(1, 40),
-		    out:gsub("%s+", " "):sub(1, 40))
+		toolog[#toolog + 1] = ("%s %s"):format(call.name,
+		    (call.raw or ""):gsub("%s+", " "))
+		toolog[#toolog + 1] = "  -> " ..
+		    out:gsub("%s+", " ")
 
-		toolog[#toolog + 1] = one
 		while #toolog > 100 do
 			table.remove(toolog, 1)
 		end
@@ -321,29 +328,6 @@ local function ui()
 				paintbody(true)
 				paintinput()
 			end
-		elseif type(m) == "string" and mouse.parse(m) then
-			local x, y, b = mouse.parse(m)
-
-			-- the bar is the only control this app has that the T-Deck's
-			-- keyboard cannot reach: it has no tab key, and the pointer
-			-- is what the panel is driven with anyway.
-			if b and (b & 1) ~= 0 and y < ROWH and not down then
-				showtools = not showtools
-				paintbody(true)
-				paintbar()
-			end
-			if b then
-				down = (b & 1) ~= 0
-			end
-			-- the trackball, which is the wheel here
-			if b and (b & mouse.WHEELUP) ~= 0 then
-				F:scroll(-1)
-				paintbody()
-			elseif b and (b & mouse.WHEELDOWN) ~= 0 then
-				F:scroll(1)
-				paintbody()
-			end
-			local _ = x
 		elseif type(m) == "string" then
 			if m == "\r" or m == "\n" then
 				submit()
@@ -376,5 +360,37 @@ end
 
 end
 
+-- the pointer, read where it comes from. The bar is the one control the
+-- T-Deck's keyboard cannot reach: it has no tab key.
+local function pointer()
+	if not ptr then
+		return
+	end
+	while true do
+		local x, y, b = ptr.read()
+
+		if not x then
+			return
+		end
+		if b and (b & BUT1) ~= 0 and y < ROWH and not down then
+			showtools = not showtools
+			paintbody(true)
+			paintbar()
+		end
+		if b then
+			down = (b & BUT1) ~= 0
+		end
+		-- the trackball, which is the wheel here
+		if b and (b & mouse.WHEELUP) ~= 0 then
+			F:scroll(-1)
+			paintbody()
+		elseif b and (b & mouse.WHEELDOWN) ~= 0 then
+			F:scroll(1)
+			paintbody()
+		end
+	end
+end
+
+thread.spawn(pointer)
 thread.spawn(ui)
 thread.run()
