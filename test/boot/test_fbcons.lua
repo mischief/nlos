@@ -17,7 +17,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(20)
+tap.plan(33)
 
 tap.ok(caps_of.fb ~= nil, "boot payload holds the screen")
 if not caps_of.fb then
@@ -159,3 +159,63 @@ con.write("\27[999;999H\27[6n")
 tap.is(table.concat(answered),
     ("\27[%d;%dR"):format(con.rows, con.cols),
     "and parked at the far corner it answers the size")
+
+-- ---- 256-color and truecolor ----
+--
+-- The cube is not evenly spaced, so an index proves the table and not
+-- just the arithmetic: 196 is its pure red corner.
+con.write(HOME .. "\27[38;5;196mA")
+tap.ok(has(0, 0, 0xff0000), "SGR 38;5;196 draws the cube's red")
+
+con.write(HOME .. "\27[48;5;21m ")
+tap.ok(solid(0, 0, 0x0000ff), "SGR 48;5;21 fills with the cube's blue")
+
+con.write(HOME .. "\27[48;2;18;52;86m ")
+tap.ok(solid(0, 0, 0x123456), "SGR 48;2 fills with an exact rgb")
+
+-- an attribute after a color is an attribute: the parameters an
+-- extended color eats must not be read as one.
+con.write(HOME .. "\27[0m\27[38;5;196;7m ")
+tap.ok(solid(0, 0, 0xff0000),
+    "reverse video after a 256-color is still reverse video")
+
+-- ---- the cursor a program asked to hide ----
+--
+-- The outline is drawn over the cell's edges, so a cell holding a space
+-- is solid paper only while no cursor sits on it.
+con.write("\27[0m\27[2J\27[H\27[?25l")
+tap.ok(solid(0, 0, 0x000000), "CSI ?25l leaves no cursor on the glass")
+con.write("\27[?25h")
+tap.ok(not solid(0, 0, 0x000000), "and CSI ?25h puts it back")
+
+-- ---- the scroll region ----
+--
+-- A region holds the rows outside it still. Row 0 is the case that
+-- catches a scroll done by turning the ring: that moves every row.
+con.write("\27[0m\27[2J\27[H\27[r")
+con.write("\27[31mT\27[0m\27[3;1HX")	-- marker on row 0, X on row 2
+con.write("\27[2;3r")			-- region is rows 1..2
+con.write("\27[3;1H\n")			-- a newline at its foot scrolls it
+tap.ok(has(0, 0, 0xcc0000), "a region scroll leaves the row above it")
+tap.ok(has(0, 1, 0xc0c0c0), "and carries the region's rows up")
+
+-- reverse index at the top of a region scrolls it back down
+con.write("\27[2;1H\27M")
+tap.ok(has(0, 2, 0xc0c0c0), "ESC M at the region top scrolls it down")
+con.write("\27[r")
+
+-- ---- insert and delete line ----
+con.write("\27[0m\27[2J\27[H\27[31mP\27[0m\27[2;1HQ")
+con.write("\27[1;1H\27[L")		-- one blank line pushes P down
+tap.ok(has(0, 1, 0xcc0000), "CSI L pushes the cursor's row down")
+con.write("\27[1;1H\27[M")		-- and taking it back pulls P up
+tap.ok(has(0, 0, 0xcc0000), "CSI M pulls it back up")
+
+-- ---- the alternate screen ----
+con.write("\27[0m\27[2J\27[H\27[31mS\27[0m")
+con.write("\27[?1049h")
+-- not solid(): the cursor is parked on this cell, and its outline is
+-- ink. What must be gone is the marker's red.
+tap.ok(not has(0, 0, 0xcc0000), "CSI ?1049h shows an empty screen")
+con.write("\27[?1049l")
+tap.ok(has(0, 0, 0xcc0000), "and ?1049l gives the first one back")

@@ -42,6 +42,27 @@ local PALETTE = {
 	[12] = 0x5555ff, [13] = 0xff55ff, [14] = 0x55ffff, [15] = 0xffffff,
 }
 
+-- the six levels a 256-color cube steps through, and what xterm picked
+-- for them. Not evenly spaced: the gap from black is wider than the rest.
+local CUBE = { 0, 95, 135, 175, 215, 255 }
+
+-- one of the 256 indexed colors as 0xRRGGBB. 0-15 are the palette above,
+-- 16-231 a 6x6x6 cube, and the last 24 a gray ramp that does not repeat
+-- either end of it.
+local function color256(n)
+	if n < 16 then
+		return PALETTE[n]
+	elseif n < 232 then
+		n = n - 16
+		return (CUBE[n // 36 + 1] << 16) | (CUBE[n % 36 // 6 + 1] << 8) |
+		    CUBE[n % 6 + 1]
+	end
+
+	local v = 8 + (n - 232) * 10
+
+	return (v << 16) | (v << 8) | v
+end
+
 local function clamp(v, lo, hi)
 	if v < lo then
 		return lo
@@ -294,6 +315,12 @@ end
 -- Four fills rather than one. Each is a strip one pixel thick, so the
 -- four together move a fraction of what the filled cell did.
 function Cons:cursor(on)
+	-- a program that asked for no cursor gets none. Drawing it is
+	-- refused rather than erasing it, so the call that lifts it before
+	-- a write still does.
+	if on and not self.curvis then
+		on = false
+	end
 	if self.curon == on or self.paused then
 		return
 	end
@@ -359,8 +386,94 @@ function Cons:scroll()
 
 	self.grid[slot + 1] = ""
 	self:rowcolor(slot, self.deffg, self.defbg)
-	self.row = self.rows - 1
 	self.scrolled = self.scrolled + 1
+end
+
+-- ---- the scroll region ----
+--
+-- The ring above turns the whole screen, so it serves a region only
+-- when the region is the whole screen. A narrower one is shifted by
+-- copying instead: turning the ring would move the rows outside it,
+-- which are the rows a region exists to hold still.
+
+function Cons:blankrow(y)
+	local slot = self:slot(y)
+
+	self.grid[slot + 1] = ""
+	self:rowcolor(slot, self.deffg, self.defbg)
+end
+
+function Cons:moverow(from, to)
+	local fs, ts = self:slot(from) * self.cols * 4,
+	    self:slot(to) * self.cols * 4
+	local w = self.cols * 4
+
+	self.grid[self:slot(to) + 1] = self.grid[self:slot(from) + 1]
+	self.fgc:copy(ts + 1, self.fgc, fs + 1, fs + w)
+	self.bgc:copy(ts + 1, self.bgc, fs + 1, fs + w)
+end
+
+-- move rows top..bot by k, up or down, blanking what arrives behind
+-- them. The rows are taken in the order that keeps a row from being
+-- overwritten before it is read.
+function Cons:shiftrows(top, bot, k, up)
+	local n = bot - top + 1
+
+	if k >= n then
+		for y = top, bot do
+			self:blankrow(y)
+		end
+	elseif up then
+		for y = top, bot - k do
+			self:moverow(y + k, y)
+		end
+		for y = bot - k + 1, bot do
+			self:blankrow(y)
+		end
+	else
+		for y = bot, top + k, -1 do
+			self:moverow(y - k, y)
+		end
+		for y = top, top + k - 1 do
+			self:blankrow(y)
+		end
+	end
+	for y = top, bot do
+		self:dirtyspan(y, 0, self.cols)
+	end
+end
+
+function Cons:scrollup(k)
+	if self.stop == 0 and self.sbot == self.rows - 1 then
+		for _ = 1, k do
+			self:scroll()
+		end
+	else
+		self:shiftrows(self.stop, self.sbot, k, true)
+	end
+end
+
+function Cons:scrolldown(k)
+	self:shiftrows(self.stop, self.sbot, k, false)
+end
+
+-- down one row. The region scrolls only when the cursor stands on its
+-- last row: one placed below the region rides down to the foot of the
+-- screen and stops, rather than dragging the region with it.
+function Cons:linefeed()
+	if self.row == self.sbot then
+		self:scrollup(1)
+	elseif self.row < self.rows - 1 then
+		self.row = self.row + 1
+	end
+end
+
+function Cons:revindex()
+	if self.row == self.stop then
+		self:scrolldown(1)
+	elseif self.row > 0 then
+		self.row = self.row - 1
+	end
 end
 
 -- place one character at the cursor with the active colors, padding a
@@ -420,20 +533,14 @@ function Cons:putc(c)
 	if self.wrapnext and c >= " " then
 		self.wrapnext = false
 		self.col = 0
-		self.row = self.row + 1
-		if self.row >= self.rows then
-			self:scroll()
-		end
+		self:linefeed()
 	elseif c < " " then
 		self.wrapnext = false
 	end
 
 	if c == "\n" then
-		self.row = self.row + 1
 		self.col = 0
-		if self.row >= self.rows then
-			self:scroll()
-		end
+		self:linefeed()
 		return
 	elseif c == "\r" then
 		self.col = 0
@@ -474,11 +581,41 @@ end
 -- state persists across write() calls, because a program can emit an
 -- escape in pieces: ESC in one write, [ and the rest in the next.
 
+-- the color an extended SGR names, and the index of its last parameter.
+--
+-- 38 and 48 take their arguments from the parameters that follow, so
+-- these have to be consumed rather than stepped over: the 1 in
+-- "38;5;1;1m" is the color, and reading it as bold would be wrong twice.
+local function xcolor(p, i)
+	local kind = p[i + 1]
+
+	if kind == 5 and p[i + 2] then
+		return color256(p[i + 2] & 0xff), i + 2
+	elseif kind == 2 and p[i + 4] then
+		return ((p[i + 2] & 0xff) << 16) | ((p[i + 3] & 0xff) << 8) |
+		    (p[i + 4] & 0xff), i + 4
+	end
+	-- a form this does not know: give up on the rest of the sequence
+	-- rather than read its arguments as attributes.
+	return nil, #p
+end
+
 function Cons:sgr(p)
-	for i = 1, #p do
+	local i = 1
+
+	while i <= #p do
 		local n = p[i]
 
-		if n == 0 then
+		if n == 38 or n == 48 then
+			local c
+
+			c, i = xcolor(p, i)
+			if c and n == 38 then
+				self.lfg = c
+			elseif c then
+				self.lbg = c
+			end
+		elseif n == 0 then
 			self.lfg, self.lbg = self.deffg, self.defbg
 			self.bold, self.rev = false, false
 		elseif n == 1 then
@@ -502,8 +639,9 @@ function Cons:sgr(p)
 		elseif n >= 100 and n <= 107 then
 			self.lbg = PALETTE[n - 100 + 8]
 		end
-		-- an unknown code (256-color 38;5, truecolor 38;2) is
-		-- skipped, leaving the color as it was rather than wrong.
+		-- an unknown code is skipped, leaving what it names as it
+		-- was rather than wrong.
+		i = i + 1
 	end
 end
 
@@ -535,6 +673,71 @@ function Cons:eraseline(mode)
 	end
 end
 
+-- ---- the alternate screen ----
+--
+-- A second grid, so a full-screen program leaves the shell's scrollback
+-- as it found it. The pen is not part of it: a program that sets a color
+-- and then switches expects the color, and only xterm's own reset says
+-- otherwise.
+function Cons:altscreen(on)
+	local cells = self.cols * self.rows
+
+	if on then
+		if self.alt then
+			return		-- already there; entering twice would lose the first
+		end
+
+		local keep = { row = self.row, col = self.col, top = self.top,
+		    stop = self.stop, sbot = self.sbot, grid = {},
+		    fgc = buf.new(cells * 4), bgc = buf.new(cells * 4) }
+
+		for i = 1, self.rows do
+			keep.grid[i] = self.grid[i]
+		end
+		keep.fgc:copy(1, self.fgc)
+		keep.bgc:copy(1, self.bgc)
+		self.alt = keep
+		self.stop, self.sbot = 0, self.rows - 1
+		self.row, self.col = 0, 0
+		for y = 0, self.rows - 1 do
+			self:blankrow(y)
+			self:dirtyspan(y, 0, self.cols)
+		end
+	else
+		local keep = self.alt
+
+		if not keep then
+			return
+		end
+		self.alt = nil
+		self.grid = keep.grid
+		self.fgc:copy(1, keep.fgc)
+		self.bgc:copy(1, keep.bgc)
+		self.top, self.row, self.col = keep.top, keep.row, keep.col
+		self.stop, self.sbot = keep.stop, keep.sbot
+		-- every cell may have changed, and none of it came from a
+		-- draw, so what the glass shows is no guide to what to send.
+		self.shownch:fill(0)
+		for y = 0, self.rows - 1 do
+			self:dirtyspan(y, 0, self.cols)
+		end
+	end
+end
+
+-- DEC private modes, the `?` forms of CSI h and l.
+function Cons:privmode(p, on)
+	for _, n in ipairs(p) do
+		if n == 25 then
+			self.curvis = on
+			if not on then
+				self:cursor(false)
+			end
+		elseif n == 1049 or n == 1047 or n == 47 then
+			self:altscreen(on)
+		end
+	end
+end
+
 -- Where an answer to a query goes. The console owns the input queue,
 -- so it hands this over when it takes the backend.
 function Cons:setreply(fn)
@@ -545,6 +748,8 @@ function Cons:reset()
 	self.lfg, self.lbg = self.deffg, self.defbg
 	self.bold, self.rev = false, false
 	self.row, self.col = 0, 0
+	self.stop, self.sbot = 0, self.rows - 1
+	self.curvis = true
 	for y = 0, self.rows - 1 do
 		self:clearrow(y, 0, self.cols)
 	end
@@ -553,6 +758,20 @@ end
 -- dispatch one complete CSI sequence: the final byte and the parameter
 -- string gathered before it.
 function Cons:csi(final, parm)
+	-- a private sequence carries a prefix the parameters cannot hold.
+	-- It dispatches on its own: the finals overlap the standard ones,
+	-- and `?25l` is not a line delete.
+	local priv = parm:sub(1, 1)
+
+	if priv == "?" or priv == ">" or priv == "=" then
+		local p = params(parm:sub(2))
+
+		if priv == "?" and (final == "h" or final == "l") then
+			self:privmode(p, final == "h")
+		end
+		return
+	end
+
 	local p = params(parm)
 	local n = p[1]
 
@@ -599,6 +818,31 @@ function Cons:csi(final, parm)
 				self.reply("\27[0n")
 			end
 		end
+	elseif final == "r" then
+		-- DECSTBM. An empty or impossible pair is the whole screen,
+		-- which is how a program takes the region back.
+		local t = atleast1(n) - 1
+		local b = (p[2] and p[2] ~= 0) and p[2] - 1 or self.rows - 1
+
+		if t < b and b <= self.rows - 1 then
+			self.stop, self.sbot = t, b
+		else
+			self.stop, self.sbot = 0, self.rows - 1
+		end
+		self.row, self.col = self.stop, 0
+	elseif final == "L" or final == "M" then
+		-- insert or delete lines, which is the region from the
+		-- cursor down rather than from its top: the rows above the
+		-- cursor stay. Outside the region it does nothing.
+		if self.row >= self.stop and self.row <= self.sbot then
+			self:shiftrows(self.row, self.sbot,
+			    math.min(atleast1(n), self.sbot - self.row + 1),
+			    final == "M")
+		end
+	elseif final == "S" then
+		self:scrollup(math.min(atleast1(n), self.sbot - self.stop + 1))
+	elseif final == "T" then
+		self:scrolldown(math.min(atleast1(n), self.sbot - self.stop + 1))
 	elseif final == "m" then
 		self:sgr(p)
 	elseif final == "s" then
@@ -632,6 +876,9 @@ function Cons:feed(c)
 			-- rather than swallowed it fills the screen with
 			-- the far end's bookkeeping.
 			self.state = "string"
+		elseif c == "M" then
+			self:revindex()
+			self.state = "ground"
 		elseif c == "c" then
 			self:reset()
 			self.state = "ground"
@@ -743,7 +990,9 @@ function M.new(o)
 		fmt = fmt, bpp = BPP[fmt],
 		cw = cw, ch = ch,
 		cols = cols, rows = rows,
-		col = 0, row = 0, curon = false, top = 0,
+		col = 0, row = 0, curon = false, curvis = true, top = 0,
+		-- the scroll region, as row numbers a DECSTBM may narrow
+		stop = 0, sbot = rows - 1,
 		deffg = deffg, defbg = defbg,
 		lfg = deffg, lbg = defbg,
 		bold = false, rev = false,

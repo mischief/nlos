@@ -136,19 +136,70 @@ function M:restore()
 end
 
 -- ---- input ----
---
--- one keypress, an escape sequence resolved to a name. The console owns
--- the timeout: getch(SEQ_MS) returns "" if no byte arrives in time, which
--- is how a bare Escape (no sequence follows) is told from Up (ESC [ A,
--- arriving together).
-function M:readkey()
-	if not self.tty then
-		return nil
-	end
-	local c = self.tty.getch()	-- block for the first byte
 
-	if c == "" then
-		return nil		-- the terminal went away: eof
+-- the letter a CSI sequence ends with, as a name.
+local CSIKEY = {
+	A = "up", B = "down", C = "right", D = "left",
+	H = "home", F = "end", E = "keypad5", Z = "backtab",
+}
+
+-- and the SS3 forms, which the keypad and F1-F4 arrive as. P through S
+-- are here and not above on purpose: ESC[R is a cursor report, and a
+-- program that read it as F3 would answer its own question.
+local SS3KEY = {
+	A = "up", B = "down", C = "right", D = "left",
+	H = "home", F = "end", E = "keypad5",
+	P = "f1", Q = "f2", R = "f3", S = "f4",
+	M = "enter", j = "*", k = "+", m = "-", n = "delete", o = "/",
+}
+
+-- the `ESC [ n ~` forms. The function keys skip 16 and 22 because the
+-- numbering was laid out for a keyboard whose rows did not match.
+local TILDE = {
+	[1] = "home", [2] = "insert", [3] = "delete", [4] = "end",
+	[5] = "pageup", [6] = "pagedown", [7] = "home", [8] = "end",
+	[11] = "f1", [12] = "f2", [13] = "f3", [14] = "f4", [15] = "f5",
+	[17] = "f6", [18] = "f7", [19] = "f8", [20] = "f9", [21] = "f10",
+	[23] = "f11", [24] = "f12",
+}
+
+-- the modifier a second parameter names, as a prefix. 1 is none, and the
+-- rest is a bitmask one greater than itself: 5 is 4, control.
+local function modprefix(n)
+	if not n or n <= 1 then
+		return ""
+	end
+
+	local m = n - 1
+	local out = ""
+
+	if m & 4 ~= 0 then
+		out = out .. "c"
+	end
+	if m & 1 ~= 0 then
+		out = out .. "s"
+	end
+	if m & 2 ~= 0 then
+		out = out .. "a"
+	end
+	return out == "" and "" or out .. "-"
+end
+
+-- one keypress, an escape sequence resolved to a name.
+--
+-- ms bounds the wait for the first byte only: a deadline that expired
+-- mid-sequence would split one keystroke into an Escape and letters.
+-- Returns nil plus "timeout" or "eof", and a dead terminal reads as a
+-- timeout -- the console answers both with the same empty string.
+function M:readkey(ms)
+	if not self.tty then
+		return nil, "eof"
+	end
+
+	local c = ms and self.tty.getch(ms) or self.tty.getch()
+
+	if c == "" or c == nil then
+		return nil, ms and "timeout" or "eof"
 	end
 	if c ~= ESC then
 		return c
@@ -159,61 +210,41 @@ function M:readkey()
 	if c2 == "" then
 		return "escape"
 	end
-	if c2 == "[" then
+	if c2 == "O" then
 		local c3 = self.tty.getch(SEQ_MS)
 
-		if c3 == "" then
-			return "escape"
-		end
-		if c3 == "A" then
-			return "up"
-		elseif c3 == "B" then
-			return "down"
-		elseif c3 == "C" then
-			return "right"
-		elseif c3 == "D" then
-			return "left"
-		elseif c3 == "H" then
-			return "home"
-		elseif c3 == "F" then
-			return "end"
-		elseif c3 >= "0" and c3 <= "9" then
-			-- extended \e[N~ forms
-			local num = c3
-			local c4 = self.tty.getch(SEQ_MS)
-
-			while c4 ~= "" and c4 >= "0" and c4 <= "9" do
-				num = num .. c4
-				c4 = self.tty.getch(SEQ_MS)
-			end
-			local n = tonumber(num)
-
-			if n == 1 then
-				return "home"
-			elseif n == 3 then
-				return "delete"
-			elseif n == 4 then
-				return "end"
-			elseif n == 5 then
-				return "pageup"
-			elseif n == 6 then
-				return "pagedown"
-			end
-			return "esc[" .. num .. "~"
-		end
-		return "esc[" .. c3
-	elseif c2 == "O" then
-		local c3 = self.tty.getch(SEQ_MS)
-
-		if c3 == "H" then
-			return "home"
-		elseif c3 == "F" then
-			return "end"
-		end
-		return "escO" .. (c3 == "" and "" or c3)
+		return SS3KEY[c3] or ("escO" .. (c3 == "" and "" or c3))
+	end
+	if c2 ~= "[" then
+		return "esc" .. c2
 	end
 
-	return "esc" .. c2
+	-- CSI: parameters, then the letter that ends it. The parameters
+	-- are read here rather than skipped because the second one is the
+	-- modifier -- ESC[1;5A is control-up, and reading only the 1 makes
+	-- it Home.
+	local parm = ""
+	local c3 = self.tty.getch(SEQ_MS)
+
+	while c3 ~= "" and c3 ~= nil and
+	    ((c3 >= "0" and c3 <= "9") or c3 == ";") do
+		parm = parm .. c3
+		c3 = self.tty.getch(SEQ_MS)
+	end
+
+	if c3 == "" or c3 == nil then
+		return "escape"
+	end
+
+	local first, second = parm:match("^(%d*);?(%d*)$")
+	local mod = modprefix(tonumber(second))
+
+	if c3 == "~" then
+		local n = tonumber(first)
+
+		return mod .. (TILDE[n] or ("esc[" .. (first or "") .. "~"))
+	end
+	return mod .. (CSIKEY[c3] or ("esc[" .. parm .. c3))
 end
 
 -- ask the terminal its size: park the cursor at a far corner, query the
