@@ -136,6 +136,26 @@ local BUT1 = 1			-- a click, from the panel or the ball
 -- a step costs is the repaint rather than the step.
 local SCROLL = 4
 
+-- what a model writes and this font does not have. Spleen is 548
+-- glyphs and none of them is a curly quote, so a box is what the panel
+-- would otherwise draw for ordinary prose.
+local FOLD = {
+	["\u{2018}"] = "'", ["\u{2019}"] = "'",
+	["\u{201c}"] = '"', ["\u{201d}"] = '"',
+	["\u{2013}"] = "-", ["\u{2014}"] = "--",
+	["\u{2026}"] = "...", ["\u{00a0}"] = " ",
+	["\u{2022}"] = "*", ["\u{2192}"] = "->",
+	["\u{00d7}"] = "x", ["\u{2212}"] = "-",
+	["\u{2032}"] = "'", ["\u{2033}"] = '"',
+}
+
+-- a whole sequence at a time: a lua pattern counts bytes, so a range
+-- written in codepoints would match none of these. What is not in the
+-- table is left alone, since the font may well have it.
+local function plain(s)
+	return (tostring(s):gsub("[\194-\244][\128-\191]*", FOLD))
+end
+
 -- s as rows of at most cols, breaking hard at the margin and at a
 -- newline. Codepoints, not bytes: cutting mid-sequence draws a box for
 -- the character it halved. Text that is not utf8 falls back to bytes,
@@ -276,7 +296,7 @@ end
 local function say(s, color)
 	local stick = atbottom()
 
-	for one in tostring(s):gmatch("[^\n]*") do
+	for one in plain(s):gmatch("[^\n]*") do
 		lines[#lines + 1] = { one, color or FG }
 	end
 	while #lines > 200 do
@@ -328,7 +348,7 @@ local A = agent.new({
 	-- leaves nothing of the result.
 	trace = function(call, out)
 		local function add(s)
-			for _, l in ipairs(wrapped(s, COLS)) do
+			for _, l in ipairs(wrapped(plain(s), COLS)) do
 				toolog[#toolog + 1] = l
 			end
 		end
