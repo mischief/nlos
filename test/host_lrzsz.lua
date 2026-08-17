@@ -27,6 +27,16 @@ local hostutil = assert(package.loadlib(os.getenv("HOSTUTIL_SO") or
     "./hostutil.so", "luaopen_hostutil"))()
 local zmodem = require("zmodem")
 
+-- the two programs, as meson found them. Naming them here instead is
+-- the bug this had: lrzsz installs as lsz and sz depending on the
+-- distribution -- debian ships the bare names -- and the meson guard
+-- accepts either, so a host with the package installed enabled the test
+-- and then asked socat for a peer that does not exist. What that looks
+-- like from in here is the first write failing, because the far end of
+-- the socket never came up: a serial fault, for a missing program.
+local SZ = os.getenv("LRZSZ_SZ") or "sz"
+local RZ = os.getenv("LRZSZ_RZ") or "rz"
+
 local SIZE = 512 * 1024
 
 local count, failed = 0, 0
@@ -157,7 +167,8 @@ local function fromsz(what, szargs, opts)
 	end
 
 	local rx = zmodem.receiver(opts)
-	local files, err = against("EXEC:lsz " .. szargs .. " " .. src, rx)
+	local files, err = against("EXEC:" .. SZ .. " " .. szargs .. " " ..
+	    src, rx)
 
 	if ok(files ~= nil, what .. ": sz completed a transfer to us") then
 		ok(files[1] and files[1].name == "payload.bin",
@@ -187,8 +198,8 @@ local function torz(what, opts)
 
 	local tx = zmodem.sender({ name = "ours.bin", size = SIZE,
 	    read = gen }, opts)
-	local sent, err = against("SYSTEM:cd " .. dst .. " && exec lrz -y -b",
-	    tx)
+	local sent, err = against("SYSTEM:cd " .. dst .. " && exec " .. RZ ..
+	    " -y -b", tx)
 
 	if ok(sent ~= nil, what .. ": we completed a transfer to rz") then
 		local g = io.open(dst .. "/ours.bin", "rb")

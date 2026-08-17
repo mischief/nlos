@@ -522,8 +522,8 @@ have_hostutil = lua54_dep.found()
 # purpose: nothing in the guest depends on either, and socat is here
 # only because lrzsz wants its stdio on a pipe pair while hostutil hands
 # out sockets.
-sz_prog = find_program('sz', required: false)
-rz_prog = find_program('rz', required: false)
+sz_prog = find_program('sz', 'lsz', required: false)
+rz_prog = find_program('rz', 'lrz', required: false)
 socat_prog = find_program('socat', required: false)
 # BlueZ's virtual controller, for the HCI tests. Rarely on PATH: it is
 # a noinst program, built only with ./configure --enable-testing, so
@@ -1784,7 +1784,12 @@ if have_hostutil and sz_prog.found() and rz_prog.found() and socat_prog.found()
     args: [files('test/host_lrzsz.lua')],
     protocol: 'tap',
     timeout: 120,
-    env: {'HOSTUTIL_SO': hostutil.full_path()},
+    # the peers by the path meson found, not by a name the test repeats:
+    # the guard above takes either spelling, so a test naming one of them
+    # itself runs on a host where that half is missing.
+    env: {'HOSTUTIL_SO': hostutil.full_path(),
+          'LRZSZ_SZ': sz_prog.full_path(),
+          'LRZSZ_RZ': rz_prog.full_path()},
     depends: hostutil,
   )
 endif
