@@ -244,10 +244,16 @@ do
 
   -- lay down the committed base on a real file once, then copy those
   -- bytes for each attempt so the baseline is not re-reamed every cut
+  --
+  -- The volume is small because the copy is paid once per cut point:
+  -- 246 of them, so its size is what this section costs and nothing
+  -- else here scales with it. 32MB is near the floor -- ream refuses 16
+  -- as too small -- and the cut points are a property of the commit, so
+  -- the empty space that went was not carrying any of them.
   local base = scratch()
   local old
   do
-    local dev = gefs.io.create(base, 64 * 1024 * 1024)
+    local dev = gefs.io.create(base, 32 * 1024 * 1024)
     gefs.ream(dev, { user = "glenda", blksz = 4096 })
     local fs = gefs.open(dev)
     local m
