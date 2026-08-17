@@ -94,6 +94,51 @@ end
 --
 -- input is the spec's: a string, or a list of items. What comes back is
 -- the decoded body, so a caller wanting more than the text has it.
+-- what the endpoint offers, newest first as it lists them. The ids are
+-- the server's own, so a list built here does not go stale the way a
+-- table in a program does.
+function Client:models()
+	local c, cerr = self:conn()
+
+	if not c then
+		return nil, cerr
+	end
+
+	local path = self.url:match("^https?://[^/]+(/.*)$") or ""
+	local res, rerr = c:request({
+		method = "GET",
+		path = path .. "/models",
+		headers = {
+			["Authorization"] = self.key and
+			    ("Bearer " .. self.key) or nil,
+			["Accept"] = "application/json",
+		},
+	})
+
+	if not res then
+		return nil, rerr
+	end
+	if res.status ~= 200 then
+		return nil, ("status %d"):format(res.status)
+	end
+
+	local ok, decoded = pcall(json.decode, res.body)
+
+	if not ok or type(decoded) ~= "table" or
+	    type(decoded.data) ~= "table" then
+		return nil, "models: no list in the answer"
+	end
+
+	local out = {}
+
+	for _, m in ipairs(decoded.data) do
+		if type(m) == "table" and type(m.id) == "string" then
+			out[#out + 1] = m.id
+		end
+	end
+	return out
+end
+
 function Client:ask(input, extra)
 	local c, cerr = self:conn()
 

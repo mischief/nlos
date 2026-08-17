@@ -2,7 +2,7 @@
 --
 --	enter             send what is typed
 --	esc               leave
---	touch the name    the next model, and a new conversation
+--	touch the name    pick a model, which starts a new conversation
 --	touch the bar     show what the tools did, and hide it again
 --	trackball         scroll the transcript
 
@@ -49,16 +49,27 @@ local net = prog.net() or die("no network: /etc/dio.lua must say net = true")
 -- on the port is keys and window state.
 local ptr = prog.mouse()
 
--- cheapest first, since that is the one to come back to. Touching the
--- name in the bar takes the next one.
+-- what to show before the server has been asked, cheapest first. The
+-- picker replaces this with the endpoint's own list the first time it
+-- is opened, so the choice is what the account actually has.
 local MODELS = {
 	"gpt-5.4-mini",
 	"gpt-5.4-nano",
 	"gpt-5.4",
 	"gpt-5.5",
+	"gpt-5.6-luna",
 }
-local mi = 1
-local MODEL = MODELS[mi]
+local MODEL = MODELS[1]
+
+-- only the ones worth talking to: the list carries embeddings, audio
+-- and image models that this app cannot use.
+local function chatty(id)
+	return id:find("^gpt%-") ~= nil and
+	    not id:find("audio") and not id:find("realtime") and
+	    not id:find("image") and not id:find("search") and
+	    not id:find("transcribe") and not id:find("tts") and
+	    not id:find("%-%d%d%d%d%-%d%d%-%d%d$")
+end
 local KEYFILE = "/config/openai.key"
 
 -- what to say on top of lib/agent.lua's description of the machine.
@@ -115,6 +126,9 @@ local busy = false
 local status = "ready"
 local showtools = false
 local toolog = {}
+local picking = false		-- the model list is up
+local picktop = 1		-- first model row shown
+local gotmodels = false		-- the server's list has been asked for
 local down = false		-- the pointer, so a press acts once
 local BUT1 = 1			-- a click, from the panel or the ball
 
@@ -193,9 +207,25 @@ local function paintbody(all)
 	if not visible then
 		return
 	end
-	if all or showtools then
+	if all or showtools or picking then
 		fill(0, TOP, W, INPUT - TOP, BG)
 		shownrow = {}
+	end
+
+	if picking then
+		local y = TOP
+
+		text(0, y, "pick a model", DIM)
+		y = y + ROWH
+		for i = picktop, #MODELS do
+			if y + ROWH > INPUT then
+				break
+			end
+			text(0, y, (MODELS[i] == MODEL and "* " or "  ") ..
+			    MODELS[i], MODELS[i] == MODEL and MINE or FG)
+			y = y + ROWH
+		end
+		return
 	end
 
 	if showtools then
@@ -259,6 +289,17 @@ local function say(s, color)
 	paintbody()
 end
 
+-- whatever is in front: the model list when it is up, the transcript
+-- otherwise.
+local function scroll(by)
+	if picking then
+		picktop = math.max(1, math.min(#MODELS, picktop + by))
+	else
+		F:scroll(by)
+	end
+	paintbody(picking)
+end
+
 -- ---- the model ----
 
 local key = N:readfile(KEYFILE)
@@ -305,18 +346,69 @@ local A = agent.new({
 	end,
 })
 
--- the next model, and a fresh conversation with it: the thread so far
--- is a response id the server holds against the model that made it.
-local function nextmodel()
+-- the picker, and what choosing does: a fresh conversation, because the
+-- thread so far is a response id the server holds against the model
+-- that made it.
+local function choose(i)
+	local m = MODELS[i]
+
+	picking = false
+	if m and m ~= MODEL then
+		MODEL = m
+		client.model = MODEL
+		client:reset()
+		say("model is " .. MODEL .. ", and this is a new conversation",
+		    DIM)
+	end
+	paintbar()
+	paintbody(true)
+end
+
+-- the endpoint's own list, fetched once and in a thread of its own: it
+-- is a request, and the loop must keep taking keys through it.
+local function askmodels()
+	if gotmodels then
+		return
+	end
+	gotmodels = true
+	thread.spawn(function()
+		local got, err = client:models()
+
+		if not got then
+			say("models: " .. tostring(err), WARN)
+			return
+		end
+
+		local keep = {}
+
+		for _, id in ipairs(got) do
+			if chatty(id) then
+				keep[#keep + 1] = id
+			end
+		end
+		-- descending, which for these names is newest first: the
+		-- top of the list is where the useful ones belong, and
+		-- gpt-3.5 is a scroll away rather than in the way.
+		table.sort(keep, function(a, b) return a > b end)
+		if #keep > 0 then
+			MODELS = keep
+		end
+		if picking then
+			paintbody(true)
+		end
+	end)
+end
+
+local function openpicker()
 	if busy then
 		return
 	end
-	mi = mi % #MODELS + 1
-	MODEL = MODELS[mi]
-	client.model = MODEL
-	client:reset()
-	paintbar()
-	say("model is " .. MODEL .. ", and this is a new conversation", DIM)
+	picking = not picking
+	picktop = 1
+	if picking then
+		askmodels()
+	end
+	paintbody(true)
 end
 
 local function submit()
@@ -375,7 +467,7 @@ paintbody(true)
 paintinput()
 
 if key then
-	say("ask it something. touch the name for another", DIM)
+	say("ask it something. touch the name to pick a", DIM)
 	say("model, or the bar for what the tools did.", DIM)
 else
 	say("no key found in " .. KEYFILE, WARN)
@@ -406,7 +498,15 @@ local function ui()
 			if m == "\r" or m == "\n" then
 				submit()
 			elseif m == "\27" then
-				break
+				-- the list first, the app only when
+				-- nothing is over it
+				if picking or showtools then
+					picking = false
+					showtools = false
+					paintbody(true)
+				else
+					break
+				end
 			elseif m == "\8" or m == "\127" then
 				-- a codepoint, not a byte: backspacing one byte of a
 				-- multibyte character leaves half of it behind.
@@ -420,11 +520,9 @@ local function ui()
 				showtools = not showtools
 				paintbody(true)
 			elseif m == "\27[A" then
-				F:scroll(-SCROLL)
-				paintbody()
+				scroll(-SCROLL)
 			elseif m == "\27[B" then
-				F:scroll(SCROLL)
-				paintbody()
+				scroll(SCROLL)
 			elseif m:byte(1) >= 0x20 and m:byte(1) ~= 0x7f then
 				typed = typed .. m
 				paintinput()
@@ -446,27 +544,33 @@ local function pointer()
 		if not x then
 			return
 		end
-		if b and (b & BUT1) ~= 0 and y < ROWH and not down then
-			-- the name is one button and the rest of the bar
-			-- is another
-			if x < namew then
-				nextmodel()
-			else
-				showtools = not showtools
-				paintbody(true)
-				paintbar()
+		if b and (b & BUT1) ~= 0 and not down then
+			if y < ROWH then
+				-- the name is one button and the rest of
+				-- the bar is another
+				if x < namew then
+					openpicker()
+				else
+					picking = false
+					showtools = not showtools
+					paintbody(true)
+					paintbar()
+				end
+			elseif picking and y < INPUT then
+				-- the header takes the first row
+				choose(picktop +
+				    (y - TOP) // ROWH - 1)
 			end
 		end
 		if b then
 			down = (b & BUT1) ~= 0
 		end
-		-- the trackball, which is the wheel here
+		-- the trackball, which is the wheel here. It moves whatever
+		-- is in front: the list when the list is up.
 		if b and (b & mouse.WHEELUP) ~= 0 then
-			F:scroll(-SCROLL)
-			paintbody()
+			scroll(-SCROLL)
 		elseif b and (b & mouse.WHEELDOWN) ~= 0 then
-			F:scroll(SCROLL)
-			paintbody()
+			scroll(SCROLL)
 		end
 	end
 end
