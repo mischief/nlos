@@ -13,15 +13,12 @@
  */
 #define BALL_LEFT	32
 #define BALL_RIGHT	64
-/* the ball's press is button 1, the same as a tap.
- *
- * They are different devices and that is not a difference a program
- * should have to know: both mean "act on the thing here", and a file
- * that reported one as button 2 would make every reader carry a rule
- * about which board it is running on. That is the knowledge /dev/mouse
- * exists to absorb.
+/* the ball's press is button 2, which the panel cannot otherwise send:
+ * the pointer is positioned by touching, and a touch is already button
+ * 1, so a press reporting 1 says what the touch that aimed it just
+ * said. The record carries the last touch position, not the ball's.
  */
-#define BALL_BUTTON	1
+#define BALL_BUTTON	2
 
 /* set the pins up once; 1 if the board has a ball. */
 int esp_ball_present(void);
