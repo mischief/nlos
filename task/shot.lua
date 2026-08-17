@@ -80,21 +80,46 @@ local size = #header + H * stride
 -- fb task narrows the answer where it does not. Doing it here instead
 -- was a string.char per pixel -- 2.7 seconds for a 320x240 screen, a
 -- third of the transfer, for bytes the driver already had.
-local cached, cachedy = nil, -1
+-- ---- what each part of a transfer costs ----
+--
+-- Kept in the program rather than added when something looks wrong: a
+-- screenshot is sometimes four times slower than usual and the only way
+-- to tell a slow guest from a slow host is a split taken at the time.
+-- sys.log stays out of a raw console, so this costs the ring alone.
+local began = sys.uptime_ms()
+local twrite, nwrite = 0, 0
+local tread, nread, slowread = 0, 0, 0
+local tband, nband = 0, 0
 
-local function row(y)
-	if y ~= cachedy then
+-- A band rather than a row: 240 fetches of one row cost 2.0s of a 3.3s
+-- transfer, and sixteen at a time is 15 of them. The transfer walks
+-- rows in order, so one band in hand serves the next sixteen.
+local BAND = 16
+local cached, cachedat, cachedn = nil, -1, 0
+
+local function band(y)
+	if y < cachedat or y >= cachedat + cachedn then
+		local t0 = sys.uptime_ms()
+		local n = math.min(BAND, H - y)
 		local r = rpc(fb, fbport, { op = "unload", fmt = "rgb",
-		    r = { x = 0, y = y, w = W, h = 1 } })
+		    r = { x = 0, y = y, w = W, h = n } })
 
 		if not (r and r.ok) then
-			error("unload row " .. y .. ": " ..
+			error("unload rows " .. y .. "+" .. n .. ": " ..
 			    tostring(r and r.err), 0)
 		end
-		cached = r.ok
-		cachedy = y
+		cached, cachedat, cachedn = r.ok, y, n
+		tband = tband + (sys.uptime_ms() - t0)
+		nband = nband + 1
 	end
-	return cached
+	return cached, cachedat
+end
+
+-- one row out of whichever band holds it
+local function row(y)
+	local b, at = band(y)
+
+	return b:sub((y - at) * stride + 1, (y - at + 1) * stride)
 end
 
 local function readat(off, n)
@@ -162,7 +187,12 @@ local line = {
 			error(GAVEUP, 0)
 		end
 		nout = nout + #d
+
+		local t0 = sys.uptime_ms()
+
 		sys.send(cons, { op = "write", data = d })
+		twrite = twrite + (sys.uptime_ms() - t0)
+		nwrite = nwrite + 1
 	end,
 	-- one round trip for the whole of what is queued. Draining with
 	-- getch instead costs a message each way per byte, which measured
@@ -174,8 +204,16 @@ local line = {
 			error(GAVEUP, 0)
 		end
 
+		local t0 = sys.uptime_ms()
 		local d = rpc(cons, consport, { op = "readraw", n = 512,
 		    timeout = ms and math.max(ms, 1) or 1000 })
+		local took = sys.uptime_ms() - t0
+
+		tread = tread + took
+		nread = nread + 1
+		if took > slowread then
+			slowread = took
+		end
 
 		if type(d) ~= "string" or d == "" then
 			return nil
@@ -192,11 +230,23 @@ local m = zmodem.sender({ { name = job.name or "screen.pbm",
 -- must still put the console back into cooked mode and still answer the
 -- parent, or the repl comes back with no line editing and nothing
 -- waiting for it says why.
+local ready = sys.uptime_ms()
 local ok, res, err = pcall(zmodem.drive, m, line)
 
 if not ok then
 	res, err = nil, tostring(res)
 end
+
+local drove = sys.uptime_ms()
+
+-- Four points and three totals, in one line: setup is everything before
+-- the first frame, drive is the transfer, and the rest says which of the
+-- three things a transfer does was slow. A run whose numbers are ordinary
+-- while the host saw a long one puts the delay outside this proc.
+sys.log("shot: setup %dms drive %dms | write %dms/%d read %dms/%d " ..
+    "worst %dms | bands %dms/%d | %d bytes",
+    ready - began, drove - ready, twrite, nwrite, tread, nread,
+    slowread, tband, nband, nout)
 
 sys.send(cons, { op = "rawoff" })
 sys.send(cons, { op = "write", data = ("shot: %s %s %d bytes\n"):format(
