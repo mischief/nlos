@@ -836,7 +836,7 @@ end
 -- A table rather than a chain of matches: the list is the help, so one
 -- cannot be added without saying what it does.
 local commands = {}
-local order = { "msg", "mesh", "nick", "who", "clear", "help" }
+local order = { "msg", "mesh", "nick", "who", "links", "clear", "help" }
 
 commands.nick = {
 	takes = "NAME", what = "what the mesh calls us",
@@ -946,6 +946,20 @@ commands.who = {
 		end
 		if not any then
 			say("* nobody yet", DIM)
+		end
+	end,
+}
+
+-- what a link will carry decides how a message is cut up, so it is
+-- worth being able to read rather than assume.
+commands.links = {
+	what = "the links we hold, and what each will carry",
+	run = function()
+		local r = ask({ op = "status" })
+
+		for _, l in ipairs((r and r.links) or {}) do
+			say(string.format("* %s  %s  mtu %d", l.addr,
+			    l.role, l.mtu or 0), DIM)
 		end
 	end,
 }
