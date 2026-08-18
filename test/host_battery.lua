@@ -38,46 +38,33 @@ local function ok(cond, name)
 	end
 end
 
--- no pack: nothing, not zero. A machine on wall power must be tellable
--- from one that is flat.
-mv = nil
-local v, pct = ps.battery()
+-- the curve, through of(): a true voltage in, what it means out. The
+-- pin's own correction is read()'s business and is checked below.
+local battery = require("battery")
+
+local v, pct, chg = battery.of(nil)
+
 ok(v == nil and pct == nil, "no battery reports nothing")
 
-mv = 4200
-v, pct = ps.battery()
+v, pct = battery.of(4200)
 ok(v == 4200 and pct == 100, "a full cell is 100%")
 
--- above what a cell can hold is the charger across the divider, which
--- is the only way this machine can tell it is on USB. Measured on the
--- T-Deck: 4.03V on the pack alone, 4.64V with USB in.
-local chg
-
-mv = 4640
-v, pct, chg = ps.battery()
-ok(chg == true and pct == 100, "over a cell's maximum reads as charging")
-
-mv = 4030
-v, pct, chg = ps.battery()
+v, pct, chg = battery.of(4030)
 ok(chg == false and pct > 80 and pct < 100,
     "a charged pack alone is not charging")
 
-mv = 3000
-v, pct = ps.battery()
+v, pct = battery.of(3000)
 ok(pct == 0, "the cutoff is 0%")
 
-mv = 2000
-v, pct = ps.battery()
+v, pct = battery.of(2000)
 ok(v == 2000 and pct == 0, "below the cutoff clamps to 0%")
 
 -- the middle: the point of the curve is that it is not linear in volts.
 -- 3.7V is under half by voltage and 40% by charge.
-mv = 3700
-v, pct = ps.battery()
+v, pct = battery.of(3700)
 ok(pct == 40, "3.7V is 40%")
 
-mv = 3750
-v, pct = ps.battery()
+v, pct = battery.of(3750)
 ok(pct == 50, "3.75V interpolates to 50%")
 
 -- monotone across the whole range, which a hand-written table is one
@@ -86,8 +73,7 @@ local last = -1
 local mono = true
 
 for x = 2800, 4300, 10 do
-	mv = x
-	local _, p = ps.battery()
+	local _, p = battery.of(x)
 
 	if p < last then
 		mono = false
@@ -96,11 +82,26 @@ for x = 2800, 4300, 10 do
 end
 ok(mono, "percent never falls as voltage rises")
 
+-- the pin reads low, so read() lifts what it is given. Metered on a
+-- T-Deck: 3.750V at the pack against 3.500V reported.
+mv = 3500
+ok(battery.read() == 3750, "read() corrects the pin against the meter")
+
+mv = nil
+ok(battery.read() == nil, "and still reports nothing where no pack is")
+
+-- the charger's node, well above what a corrected cell can reach
+mv = 4666
+local _, cpct, cchg = battery.read()
+
+ok(cchg == true and cpct == 100, "the charger's node reads as charging")
+
 -- the stats line carries it, and says nothing where there is no pack.
 mv = nil
 ok(not tostring(ps.stats):find("bat="), "no bat= without a battery")
 
-mv = 3800
+-- 3.547V at the pin is 3.80V corrected, which the curve calls 60%
+mv = 3547
 
 local line = tostring(ps.stats)
 
@@ -108,35 +109,28 @@ ok(line:find("bat=60%% 3%.80V") ~= nil,
     "the stats line reports the battery")
 ok(not line:find("chg"), "and says nothing of a charger that is absent")
 
-mv = 4640
-
-ok(tostring(ps.stats):find("bat=100%% 4%.64V chg") ~= nil,
+mv = 4666
+ok(tostring(ps.stats):find("chg") ~= nil,
     "the stats line says when it is charging")
 
--- the plug-in transient, through the meter: read() is the plain
--- conversion and stays that way, so only a caller that polls carries a
--- history to compare against.
-local battery = require("battery")
+-- the plug-in transient, through the meter: a caller that polls carries
+-- the history, and read() itself keeps none.
 local meter = battery.meter()
 
-mv = 4030
-ok(meter() == 4030, "the meter's first reading is the pack's")
+mv = 3500
+ok(meter() == 3750, "the meter's first reading is the pack's")
 
-mv = 3300
-ok(meter() == 4030, "a sudden collapse is not published")
+mv = 3080
+ok(meter() == 3750, "a sudden collapse is not published")
 
-mv = 4030
-ok(meter() == 4030, "and the pack's own reading comes straight back")
+mv = 3500
+ok(meter() == 3750, "and the pack's own reading comes straight back")
 
 -- the same guard must not freeze a real move: unplugging is a genuine
 -- jump, and the reading after it is what confirms one.
-mv = 4616
-ok(meter() == 4030, "a real jump waits for a second opinion")
-ok(meter() == 4616, "which the next reading gives")
-
--- read() itself is stateless, so it never holds anything back
-mv = 3300
-ok(battery.read() == 3300, "read() reports what the pin says")
+mv = 4300
+ok(meter() == 3750, "a real jump waits for a second opinion")
+ok(meter() == 4607, "which the next reading gives")
 
 print("1.." .. n)
 os.exit(fails == 0 and 0 or 1)

@@ -17,12 +17,18 @@ local CURVE = {
 	{ 3800, 60 }, { 3950, 80 }, { 4100, 95 }, { 4200, 100 },
 }
 
+-- the ADC reads low. Metered at the pack with the charger out: 3.750V
+-- against 3.500V reported, so the correction is a ratio. One number for
+-- every board, which is the compromise it looks like -- two boards here
+-- differ by 106mV at the same state, and one moves 48mV across a reset.
+local CAL = 3750 / 3500
+
 -- above a cell's own maximum, something external is holding the pin up:
 -- the charger, which on the T-Deck sits across the same divider. So a
 -- reading over the top of the curve is how charging is detected, there
--- being no status pin to ask. Measured: 4.03V on the pack alone against
--- 4.64V on USB.
-local CHARGING = 4250
+-- being no status pin to ask. Clear of a corrected full cell, since the
+-- ratio above lifts one board's 4.2V nearer 4.5 than 4.2.
+local CHARGING = 4600
 
 -- of(mv) -> millivolts, percent, charging: the conversion on its own,
 -- so a caller that already has a voltage can ask what it means.
@@ -50,9 +56,13 @@ function M.of(mv)
 end
 
 -- read() -> the same, for the pack this machine has. Nothing where
--- there is none, which is every machine that runs on wall power.
+-- there is none, which is every machine that runs on wall power. The
+-- correction is applied here and not in of(), which converts a voltage
+-- that is already true.
 function M.read()
-	return M.of(sys.battery and sys.battery())
+	local mv = sys.battery and sys.battery()
+
+	return M.of(mv and math.floor(mv * CAL + 0.5))
 end
 
 -- plugging in USB collapses the sensed node for an instant while the
