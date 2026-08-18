@@ -67,8 +67,26 @@ esac
 
 cd "$(dirname "$0")/../esp32"
 
-# export.sh is chatty and says nothing a build wants; its failures are
-# not quiet, so the status is what this reads.
-. "$idf/export.sh" >/dev/null
+# IDF_PATH rather than letting export.sh work it out for itself: it
+# finds its own directory through $BASH_SOURCE, which a POSIX sh does
+# not set, so under dash -- /bin/sh on debian -- it gives up and this
+# script never had a toolchain. FORCE is what makes it accept the path
+# handed to it instead of deducing one.
+IDF_PATH=$idf
+IDF_PATH_FORCE=1
+export IDF_PATH IDF_PATH_FORCE
+
+# export.sh is chatty and says nothing a build wants, but it reports its
+# own failures on stdout rather than stderr -- so discarding that makes
+# a bad IDF a build that fails with no output whatsoever, which is how
+# the dash breakage above presented. Kept, and shown only if it fails.
+log=$(mktemp)
+
+if ! . "$idf/export.sh" >"$log" 2>&1; then
+	cat "$log" >&2
+	rm -f "$log"
+	exit 1
+fi
+rm -f "$log"
 
 exec idf.py "$@"
