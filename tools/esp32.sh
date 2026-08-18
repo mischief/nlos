@@ -37,13 +37,6 @@ case $board in
 tdeck)
 	set -- -B build-tdeck "$@"
 	;;
-tdeckuart)
-	# the same board with its console on Grove, so a TTL cable
-	# reaches it while it runs on the battery.
-	set -- -B build-tdeckuart -DSDKCONFIG=build-tdeckuart.sdkconfig \
-	    -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.tdeckuart" \
-	    "$@"
-	;;
 c5)
 	set -- -B build-c5 -DSDKCONFIG=build-c5.sdkconfig \
 	    -DIDF_TARGET=esp32c5 \
