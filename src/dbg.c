@@ -462,8 +462,7 @@ dbg_status_body(lua_State *L)
 }
 
 /* Once per lap, holding nothing. Every cpu runs laps, so both halves
- * are claimed with an exchange; the wide lock is what port_push wants
- * and what serializes the walk against another cpu's proc_new.
+ * are claimed with an exchange; the wide lock is what port_push wants.
  */
 void
 dbg_sweep(void)
@@ -471,9 +470,10 @@ dbg_sweep(void)
 	for (int i = 0; i < prochigh; i++) {
 		struct kproc *p = procv[i];
 
-		/* unlocked, and it has to be: this runs on every lap of
-		 * every cpu, and taking the wide lock to find nothing is
-		 * the cost the ordinary machine would pay.
+		/* the one unlocked read of the proc table: this runs on
+		 * every lap of every cpu. Safe because proc_new zeroes a
+		 * slot before publishing it, so dbg reads as a pointer or
+		 * null, and it is read again under the lock below.
 		 */
 		if (!p || !p->dbg)
 			continue;

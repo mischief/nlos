@@ -102,6 +102,37 @@ was not zero and cannot reach zero underneath. Dropping one can, so
 That asymmetry is what lets `serialize` and `right_new` run with
 nothing held.
 
+## The proc table
+
+`procv`, `prochigh`, `nlive` and the pid counter are under the wide ipc
+lock. Not a lock of their own: `proc_detach` reaches `find_proc` with
+every bucket held, so a second lock would have to be ordered against
+this one, and one lock is one order.
+
+Every walk of the array takes the wide form. `proc_new` claims a slot
+by wiping it, so a walk without the lock reads a proc that is halfway
+between its last occupant and its next -- `sys.procs`, `sys.stats` and
+`sys.meminfo` all did.
+
+`find_proc` asserts the lock and `find_proc_locked` takes it. The
+divide is by caller: the kernel's own spawn path and `proc_detach` are
+already holding it, and a `sys.*` call naming another proc arrives with
+nothing.
+
+Two things the lock does not do.
+
+It does not pin what a walk carries away. The pointer stays a pointer
+-- a `struct kproc` is recycled in place, never freed -- but the proc
+under it can die and be reborn as another once the lock is dropped.
+Every caller today is either the proc itself or holds a right to the
+target, which is what keeps this theoretical.
+
+And `dbg_sweep` reads `procv[i]` without it, deliberately: it runs on
+every lap of every cpu and the wide lock to find nothing is what the
+ordinary machine would pay. `proc_new` zeroes a slot before publishing
+it so that read sees a pointer or null, and the sweep re-reads under
+the lock before acting.
+
 ## Waking
 
 A waker holds one port's bucket. A proc in an `alt` waits on several

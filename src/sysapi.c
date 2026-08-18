@@ -758,7 +758,7 @@ api_kill(lua_State *L)
 {
 	struct kproc *p = self(L);
 	int pid = (int)luaL_checkinteger(L, 1);
-	struct kproc *target = find_proc(pid);
+	struct kproc *target = find_proc_locked(pid);
 
 	if (target == p)
 		return luaL_error(L, "cannot kill self");
@@ -852,7 +852,7 @@ api_meminfo(lua_State *L)
 	struct kproc *p = self(L);
 
 	if (!lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
+		p = find_proc_locked((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
 	}
@@ -878,7 +878,7 @@ api_monitor(lua_State *L)
 {
 	struct kproc *p = self(L);
 	int pid = (int)luaL_checkinteger(L, 1);
-	struct kproc *target = find_proc(pid);
+	struct kproc *target = find_proc_locked(pid);
 
 	/* a corpse is not monitorable: its death notification has already
 	 * gone out, and it will never die a second time. treating BROKE as
@@ -985,7 +985,7 @@ api_pidstat(lua_State *L)
 	struct kproc *p = self(L);
 
 	if (!lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
+		p = find_proc_locked((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
 	}
@@ -1107,7 +1107,7 @@ static int
 api_priority(lua_State *L)
 {
 	int pid = (int)luaL_checkinteger(L, 1);
-	struct kproc *p = find_proc(pid);
+	struct kproc *p = find_proc_locked(pid);
 
 	if (!p)
 		return luaL_error(L, "no such proc");
@@ -1135,7 +1135,7 @@ api_procname(lua_State *L)
 		return 1;
 	}
 	if (!lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
+		p = find_proc_locked((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
 	}
@@ -1146,12 +1146,25 @@ api_procname(lua_State *L)
 static int
 api_procs(lua_State *L)
 {
-	lua_newtable(L);
-	for (int i = 0, n = 1; i < MAXPROCS; i++)
-		if (procv[i] && procv[i]->status != DEAD) {
-			lua_pushinteger(L, procv[i]->id);
-			lua_rawseti(L, -2, n++);
-		}
+	int room = prochigh > 0 ? prochigh : 1, n = 0;
+	int *ids = lua_newuserdatauv(L, room * sizeof *ids, 0);
+
+	/* the pids are copied out first and the table built after the
+	 * lock is dropped: a lua error raised inside the region would
+	 * longjmp past the release. Scratch space in a userdata rather
+	 * than a malloc, for the same reason -- nothing to leak.
+	 */
+	ipclock_enter();
+	for (int i = 0; i < prochigh && n < room; i++)
+		if (procv[i] && procv[i]->status != DEAD)
+			ids[n++] = procv[i]->id;
+	ipclock_leave();
+
+	lua_createtable(L, n, 0);
+	for (int i = 0; i < n; i++) {
+		lua_pushinteger(L, ids[i]);
+		lua_rawseti(L, -2, i + 1);
+	}
 	return 1;
 }
 
@@ -1165,7 +1178,7 @@ api_procs(lua_State *L)
 static int
 api_reap(lua_State *L)
 {
-	struct kproc *p = find_proc((int)luaL_checkinteger(L, 1));
+	struct kproc *p = find_proc_locked((int)luaL_checkinteger(L, 1));
 
 	if (!p)
 		return luaL_error(L, "no such proc");
@@ -1410,7 +1423,7 @@ api_set_priority(lua_State *L)
 {
 	int pid = (int)luaL_checkinteger(L, 1);
 	int weight = (int)luaL_checkinteger(L, 2);
-	struct kproc *p = find_proc(pid);
+	struct kproc *p = find_proc_locked(pid);
 
 	if (!proc_has_port(self(L), schedport))
 		return luaL_error(L, "no scheduling capability");
@@ -1458,7 +1471,7 @@ api_set_torture(lua_State *L)
 
 	if (lua_gettop(L) > 1) {
 		arg = 2;
-		p = find_proc((int)luaL_checkinteger(L, 1));
+		p = find_proc_locked((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
 	}
@@ -1768,20 +1781,23 @@ api_stats(lua_State *L)
 {
 	int nports = 0, nprocs = 0, nbroke = 0;
 
+	/* both tables under one hold, and counting only: the lua half is
+	 * below, where a raise cannot jump past the release. Corpses are
+	 * counted apart from procs -- they hold no rights and will never
+	 * run, so counting them here would make "procs" disagree with
+	 * nlive and read as a leak after every crash.
+	 */
+	ipclock_enter();
 	for (int i = 0; i < porthigh; i++)
 		if (portv[i])
 			nports++;
-	/* corpses are counted separately rather than as procs. they are
-	 * listed by sys.procs, because a corpse you cannot find is a
-	 * corpse you cannot inspect, but they hold no rights and will
-	 * never run -- counting them here would make "procs" disagree
-	 * with nlive and read as a leak after every crash.
-	 */
 	for (int i = 0; i < prochigh; i++)
 		if (procv[i] && procv[i]->status == BROKE)
 			nbroke++;
 		else if (procv[i] && procv[i]->status != DEAD)
 			nprocs++;
+	ipclock_leave();
+
 	lua_createtable(L, 0, 3);
 	lua_pushinteger(L, nports);
 	lua_setfield(L, -2, "ports");
@@ -1891,6 +1907,7 @@ api_stats(lua_State *L)
 	if (shared_heap) {
 		luaheap_stats(shared_heap, &hs);
 	} else {
+		ipclock_enter();
 		for (int i = 0; i < prochigh; i++) {
 			if (!procv[i] || !procv[i]->heap)
 				continue;
@@ -1906,6 +1923,7 @@ api_stats(lua_State *L)
 			hs.chunks += one.chunks;
 			hs.larges += one.larges;
 		}
+		ipclock_leave();
 	}
 	lua_pushinteger(L, (lua_Integer)hs.live);
 	lua_setfield(L, -2, "lua_live");
@@ -2032,7 +2050,7 @@ api_syscalls(lua_State *L)
 	struct kproc *p = self(L);
 
 	if (!lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
+		p = find_proc_locked((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
 	}
@@ -2179,7 +2197,7 @@ api_wchan(lua_State *L)
 	struct kproc *p = self(L);
 
 	if (!lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
+		p = find_proc_locked((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
 	}
@@ -2558,7 +2576,13 @@ popfail(lua_State *L, struct kproc *p, int rc)
 static int
 port_owner(const struct kport *port)
 {
-	for (int i = 0; i < prochigh; i++) {
+	int id = -1;
+
+	/* the proc table and every right table on it, so the wide lock
+	 * rather than the one bucket covering this port.
+	 */
+	ipclock_enter();
+	for (int i = 0; i < prochigh && id < 0; i++) {
 		struct kproc *p = procv[i];
 
 		if (!p || p->status == DEAD)
@@ -2566,11 +2590,14 @@ port_owner(const struct kport *port)
 		for (int h = 0; h < MAXRIGHTS; h++) {
 			struct right *r = right_get(p, h);
 
-			if (r && r->recv && r->port == port)
-				return p->id;
+			if (r && r->recv && r->port == port) {
+				id = p->id;
+				break;
+			}
 		}
 	}
-	return -1;
+	ipclock_leave();
+	return id;
 }
 
 /* `len`, if given, is filled with the serialized size of the message.
@@ -2644,7 +2671,7 @@ proc_hold(lua_State *L, int argn, struct kproc **out, lua_KContext ctx)
 	struct kproc *p = me;
 
 	if (!lua_isnoneornil(L, argn)) {
-		p = find_proc((int)luaL_checkinteger(L, argn));
+		p = find_proc_locked((int)luaL_checkinteger(L, argn));
 		if (!p)
 			return HOLD_GONE;
 	}
@@ -2749,7 +2776,7 @@ set_trace_k(lua_State *L, int status, lua_KContext ctx)
 	if (lua_gettop(L) > 1 || (lua_gettop(L) == 1 && lua_isnoneornil(L, 1)))
 		arg = 2;
 	if (arg == 2 && !lua_isnoneornil(L, 1)) {
-		p = find_proc((int)luaL_checkinteger(L, 1));
+		p = find_proc_locked((int)luaL_checkinteger(L, 1));
 		if (!p)
 			return luaL_error(L, "no such proc");
 		/* the one call here that writes to another proc, so the

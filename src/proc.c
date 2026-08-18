@@ -100,14 +100,34 @@ int default_reductions = REDUCTIONS;
  */
 #define GCDEBT	(64 * 1024)
 
+/* the proc holding a pid, or null. Caller holds ipclock, which is what
+ * the proc table is under: a walk without it runs while proc_new is
+ * wiping a recycled slot. The proc that comes back may still die once
+ * the lock is dropped; nothing here pins it.
+ */
 struct kproc *
 find_proc(int pid)
 {
-	for (int i = 0; i < MAXPROCS; i++)
+	IPC_ASSERT_LOCKED();
+	for (int i = 0; i < prochigh; i++)
 		if (procv[i] && procv[i]->status != DEAD &&
 		    procv[i]->id == pid)
 			return procv[i];
 	return 0;
+}
+
+/* find_proc for the callers that hold nothing: every sys.* call that
+ * names another proc arrives that way.
+ */
+struct kproc *
+find_proc_locked(int pid)
+{
+	struct kproc *p;
+
+	ipclock_enter();
+	p = find_proc(pid);
+	ipclock_leave();
+	return p;
 }
 
 /* remove the file half of io; the console half stays. see kernel.h on
@@ -511,14 +531,19 @@ kbuf_step_due(lua_State *L, size_t n)
 	return 1;
 }
 
+/* pooled bytes across every proc. Takes ipclock for the walk, so no
+ * caller holding it may ask.
+ */
 size_t
 kbuf_pooled(void)
 {
 	size_t total = 0;
 
+	ipclock_enter();
 	for (int i = 0; i < prochigh; i++)
 		if (procv[i])
 			total += procv[i]->buf_used;
+	ipclock_leave();
 	return total;
 }
 
@@ -1110,25 +1135,37 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 {
 	struct kproc *p = 0;
 
-	for (int i = 0; i < MAXPROCS; i++)
-		if (!procv[i] || procv[i]->status == DEAD) {
-			if (!procv[i]) {
-				procv[i] = malloc(sizeof *procv[i]);
-				if (!procv[i])
-					return -1;
-				memset(procv[i], 0, sizeof *procv[i]);
-			}
-			p = procv[i];
+	/* the caller holds ipclock, and that is what serializes this claim
+	 * against another cpu's -- and against every walk of the table.
+	 */
+	IPC_ASSERT_LOCKED();
+	for (int i = 0; i < MAXPROCS; i++) {
+		if (procv[i] && procv[i]->status != DEAD)
+			continue;
+		if (!procv[i]) {
+			struct kproc *np = malloc(sizeof *np);
+
+			if (!np)
+				return -1;
+			/* zeroed before the slot points at it: dbg_sweep
+			 * reads procv without the lock, and malloc's
+			 * leavings would read as a debugger attached.
+			 */
+			memset(np, 0, sizeof *np);
+			procv[i] = np;
+		} else {
 			/* a reused slot still holds the last occupant's
 			 * fields; only the id must survive nothing, so wipe
 			 * it rather than trusting every assignment below to
 			 * cover every field
 			 */
-			memset(p, 0, sizeof *p);
-			if (i >= prochigh)
-				prochigh = i + 1;
-			break;
+			memset(procv[i], 0, sizeof *procv[i]);
 		}
+		p = procv[i];
+		if (i >= prochigh)
+			prochigh = i + 1;
+		break;
+	}
 	if (!p)
 		return -1;
 
@@ -1691,8 +1728,14 @@ proc_reap(struct kproc *p)
 {
 	if (p->status != BROKE)
 		return;
+	/* the same split proc_kill makes: the state closes outside the
+	 * lock, because lua_close runs this corpse's finalizers, and the
+	 * slot is released under it.
+	 */
 	proc_freestate(p);
+	ipclock_enter();
 	p->status = DEAD;
+	ipclock_leave();
 }
 
 void
@@ -1756,8 +1799,13 @@ proc_heaps_release(void)
 
 	if (shared_heap)
 		return luaheap_release(shared_heap);
+	/* the walk takes ipclock; the release itself touches only the one
+	 * heap and the physical allocator under it.
+	 */
+	ipclock_enter();
 	for (int i = 0; i < prochigh; i++)
 		if (procv[i] && procv[i]->heap)
 			freed += luaheap_release(procv[i]->heap);
+	ipclock_leave();
 	return freed;
 }

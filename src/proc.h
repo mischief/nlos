@@ -14,7 +14,7 @@
  * the top of a lap, because dispatch reads its status right after a
  * resume that may have killed it.
  */
-extern struct kproc *procv[MAXPROCS];
+extern struct kproc *procv[MAXPROCS];	/* ipclock covers every walk */
 extern int prochigh;		/* one past the highest slot ever used */
 extern int nlive;		/* procs that are not DEAD */
 
@@ -28,7 +28,12 @@ extern struct luaheap *shared_heap;
  */
 extern int default_reductions;
 
+/* the proc holding a pid. find_proc wants ipclock held; the _locked
+ * form takes it, which is what a sys.* call arriving with nothing held
+ * needs.
+ */
 struct kproc *find_proc(int pid);
+struct kproc *find_proc_locked(int pid);
 
 /* make a proc, and let a made one run. They are separate because every
  * caller has setup to do in between -- the spawn argument, a driver's

@@ -1239,21 +1239,26 @@ gc_idle_sweep(struct cpu *me)
 	for (int i = 0; i < prochigh; i++) {
 		struct kproc *p;
 
+		/* ipclock for the slot, because proc_new wipes a recycled
+		 * one; schedlock for the fields; in that order. BLOCKED
+		 * and nothing else: a corpse must not run a finalizer, a
+		 * HATCHING proc has no chunk yet, and a runnable one is
+		 * about to reset its own clock.
+		 */
+		ipclock_enter();
 		lock(&schedlock);
 		p = procv[i];
-		/* BLOCKED and nothing else: a corpse must not run a
-		 * finalizer, a HATCHING proc has no chunk yet, and a
-		 * runnable one is about to reset its own clock.
-		 */
 		if (!p || p->status != BLOCKED || p->oncpu || p->frozen ||
 		    p->onq || p->gc_idle_owed < GCIDLE_MIN ||
 		    now - p->gc_idle_ms < wait) {
 			unlock(&schedlock);
+			ipclock_leave();
 			continue;
 		}
 		p->oncpu = me->idx + 1;
 		me->current = p;
 		unlock(&schedlock);
+		ipclock_leave();
 
 		gc_idle_collect(p);
 
