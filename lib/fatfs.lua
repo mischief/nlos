@@ -326,6 +326,35 @@ function M.new(fs)
 		gen = gen + 1
 	end
 
+	-- the name, within the directory that already holds it: 9P's
+	-- Twstat, and all of it this filesystem has anywhere to keep.
+	function B.wstat(h, st)
+		if isctl(h) or h.path == "/" then
+			dev.error(dev.Eperm)
+		end
+		if not st or st.name == nil then
+			return true
+		end
+		fail(fs:rename(h.path, childpath(parentpath(h.path), st.name)))
+		gen = gen + 1
+		return true
+	end
+
+	-- across directories of this one volume. A FAT name lives in its
+	-- entry, so this moves the entry and leaves the clusters alone.
+	function B.rename(dsrc, name, ddst, newname)
+		if isctl(dsrc) or isctl(ddst) then
+			dev.error(dev.Eperm)
+		end
+		if not isdir(entof(dsrc)) or not isdir(entof(ddst)) then
+			dev.error(dev.Enotdir)
+		end
+		fail(fs:rename(childpath(dsrc.path, name),
+		    childpath(ddst.path, newname)))
+		gen = gen + 1
+		return true
+	end
+
 	function B.clunk(_)
 	end
 

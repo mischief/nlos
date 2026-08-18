@@ -99,7 +99,11 @@ function M.readonly(B)
 
 	RO.write = refuse
 	RO.create = refuse
-	RO.remove = nil		-- absent, not a stub: see the note above
+	-- absent, not stubs: a caller checks before calling, and a tree
+	-- that cannot be changed says so by not offering the methods.
+	RO.remove = nil
+	RO.wstat = nil
+	RO.rename = nil
 
 	function RO.open(h, mode)
 		if mode ~= "r" then
@@ -232,6 +236,72 @@ function M.mem(tree)
 		end
 		table.sort(out, function(a, b) return a.name < b.name end)
 		return out
+	end
+
+	-- the parent table holding this handle's entry, and the key in it.
+	-- The root has no parent, so it answers nil and callers refuse.
+	local function locate(h)
+		local names = dev.elements(h.path)
+		local parent = tree
+
+		for i = 1, #names - 1 do
+			parent = parent[names[i]]
+			if type(parent) ~= "table" then
+				error_(dev.Enotdir)
+			end
+		end
+		return parent, names[#names]
+	end
+
+	function B.remove(h)
+		local parent, key = locate(h)
+
+		if not key then
+			error_(dev.Eperm)
+		end
+		if parent[key] == nil then
+			error_(dev.Enonexist)
+		end
+		parent[key] = nil
+		return true
+	end
+
+	-- only the name, which is all 9P's Twstat carries that this tree
+	-- has anywhere to keep. An occupied name is refused rather than
+	-- replaced: unix's rename would overwrite, and no backend here can
+	-- do that in one step, so all of them say so instead.
+	function B.wstat(h, st)
+		if not st or st.name == nil then
+			return true
+		end
+
+		local parent, key = locate(h)
+
+		if not key then
+			error_(dev.Eperm)
+		end
+		if parent[key] == nil then
+			error_(dev.Enonexist)
+		end
+		if st.name ~= key and parent[st.name] ~= nil then
+			error_(dev.Eexist)
+		end
+		parent[key], parent[st.name] = nil, parent[key]
+		return true
+	end
+
+	function B.rename(dsrc, name, ddst, newname)
+		if type(dsrc.node) ~= "table" or type(ddst.node) ~= "table" then
+			error_(dev.Enotdir)
+		end
+		if dsrc.node[name] == nil then
+			error_(dev.Enonexist)
+		end
+		if ddst.node[newname] ~= nil then
+			error_(dev.Eexist)
+		end
+		ddst.node[newname], dsrc.node[name] = dsrc.node[name], nil
+		return true
 	end
 
 	function B.clunk(_)

@@ -66,13 +66,14 @@
 -- backend whose read parks needs it -- what it waits for comes from the
 -- client that has gone, so the reader would park forever.
 --
--- NOT required, and deliberately: remove() and wstat(). a shell wants
--- `rm`, so remove() is the next thing this interface should grow -- but
--- espfs cannot implement it yet (EFI_FILE_PROTOCOL has Delete and
--- src/fs.c does not wrap it), and requiring a method no real backend can
--- provide would just mean every backend stubbing it. backends MAY
--- provide either; dev.check does not demand them, so check before
--- calling.
+-- OPTIONAL: remove(h) and wstat(h, st). wstat changes a file's name
+-- within its own directory, which is all 9P's Twstat can carry.
+
+-- OPTIONAL: rename(dsrc, name, ddst, newname), moving an entry between
+-- two directories of the SAME backend. 9P has no message for this, so a
+-- mount cannot offer it and ns falls back to wstat or refuses.
+
+-- dev.check demands none of the three. check before calling.
 --
 -- ---- errors are raised, plan 9 style ----
 --
@@ -130,6 +131,12 @@ M.Ebadarg    = "bad arg in system call"
 M.Eio        = "i/o error"
 M.Ebadusefd  = "inappropriate use of fd"
 M.Enotimpl   = "not implemented"
+-- not from error.h: unix's EXDEV, which plan 9 has no name for because
+-- wstat cannot express the move that fails this way. a rename whose two
+-- ends sit on different mounts raises it, and `mv` is what falls back to
+-- copying. the guarantee rename makes -- one name or the other, never
+-- neither -- is exactly what no two backends can jointly keep.
+M.Exdev      = "cross-device link"
 -- not from error.h: this is the string plan 9's own 9P servers send for
 -- a fid they do not know, and lib/srv.lua raises it for the same reason.
 M.Ebadfid    = "unknown fid"

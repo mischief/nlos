@@ -1673,6 +1673,16 @@ test('slide-board', lua_interp,
   timeout: 20,
 )
 
+# rename over all three backends that have one, plus two mounts, because
+# the refusal to rename across them is the rule no filesystem can show.
+test('ns-rename', lua_interp,
+  args: [files('test/host_rename.lua')],
+  protocol: 'tap',
+  timeout: 60,
+  env: host_env,
+  depends: host_deps,
+)
+
 # the known networks. What a scan saw is a table, so choosing one is
 # tested without a radio.
 test('wifi-config', lua_interp,

@@ -217,13 +217,33 @@ function M.new(mnt)
 	end
 
 	-- remove() is offered (dev.lua marks it optional): gefs can do it, so
-	-- a served client can rm. wstat/rename waits on the same interface
-	-- growth as directory create.
+	-- a served client can rm.
 	function B.remove(h)
 		if isctl(h) or h.path == "/" then
 			dev.error(dev.Eperm)
 		end
 		mnt:removepath(h.path)
+	end
+
+	-- the name only. A dirent's key is (parent, name), so gefs renames
+	-- within one directory by deleting and inserting -- and no rename()
+	-- here, because moving between directories would rewrite the key's
+	-- other half along with the super entry that points back at it.
+	function B.wstat(h, st)
+		if isctl(h) or h.path == "/" then
+			dev.error(dev.Eperm)
+		end
+		if not st or st.name == nil then
+			return true
+		end
+
+		local d = direntof(h.path)
+		local ok, err = pcall(mnt.wstat, mnt, d, { name = st.name })
+
+		if not ok then
+			dev.error(tostring(err))
+		end
+		return true
 	end
 
 	function B.clunk(_)

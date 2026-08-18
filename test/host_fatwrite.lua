@@ -278,5 +278,67 @@ do
 	    "and the volume still checks clean")
 end
 
+-- ---- rename, which rewrites directory entries ----
+--
+-- The clusters do not move, so what this proves is that the entries do
+-- and that nothing else in the directory was damaged doing it. A
+-- remount reads the entries back off the device rather than from cache.
+do
+	local B = mount()
+	local root = B.attach()
+	local body = string.rep("renameable\n", 400)
+
+	writefile(B, "old.dat", body)
+	B.clunk(B.create(root, "movedto", "rw", true))
+
+	local h = B.walk(root, "old.dat")
+
+	ok(pcall(B.wstat, h, { name = "new.dat" }),
+	    "wstat renames within a directory")
+
+	local d = B.walk(root, "movedto")
+
+	ok(pcall(B.rename, root, "new.dat", d, "here.dat"),
+	    "rename moves an entry to another directory")
+	B.sync()
+
+	local C = mount()
+
+	-- walk takes one element, so the subdirectory is a step of its own
+	local moved = C.walk(C.attach(), "movedto")
+	local got, at = {}, 0
+	local o = C.open(C.walk(moved, "here.dat"), "r")
+
+	while true do
+		local s = C.read(o, at, 8192)
+
+		if not s or s == "" then
+			break
+		end
+		got[#got + 1] = s
+		at = at + #s
+	end
+	C.clunk(o)
+	ok(table.concat(got) == body, "the contents survived both moves")
+	ok(not pcall(C.walk, C.attach(), "old.dat"), "the first name is gone")
+	ok(not pcall(C.walk, C.attach(), "new.dat"), "and so is the second")
+
+	-- every file built at the top is still whole: a rename that
+	-- damaged a neighbour's entry shows up here and not on the board.
+	local intact = true
+
+	for name, data in pairs(files) do
+		if readfile(C, name) ~= data then
+			intact = false
+		end
+	end
+	ok(intact, "every neighbouring file is intact")
+
+	local rep = fat.open(dev, { cache = 128 }):check()
+
+	ok(type(rep) ~= "table" or #rep == 0,
+	    "and the volume checks clean afterwards")
+end
+
 io.write(("1..%d\n"):format(count))
 os.exit(failed == 0 and 0 or 1)

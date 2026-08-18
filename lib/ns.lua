@@ -403,6 +403,55 @@ function NS:remove(path)
 	return true
 end
 
+-- rename, with unix's semantics: within one directory this is 9P's
+-- Twstat, and across two of one backend it is rename(), which 9P cannot
+-- express -- so a mounted filesystem refuses where a local one need not.
+
+-- Two mounts are two devices, and dev.Exdev is what unix answers. No two
+-- backends can jointly promise that one name or the other survives, so
+-- the copy belongs in bin/mv.lua where the weaker guarantee is visible.
+function NS:rename(from, to)
+	local a, b = clean(from), clean(to)
+	local adir, aname = a:match("^(.*)/([^/]+)$")
+	local bdir, bname = b:match("^(.*)/([^/]+)$")
+
+	if not aname or not bname then
+		return nil, dev.Ebadarg
+	end
+	adir = adir ~= "" and adir or "/"
+	bdir = bdir ~= "" and bdir or "/"
+
+	local ok, res = pcall(function()
+		local da <close> = self:walk(adir)
+		local db <close> = self:walk(bdir)
+
+		if da.B ~= db.B then
+			dev.error(dev.Exdev)
+		end
+		if adir == bdir then
+			if not da.B.wstat then
+				dev.error(dev.Enotimpl)
+			end
+
+			local c <close> = self:walk(a)
+
+			return da.B.wstat(c.h, { name = bname })
+		end
+		-- one backend, so not Exdev: it is the same device and it
+		-- cannot do this. A mount always lands here, since 9P has no
+		-- message for it. bin/mv.lua falls back on either answer.
+		if not da.B.rename then
+			dev.error(dev.Enotimpl)
+		end
+		return da.B.rename(da.h, aname, db.h, bname)
+	end)
+
+	if not ok then
+		return nil, res
+	end
+	return true
+end
+
 function NS:stat(path)
 	local ok, res = pcall(function()
 		local c <close> = self:walk(path)
