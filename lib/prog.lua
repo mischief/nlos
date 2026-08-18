@@ -357,6 +357,109 @@ local function exitproc(ctx)
 	end
 end
 
+
+-- ---- os, built on use ----
+--
+-- os is excluded from our stdlib entirely (see src/linit.c), so what a
+-- program gets is only this. The builders are shared, so what a program
+-- pays for is the one function it calls. time, date, difftime, clock
+-- and setlocale want no ctx and belong in C beside the rest.
+local osbuild = {}
+
+osbuild.exit = function(ctx)
+	return function(code)
+		-- record the status, then unwind: see sys.setexit on why
+		-- the kernel does not raise. ctx.setexit rather than
+		-- sys.setexit, because a program running as a coroutine
+		-- must not set the PROC's status -- that belongs to the
+		-- launcher hosting it.
+		ctx.setexit(tonumber(code) or 0)
+		exitproc(ctx)
+		error(M.EXIT, 0)
+	end
+end
+
+osbuild.getenv = function(ctx)
+	return function(k)
+		return (ctx.env or {})[k]
+	end
+end
+
+-- the machine's wall clock, nil until something has set it. A program
+-- that only wants an interval wants os.clock, which is always there.
+osbuild.time = function()
+	return function(t)
+		if type(t) == "table" then
+			return require("time").unix(t)
+		end
+		return sys.time()
+	end
+end
+
+osbuild.date = function()
+	return function(fmt, when)
+		when = when or sys.time()
+		if not when then
+			return nil
+		end
+		return require("time").date(fmt, when)
+	end
+end
+
+osbuild.difftime = function()
+	return function(a, b)
+		return (a or 0) - (b or 0)
+	end
+end
+
+-- seconds since boot, monotonic: this is the one a timing loop wants,
+-- and it does not need the clock to have been set.
+osbuild.clock = function()
+	return function()
+		return sys.uptime_ms() / 1000
+	end
+end
+
+-- the namespace at call time, not at start: a program may have mounted
+-- something since. nil and a reason on failure, which is what a caller
+-- tests and what lua's own os.remove answers.
+osbuild.remove = function()
+	return function(name)
+		local N = ns.current()
+
+		if not N then
+			return nil, tostring(name) .. ": no namespace"
+		end
+
+		local ok, err = N:remove(name)
+
+		if not ok then
+			return nil, tostring(name) .. ": " ..
+			    tostring(err or "cannot remove")
+		end
+		return true
+	end
+end
+
+-- one locale, and it is C. nil for any other is what a caller checks
+-- before it formats anything.
+osbuild.setlocale = function()
+	return function(name)
+		if name == nil or name == "" or name == "C" then
+			return "C"
+		end
+		return nil
+	end
+end
+
+-- what is absent says why. "attempt to call a nil value" names the
+-- line that used it and not the reason it is not there.
+local noos = {
+	rename = "no filesystem here implements wstat",
+	execute = "no shell to run one; see prog.spawn",
+	tmpname = "this machine has no /tmp",
+}
+
 local function install(ctx)
 	local fds = newfds(ctx)
 	local G = setmetatable({}, { __index = _G })
@@ -378,21 +481,27 @@ local function install(ctx)
 		G.arg[i - 1] = argv[i]
 	end
 
-	-- os is excluded from our stdlib entirely (see src/linit.c), so this
-	-- is not an override -- it is the only os a program has.
-	G.os = {}
-	G.os.exit = function(code)
-		-- record the status, then unwind. the two are separate: see
-		-- sys.setexit's comment on why the kernel does not raise.
-		--
-		-- ctx.setexit rather than sys.setexit: a program running as a
-		-- coroutine must not set the PROC's exit status, which
-		-- belongs to the launcher hosting it. this is the one seam
-		-- between the two modes that is not a stream.
-		ctx.setexit(tonumber(code) or 0)
-		exitproc(ctx)
-		error(M.EXIT, 0)
-	end
+	-- os is excluded from our stdlib entirely (see src/linit.c), so
+	-- this is not an override -- it is the only os a program has.
+	--
+	-- Built on use. Most programs touch os.exit and nothing else, and
+	-- a table of eight closures per program is seven it never calls;
+	-- what is per program here is one table and one __index.
+	G.os = setmetatable({}, {
+		__index = function(t, k)
+			local build = osbuild[k]
+
+			if not build then
+				error("os." .. tostring(k) .. ": " ..
+				    (noos[k] or "no such thing here"), 2)
+			end
+
+			local f = build(ctx)
+
+			rawset(t, k, f)
+			return f
+		end,
+	})
 
 	-- plan 9's exits(msg): nil is success, any string is failure WITH a
 	-- reason, which beats a number nobody has a table for. sys.setexit
@@ -401,33 +510,6 @@ local function install(ctx)
 	G.exits = function(msg)
 		ctx.setexit(msg)
 		error(M.EXIT, 0)
-	end
-	G.os.getenv = function(k)
-		return (ctx.env or {})[k]
-	end
-	-- the machine's wall clock, nil until something has set it. A
-	-- program that only wants an interval wants os.clock, which is
-	-- always there.
-	G.os.time = function(t)
-		if type(t) == "table" then
-			return require("time").unix(t)
-		end
-		return sys.time()
-	end
-	G.os.date = function(fmt, when)
-		when = when or sys.time()
-		if not when then
-			return nil
-		end
-		return require("time").date(fmt, when)
-	end
-	G.os.difftime = function(a, b)
-		return (a or 0) - (b or 0)
-	end
-	-- seconds since boot, monotonic: this is the one a timing loop
-	-- wants, and it does not need the clock to have been set.
-	G.os.clock = function()
-		return sys.uptime_ms() / 1000
 	end
 
 	-- io.write/io.stderr must reach the ABI's streams, not the raw
