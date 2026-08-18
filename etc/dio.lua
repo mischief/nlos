@@ -19,15 +19,11 @@
 --	color	the button, 0xRRGGBB.
 --	keys	give this one the keyboard while it is in front. Off by
 --		default: an app is reached with the pointer, and keys sent
---		to a program that never reads them would fill a port. A
---		terminal gets them whatever this says.
+--		to a program that never reads them would fill a port.
 --	ble	lend this one the bluetooth adapter. Off by default and
 --		named per entry rather than given to everything: the
 --		radio is a singleton, and a program that never asked for
 --		it cannot advertise as somebody else.
---	kind	"term" for the console stack, which takes a framebuffer
---		and a keyboard rather than the program ABI. Anything else
---		is an ordinary program.
 --	category
 --		which heading the launcher files it under. Groups appear
 --		in the order first named below, one open at a time, and
@@ -46,14 +42,10 @@ return {
 	apps = {
 		-- a terminal, and through it everything that is not a
 		-- pointer program: a shell in the window, and vi in the
-		-- shell. kind = "term" is the one entry dio starts
-		-- differently -- task/fbterm.lua takes a framebuffer and a
-		-- keyboard rather than the program ABI, and dio gives it
-		-- the window and the keys it was lent.
-		-- boot = true starts it before anything is touched, so the
-		-- machine comes up at a prompt rather than at a tray and
-		-- an empty rectangle.
-		{ name = "term", cmd = "/task/fbterm.lua", kind = "term",
+		-- shell. boot = true starts it before anything is touched,
+		-- so the machine comes up at a prompt rather than at a
+		-- tray and an empty rectangle.
+		{ name = "term", cmd = "/bin/term.lua", keys = true,
 		  boot = true, label = ">", color = 0x0074d9, category = "shell",
 		  desc = "a shell, and everything run from one" },
 

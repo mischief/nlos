@@ -60,14 +60,6 @@ return {
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
 	  optcaps = { "tcp", "ip", "dns", "power", "ble" } },
 
-	-- the panel and the keyboard as a plain terminal, for a board
-	-- with no pointer. Exactly one of this and dio above belongs in a
-	-- machine's file: both name fb and kbd, so both would start, and
-	-- two consoles drawing on one screen is two consoles drawing on
-	-- one screen.
-	-- { path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" },
-	--   optcaps = { "tcp", "ip", "power" } },
-
 	-- the wall clock. "time" is the right to sys.settime, and this is
 	-- the only entry naming it: everything else reads the clock and
 	-- cannot move it.

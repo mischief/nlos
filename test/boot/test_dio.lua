@@ -14,7 +14,7 @@ local tap = require("tap")
 
 local caps = sys.granted()
 
-tap.plan(9)
+tap.plan(10)
 
 tap.ok(caps.fb ~= nil, "the payload holds a screen")
 tap.ok(caps.esp ~= nil, "and a filesystem to run dio out of")
@@ -135,6 +135,11 @@ for _, id in ipairs(sys.procs()) do
 end
 
 tap.ok(names["dio"] == true, "dio is still alive after all that")
+
+-- the boot entry is the terminal, and an ordinary program: dio starting
+-- it through the program ABI is what proves a console stack needs no
+-- launch path of its own.
+tap.ok(names["term"] == true, "the boot terminal runs as a program")
 tap.ok(names["scribble"] == true or names["smiley"] == true or
     names["term"] == true,
     "the tray started an app")

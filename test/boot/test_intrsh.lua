@@ -9,7 +9,7 @@
 -- Run twice, because a shell reads its notices from one of two places
 -- and only one of them was ever exercised by hand. A shell in a proc of
 -- its own takes them off sys.SELF; one sharing a proc with a console --
--- task/fbterm.lua, which is what a T-Deck runs -- is handed a port
+-- bin/term.lua, which is what a T-Deck runs -- is handed a port
 -- instead and mints the right it gives the console from that. The two
 -- paths meet in Sh:noticeright().
 --
@@ -54,7 +54,7 @@ local function round(notices)
 
 	-- sys.monitor delivers to the proc's own port whoever asked, so a
 	-- shell reading its notices elsewhere only sees an exit because
-	-- something forwards. In task/fbterm.lua that is the console's
+	-- something forwards. In bin/term.lua that is the console's
 	-- `other` hook; here it is this.
 	if notices then
 		local nsend = sys.sendright(notices)

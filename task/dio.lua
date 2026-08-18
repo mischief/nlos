@@ -1,7 +1,7 @@
 -- dio: a window system with one window.
 --
 -- The panel and the keyboard, as the machine's own interface: started
--- from /etc/services.lua the way task/fbterm.lua is, and in its place.
+-- from /etc/services.lua, and the machine's whole interface.
 -- A launcher tray down the left, and the app in front filling everything
 -- right of it. Several apps run at once and one is on the glass.
 -- What the tray holds is /etc/dio.lua.
@@ -748,7 +748,7 @@ end
 --
 -- an instance is:
 --	{ id, entry, name, pid, winid, fbport, mouse, ev, evsend,
---	  wstate, kind }
+--	  wstate }
 
 -- ---- the window, as a message ----
 
@@ -794,7 +794,7 @@ end
 
 -- make an app's windows before it is spawned, since what it is handed
 -- is rights to them.
-local function newapp(entryidx, kind)
+local function newapp(entryidx)
 	-- the window, and a session over it. That right is the app's
 	-- screen: it draws into the image and never into this proc, so
 	-- nothing here is between an app and its pixels.
@@ -821,7 +821,6 @@ local function newapp(entryidx, kind)
 	local a = {
 		id = nextid,
 		entry = entryidx,
-		kind = kind,
 		winid = winid, fbport = win.handle,
 		ev = ev, evsend = evsend,
 	}
@@ -868,11 +867,11 @@ end
 
 -- ---- a terminal in the window ----
 --
--- task/fbterm.lua is the console stack -- glyphs through lib/fbcons.lua,
--- tty logic in lib/console.lua, a shell above it -- and it takes a
--- framebuffer and a keyboard port. Handed dio's framebuffer it draws in
--- the app area and asks it how big the screen is, so the grid is the
--- window's. Nothing in it knows about dio.
+-- bin/term.lua is the console stack -- glyphs through lib/fbcons.lua,
+-- tty logic in lib/console.lua, a shell above it. Handed dio's window it
+-- draws in the app area and asks how big it is, so the grid is the
+-- window's. Nothing in it knows about dio: it is an ordinary program
+-- whose entry asks for keys.
 --
 -- Keystrokes are forwarded rather than handed over, for the reason the
 -- framebuffer is. Giving the app the keyboard right would work exactly
@@ -897,46 +896,6 @@ if kbd then
 			end
 		end
 	end)
-end
-
-local function startterm(a, entry, desc)
-	if not kbd then
-		return nil, "no keyboard on this machine"
-	end
-
-	local pid, h = proc.start(entry.cmd, {
-		fb = { __right = a.fbport },
-		-- the pointer, for the programs it runs rather than for
-		-- itself: a shell reads keys, and scribble reads this.
-		ptr = { __right = a.ptr },
-		-- the event port, which for a terminal is its keyboard: the
-		-- window messages riding on it are not keystrokes and the
-		-- console hands them on rather than typing them.
-		kbd = { __right = a.ev },
-		-- the serial line, for what the terminal cannot report
-		-- about itself. Its own output goes to the glass.
-		cons = cons and { __right = cons } or nil,
-		tcp = tcp and { __right = tcp } or nil,
-		dns = dnsh and { __right = dnsh } or nil,
-		seed = rng and rng.bytes(32) or nil,
-		-- and power, which is what bin/reboot.lua spends. The panel
-		-- is a local terminal: it holds what the serial console
-		-- holds, and a session over the network does not.
-		power = power and { __right = power } or nil,
-		-- the ip task, which is also the udp server: bin/host.lua
-		-- and bin/date.lua ask a server one question each.
-		ip = ip and { __right = ip } or nil,
-	}, { name = a.name, ns = desc })
-
-	if not pid then
-		return nil, tostring(h)
-	end
-	-- the handle is kept, not closed: it is a right to the app's
-	-- own port, and sys.kill asks whether the caller holds one. Drop
-	-- it and the tray can start an app it can never stop -- which is
-	-- what a second tap did for as long as this closed it here.
-	a.ctl = h
-	return pid
 end
 
 -- ---- switching ----
@@ -967,13 +926,12 @@ local function focus(id)
 	else
 		clearapp()
 	end
-	-- keys follow the front, to a terminal or to a program whose
-	-- entry asked for them. A pointer program is given none: what it
-	-- does not read would sit in a port nobody drains.
+	-- keys follow the front, to a program whose entry asked for them.
+	-- A pointer program is given none: what it does not read would
+	-- sit in a port nobody drains.
 	local fa = id ~= nil and apps[id] or nil
 
-	wantkeys = fa ~= nil and (fa.kind == "term" or
-	    (catalog[fa.entry] or {}).keys == true)
+	wantkeys = fa ~= nil and (catalog[fa.entry] or {}).keys == true
 	if was then
 		drawbutton(was)
 	end
@@ -1003,7 +961,7 @@ local function start(i, openarg)
 	end
 
 	entry.idx = i
-	local a = newapp(i, entry.kind)
+	local a = newapp(i)
 
 	if not a then
 		return nil, "no window"
@@ -1016,9 +974,7 @@ local function start(i, openarg)
 	local desc = N:describe()
 	local pid, err
 
-	if entry.kind == "term" then
-		pid, err = startterm(a, entry, desc)
-	else
+	do
 		local h
 
 		pid, h = proc.spawn('require("prog").main()',
@@ -1073,7 +1029,11 @@ local function start(i, openarg)
 				stdout = cons and { __right = cons } or nil,
 				stderr = cons and { __right = cons } or nil,
 			})
-			a.ctl = h	-- kept, as in startterm: see there
+			-- the handle is kept, not closed: it is a right
+			-- to the app's own port, and sys.kill asks
+			-- whether the caller holds one. Drop it and the
+			-- tray can start an app it can never stop.
+			a.ctl = h
 		else
 			err = "spawn failed"
 		end

@@ -1,6 +1,6 @@
 -- fbsh: a dos shell on the console of the proc it runs in.
 --
--- A thread of task/fbterm.lua rather than a proc of its own, because a
+-- A thread of bin/term.lua rather than a proc of its own, because a
 -- proc of its own loads a second copy of the whole namespace stack --
 -- ns, chan, mnt, nsio, romfs, dos, prog -- which is most of what a shell
 -- weighs.

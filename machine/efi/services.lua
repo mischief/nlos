@@ -77,9 +77,7 @@ return {
 	-- app its own, as it already did for the keyboard.
 
 	-- Naming it also decides the machine: a service naming a
-	-- capability the machine has not got is skipped, and a board with
-	-- a panel and no pointer wants task/fbterm.lua instead, which is
-	-- the entry below.
+	-- capability the machine has not got is skipped.
 	--
 	-- tcp is optional rather than required: a panel is still a panel
 	-- on a board with no stack. Where there is one it reaches the
@@ -95,14 +93,6 @@ return {
 	-- bin/win.lua hands the screen over on request.
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
 	  optcaps = { "tcp", "ip", "dns", "power" } },
-
-	-- the panel and the keyboard as a plain terminal, for a board
-	-- with no pointer. Exactly one of this and dio above belongs in a
-	-- machine's file: both name fb and kbd, so both would start, and
-	-- two consoles drawing on one screen is two consoles drawing on
-	-- one screen.
-	-- { path = "/task/fbterm.lua", caps = { "fb", "kbd", "cons" },
-	--   optcaps = { "tcp", "ip", "power" } },
 
 	-- the browser shell. off by default: it hands anonymous visitors a
 	-- shell, which is a decision to make deliberately rather than

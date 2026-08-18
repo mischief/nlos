@@ -720,9 +720,8 @@ lua_payload = files(
   # record is an ordinary send to it.
   'task/dio.lua',
   'etc/dio.lua',
-  'bin/dio.lua',
   'lib/mouse.lua',
-  'task/fbterm.lua',
+  'bin/term.lua',
   'lib/fbsh.lua',
   'bin/scribble.lua',
   # vi, and its ed/ engine and terminal (lib/ed/*). a full-screen program
