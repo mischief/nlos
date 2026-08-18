@@ -393,6 +393,7 @@ else
     'lib/sync/lock.lua',
     'lib/tap.lua',
     'lib/ps.lua',
+    'lib/battery.lua',
     'lib/zmodem.lua',
     # what init.lua needs before it has mounted anything. romfs is the
     # root on a machine with no disk, and is what makes the embedded
@@ -983,6 +984,7 @@ lua_payload = files(
   'lib/stream/pipe.lua',
   'lib/stream/chan.lua',
   'lib/ps.lua',
+  'lib/battery.lua',
   'task/eth.lua',
   'lib/srvc.lua',
   'task/srvd.lua',

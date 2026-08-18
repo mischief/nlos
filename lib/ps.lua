@@ -139,47 +139,15 @@ ps_mt.__tostring = function()
 end
 M.ps = setmetatable({}, ps_mt)
 
--- a single cell's resting voltage against its charge, in millivolts.
--- Li-ion is flat across the middle and steep at both ends, so a linear
--- reading of volts would sit at "half full" for most of a discharge.
--- Interpolated between the points, clamped outside them.
-local CURVE = {
-	{ 3000, 0 }, { 3300, 10 }, { 3600, 25 }, { 3700, 40 },
-	{ 3800, 60 }, { 3950, 80 }, { 4100, 95 }, { 4200, 100 },
-}
+-- the battery, where the machine has one. lib/battery.lua holds the
+-- curve, so a panel can read it without loading this.
+--
+-- Required here and not inside the call: stats is reached through a
+-- __tostring, and a mounted require blocks -- which cannot be yielded
+-- through a metamethod's C frame. It fails as "top exited 1".
+local battery = require("battery")
 
--- above a cell's own maximum, something external is holding the pin up:
--- the charger, which on the T-Deck sits across the divider. So a
--- reading over the top of the curve is how charging is detected, there
--- being no status pin to ask. Measured: 4.03V on the pack alone against
--- 4.64V on USB.
-local CHARGING = 4250
-
--- battery() -> millivolts, percent, charging. Nothing where no pack.
-function M.battery()
-	local mv = sys.battery and sys.battery()
-
-	if not mv then
-		return nil
-	end
-	if mv >= CHARGING then
-		return mv, 100, true
-	end
-	if mv <= CURVE[1][1] then
-		return mv, 0, false
-	end
-	for i = 2, #CURVE do
-		local lo, hi = CURVE[i - 1], CURVE[i]
-
-		if mv <= hi[1] then
-			local f = (mv - lo[1]) / (hi[1] - lo[1])
-
-			return mv, math.floor(lo[2] + f * (hi[2] - lo[2]) + 0.5),
-			    false
-		end
-	end
-	return mv, 100, false
-end
+M.battery = battery.read
 
 local stats_mt = {}
 stats_mt.__tostring = function()
