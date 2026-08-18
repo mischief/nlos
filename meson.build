@@ -258,6 +258,9 @@ else
     # a couple of programs, so the spawn path has something to run:
     # this machine has no disk, so /bin exists only if the image says.
     'lib/prog.lua',
+    'lib/stream/port.lua',
+    'lib/stream/pipe.lua',
+    'lib/stream/chan.lua',
     'lib/client/tty.lua',
     'lib/client/power.lua',
     'lib/client/udp.lua',
@@ -882,6 +885,9 @@ lua_payload = files(
   'lib/proc.lua',
   'lib/procfs.lua',
   'lib/prog.lua',
+  'lib/stream/port.lua',
+  'lib/stream/pipe.lua',
+  'lib/stream/chan.lua',
   'lib/ps.lua',
   'task/eth.lua',
   'lib/srvc.lua',

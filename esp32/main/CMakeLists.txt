@@ -245,6 +245,9 @@ set(EMBED_FILES
     # a cable and a host that can flash.
     lib/dos.lua
     lib/prog.lua
+    lib/stream/port.lua
+    lib/stream/pipe.lua
+    lib/stream/chan.lua
     lib/zmodem.lua
     bin/rz.lua
     # init requires this one before it reaches any of the above, so a

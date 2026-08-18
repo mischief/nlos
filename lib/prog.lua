@@ -56,186 +56,27 @@ local M = {}
 
 -- ---- streams ----
 --
--- two implementations behind one shape (:read/:write/:close), because
--- the two things a program's stdout can be are genuinely different: a
--- port (a pipe, or the console task) and a file in the namespace.
---
--- the port form speaks the protocol lib/cons.lua and lib/wire.lua
--- already invented independently: {op="write", data=} with no reply, and
--- {op="read", reply={__right=}}. standardising on it is what lets a
--- program write the same way to a terminal, a pipe or a file without
--- ever learning which it has.
+-- One shape (:read/:write/:close) over three things: a port, an in-proc
+-- channel, and an ns Chan. That is what lets a program write the same
+-- way to a terminal, a pipe or a file without learning which it has.
 
--- a PIPE stream: the port IS the pipe. the writer sends
--- {op="write", data=} straight into the port queue, the reader takes
--- them off it, and sys.hungup tells the reader when no other holder
--- remains, which is eof.
---
--- there is no server in the middle. an earlier version had one -- a
--- coroutine in the launcher relaying between two ports -- which cost 3
--- messages and 2 proc switches per chunk instead of 1 and 1, and needed
--- its own two-signal shutdown protocol to synthesise the eof the kernel
--- can now report directly.
-local PipeStream = {}
+-- lib/stream/ holds them, required inside these rather than at the top:
+-- a proc with no fds loads none of the three.
 
-PipeStream.__index = PipeStream
-
-function M.pipestream(h)
-	return setmetatable({ h = h }, PipeStream)
+function M.pipestream(h, own)
+	return require("stream.port").new(h, own)
 end
 
--- a full pipe applies BACKPRESSURE: park until the reader drains, then
--- retry. this is the mirror image of :read below -- the kernel reports
--- "would block" and the loop lives here -- and it is the reason
--- sys.send returns "full" rather than raising.
---
--- it used to be a bare send, so a program outrunning its reader died on
--- MAXQUEUE (64KB of SERIALIZED bytes, which a line-at-a-time writer
--- reaches in ~1600 writes) with an internal error. `seq 1 20000 | head
--- -1` is the shape of it.
---
--- a dead port is NOT an error here: the reader hung up, which is EPIPE.
--- 0 written is what the caller sees, matching read()'s "" for eof.
-function PipeStream:write(data)
-	local msg = { op = "write", data = data }
-
-	while true do
-		local ok, why = sys.send(self.h, msg)
-
-		if ok then
-			return #data
-		end
-		if why ~= "full" then
-			return 0
-		end
-		require("los.thread").parksend(self.h)
-	end
+function M.portstream(h, own)
+	return require("stream.port").pull(h, own)
 end
-
-function PipeStream:read(_)
-	-- thread.await is exactly this: drain first, and only then treat
-	-- empty AND nobody else holding the port as the end. it parks
-	-- until something arrives OR a right is dropped, since port_unref
-	-- wakes receivers precisely so the hangup gets re-tested after a
-	-- writer exits.
-	local m, why = require("los.thread").await(self.h)
-
-	-- eof is "" rather than nil because a Stream's read returns a
-	-- string, and it is read from `why` rather than from m being nil
-	-- because a message with no data is not an ending.
-	if why then
-		return ""
-	end
-	return (m and m.data) or ""
-end
-
-function PipeStream:close()
-	sys.close(self.h)
-end
-
--- a PULL stream: {op="read", reply={__right=}}, which is what cons and
--- wire speak. needed where data arrives asynchronously from hardware and
--- the far end must be asked rather than drained.
-local PortStream = {}
-
-PortStream.__index = PortStream
-
-function M.portstream(h)
-	return setmetatable({ h = h, replyport = nil }, PortStream)
-end
-
--- writing is the same operation in both directions: only reading differs
--- between a stream that is drained and one that is asked. Shared rather
--- than repeated, so a full queue parks here too instead of dropping the
--- write and reporting it as sent.
-PortStream.write = PipeStream.write
-
-function PortStream:read(_)
-	if not self.replyport then
-		self.replyport = sys.newport("prog.replyport")
-		-- send only: {__right=} copies the recv flag, and the far
-		-- end has no business receiving our own answers
-		self.replyright = sys.sendright(self.replyport)
-	end
-	sys.send(self.h, { op = "read", reply = { __right = self.replyright } })
-	local r = require("los.thread").recv(self.replyport)
-
-	-- nil means the far end is done; the ABI says "" is eof so that a
-	-- program's `while data ~= ""` loop terminates rather than erroring
-	return r or ""
-end
-
-function PortStream:close()
-	if self.replyport then
-		sys.close(self.replyright)
-		sys.close(self.replyport)
-		self.replyport, self.replyright = nil, nil
-	end
-end
-
--- a CHANNEL stream: the in-proc pipe, for a launcher running its stages
--- as coroutines in one proc rather than a proc each. same three methods
--- as PipeStream, so a program cannot tell which it was handed -- which
--- is the entire point of there being an interface here at all.
---
--- eof is Channel:close() rather than sys.hungup. a port's REFCOUNT is
--- its eof, which a channel has no equivalent of, so the writer has to
--- say so explicitly. that asymmetry does not reach programs, but it
--- does reach whoever wires the pipeline up: a launcher that forgets to
--- close leaves its reader waiting forever, exactly as a launcher that
--- forgets to drop its port right does.
---
--- backpressure comes free and bounded: send on a full buffered channel
--- parks the coroutine until the reader takes one, which is what
--- MAXQUEUE plus sys.sendblock does for the port form.
-local ChanStream = {}
-
-ChanStream.__index = ChanStream
 
 function M.chanstream(c)
-	return setmetatable({ c = c }, ChanStream)
+	return require("stream.pipe").new(c)
 end
-
-function ChanStream:write(data)
-	self.c:send(data)
-	return #data
-end
-
-function ChanStream:read(_)
-	local v, more = self.c:recv()
-
-	-- "" is eof throughout this ABI, so that a program's
-	-- `while data ~= ""` loop terminates rather than erroring
-	if not more then
-		return ""
-	end
-	return v or ""
-end
-
-function ChanStream:close()
-	self.c:close()
-end
-
-local FileStream = {}
-
-FileStream.__index = FileStream
 
 function M.filestream(f)
-	return setmetatable({ f = f }, FileStream)
-end
-
-function FileStream:write(data)
-	local n = self.f:write(data)
-
-	return n or 0
-end
-
-function FileStream:read(n)
-	return self.f:read(n or 8192) or ""
-end
-
-function FileStream:close()
-	self.f:close()
+	return require("stream.chan").new(f)
 end
 
 -- ---- the fd table ----
