@@ -74,8 +74,24 @@ end
 
 local a, b, c, d = host:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
 
+-- a name, so spend the resolver this program was lent. A session given
+-- none can still be given an address.
 if not a then
-	die(host .. ": a dotted quad, please -- no resolver here yet")
+	local dns = prog.dns()
+
+	if not dns then
+		die(host .. ": a dotted quad, please -- no resolver lent")
+	end
+
+	local addr, why = dns.resolve(host)
+
+	if not addr then
+		die(host .. ": " .. tostring(why or "cannot resolve"))
+	end
+	a, b, c, d = tostring(addr):match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+	if not a then
+		die(host .. ": resolver answered " .. tostring(addr))
+	end
 end
 
 -- ---- what the program was lent ----

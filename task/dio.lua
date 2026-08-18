@@ -992,6 +992,12 @@ local function start(i, openarg)
 				    { __right = tcp } or nil,
 				dns = entry.net and dnsh and
 				    { __right = dnsh } or nil,
+				-- and udp, which is the same grant: the ip
+				-- task answers datagrams, and bin/host.lua
+				-- and bin/date.lua each ask a server one
+				-- question over one.
+				ip = entry.net and ip and
+				    { __right = ip } or nil,
 				-- entropy of its own, drawn from ours: a
 				-- program that makes a key needs one, and
 				-- two apps must not draw the same bytes.
