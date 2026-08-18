@@ -41,14 +41,15 @@ if not ok then
 	os.exit(1)
 end
 
-p:torepl()
-
+-- only --draw needs a prompt of its own. Panel:shot goes through dos
+-- and takes the session there itself.
 if draw then
-	p:say("FT=require(\"los.font\") M=thread.rpc(fb,{op=\"mode\"}).ok")
-	p:say("thread.rpc(fb,{op=\"fill\",r={x=0,y=0,w=M.w,h=M.h},color=0})")
+	p:tolua()
+	p:say([[FT=require("los.font") M=thread.rpc(fb,{op="mode"}).ok]])
+	p:say([[thread.rpc(fb,{op="fill",r={x=0,y=0,w=M.w,h=M.h},color=0})]])
 	p:say("P,PW,PH=FT.render(" .. string.format("%q", draw) ..
 	    ",0xffffff,0)")
-	p:say("thread.rpc(fb,{op=\"load\",r={x=6,y=10,w=PW,h=PH},data=P})")
+	p:say([[thread.rpc(fb,{op="load",r={x=6,y=10,w=PW,h=PH},data=P})]])
 end
 
 local st, err = p:shot(out, rows)
