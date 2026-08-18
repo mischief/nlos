@@ -355,6 +355,12 @@ enum {
 	 * owns this and cannot tell which stack answered.
 	 */
 	PRIV_TCP	= 1 << 11,
+
+	/* udp on the same terms, and a separate capability because it is
+	 * a separate protocol: a proc that resolves names should not get
+	 * the authority to open connections with it.
+	 */
+	PRIV_UDP	= 1 << 12,
 };
 
 /* does this cpu hold a given bucket, every bucket, or any bucket at

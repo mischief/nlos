@@ -125,6 +125,38 @@ kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
 	(void)total;
 }
 
+/* the boot parameters, which are few and set once at startup. A list
+ * rather than a table: nothing here has more than a handful.
+ */
+#define MAXFWCFG 8
+
+static struct {
+	const char *name;
+	char *value;
+} fwcfg[MAXFWCFG];
+
+static int nfwcfg;
+
+void
+hosted_setfwcfg(const char *name, const char *value)
+{
+	if (nfwcfg >= MAXFWCFG || !value)
+		return;
+	fwcfg[nfwcfg].name = name;
+	fwcfg[nfwcfg].value = strdup(value);
+	if (fwcfg[nfwcfg].value)
+		nfwcfg++;
+}
+
+const char *
+hosted_fwcfg(const char *name)
+{
+	for (int i = 0; i < nfwcfg; i++)
+		if (strcmp(fwcfg[i].name, name) == 0)
+			return fwcfg[i].value;
+	return NULL;
+}
+
 /* the kernel's entropy, from the kernel that is actually underneath.
  * getrandom blocks only before the host pool is first seeded, which a
  * process started from a shell is long past.

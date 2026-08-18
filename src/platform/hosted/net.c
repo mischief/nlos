@@ -37,7 +37,7 @@ struct conn {
 	int closed;
 };
 
-enum { OP_DIAL = 1, OP_ACCEPT, OP_SEND, OP_RECV };
+enum { OP_DIAL = 1, OP_ACCEPT, OP_SEND, OP_RECV, OP_USEND, OP_URECV };
 
 /* an outstanding operation. Tokens are lua objects too, so an abandoned
  * one is collected rather than leaked, and the poll set below holds
@@ -56,6 +56,17 @@ struct token {
 	char *buf;
 	size_t len, off;
 	size_t want;
+
+	/* a datagram names its far end on every call, where a stream
+	 * carries it in the socket.
+	 */
+	struct sockaddr_in to;
+
+	/* cancelled: the caller gave up waiting. It still completes, as a
+	 * failure, so whoever is parked on it is answered rather than
+	 * left there.
+	 */
+	int cancelled;
 };
 
 /* every live token, so platform_net_ready can ask the host about all of
@@ -92,16 +103,33 @@ token_events(const struct token *t)
 	switch (t->kind) {
 	case OP_DIAL:
 	case OP_SEND:
+	case OP_USEND:
 		return POLLOUT;
 	case OP_ACCEPT:
 	case OP_RECV:
+	case OP_URECV:
 		return POLLIN;
 	}
 	return 0;
 }
 
+/* a cancelled token is ready by definition: it has an answer to give,
+ * and nothing on the socket has to happen first.
+ */
+static int
+token_pending(const struct token *t)
+{
+	return !t->done && t->c && !t->c->closed && !t->cancelled;
+}
+
 int
 platform_have_net(void)
+{
+	return 1;
+}
+
+int
+platform_have_udp(void)
 {
 	return 1;
 }
@@ -113,7 +141,9 @@ platform_net_ready(void)
 	int n = 0;
 
 	for (int i = 0; i < nlive; i++) {
-		if (live[i]->done || !live[i]->c || live[i]->c->closed)
+		if (live[i]->cancelled && !live[i]->done)
+			return 1;
+		if (!token_pending(live[i]))
 			continue;
 		pfd[n].fd = live[i]->c->fd;
 		pfd[n].events = token_events(live[i]);
@@ -131,7 +161,7 @@ net_pollfds(struct pollfd *out, int max)
 	int n = 0;
 
 	for (int i = 0; i < nlive && n < max; i++) {
-		if (live[i]->done || !live[i]->c || live[i]->c->closed)
+		if (!token_pending(live[i]))
 			continue;
 		out[n].fd = live[i]->c->fd;
 		out[n].events = token_events(live[i]);
@@ -222,8 +252,6 @@ token_gc(lua_State *L)
 	t->buf = NULL;
 	return 0;
 }
-
-/* ---- listen and dial ---- */
 
 static void
 addr_of(lua_State *L, int base, struct sockaddr_in *sa, int port)
@@ -350,8 +378,6 @@ l_accept_poll(lua_State *L)
 	newconn(L, fd, 0);
 	return 2;
 }
-
-/* ---- send and recv ---- */
 
 static int
 l_send_start(lua_State *L)
@@ -491,6 +517,193 @@ static int
 l_setaddr(lua_State *L)
 {
 	lua_pushboolean(L, 0);
+	return 1;
+}
+
+/* a bound socket rather than a connection: every send names where it is
+ * going and every recv reports where it came from. `raw` would be raw
+ * IP, which an unprivileged process does not get; asking for it fails
+ * rather than quietly answering with something else.
+ */
+static int
+l_udp_open(lua_State *L)
+{
+	int port = (int)luaL_optinteger(L, 1, 0);
+	int raw = lua_toboolean(L, 2);
+	struct sockaddr_in sa;
+	int fd;
+
+	if (raw)
+		return 0;
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0)
+		return 0;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons((unsigned short)port);
+	sa.sin_addr.s_addr = htonl(INADDR_ANY);
+	if (bind(fd, (struct sockaddr *)&sa, sizeof sa) != 0 ||
+	    nonblock(fd) != 0) {
+		close(fd);
+		return 0;
+	}
+	newconn(L, fd, 0);
+	return 1;
+}
+
+static int
+l_udp_send_start(lua_State *L)
+{
+	struct conn *c = checkconn(L, 1);
+	int port = (int)luaL_checkinteger(L, 6);
+	size_t n;
+	const char *data = luaL_checklstring(L, 7, &n);
+	struct sockaddr_in sa;
+
+	addr_of(L, 2, &sa, port);
+	if (n > NET_MAXIO)
+		return 0;
+
+	char *copy = malloc(n ? n : 1);
+
+	if (!copy)
+		return 0;
+	memcpy(copy, data, n);
+
+	lua_pushvalue(L, 1);
+
+	struct token *t = newtoken(L, OP_USEND, c);
+
+	t->buf = copy;
+	t->len = n;
+	t->to = sa;
+	return 1;
+}
+
+static int
+l_udp_send_poll(lua_State *L)
+{
+	struct token *t = luaL_checkudata(L, 1, TOKENMT);
+	ssize_t w;
+
+	if (t->done)
+		return 0;
+	if (t->cancelled) {
+		finish(t);
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+	do {
+		w = sendto(t->c->fd, t->buf, t->len, MSG_NOSIGNAL,
+		    (struct sockaddr *)&t->to, sizeof t->to);
+	} while (w < 0 && errno == EINTR);
+	if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		return 0;
+	finish(t);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+static int
+l_udp_recv_start(lua_State *L)
+{
+	struct conn *c = checkconn(L, 1);
+	lua_Integer maxlen = luaL_optinteger(L, 2, 4096);
+
+	if (maxlen <= 0)
+		maxlen = 1;
+	if (maxlen > NET_MAXIO)
+		maxlen = NET_MAXIO;
+
+	lua_pushvalue(L, 1);
+
+	struct token *t = newtoken(L, OP_URECV, c);
+
+	t->want = (size_t)maxlen;
+	return 1;
+}
+
+static int
+l_udp_recv_poll(lua_State *L)
+{
+	struct token *t = luaL_checkudata(L, 1, TOKENMT);
+	static char buf[NET_MAXIO];
+	struct sockaddr_in from;
+	socklen_t flen = sizeof from;
+	ssize_t r;
+
+	if (t->done)
+		return 0;
+	if (t->cancelled) {
+		finish(t);
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+	do {
+		r = recvfrom(t->c->fd, buf, t->want, 0,
+		    (struct sockaddr *)&from, &flen);
+	} while (r < 0 && errno == EINTR);
+	if (r < 0) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			return 0;
+		finish(t);
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+	finish(t);
+
+	const unsigned char *q = (const unsigned char *)&from.sin_addr;
+
+	lua_pushboolean(L, 1);
+	lua_pushlstring(L, buf, (size_t)r);
+	for (int i = 0; i < 4; i++)
+		lua_pushinteger(L, q[i]);
+	lua_pushinteger(L, ntohs(from.sin_port));
+	return 7;
+}
+
+/* give up on whatever this socket has outstanding, without closing it.
+ * The token still completes, as a failure, so a caller running its own
+ * timeout is answered rather than left parked.
+ */
+static int
+l_udp_cancel(lua_State *L)
+{
+	struct conn *c = luaL_checkudata(L, 1, CONNMT);
+
+	for (int i = 0; i < nlive; i++)
+		if (live[i]->c == c && !live[i]->done)
+			live[i]->cancelled = 1;
+	return 0;
+}
+
+static const luaL_Reg udplib[] = {
+	{ "open", l_udp_open },
+	{ "send_start", l_udp_send_start },
+	{ "send_poll", l_udp_send_poll },
+	{ "recv_start", l_udp_recv_start },
+	{ "recv_poll", l_udp_recv_poll },
+	{ "close", l_close },
+	{ "cancel", l_udp_cancel },
+	{ NULL, NULL }
+};
+
+int luaopen_los_platform_udp(lua_State *L);
+
+int
+luaopen_los_platform_udp(lua_State *L)
+{
+	luaL_newmetatable(L, CONNMT);
+	lua_pushcfunction(L, conn_gc);
+	lua_setfield(L, -2, "__gc");
+	lua_pop(L, 1);
+
+	luaL_newmetatable(L, TOKENMT);
+	lua_pushcfunction(L, token_gc);
+	lua_setfield(L, -2, "__gc");
+	lua_pop(L, 1);
+
+	luaL_newlib(L, udplib);
 	return 1;
 }
 

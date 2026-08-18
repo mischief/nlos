@@ -63,6 +63,9 @@ int	platform_have_eth(void);
  */
 int	platform_have_net(void);
 
+/* and udp, which is a separate capability and a separate task. */
+int	platform_have_udp(void);
+
 /* can some outstanding operation make progress now? Only outstanding
  * ones: a socket nobody waits on would say yes forever and never idle.
  */

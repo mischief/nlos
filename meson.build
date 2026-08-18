@@ -889,8 +889,9 @@ foreach t : ['dev', 'prog', 'vi', 'xd']
   )
 endforeach
 
-# this machine's own, because no other has tcp from the platform.
-foreach t : ['tcp']
+# this machine's own, because no other takes tcp and udp from the
+# platform rather than building them on frames.
+foreach t : ['tcp', 'udp']
   test('hosted-' + t, lua_interp,
     args: [hosted_boottest, luaos_hosted,
       files('test/boot/hosted_' + t + '.lua')],

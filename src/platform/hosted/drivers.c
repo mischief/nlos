@@ -17,8 +17,6 @@
 #include "lua.h"
 #include "platform.h"
 
-/* ---- los.platform.cons ---- */
-
 /* the terminal is the console and nothing else wants it: there is no
  * wire here to hold the bytes until a task claims them.
  */
@@ -68,8 +66,6 @@ luaopen_los_platform_cons(lua_State *L)
 	return 1;
 }
 
-/* ---- los.platform.power ---- */
-
 static int
 power_reset(lua_State *L)
 {
@@ -99,11 +95,26 @@ luaopen_los_platform_power(lua_State *L)
 	return 1;
 }
 
-/* ---- los.efi: the module init.lua asks the firmware for. There is no
- * firmware here, so it answers nothing and init.lua takes its services
- * list from /etc/services.lua. The symbol has to exist for the link.
- */
-static const luaL_Reg efilib[] = { { NULL, NULL } };
+/* los.efi: how this machine is handed its boot parameters.
+ * No firmware, so fwcfg answers from the command line -- the channel
+ * qemu's -fw_cfg is elsewhere, read the same way by init.lua and by
+ * /etc/services.lua. */
+static int
+l_efi_fwcfg(lua_State *L)
+{
+	const char *name = luaL_checkstring(L, 1);
+	const char *v = hosted_fwcfg(name);
+
+	if (!v)
+		return 0;
+	lua_pushstring(L, v);
+	return 1;
+}
+
+static const luaL_Reg efilib[] = {
+	{ "fwcfg", l_efi_fwcfg },
+	{ NULL, NULL }
+};
 
 int luaopen_los_efi(lua_State *L);
 
@@ -113,8 +124,6 @@ luaopen_los_efi(lua_State *L)
 	luaL_newlib(L, efilib);
 	return 1;
 }
-
-/* ---- los.platform.rng: the host's, which is a real one ---- */
 
 #define RNG_MAX_BYTES 65536
 
@@ -172,8 +181,6 @@ platform_boot_extra_modules(lua_State *L)
 	lua_pop(L, 2);
 }
 
-/* ---- what this machine has ---- */
-
 /* the root directory, served by task/espsrv.lua over los.fs: one task
  * owns the host tree and everything else mounts it. With --no-host-fs
  * there is no such tree, so this answers no and init.lua mounts
@@ -203,8 +210,6 @@ platform_have_eth(void)
 {
 	return 0;
 }
-
-/* ---- los.platform.blk: the file named with -d ---- */
 
 int
 platform_have_blk(void)
@@ -369,8 +374,6 @@ platform_dev_wait(void)
 {
 	return NULL;
 }
-
-/* ---- the empty modules, present for the link ---- */
 
 static const luaL_Reg emptylib[] = { { NULL, NULL } };
 

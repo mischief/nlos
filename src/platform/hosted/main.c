@@ -30,6 +30,8 @@ usage(const char *argv0)
 	    "  -w           allow writes into the root (default: read-only)\n"
 	    "  -m mb        the machine's memory in megabytes (default: 512)\n"
 	    "  -d image     a file to serve as this machine's disk\n"
+	    "  -n addr      the nameserver to ask (default: the host's)\n"
+	    "  -s path      the services list, in the root\n"
 	    "  --no-host-fs boot the tree built into this binary, not a\n"
 	    "               directory: the machine carries its own root\n"
 	    "  --gui        ask for a framebuffer window\n"
@@ -42,7 +44,8 @@ usage(const char *argv0)
  */
 static const char *
 parse_args(int argc, char **argv, const char **root, int *writable,
-    unsigned long *mb, const char **disk)
+    unsigned long *mb, const char **disk, const char **dns,
+    const char **services)
 {
 	const char *payload = "/init.lua";
 
@@ -61,6 +64,10 @@ parse_args(int argc, char **argv, const char **root, int *writable,
 			*disk = argv[++i];
 		else if (strcmp(a, "--no-host-fs") == 0)
 			*root = NULL;
+		else if (strcmp(a, "-n") == 0 && i + 1 < argc)
+			*dns = argv[++i];
+		else if (strcmp(a, "-s") == 0 && i + 1 < argc)
+			*services = argv[++i];
 		else if (strcmp(a, "--gui") == 0)
 			hosted_display = HOSTED_GUI;
 		else if (strcmp(a, "--headless") == 0)
@@ -71,38 +78,73 @@ parse_args(int argc, char **argv, const char **root, int *writable,
 	return payload;
 }
 
-/* proc 0 from a file, as a chunk rather than by path, so the kernel
- * names it "init". A boot payload is injected as bytes everywhere else,
- * and a test that reads its own error messages expects that name.
- */
-static int
-spawn_payload(const char *path)
+/* the host's own nameserver, which is the one a guest sharing its
+ * sockets should ask. Read before clearenv and before any root exists,
+ * because it is the host's file and not the guest's. */
+static char *
+host_resolver(void)
+{
+	static char ip[64];
+	FILE *f = fopen("/etc/resolv.conf", "r");
+	char line[256];
+
+	if (!f)
+		return NULL;
+	while (fgets(line, sizeof line, f)) {
+		if (sscanf(line, " nameserver %63s", ip) == 1) {
+			fclose(f);
+			return ip;
+		}
+	}
+	fclose(f);
+	return NULL;
+}
+
+/* the whole of a file in the served root, or null. The caller frees. */
+static char *
+slurp(const char *path, size_t *len)
 {
 	void *f = fs_open(path, 0);
 	struct fs_dirent st;
 	char *buf;
 	long n;
-	int pid;
 
 	if (!f)
-		return -1;
+		return NULL;
 	if (fs_stat(f, &st) != 0 || st.isdir) {
 		fs_close(f);
-		return -1;
+		return NULL;
 	}
 	buf = malloc((size_t)st.size + 1);
 	if (!buf) {
 		fs_close(f);
-		return -1;
+		return NULL;
 	}
 	n = fs_read(f, buf, (long)st.size);
 	fs_close(f);
 	if (n < 0) {
 		free(buf);
-		return -1;
+		return NULL;
 	}
 	buf[n] = '\0';
-	pid = kernel_spawn_buffer(buf, (size_t)n);
+	if (len)
+		*len = (size_t)n;
+	return buf;
+}
+
+/* proc 0 from a file, as a chunk rather than by path, so the kernel
+ * names it "init". A boot payload is injected as bytes everywhere else,
+ * and a test reading its own error messages expects that name. */
+static int
+spawn_payload(const char *path)
+{
+	size_t n;
+	char *buf = slurp(path, &n);
+	int pid;
+
+	if (!buf)
+		return -1;
+	pid = kernel_spawn_buffer(buf, n);
 	free(buf);
 	return pid;
 }
@@ -114,13 +156,23 @@ main(int argc, char **argv)
 	int writable = 0;
 	unsigned long mb = 512;
 	const char *disk = NULL;
+	const char *dns = NULL;
+	const char *services = "/machine/hosted/services.lua";
 	const char *payload = parse_args(argc, argv, &root, &writable, &mb,
-	    &disk);
+	    &disk, &dns, &services);
 	char line[256];
 
 	if (mb == 0)
 		usage(argv[0]);
 	hosted_setmem((unsigned long long)mb * 1024 * 1024);
+
+	/* before clearenv, and before the guest has any filesystem: this
+	 * is the host's own resolver, which is the one a guest borrowing
+	 * the host's sockets should ask.
+	 */
+	if (!dns)
+		dns = host_resolver();
+	hosted_setfwcfg("opt/org.luaos.resolver", dns);
 
 	/* the guest inherits nothing from the shell. package.path is read
 	 * from LUA_PATH where one is set, so a host with luarocks installed
@@ -160,6 +212,24 @@ main(int argc, char **argv)
 			kernel_log(line);
 		}
 	}
+	/* which services this machine runs. The embedded tree installs the
+	 * list as /etc/services.lua; a served working copy has no such
+	 * file, since the other machines get theirs at image time, so it
+	 * goes on the boot-parameter channel init.lua reads first. */
+	if (root) {
+		char *svc = slurp(services, NULL);
+
+		if (svc) {
+			hosted_setfwcfg("opt/org.luaos.services", svc);
+			free(svc);
+		} else {
+			snprintf(line, sizeof line,
+			    "services: %s is not there; none will start",
+			    services);
+			kernel_log(line);
+		}
+	}
+
 	if (hosted_display == HOSTED_GUI)
 		kernel_log("display: --gui asked for, no backend built; headless");
 

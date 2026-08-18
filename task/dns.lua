@@ -30,6 +30,11 @@ local dnsmsg = require("dns")
 -- the fallback is qemu slirp's fixed .3 (a slirp convention), for the
 -- case where there is no lease at all: no NIC, or dhcpd never started.
 local FALLBACK = { 10, 0, 2, 3 }
+
+-- a machine with no lease can still be told where to ask, in its
+-- services list. Named rather than assumed: a host's resolver is on
+-- its own network, and no default here can be right for both.
+local CONFIGURED = nil
 local RESOLVER_PORT = dnsmsg.PORT
 
 local dhcpd = nil		-- a right, where this machine has one
@@ -51,7 +56,7 @@ local function resolver()
 			    tonumber(d) }
 		end
 	end
-	return FALLBACK
+	return CONFIGURED or FALLBACK
 end
 
 -- real milliseconds, via thread.sleep/recvtimeout. these used to be raw
@@ -81,6 +86,15 @@ if not udph then
 	udph = thread.recv(sys.SELF).ip.__right
 end
 dhcpd = type(a) == "table" and a.dhcpd and a.dhcpd.__right or nil
+
+if type(a) == "table" and type(a.resolver) == "string" then
+	local w, x, y, z = a.resolver:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+
+	if w then
+		CONFIGURED = { tonumber(w), tonumber(x), tonumber(y),
+		    tonumber(z) }
+	end
+end
 
 local udp = udpc.new(udph)
 

@@ -25,6 +25,13 @@ unsigned long long hosted_now_us(void);
 struct pollfd;
 int	net_pollfds(struct pollfd *out, int max);
 
+/* a boot parameter by name, or null. What -fw_cfg is on the machines
+ * with firmware: the host's way of telling the guest something before
+ * it has a filesystem to read it from.
+ */
+const char *hosted_fwcfg(const char *name);
+void	hosted_setfwcfg(const char *name, const char *value);
+
 /* sleep this long, giving the cpu back for the whole of it. */
 void	hosted_stall_us(unsigned long us);
 

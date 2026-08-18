@@ -1435,6 +1435,10 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 		lua_pushcfunction(p->L, luaopen_los_platform_tcp);
 		lua_setfield(p->L, -2, "los.platform.tcp");
 	}
+	if (priv & PRIV_UDP) {
+		lua_pushcfunction(p->L, luaopen_los_platform_udp);
+		lua_setfield(p->L, -2, "los.platform.udp");
+	}
 	if (priv & PRIV_BLK) {
 		lua_pushcfunction(p->L, luaopen_los_platform_blk);
 		lua_setfield(p->L, -2, "los.platform.blk");

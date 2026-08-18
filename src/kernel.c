@@ -115,10 +115,12 @@ static struct kport *hciport;
  * nothing outstanding sleeps rather than asking.
  */
 static struct kport *netport;
+static struct kport *udpport;
 
 static int have_p9;
 static int have_eth;
 static int have_net;
+static int have_udp;
 static int have_hci;
 static int have_fb;
 static int have_blk;
@@ -362,13 +364,23 @@ pump_eth(void)
 static void
 pump_net(void)
 {
-	if (!have_net || !netport || netport->head)
+	int wantnet = have_net && netport && !netport->head;
+	int wantudp = have_udp && udpport && !udpport->head;
+
+	if (!wantnet && !wantudp)
 		return;
+	/* one readiness question for both: it answers for every
+	 * outstanding operation, so a udp datagram wakes the tcp task
+	 * too. That task finds nothing and blocks again, which is one
+	 * spare wakeup rather than a second poll of every socket.
+	 */
 	if (!platform_net_ready())
 		return;
 	ipclock_enter();
-	if (!netport->head)
+	if (wantnet && !netport->head)
 		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
+	if (wantudp && !udpport->head)
+		port_push(udpport, (const unsigned char *)"N", 1, 0, 0);
 	ipclock_leave();
 }
 
@@ -661,12 +673,13 @@ kernel_init(void)
 	ethport = port_new();
 	hciport = port_new();
 	netport = port_new();
+	udpport = port_new();
 	schedport = port_new();
 	clockport = port_new();
 	dbgport = port_new();
 	ipclock_leave();
 	if (!kbdport || !serport || !diskport || !schedport || !ethport ||
-	    !netport || !clockport || !dbgport)
+	    !netport || !udpport || !clockport || !dbgport)
 		return -1;
 	/* kernel refs: the pumps (and, for diskport/schedport, the kernel
 	 * itself) hold these ports forever
@@ -681,6 +694,7 @@ kernel_init(void)
 	ethport->nrights++;
 	hciport->nrights++;
 	netport->nrights++;
+	udpport->nrights++;
 	schedport->nrights++;
 	clockport->nrights++;
 	dbgport->nrights++;
@@ -695,6 +709,7 @@ kernel_init(void)
 	 */
 	have_eth = platform_have_eth();
 	have_net = platform_have_net();
+	have_udp = platform_have_udp();
 	have_hci = platform_have_hci();
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
@@ -860,6 +875,13 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_TCP, .devport = netport, .devrecv = 1,
 		  .what = "networking (tcp from the host)",
 		  .enabled = have_net, .capname = "tcp" },
+		/* udp on the same terms, and its own task: a proc that
+		 * resolves names holds this and not the other.
+		 */
+		{ .path = "/task/udp.lua", .chunkname = "=udp",
+		  .priv = PRIV_UDP, .devport = udpport, .devrecv = 1,
+		  .what = "networking (udp from the host)",
+		  .enabled = have_udp, .capname = "udp" },
 		/* ip, tcp4 and dhcp are not here. Each owns no device and
 		 * holds only a send right to the task below it, so they
 		 * come off the filesystem, started from a machine's
