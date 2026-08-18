@@ -51,8 +51,15 @@ function M.open(port, baud)
 	return setmetatable({ hu = hu, f = f, fd = hu.fileno(f) }, Panel)
 end
 
+-- nanosleep, loaded once. A wait is one call, and spawning a process
+-- to do it puts sleep(1) in the process table for every poll.
+local napper = nil
+
 local function nap(seconds)
-	os.execute("sleep " .. tostring(seconds))
+	if not napper then
+		napper = hostutil().sleep
+	end
+	napper(seconds)
 end
 
 M.nap = nap

@@ -193,7 +193,7 @@ while os.time() < deadline do
 	    readfile(serial):find("test complete", 1, true) then
 		break
 	end
-	os.execute("sleep 0.2")
+	hostutil.sleep(0.05)
 end
 
 -- ---- the guest's own TAP, passed through ----

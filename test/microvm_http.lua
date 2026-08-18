@@ -152,7 +152,7 @@ while os.time() < deadline do
 		ready = true
 		break
 	end
-	os.execute("sleep 0.2")
+	hostutil.sleep(0.05)
 end
 
 if not ok(ready, "the guest listened and said so") then

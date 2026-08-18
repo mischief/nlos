@@ -584,7 +584,7 @@ for _ = 1, 50 do
 	if fd and fd >= 0 then
 		break
 	end
-	os.execute("sleep 0.1")
+	hu.sleep(0.05)
 end
 
 ok(fd and fd >= 0, "connected to the virtual controller")

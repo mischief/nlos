@@ -26,6 +26,7 @@
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 package.path = scriptdir .. "/?.lua;" .. package.path
 local arch = require("arch")
+local nap = require("nap")
 local q = arch.quote
 
 local img, payload, out = arg[1], arg[2], arg[3] or "screenshot.ppm"
@@ -105,7 +106,7 @@ while os.time() < deadline do
 		ready = true
 		break
 	end
-	os.execute("sleep 0.1")
+	nap(0.05)
 end
 
 if not ready then
@@ -125,7 +126,7 @@ end
 -- the monitor to finish the previous command does.
 mon:write("screendump " .. out .. "\n")
 mon:write("info version\n")
-os.execute("sleep 0.3")
+nap(0.3)
 mon:write("quit\n")
 mon:close()
 

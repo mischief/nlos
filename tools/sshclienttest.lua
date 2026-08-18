@@ -15,6 +15,7 @@ local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 package.path = scriptdir .. "/?.lua;" .. scriptdir .. "/../test/?.lua;" ..
     package.path
 
+local nap = require("nap")
 local img, payload = arg[1], arg[2]
 local tmp = os.getenv("TMPDIR") or "/tmp"
 local dir = ("%s/luaos-sshtest-%d"):format(tmp, os.time())
@@ -133,7 +134,7 @@ end
 
 -- It is listening or it is not: a fixed wait is what tells a slow start
 -- from a refusal to start at all.
-os.execute("sleep 1")
+nap(1)
 
 local up = run(("%s -q -o ConnectTimeout=2 -o StrictHostKeyChecking=no " ..
     "-o UserKnownHostsFile=/dev/null -o BatchMode=yes -i %q/user " ..
