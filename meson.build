@@ -1118,7 +1118,7 @@ foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('test/boot/test_' + t + '.lua')],
     protocol: 'tap',
-    timeout: 90,
+    timeout: 60,
     is_parallel: true,
     env: archenv,
   )
@@ -1129,7 +1129,7 @@ foreach t : shared_tests
     test('boot-' + t[0], boottest,
       args: [luaos_img, files('test/boot/shared_' + t[0] + '.lua')],
       protocol: 'tap',
-      timeout: 90,
+      timeout: 60,
       is_parallel: true,
       env: archenv,
     )
@@ -1277,7 +1277,7 @@ if have_hostutil
   test('9p-protocol', lua_interp,
     args: [files('test/test_9p.lua'), luaos_img, files('test/boot/srv9p.lua')],
     protocol: 'tap',
-    timeout: 90,
+    timeout: 60,
     env: hostenv,
     depends: hostutil,
   )
@@ -1360,7 +1360,7 @@ foreach t : microvm_tests
     args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] +
       tflags,
     protocol: 'tap',
-    timeout: 90,
+    timeout: 60,
     is_parallel: true,
     env: gefs_host_env,
     depends: gefs_host_deps,
@@ -1407,7 +1407,7 @@ foreach n : ['2', '4']
         files('test/boot/microvm_' + t[0] + '.lua'),
         '--smp=' + n] + tflags,
       protocol: 'tap',
-      timeout: 90,
+      timeout: 60,
       is_parallel: true,
       env: gefs_host_env,
       depends: gefs_host_deps,
@@ -1423,7 +1423,7 @@ foreach t : shared_tests
   test('microvm-' + t[0], microvm_boottest,
     args: [luaos_microvm_elf, files('test/boot/shared_' + t[0] + '.lua')] + tflags,
     protocol: 'tap',
-    timeout: 90,
+    timeout: 60,
     is_parallel: true,
     env: gefs_host_env,
     depends: gefs_host_deps,
@@ -1464,7 +1464,7 @@ foreach t : microvm_pci0_tests
     args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] +
       t[1] + ['--pci0'],
     protocol: 'tap',
-    timeout: 90,
+    timeout: 60,
     is_parallel: true,
     env: gefs_host_env,
     depends: gefs_host_deps,
@@ -1480,7 +1480,7 @@ foreach t : microvm_pci_tests
     args: [luaos_microvm_elf, files('test/boot/microvm_' + t[0] + '.lua')] +
       tflags + ['--pci'],
     protocol: 'tap',
-    timeout: 90,
+    timeout: 60,
     is_parallel: true,
     env: gefs_host_env,
     depends: gefs_host_deps,
@@ -1513,7 +1513,7 @@ if have_hostutil
     args: [files('test/microvm_http.lua'), luaos_microvm_elf,
       files('test/boot/microvm_httpd.lua')],
     protocol: 'tap',
-    timeout: 90,
+    timeout: 60,
     env: {'HOSTUTIL_SO': hostutil.full_path()},
     depends: hostutil,
   )

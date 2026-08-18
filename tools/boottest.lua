@@ -9,7 +9,11 @@ package.path = scriptdir .. "/?.lua;" .. package.path
 local arch = require("arch")
 local q = arch.quote
 
-local TIMEOUT = os.getenv("TIMEOUT") or "60"
+-- The slowest legitimate boot test is around 16s under a full parallel
+-- run, so this is headroom rather than a budget. It must stay UNDER
+-- meson's own per-test timeout: this one dumps the serial trace, and
+-- meson's only kills the process.
+local TIMEOUT = os.getenv("TIMEOUT") or "45"
 local img, payload = arg[1], arg[2]
 
 -- --services: start the payload as the last entry of an injected
@@ -145,9 +149,6 @@ local cmd = table.concat({
 	">/dev/null 2>&1",
 }, " ")
 
-local execok, how, code = os.execute(cmd)
-local rc = execok and 0 or (code or 1)
-
 local function readfile(path)
 	local f = io.open(path, "rb")
 	if not f then
@@ -158,19 +159,48 @@ local function readfile(path)
 	return d
 end
 
--- strip cr + ansi
-local raw = readfile(tmp .. "/serial.log")
-local clean = raw:gsub("\r", "")
-clean = clean:gsub("\27%[[%d;=]*%a", "")
-
-local lines = {}
-for line in (clean .. "\n"):gmatch("([^\n]*)\n") do
-	lines[#lines + 1] = line
-end
-
 local function is_tap_line(line)
 	return line:match("^1%.%.") ~= nil or line:match("^ok ") ~= nil or
 	    line:match("^not ok ") ~= nil or line:match("^# ") ~= nil
+end
+
+-- run the guest and split its serial log into lines, ansi stripped.
+local function run()
+	os.remove(tmp .. "/serial.log")
+
+	local execok, _, code = os.execute(cmd)
+	local clean = readfile(tmp .. "/serial.log"):gsub("\r", "")
+	local out = {}
+
+	clean = clean:gsub("\27%[[%d;=]*%a", "")
+	for line in (clean .. "\n"):gmatch("([^\n]*)\n") do
+		out[#out + 1] = line
+	end
+	return execok and 0 or (code or 1), out
+end
+
+-- The firmware sometimes hangs in boot device selection and never
+-- loads our binary, which the timeout then kills. It is worth retrying
+-- because nothing of ours has run: a log with no TAP line in it is a
+-- guest that produced no test, rather than a test that failed.
+local function nothing_ran(ls)
+	for _, line in ipairs(ls) do
+		if is_tap_line(line) then
+			return false
+		end
+	end
+	return true
+end
+
+local rc, lines = run()
+
+for attempt = 1, 2 do
+	if not (rc == 124 and nothing_ran(lines)) then
+		break
+	end
+	print(("# firmware never reached our binary; retrying (%d of 2)")
+	    :format(attempt))
+	rc, lines = run()
 end
 
 local saw_plan = false
