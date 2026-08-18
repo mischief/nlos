@@ -682,6 +682,16 @@ platform_ptr_read(int *x, int *y, int *buttons)
 	return 1;
 }
 
+/* the firmware knows about batteries through ACPI, and this machine has
+ * no ACPI interpreter to ask with.
+ */
+int
+platform_battery(int *mv)
+{
+	(void)mv;
+	return 0;
+}
+
 /* los.rom: no embedded set published here yet. An empty table rather
  * than an absent module, so a caller can ask and get "nothing" instead
  * of a require error -- this platform reaches its files through a

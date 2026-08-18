@@ -127,6 +127,14 @@ int	platform_kbd_read(void);
 int	platform_have_ptr(void);
 int	platform_ptr_read(int *x, int *y, int *buttons);
 
+/* the battery, if the machine runs on one. Answers 1 and fills *mv with
+ * the pack voltage in millivolts, or 0 for a machine on wall power.
+ * Millivolts only: a percentage is a curve over a chemistry, and which
+ * curve is policy. lib/ps.lua applies one, so it can be corrected
+ * without a reflash.
+ */
+int	platform_battery(int *mv);
+
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);

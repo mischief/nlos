@@ -779,6 +779,14 @@ platform_ptr_read(int *x, int *y, int *buttons)
 	return 0;
 }
 
+/* a virtual machine runs on the host's power, whatever that is. */
+int
+platform_battery(int *mv)
+{
+	(void)mv;
+	return 0;
+}
+
 /* los.rom: the embedded set as data, so lib/romfs.lua can mount it as
  * this machine's root. require() already loads these bytes through
  * luaL_loadfile, below the lua-level io stripping; what this adds is

@@ -1782,6 +1782,14 @@ test('io-formats', lua_interp,
   timeout: 20,
 )
 
+# the battery curve: the kernel reports millivolts, and everything that
+# turns those into a number a person reads is lib/ps.lua.
+test('battery', lua_interp,
+  args: [files('test/host_battery.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # rename over all three backends that have one, plus two mounts, because
 # the refusal to rename across them is the rule no filesystem can show.
 test('ns-rename', lua_interp,

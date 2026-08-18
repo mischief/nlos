@@ -17,6 +17,10 @@
 
 #if CONFIG_LUAOS_BOARD_TDECK
 
+#include <esp_adc/adc_cali.h>
+#include <esp_adc/adc_cali_scheme.h>
+#include <esp_adc/adc_oneshot.h>
+
 #include <driver/gpio.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
@@ -135,6 +139,89 @@ esp_tdeck_i2c(i2c_master_bus_handle_t *out)
 	if (out)
 		*out = i2cbus;
 	return 0;
+}
+
+/* the battery, on an ADC pin behind a 2:1 divider. Nothing else uses
+ * ADC1, so this owns the unit and keeps it rather than creating one per
+ * reading. 12dB reads to about 3.1V, which the divider makes 6.2V at
+ * the pack -- clear of a full cell.
+ */
+static adc_oneshot_unit_handle_t adc;
+static adc_cali_handle_t adccali;
+static int adcbad;
+
+static int
+batt_init(void)
+{
+	adc_oneshot_unit_init_cfg_t ucfg = { .unit_id = ADC_UNIT_1 };
+	adc_oneshot_chan_cfg_t ccfg = {
+		.atten = ADC_ATTEN_DB_12,
+		.bitwidth = ADC_BITWIDTH_DEFAULT,
+	};
+	adc_cali_curve_fitting_config_t cal = {
+		.unit_id = ADC_UNIT_1,
+		.atten = ADC_ATTEN_DB_12,
+		.bitwidth = ADC_BITWIDTH_DEFAULT,
+	};
+	adc_channel_t ch;
+	adc_unit_t unit;
+
+	if (adc)
+		return 0;
+	if (adcbad)
+		return -1;
+	adcbad = 1;
+
+	if (adc_oneshot_io_to_channel(TDECK_BAT_ADC, &unit, &ch) != ESP_OK)
+		return -1;
+	cal.chan = ch;
+	if (adc_oneshot_new_unit(&ucfg, &adc) != ESP_OK)
+		return -1;
+	if (adc_oneshot_config_channel(adc, ch, &ccfg) != ESP_OK) {
+		adc_oneshot_del_unit(adc);
+		adc = NULL;
+		return -1;
+	}
+
+	/* an uncalibrated reading is still a reading, so a chip with no
+	 * factory curve reports raw counts scaled by the attenuation
+	 * rather than nothing at all.
+	 */
+	if (adc_cali_create_scheme_curve_fitting(&cal, &adccali) != ESP_OK)
+		adccali = NULL;
+
+	adcbad = 0;
+	return 0;
+}
+
+int
+esp_tdeck_battery_mv(void)
+{
+	adc_channel_t ch;
+	adc_unit_t unit;
+	int raw, mv, sum = 0, n = 0;
+
+	if (batt_init() != 0)
+		return 0;
+	if (adc_oneshot_io_to_channel(TDECK_BAT_ADC, &unit, &ch) != ESP_OK)
+		return 0;
+
+	/* the pin sits next to the radio, so one conversion is noisy */
+	for (int i = 0; i < 8; i++) {
+		if (adc_oneshot_read(adc, ch, &raw) != ESP_OK)
+			continue;
+		if (adccali) {
+			if (adc_cali_raw_to_voltage(adccali, raw, &mv) != ESP_OK)
+				continue;
+		} else {
+			mv = raw * 3100 / 4095;
+		}
+		sum += mv;
+		n++;
+	}
+	if (n == 0)
+		return 0;
+	return (sum / n) * 2;
 }
 
 #endif /* CONFIG_LUAOS_BOARD_TDECK */

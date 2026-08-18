@@ -1776,6 +1776,23 @@ api_stack_k(lua_State *L, int status, lua_KContext ctx)
 	return 1;
 }
 
+/* sys.battery() -> millivolts, or nil where there is no pack.
+ *
+ * Ambient, like sys.stats: reading a voltage is an observation of the
+ * machine and reaches nothing. Raw millivolts, since what counts as
+ * empty belongs to whoever draws the meter.
+ */
+static int
+api_battery(lua_State *L)
+{
+	int mv = 0;
+
+	if (!platform_battery(&mv))
+		return 0;
+	lua_pushinteger(L, mv);
+	return 1;
+}
+
 static int
 api_stats(lua_State *L)
 {
@@ -2363,6 +2380,7 @@ static const luaL_Reg kapi[] = {
 	{ "stats", api_stats },
 	{ "reclaim", api_reclaim },
 	{ "meminfo", api_meminfo },
+	{ "battery", api_battery },
 	{ "self", api_self },
 	{ "procs", api_procs },
 	{ "ports", api_ports },

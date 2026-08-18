@@ -69,6 +69,8 @@ idf_component_register(
         ${CMAKE_CURRENT_BINARY_DIR}
     REQUIRES esp_psram esp_timer driver vfs esp_driver_usb_serial_jtag
             esp_lcd esp_partition
+            # esp_adc: the battery pin, read by tdeck.c
+            esp_adc
             # the radio: esp_wifi for the driver, nvs_flash because it
             # keeps its calibration there and will not start without
             # one, esp_event for the association callbacks. Not

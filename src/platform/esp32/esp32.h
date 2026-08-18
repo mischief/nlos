@@ -53,6 +53,7 @@ void	vfs_embed_register(void);
 #define TDECK_KB_INT		46
 #define TDECK_TOUCH_ADDR	0x5d	/* GT911, the second device on i2c */
 #define TDECK_TOUCH_INT		16
+#define TDECK_BAT_ADC		4	/* the pack, behind a 2:1 divider */
 
 /* the largest single SPI transfer any T-Deck driver asks for. A display
  * band dwarfs the card's 32-sector read, so this is the display's.
@@ -77,6 +78,12 @@ int	esp_tdeck_spi_init(void);
  */
 struct i2c_master_bus_t;
 int	esp_tdeck_i2c(struct i2c_master_bus_t **out);
+
+/* the pack voltage in millivolts, or 0 if the ADC would not answer.
+ * Doubled for the divider, and calibrated where the chip carries the
+ * factory curve. Costs a few milliseconds, so a caller polls it slowly.
+ */
+int	esp_tdeck_battery_mv(void);
 
 /* the gpio interrupt service, installed once for every driver here */
 int	esp_gpio_isr(void);

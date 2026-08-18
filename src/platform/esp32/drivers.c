@@ -1108,6 +1108,30 @@ uart_takeover(void)
 {
 }
 
+/* the battery. Only the T-Deck has one wired to a pin we can read; the
+ * charger reports nothing, so a machine on USB is not distinguishable
+ * from one running down and only the voltage is offered.
+ */
+int
+platform_battery(int *mv)
+{
+#if CONFIG_LUAOS_BOARD_TDECK
+	int v = esp_tdeck_battery_mv();
+
+	/* under a cell's cutoff means no pack, not a flat one: the
+	 * divider floats near zero with nothing attached.
+	 */
+	if (v < 2500)
+		return 0;
+	if (mv)
+		*mv = v;
+	return 1;
+#else
+	(void)mv;
+	return 0;
+#endif
+}
+
 /* the matrix (Cardputer) or the i2c keyboard (T-Deck), drained by the
  * kernel into a port of its own. Not the console: the serial line stays
  * the console, and this is the input half of the second terminal.
