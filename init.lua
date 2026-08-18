@@ -203,7 +203,7 @@ do
 	-- a read-only right to the same ESP server, offered under the name
 	-- "espro". a service that only reads the disk names that instead of
 	-- "esp". the distinction is which right it holds, not a check
-	-- anywhere: see lib/dev.lua's readonly.
+	-- anywhere: see lib/devtree.lua's readonly.
 	-- do not give a public session "esp". espsrv holds diskport, so a
 	-- holder can write the real boot volume.
 	local grants = {}

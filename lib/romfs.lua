@@ -95,7 +95,7 @@ function M.new()
 	end
 
 	-- the contents are taken at open and held in the handle, so the
-	-- handle owns its own lifetime as lib/dev.lua requires. The data
+	-- handle owns its own lifetime as src/dev.c requires. The data
 	-- is in flash and does not change.
 	function B.open(h, mode)
 		if mode and mode ~= "r" then
@@ -120,7 +120,7 @@ function M.new()
 		return h.data:sub(off + 1, off + n)
 	end
 
-	-- refused rather than absent: lib/dev.lua checks the whole set at
+	-- refused rather than absent: src/dev.c checks the whole set at
 	-- mount, so a backend missing these cannot be mounted at all.
 	function B.create()
 		dev.error(dev.Eperm)

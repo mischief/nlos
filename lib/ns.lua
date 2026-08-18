@@ -15,7 +15,7 @@
 --
 -- ---- errors: this is the seam ----
 --
--- backends RAISE (see lib/dev.lua -- plan 9's error() idiom, since
+-- backends RAISE (see src/dev.c -- plan 9's error() idiom, since
 -- threading nil+err through a five-frame path resolution is exactly the
 -- noise it exists to delete). this module's public calls are the entry
 -- point, so each one pcalls exactly once and RETURNS nil plus the
@@ -86,7 +86,7 @@ end
 
 M.clean = clean
 
--- the open file used to be a local File type here. it is lib/chan.lua
+-- the open file used to be a local File type here. it is src/chan.c
 -- now, under the name plan 9 gives it, and it carries the name it was
 -- opened by -- see that file for why the name earns its keep.
 
@@ -381,7 +381,7 @@ function NS:create(path, mode, isdir)
 end
 
 -- remove a file. nil plus a reason where the backend has no remove --
--- lib/dev.lua makes it optional, and a read-only mount is the ordinary
+-- src/dev.c makes it optional, and a read-only mount is the ordinary
 -- case rather than a fault.
 --
 -- The handle is walked and spent here, never clunked: a remove consumes

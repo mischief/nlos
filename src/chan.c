@@ -252,9 +252,13 @@ walk_k(lua_State *L, int status, lua_KContext ctx)
 	 * root of "/" contributes nothing, or the name gains "//".
 	 */
 	lua_getfield(L, 1, "path");
-	if (strcmp(lua_tostring(L, -1), "/") == 0) {
+	{
+		const char *pp = lua_tostring(L, -1);
+
+	if (pp != NULL && strcmp(pp, "/") == 0) {
 		lua_pop(L, 1);
 		lua_pushliteral(L, "");
+	}
 	}
 	lua_pushliteral(L, "/");
 	lua_pushvalue(L, 3);
@@ -312,10 +316,18 @@ seekend_k(lua_State *L, int status, lua_KContext ctx)
 static int
 l_seek(lua_State *L)
 {
-	const char *whence = luaL_optstring(L, 2, "set");
+	const char *whence = lua_isnoneornil(L, 2) ? "set" :
+	    lua_tostring(L, 2);
 	lua_Integer off = (lua_Integer)luaL_optinteger(L, 3, 0);
 
 	lua_settop(L, 3);
+	if (whence == NULL) {
+		lua_getfield(L, LUA_REGISTRYINDEX, DEVKEY);
+		lua_getfield(L, -1, "Ebadarg");
+		lua_pushnil(L);
+		lua_insert(L, -2);
+		return 2;
+	}
 	if (strcmp(whence, "set") == 0) {
 		lua_pushinteger(L, off);
 		lua_setfield(L, 1, "pos");

@@ -122,7 +122,7 @@ end
 -- lib/dos.lua, dos loads lib/prog.lua, and a program loads whatever it
 -- was written against -- so copying means keeping a list of modules by
 -- hand and finding out it is short when a session dies at a require.
--- The subtree is a mount's root (lib/dev.lua's subtree, applied by
+-- The subtree is a mount's root (lib/devtree.lua's subtree, applied by
 -- ns:mount), so a session sees /lib and /bin and not /etc.
 --
 -- What that is worth is tidiness, not confinement: the description

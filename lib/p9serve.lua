@@ -1,4 +1,4 @@
--- p9serve: a 9P2000 server over a dev backend (lib/dev.lua).
+-- p9serve: a 9P2000 server over a dev backend (src/dev.c).
 --
 -- The inverse of lib/p9fs.lua, which is the 9P client. lib/ninep.lua's own
 -- M.serve serves a static synth tree; this serves a live backend, so

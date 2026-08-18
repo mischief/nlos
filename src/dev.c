@@ -197,9 +197,10 @@ static int walk_loop(lua_State *L, lua_Integer i);
 static int
 walk_failed(lua_State *L, lua_Integer i)
 {
-	luaL_tolstring(L, -1, NULL);
+	luaL_tolstring(L, -1, NULL);		/* why, as text */
 	lua_rawgeti(L, 3, i);
-	lua_pushfstring(L, "%s: '%s'", lua_tostring(L, -2),
+	luaL_tolstring(L, -1, NULL);		/* and the element */
+	lua_pushfstring(L, "%s: '%s'", lua_tostring(L, -3),
 	    lua_tostring(L, -1));
 	return lua_error(L);
 }

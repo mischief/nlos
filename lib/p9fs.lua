@@ -1,4 +1,4 @@
--- p9fs: a dev backend (see lib/dev.lua) over a real 9P2000.u
+-- p9fs: a dev backend (see src/dev.c) over a real 9P2000.u
 -- connection -- los.platform.p9's virtio-9p transport, decoded with
 -- lib/ninep.lua's client half.
 --
@@ -537,7 +537,7 @@ function M.new(transport, opts)
 	end
 
 	-- directories need their own Topen before Tread, same as files,
-	-- but readdir()'s contract (lib/dev.lua) doesn't require a prior
+	-- but readdir()'s contract (src/dev.c) doesn't require a prior
 	-- open() -- so this opens (and clunks) its OWN cloned fid rather
 	-- than touching h, matching open()'s never-mutate rule.
 	function B.readdir(h)

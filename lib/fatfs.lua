@@ -1,4 +1,4 @@
--- fatfs: a mounted FAT volume, presented as a dev backend (lib/dev.lua).
+-- fatfs: a mounted FAT volume, presented as a dev backend (src/dev.c).
 --
 -- The same shape as lib/gefsfs.lua, and for the same reason: lib/fat
 -- speaks paths and dev speaks handles, so a handle here is a path and

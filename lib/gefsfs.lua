@@ -1,4 +1,4 @@
--- gefsfs: a mounted gefs volume, presented as a dev backend (lib/dev.lua).
+-- gefsfs: a mounted gefs volume, presented as a dev backend (src/dev.c).
 --
 -- gefs speaks paths -- walk(path), read(dirent, off, n) -- and dev speaks
 -- fids: walk returns a handle, read takes an offset. The gap closes the

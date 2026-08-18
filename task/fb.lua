@@ -465,7 +465,7 @@ while true do
 			end
 		else
 			-- one pcall per message, at the boundary, exactly as
-			-- lib/dev.lua describes: everything inside raises
+			-- src/dev.c describes: everything inside raises
 			-- freely and the caller gets the message back as text.
 			local ok, res, tmp = pcall(fn, m, space)
 

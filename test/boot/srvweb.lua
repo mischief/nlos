@@ -73,7 +73,7 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 ]],
 	["notes"] = {
 		["hello"] = "the whole filesystem you are looking at is one " ..
-		    "lua table.\nsee lib/dev.lua's dev.mem.\n",
+		    "lua table.\nsee lib/devtree.lua's mem.\n",
 	},
 	["bin"] = {
 		["ls.lua"] = slurp("/bin/ls.lua"),

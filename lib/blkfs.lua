@@ -1,4 +1,4 @@
--- blkfs: a block device as a dev backend (see lib/dev.lua).
+-- blkfs: a block device as a dev backend (see src/dev.c).
 --
 -- the tree is two files and nothing else:
 --
@@ -18,7 +18,7 @@
 -- are this file's problem and appear in no interface it exposes; the
 -- read-modify-write that hides them is below.
 --
--- failures are raised, not returned (lib/dev.lua says why).
+-- failures are raised, not returned (src/dev.c says why).
 
 -- whichever raw device this proc holds. The kernel grants exactly one
 -- -- PRIV_BLK brings los.platform.blk, PRIV_FLASH brings

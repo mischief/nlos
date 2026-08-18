@@ -1,4 +1,4 @@
--- espfs: the ESP as a dev backend (see lib/dev.lua for the interface).
+-- espfs: the ESP as a dev backend (see src/dev.c for the interface).
 --
 -- EVERYTHING goes through los.fs -- enumeration, metadata and file data
 -- alike. espfs is the ESP driver, so it reaches the platform directly
@@ -11,7 +11,7 @@
 -- works. that is deliberate: the gate belongs where the risk is, and
 -- reading the esp is not the risk.
 --
--- failures are raised, not returned; see lib/dev.lua on why, and catch
+-- failures are raised, not returned; see src/dev.c on why, and catch
 -- with pcall at whatever counts as an entry point.
 --
 -- this is a plain backend, not a task. making it an exclusive task that

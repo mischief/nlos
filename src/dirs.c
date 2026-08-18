@@ -185,7 +185,7 @@ l_fs_open(lua_State *L)
 	return 1;
 }
 
-/* read(n) -> string. "" is end of file, matching lib/dev.lua's contract
+/* read(n) -> string. "" is end of file, matching src/dev.c's contract
  * rather than lua's nil, since espfs is the only caller and that is what
  * it has to return.
  */
@@ -229,7 +229,7 @@ l_file_write(lua_State *L)
 	return 1;
 }
 
-/* seek(pos) -> pos. absolute only: lib/dev.lua takes explicit offsets,
+/* seek(pos) -> pos. absolute only: src/dev.c takes explicit offsets,
  * so nothing here has ever needed cur/end.
  */
 static int

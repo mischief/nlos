@@ -121,7 +121,7 @@ tap.ok(table.concat(rootnames, " "):find("host", 1, true) ~= nil,
 
 -- ---- a mount rooted at a subtree ----
 --
--- args.root is the namespace's, not the backend's: lib/dev.lua wraps
+-- args.root is the namespace's, not the backend's: src/dev.c wraps
 -- whatever was mounted, so this claims the same thing for a local
 -- backend as for one across a port.
 

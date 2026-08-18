@@ -24,7 +24,7 @@
 --
 -- ---- the file object ----
 --
--- a Chan (lib/chan.lua) already has read/write/seek/close at a position.
+-- a Chan (src/chan.c) already has read/write/seek/close at a position.
 -- what it does not have is lua's read FORMATS -- "a", "l", a count --
 -- because a Chan is the plan 9 object and formats are a lua convenience.
 -- so this wraps rather than extends: the layering stays honest and

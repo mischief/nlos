@@ -7,14 +7,14 @@
 -- itself -- the three variants, long names, the checker, and interop
 -- with fsck.fat and mtools. What is tested here is the part that only
 -- exists in lua-os: that lib/fat loads under our loader, and that
--- lib/fatfs.lua maps it onto lib/dev.lua's interface correctly.
+-- lib/fatfs.lua maps it onto src/dev.c's interface correctly.
 --
 -- The length case has a test of its own below. fs:write grows the entry
 -- it is handed and nothing else, so a backend that does not flush that
 -- entry to its parent directory leaves a file whose bytes are on the
 -- device and whose size still reads zero.
 --
--- No dependency beyond lua5.4: lib/dev.lua wants los.sys for one
+-- No dependency beyond lua5.4: src/dev.c wants los.sys for one
 -- constant, which is stubbed rather than booted.
 
 local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
@@ -28,7 +28,7 @@ package.preload["los.sys"] = function()
 	return { MAXMSG = 8192 }
 end
 
--- lib/ns.lua reaches lib/chan.lua, which wants the scheduler for its
+-- lib/ns.lua reaches src/chan.c, which wants the scheduler for its
 -- parallel walk. A local mount never takes that path -- there is no
 -- port and nothing to wait on -- so this stubs the names rather than
 -- booting a kernel, and says so loudly if one is ever reached.

@@ -211,7 +211,7 @@ tap.ok(bad == nil and tostring(berr):find("unknown backend kind") ~= nil,
 
 -- ---- Chans carry the name they were reached by ----
 --
--- lib/chan.lua's whole argument. the name is the CALLER's cleaned path,
+-- src/chan.c's whole argument. the name is the CALLER's cleaned path,
 -- never anything the backend reports: a backend has no idea what prefix
 -- it was mounted at, and /mnt/other/hello.txt is "hello.txt" to the
 -- dev.mem serving it.

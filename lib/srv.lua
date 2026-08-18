@@ -17,7 +17,7 @@
 --
 -- 9P's SEMANTICS survive intact -- fids, explicit offsets, walk one
 -- element at a time, create-implies-open -- because those are the dev
--- interface (see lib/dev.lua, which was shaped fid-first for exactly
+-- interface (see src/dev.c, which was shaped fid-first for exactly
 -- this). what does not survive is everything the wire format needs and
 -- a port supplies for free:
 --
@@ -75,7 +75,7 @@ local M = {}
 -- each is the dev call, verbatim. they RAISE on failure, because the
 -- backend raises and nothing in between should be checking -- the one
 -- pcall is in dispatch(), which is this module's syscall entrypoint in
--- exactly the sense lib/dev.lua describes.
+-- exactly the sense src/dev.c describes.
 
 local ops = {}
 
@@ -189,7 +189,7 @@ end
 -- refusal. The error still comes back.
 --
 -- A backend that has no remove says Enotimpl rather than pretending:
--- lib/dev.lua marks it optional, and a client that cannot tell a
+-- src/dev.c marks it optional, and a client that cannot tell a
 -- refusal from a success would report a file gone that is still there.
 function ops.remove(S, m)
 	local h = S.fids[m.fid]

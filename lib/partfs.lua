@@ -13,7 +13,7 @@
 --	/data	the partition, as a seekable byte stream
 --	/ctl	read-only text: the window's length and its offset
 --
--- failures are raised, not returned (lib/dev.lua says why).
+-- failures are raised, not returned (src/dev.c says why).
 
 local dev = require("dev")
 

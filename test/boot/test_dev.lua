@@ -1,4 +1,4 @@
--- the dev backend interface (lib/dev.lua).
+-- the dev backend interface (src/dev.c).
 --
 -- two things this is really testing:
 --
