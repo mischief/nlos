@@ -793,6 +793,7 @@ lua_payload = files(
   'bin/lua.lua',
   'bin/host.lua',
   'bin/date.lua',
+  'bin/batcast.lua',
   'lib/ntp.lua',
   'lib/time.lua',
   # the irc protocol. On the image ahead of any client for it, so a
