@@ -52,9 +52,20 @@ local fbright = sys.sendright(fbport)
 local consright = sys.sendright(consport)
 local sendright = { [fbport] = fbright, [consport] = consright }
 
+-- A full queue drops a bare send, and what is dropped here is the
+-- request this then waits forever for an answer to.
 local function rpc(h, port, msg)
 	msg.reply = { __right = sendright[port] }
-	sys.send(h, msg)
+
+	local ok, why = sys.send(h, msg)
+
+	while not ok and why == "full" do
+		sys.sendblock(h)
+		ok, why = sys.send(h, msg)
+	end
+	if not ok then
+		error("send: " .. tostring(why), 0)
+	end
 	return recv(port)
 end
 
