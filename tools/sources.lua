@@ -34,6 +34,7 @@ groups.kernel = {
 	"src/crc.c",
 	"src/buf.c",
 	"src/dev.c",
+	"src/chan.c",
 	"src/font.c",
 	"src/kernel.c",
 	"src/serialize.c",

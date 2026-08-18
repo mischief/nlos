@@ -191,7 +191,6 @@ set(EMBED_FILES
     # and what a client needs to mount it, which is also what a spawned
     # proc adopts a namespace with. Not lib/ninep.lua -- that is the 9p
     # wire, and a local dev backend is reached by message.
-    lib/chan.lua
     lib/ns.lua
     lib/mnt.lua
     lib/nsio.lua

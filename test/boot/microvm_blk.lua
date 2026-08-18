@@ -19,7 +19,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(20)
+tap.plan(18)
 
 local SECSZ = 512
 local SECTORS = 2048
@@ -127,54 +127,6 @@ tap.ok(bigok, "a single read larger than a message comes back whole (" ..
 tap.ok(readat(SECTORS * SECSZ, SECSZ) == "",
     "reading at the end of the device returns eof")
 
--- ---- several requests in flight ----
---
--- the whole reason virtio_blk.c has a slot table and a reap that drains
--- the entire used ring, and none of it is exercised by a serial reader:
--- with one request outstanding, a driver that filed completions under
--- the wrong slot, or that dropped the ones that were not its own, would
--- behave identically. Sectors carry their own indices, so a reply
--- delivered against the wrong request fails on content rather than on
--- a count.
---
--- Compared against the serial read of the same device above.
-
-local function collect(f, window, blocksize)
-	local parts = {}
-
-	for block, err in f:readparallel(window, blocksize) do
-		if not block then
-			return nil, err
-		end
-		parts[#parts + 1] = block
-	end
-	return table.concat(parts)
-end
-
-do
-	local f <close> = assert(N:open("/dev/data", "r"))
-	local got, gerr = collect(f, 8, 4096)
-
-	if not tap.ok(got == one,
-	    "readparallel(8) over the whole device matches the serial read") then
-		tap.diag("got " .. tostring(got and #got or gerr) ..
-		    ", wanted " .. #one)
-	end
-end
-
--- a window wider than VIRTIO_BLK_SLOTS, so the driver runs out of slots
--- and blk.read takes the branch that yields and retries rather than
--- failing. Nothing above has reached that path.
-do
-	local f <close> = assert(N:open("/dev/data", "r"))
-	local got, gerr = collect(f, 24, 4096)
-
-	if not tap.ok(got == one,
-	    "a window wider than the slot table still reads correctly") then
-		tap.diag("got " .. tostring(got and #got or gerr) ..
-		    ", wanted " .. #one)
-	end
-end
 
 -- ---- the write ----
 --

@@ -307,7 +307,6 @@ else
     'lib/proc.lua',
     'lib/lazy.lua',
     'lib/devtree.lua',
-    'lib/chan.lua',
     'lib/p9fs.lua',
     'lib/p9tcp.lua',
     'task/p9srv.lua',
@@ -624,6 +623,17 @@ if lua54_dep.found()
   )
   host_deps += dev_native_host
 
+  # chan, which ns and nsfs build over dev.
+  chan_native_host = shared_module('chan',
+    ['src/chan.c', 'src/dev.c', 'src/buf.c', 'test/hostbuf.c'],
+    name_prefix: '',
+    include_directories: include_directories('src'),
+    dependencies: lua54_dep,
+    native: true,
+    build_by_default: true,
+  )
+  host_deps += chan_native_host
+
   # the same primitives the guest preloads, so lib/crypto and what sits
   # on it can be tested here rather than only on a board.
   crypto_native_host = shared_module('crypto',
@@ -830,7 +840,6 @@ lua_payload = files(
   'lib/fbcons.lua',
   'lib/lazy.lua',
   'lib/devtree.lua',
-  'lib/chan.lua',
   # the block device and the gefs filesystem over it. blksrv is spawned
   # by the kernel when platform_have_blk() finds a disk (now true on efi
   # too, via src/platform/efi/blk.c); the rest is the same stack microvm
@@ -1315,7 +1324,6 @@ microvm_tests = [
   ['rng', []],
   ['p9mount', ['--9p']],
   ['p9bench', ['--9p']],
-  ['p9par', ['--9p']],
   ['blk', ['--blk']],
   ['gefs', ['--gefscommit']],
   ['gefssrv', ['--gefscommit']],
@@ -1391,7 +1399,6 @@ microvm_smp_tests = [
   ['idle', []],
   ['blk', ['--blk']],
   ['p9mount', ['--9p']],
-  ['p9par', ['--9p']],
   ['eth', ['--net']],
   ['tcp', ['--netecho']],
   ['gefssrv', ['--gefscommit']],

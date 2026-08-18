@@ -1328,6 +1328,8 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_dev);
 	lua_setfield(p->L, -2, "dev");
+	lua_pushcfunction(p->L, luaopen_chan);
+	lua_setfield(p->L, -2, "chan");
 
 	/* los.inet (src/inet.c), ambient for the same reason as the one
 	 * above: the internet checksum is arithmetic on a string the
