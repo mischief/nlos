@@ -38,18 +38,29 @@ endif
 # (self-relocation to wherever firmware loaded it) -- microvm links at
 # a fixed physical address instead (see src/platform/microvm/boot.S),
 # so it needs neither.
-plat_src = files(
-  'src' / arch / 'machine.c',
-  'src' / arch / 'setjmp.S',
-)
-if platform == 'efi'
-  plat_src += files(
-    'src' / arch / 'header.S',
-    'src' / arch / 'reloc.c',
+#
+# hosted needs none of it: there is no boot stub to write, and the
+# clock, setjmp and libm all come from the host's own libc.
+if platform == 'hosted'
+  plat_src = []
+else
+  plat_src = files(
+    'src' / arch / 'machine.c',
+    'src' / arch / 'setjmp.S',
   )
+  if platform == 'efi'
+    plat_src += files(
+      'src' / arch / 'header.S',
+      'src' / arch / 'reloc.c',
+    )
+  endif
 endif
 
-if arch == 'x86_64'
+if platform == 'hosted'
+  arch_args = []
+  arch_src = []
+  boot_efi = ''
+elif arch == 'x86_64'
   # no red zone (efi), sse4.1 so floor/ceil are single instructions
   # (qemu wants -cpu max)
   arch_args = ['-mno-red-zone', '-msse4.1']
@@ -138,6 +149,26 @@ else
   error('no src/' + arch + ': x86_64, aarch64 and riscv64 are ported')
 endif
 
+# hosted compiles against the host's libc, so include/ stays OFF the
+# path: our stdio.h and string.h would shadow glibc's and the structs
+# would not match. src/platform/hosted/sys/queue.h is the one exception
+# and names the project copy by path.
+#
+# LUA_USE_LINUX is deliberately not defined. It would give lua popen and
+# dlopen, which every other platform lacks, so the guest would have
+# authority here that it has nowhere else.
+if platform == 'hosted'
+  hosted_args = [
+    '-D_GNU_SOURCE',
+    '-fno-strict-aliasing',
+    '-DLUA_USER_H="coreg.h"',
+    '-DLUA_PATH_DEFAULT="/?.lua;/lib/?.lua"',
+    '-DLUA_CPATH_DEFAULT=""',
+  ]
+  add_project_arguments(hosted_args, language: 'c')
+  inc = include_directories('src', 'lua', 'src/platform/hosted')
+endif
+
 # freestanding: our include/ plus only the compiler's own headers.
 # pic + hidden is for the RELATIVE-relocs-only self-relocation scheme.
 gccinc = run_command(cc.cmd_array() + ['-print-file-name=include'],
@@ -161,10 +192,11 @@ freestanding_args = [
   '-DLUA_CPATH_DEFAULT=""',
 ] + arch_args
 
-add_project_arguments(freestanding_args, language: 'c')
-
-inc = include_directories('include', 'src', 'lua', 'src' / arch,
-  'src/platform' / platform)
+if platform != 'hosted'
+  add_project_arguments(freestanding_args, language: 'c')
+  inc = include_directories('include', 'src', 'lua', 'src' / arch,
+    'src/platform' / platform)
+endif
 
 # dirs.c/kernel.c/linit.c are firmware-blind (the platform seam is
 # platform.h + fs.h/efi.h, all resolved from the per-platform
@@ -197,7 +229,39 @@ version_h = custom_target('revision.h',
 kernel_src = files(run_command(lua_interp, sources_lua, 'kernel', check: true)
   .stdout().strip().split('\n'))
 kernel_src += version_h
-if platform == 'efi'
+if platform == 'hosted'
+  kernel_src += files(
+    'src/platform/hosted/blk.c',
+    'src/platform/hosted/clock.c',
+    'src/platform/hosted/console.c',
+    'src/platform/hosted/drivers.c',
+    'src/platform/hosted/fs.c',
+    'src/platform/hosted/machine.c',
+    'src/platform/hosted/main.c',
+  )
+
+  # the tree, carried in the binary, so --no-host-fs has a root. The
+  # list is tools/embedtree.lua's rather than a literal here because it
+  # is every lua file under lib, bin and task: a curated list would be a
+  # second place to forget a new module.
+  hosted_embed = run_command(lua_interp, files('tools/embedtree.lua'),
+    check: true).stdout().strip().split('\n')
+
+  embed_args = ['/etc/services.lua=' + meson.current_source_dir() /
+      'machine/hosted/services.lua']
+  foreach f : hosted_embed
+    embed_args += '/' + f + '=' + meson.current_source_dir() / f
+  endforeach
+  embed_args += '/VERSION.app=' + version_txt.full_path()
+
+  kernel_src += custom_target('embedfs.c',
+    output: 'embedfs.c',
+    input: files(hosted_embed) +
+      files('machine/hosted/services.lua'),
+    command: [lua_interp, files('tools/gen_embedfs.lua'), '@OUTPUT@'] + embed_args,
+    depends: version_txt,
+  )
+elif platform == 'efi'
   kernel_src += files(
     'src/platform/efi/blk.c',
     'src/platform/efi/console.c',
@@ -483,7 +547,32 @@ lua_lib = static_library('lua54', lua_src,
   include_directories: inc,
 )
 
-if platform == 'efi'
+if platform == 'hosted'
+  # an ordinary program. --wrap=fopen is what keeps luaL_loadfile and
+  # io.open inside the served root and behind the disk capability; see
+  # src/platform/hosted/fs.c.
+  luaos_hosted = executable('luaos-hosted',
+    kernel_src,
+    include_directories: inc,
+    c_args: hardening_args,
+    link_with: lua_lib,
+    dependencies: cc.find_library('m', required: false),
+    link_args: ['-Wl,--wrap=fopen', '-Wl,--wrap=fopen64'],
+    build_by_default: true,
+  )
+
+  # the tree as it stands, served as /. Nothing is built into an image,
+  # so an edit under lib/ is live on the next run.
+  run_target('hosted',
+    command: [luaos_hosted, '-r', meson.current_source_dir()],
+  )
+
+  # the same binary with no directory behind it, which is what ships.
+  run_target('hosted-selfcontained',
+    command: [luaos_hosted, '--no-host-fs'],
+  )
+
+elif platform == 'efi'
   # the elf intermediate: base 0, RELATIVE relocs only, self-relocated
   # at entry. gcc drives ld; -nostdlib keeps crt/libc out.
   luaos_elf = shared_library('luaos',
@@ -753,6 +842,74 @@ shared_tests = [
   ['tcploop', ['--net'], true],
   ['checksum', [], false],
 ]
+
+if platform == 'hosted'
+# ---- tests ----
+# the payload runs as proc 0 of a process, so these cost milliseconds
+# rather than a boot. Tests naming hardware this machine has not got
+# are absent rather than failing: no NIC, no framebuffer, no firmware.
+hosted_boottest = files('tools/boottest-hosted.lua')
+hosted_env = {
+  'MESON_SOURCE_ROOT': meson.current_source_dir(),
+  'LUA_CPATH': meson.current_build_dir() / '?.so;;',
+}
+
+hosted_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc',
+  'recovery', 'ipc', 'budget', 'memlimit', 'math', 'srv', 'mountcmd',
+  'sendwait', 'sched', 'json', 'timer', 'pingpong', 'readdir', 'magic',
+  'ns', 'hangup', 'procfs', 'buf', 'mnt', 'readonly', 'session', 'runq',
+  'ninep_selfmount', 'p9stream', 'p9flush', 'chanstress', 'torture',
+  'generator', 'sync', 'readline', 'mntconc', 'ports', 'font', 'nohook',
+  'preempt', 'stack', 'broke', 'kill', 'exit', 'sshkbd', 'replyright',
+  'rightsundo', 'procpriv', 'portlimit', 'trace', 'wakeup', 'nesting',
+  'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls', 'layout', 'strictglobals',
+  'bufout', 'bufmove', 'serialize', 'mntshare', 'althup', 'ninepc',
+  'oom', 'selfpipe', 'reboot', 'nsfs', 'zmodem', 'atexit', 'history',
+  'top', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim',
+  'lazy', 'strseed', 'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak',
+  'dbgstep', 'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1',
+  'nostr']
+
+foreach t : hosted_tests
+  test('hosted-' + t, lua_interp,
+    args: [hosted_boottest, luaos_hosted,
+      files('test/boot/test_' + t + '.lua')],
+    protocol: 'tap', timeout: 60, env: hosted_env,
+  )
+endforeach
+
+# what needs to write into the root: the harness copies the tree for
+# these rather than letting a test edit the working copy.
+foreach t : ['dev', 'prog', 'vi', 'xd']
+  test('hosted-' + t, lua_interp,
+    args: [hosted_boottest, luaos_hosted,
+      files('test/boot/test_' + t + '.lua'), '--writable'],
+    protocol: 'tap', timeout: 60, env: hosted_env,
+  )
+endforeach
+
+# the disk, seeded by the harness. The payloads are the microvm ones:
+# what they exercise is blk and the filesystems over it, which this
+# machine has for the same reason that one does.
+foreach t : [['blk', '--blk'], ['gefs', '--gefs'], ['gefssrv', '--gefs'],
+  ['gefspar', '--gefs'], ['gefsshutdown', '--gefs']]
+  test('hosted-' + t[0], lua_interp,
+    args: [hosted_boottest, luaos_hosted,
+      files('test/boot/microvm_' + t[0] + '.lua'), t[1]],
+    protocol: 'tap', timeout: 120, env: hosted_env,
+  )
+endforeach
+
+foreach t : shared_tests
+  if not t[2]
+    test('hosted-' + t[0], lua_interp,
+      args: [hosted_boottest, luaos_hosted,
+        files('test/boot/shared_' + t[0] + '.lua')],
+      protocol: 'tap', timeout: 60, env: hosted_env,
+    )
+  endif
+endforeach
+endif # platform == 'hosted'
 
 if platform == 'efi'
 

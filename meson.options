@@ -19,8 +19,14 @@ option('fw_network', type: 'feature', value: 'auto',
 #
 # A build is configured for one platform or the other, and `meson test`
 # runs whichever suite that build can produce a guest for.
-option('platform', type: 'combo', choices: ['efi', 'microvm'], value: 'efi',
-  description: 'efi (firmware boot, all arches) or microvm (bare PVH, x86_64 only)')
+# hosted: lua-os as a linux process. The host directory named with -r is
+# the root, served by the same task/espsrv.lua the other machines use,
+# and the terminal is the console. It links the host's libc rather than
+# src/libc, has no devices, and exists to run the tree without an image
+# or an emulator in the way.
+option('platform', type: 'combo', choices: ['efi', 'microvm', 'hosted'],
+  value: 'efi',
+  description: 'efi (firmware boot, all arches), microvm (bare PVH, x86_64) or hosted (a linux process)')
 
 # What the microvm image runs when fw_cfg injects nothing.
 #
