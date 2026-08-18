@@ -21,7 +21,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local mouse = require("mouse")
 local font = require("los.font")
-local battery = require("battery")
+local battery = require("battery").meter()
 
 local N = prog.ns()
 local fb = prog.screen()
@@ -133,7 +133,7 @@ local function sections()
 
 	-- the battery first: it is the one figure a handheld is picked up
 	-- to check, and it is absent on a machine with a wall socket.
-	local mv, pct, chg = battery.read()
+	local mv, pct, chg = battery()
 
 	if mv then
 		head("battery")

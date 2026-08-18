@@ -24,11 +24,9 @@ local CURVE = {
 -- 4.64V on USB.
 local CHARGING = 4250
 
--- read() -> millivolts, percent, charging. Nothing where there is no
--- pack, which is every machine that runs on wall power.
-function M.read()
-	local mv = sys.battery and sys.battery()
-
+-- of(mv) -> millivolts, percent, charging: the conversion on its own,
+-- so a caller that already has a voltage can ask what it means.
+function M.of(mv)
 	if not mv then
 		return nil
 	end
@@ -49,6 +47,44 @@ function M.read()
 		end
 	end
 	return mv, 100, false
+end
+
+-- read() -> the same, for the pack this machine has. Nothing where
+-- there is none, which is every machine that runs on wall power.
+function M.read()
+	return M.of(sys.battery and sys.battery())
+end
+
+-- plugging in USB collapses the sensed node for an instant while the
+-- charger hands the system load from the pack to the input, and it
+-- reads as a flat battery. A pack cannot move that far that fast, so a
+-- jump this large is held until a second reading agrees with it.
+local JUMP = 300
+
+-- meter() -> a reader for something that polls, where read() is the
+-- plain conversion. The state is the caller's, so two of them do not
+-- share a history.
+function M.meter()
+	local last, cand
+
+	return function()
+		local mv, pct, chg = M.read()
+
+		if not mv then
+			return nil
+		end
+		if last and math.abs(mv - last) > JUMP then
+			if cand and math.abs(mv - cand) <= JUMP then
+				last, cand = mv, nil	-- twice: it is real
+			else
+				cand = mv
+				return M.of(last)	-- not the transient
+			end
+		else
+			last, cand = mv, nil
+		end
+		return mv, pct, chg
+	end
 end
 
 return M

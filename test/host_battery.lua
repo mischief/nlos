@@ -101,6 +101,7 @@ mv = nil
 ok(not tostring(ps.stats):find("bat="), "no bat= without a battery")
 
 mv = 3800
+
 local line = tostring(ps.stats)
 
 ok(line:find("bat=60%% 3%.80V") ~= nil,
@@ -108,8 +109,34 @@ ok(line:find("bat=60%% 3%.80V") ~= nil,
 ok(not line:find("chg"), "and says nothing of a charger that is absent")
 
 mv = 4640
+
 ok(tostring(ps.stats):find("bat=100%% 4%.64V chg") ~= nil,
     "the stats line says when it is charging")
+
+-- the plug-in transient, through the meter: read() is the plain
+-- conversion and stays that way, so only a caller that polls carries a
+-- history to compare against.
+local battery = require("battery")
+local meter = battery.meter()
+
+mv = 4030
+ok(meter() == 4030, "the meter's first reading is the pack's")
+
+mv = 3300
+ok(meter() == 4030, "a sudden collapse is not published")
+
+mv = 4030
+ok(meter() == 4030, "and the pack's own reading comes straight back")
+
+-- the same guard must not freeze a real move: unplugging is a genuine
+-- jump, and the reading after it is what confirms one.
+mv = 4616
+ok(meter() == 4030, "a real jump waits for a second opinion")
+ok(meter() == 4616, "which the next reading gives")
+
+-- read() itself is stateless, so it never holds anything back
+mv = 3300
+ok(battery.read() == 3300, "read() reports what the pin says")
 
 print("1.." .. n)
 os.exit(fails == 0 and 0 or 1)
