@@ -48,9 +48,19 @@ mv = 4200
 v, pct = ps.battery()
 ok(v == 4200 and pct == 100, "a full cell is 100%")
 
-mv = 4500
-v, pct = ps.battery()
-ok(pct == 100, "above full clamps to 100%")
+-- above what a cell can hold is the charger across the divider, which
+-- is the only way this machine can tell it is on USB. Measured on the
+-- T-Deck: 4.03V on the pack alone, 4.64V with USB in.
+local chg
+
+mv = 4640
+v, pct, chg = ps.battery()
+ok(chg == true and pct == 100, "over a cell's maximum reads as charging")
+
+mv = 4030
+v, pct, chg = ps.battery()
+ok(chg == false and pct > 80 and pct < 100,
+    "a charged pack alone is not charging")
 
 mv = 3000
 v, pct = ps.battery()
@@ -91,8 +101,15 @@ mv = nil
 ok(not tostring(ps.stats):find("bat="), "no bat= without a battery")
 
 mv = 3800
-ok(tostring(ps.stats):find("bat=60%% 3%.80V") ~= nil,
+local line = tostring(ps.stats)
+
+ok(line:find("bat=60%% 3%.80V") ~= nil,
     "the stats line reports the battery")
+ok(not line:find("chg"), "and says nothing of a charger that is absent")
+
+mv = 4640
+ok(tostring(ps.stats):find("bat=100%% 4%.64V chg") ~= nil,
+    "the stats line says when it is charging")
 
 print("1.." .. n)
 os.exit(fails == 0 and 0 or 1)

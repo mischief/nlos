@@ -148,15 +148,25 @@ local CURVE = {
 	{ 3800, 60 }, { 3950, 80 }, { 4100, 95 }, { 4200, 100 },
 }
 
--- battery() -> millivolts, percent. Nothing on a machine with no pack.
+-- above a cell's own maximum, something external is holding the pin up:
+-- the charger, which on the T-Deck sits across the divider. So a
+-- reading over the top of the curve is how charging is detected, there
+-- being no status pin to ask. Measured: 4.03V on the pack alone against
+-- 4.64V on USB.
+local CHARGING = 4250
+
+-- battery() -> millivolts, percent, charging. Nothing where no pack.
 function M.battery()
 	local mv = sys.battery and sys.battery()
 
 	if not mv then
 		return nil
 	end
+	if mv >= CHARGING then
+		return mv, 100, true
+	end
 	if mv <= CURVE[1][1] then
-		return mv, 0
+		return mv, 0, false
 	end
 	for i = 2, #CURVE do
 		local lo, hi = CURVE[i - 1], CURVE[i]
@@ -164,10 +174,11 @@ function M.battery()
 		if mv <= hi[1] then
 			local f = (mv - lo[1]) / (hi[1] - lo[1])
 
-			return mv, math.floor(lo[2] + f * (hi[2] - lo[2]) + 0.5)
+			return mv, math.floor(lo[2] + f * (hi[2] - lo[2]) + 0.5),
+			    false
 		end
 	end
-	return mv, 100
+	return mv, 100, false
 end
 
 local stats_mt = {}
@@ -206,9 +217,9 @@ stats_mt.__tostring = function()
 
 	-- the battery, where there is one. Absent on every machine that
 	-- runs on wall power, which is most of them.
-	local mv, pct = M.battery()
-	local bat = mv and string.format(" bat=%d%% %.2fV", pct, mv / 1000)
-	    or ""
+	local mv, pct, chg = M.battery()
+	local bat = mv and string.format(" bat=%d%% %.2fV%s", pct,
+	    mv / 1000, chg and " chg" or "") or ""
 
 	-- max is the largest single free run. Free bytes scattered below
 	-- what a chunk costs buy nothing, and say nothing about it.

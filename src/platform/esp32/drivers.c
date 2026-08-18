@@ -1108,9 +1108,10 @@ uart_takeover(void)
 {
 }
 
-/* the battery. Only the T-Deck has one wired to a pin we can read; the
- * charger reports nothing, so a machine on USB is not distinguishable
- * from one running down and only the voltage is offered.
+/* the battery. Only the T-Deck has one wired to a pin we can read, and
+ * the charger has no status line -- but it sits across the same
+ * divider, so a reading above what a cell can hold is what says the
+ * machine is on USB. lib/ps.lua makes that call; this reports volts.
  */
 int
 platform_battery(int *mv)
