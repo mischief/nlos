@@ -261,9 +261,27 @@ np_decode(lua_State *L)
 	case Tclunk:
 	case Tremove:
 	case Tstat:
-	case Twstat:
 		setint(L, "fid", rdint(&r, 4));
 		break;
+	case Twstat: {
+		/* fid, then a stat wrapped twice exactly as Rstat's is. A
+		 * decoder that stopped at the fid would drop the name, so
+		 * a rename would be answered Rwstat and never happen.
+		 */
+		uint64_t n;
+
+		setint(L, "fid", rdint(&r, 4));
+		rdint(&r, 2);
+		n = rdint(&r, 2);
+		if (r.bad || r.off + n > r.len) {
+			r.bad = 1;
+			break;
+		}
+		lua_pushlstring(L, (const char *)r.p + r.off, (size_t)n);
+		lua_setfield(L, -2, "statbytes");
+		r.off += (size_t)n;
+		break;
+	}
 	case Rerror:
 		rdstr(L, &r);
 		if (!r.bad)

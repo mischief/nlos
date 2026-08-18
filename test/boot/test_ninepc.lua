@@ -9,7 +9,7 @@
 local p9 = require("ninep")
 local tap = require("tap")
 
-tap.plan(38)
+tap.plan(41)
 
 local C, L = p9, p9.pure
 
@@ -139,6 +139,15 @@ local cutstat = string.pack("<I4BI2I2I2", 7 + 4 + 8, p9.Rstat, 13, 0,
 
 agree("rstat whose record runs past the message", cutstat)
 tap.ok(C.decode(cutstat) == nil, "and it is refused rather than clamped")
+
+-- Twstat carries a stat too, wrapped the same way. A decoder that read
+-- only the fid would answer Rwstat to a rename that never happened.
+local twstat = p9.twstat(14, 7, { name = "renamed" })
+
+agree("twstat", twstat)
+tap.is(C.unpackstat(C.decode(twstat).statbytes).name, "renamed",
+    "the C codec reads the name a rename asks for")
+tap.is(C.decode(twstat).fid, 7, "and still reads the fid")
 
 -- ---- malformed input: agreeing on refusal ----
 --

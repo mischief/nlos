@@ -603,6 +603,20 @@ function M.new(transport, opts)
 		return out
 	end
 
+	-- the name, which is as far as wstat reaches. No rename() here:
+	-- 9P has no message that names two directories, so a move between
+	-- them is dev.Enotimpl and the namespace says so.
+	function B.wstat(h, st)
+		if not st or st.name == nil then
+			return true
+		end
+		rpc(function(t)
+			return ninep.twstat(t, h.fid, { name = st.name })
+		end, ninep.Rwstat, "wstat")
+		h.name = st.name
+		return true
+	end
+
 	function B.clunk(h)
 		pcall(rpc, function(t) return ninep.tclunk(t, h.fid) end,
 		    ninep.Rclunk, "clunk")
