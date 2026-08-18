@@ -872,3 +872,27 @@ platform_hci_irqs(void)
 {
 	return 0;
 }
+
+/* no tcp from this machine: it has a wire, and lib/tcp4.lua builds the
+ * protocol over the frames. The module is empty, for the link.
+ */
+int
+platform_have_net(void)
+{
+	return 0;
+}
+
+int
+platform_net_ready(void)
+{
+	return 0;
+}
+
+int luaopen_los_platform_tcp(lua_State *L);
+
+int
+luaopen_los_platform_tcp(lua_State *L)
+{
+	lua_newtable(L);
+	return 1;
+}

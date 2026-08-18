@@ -110,8 +110,15 @@ extern void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
 static struct kport *ethport;
 static struct kport *hciport;
 
+/* the tcp task's wakeup, on the same terms as ethport: pushed when the
+ * platform says a connection has something to answer, so a machine with
+ * nothing outstanding sleeps rather than asking.
+ */
+static struct kport *netport;
+
 static int have_p9;
 static int have_eth;
+static int have_net;
 static int have_hci;
 static int have_fb;
 static int have_blk;
@@ -345,6 +352,23 @@ pump_eth(void)
 	ipclock_enter();
 	if (have_eth && ethport && !ethport->head)
 		port_push(ethport, (const unsigned char *)"N", 1, 0, 0);
+	ipclock_leave();
+}
+
+/* the tcp task's wakeup, on pump_eth's terms and for the same reason.
+ * platform_net_ready answers only when an outstanding operation can
+ * make progress, so a machine whose connections are all quiet sleeps.
+ */
+static void
+pump_net(void)
+{
+	if (!have_net || !netport || netport->head)
+		return;
+	if (!platform_net_ready())
+		return;
+	ipclock_enter();
+	if (!netport->head)
+		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
 	ipclock_leave();
 }
 
@@ -636,12 +660,13 @@ kernel_init(void)
 	diskport = port_new();
 	ethport = port_new();
 	hciport = port_new();
+	netport = port_new();
 	schedport = port_new();
 	clockport = port_new();
 	dbgport = port_new();
 	ipclock_leave();
 	if (!kbdport || !serport || !diskport || !schedport || !ethport ||
-	    !clockport || !dbgport)
+	    !netport || !clockport || !dbgport)
 		return -1;
 	/* kernel refs: the pumps (and, for diskport/schedport, the kernel
 	 * itself) hold these ports forever
@@ -655,6 +680,7 @@ kernel_init(void)
 	diskport->nrights++;
 	ethport->nrights++;
 	hciport->nrights++;
+	netport->nrights++;
 	schedport->nrights++;
 	clockport->nrights++;
 	dbgport->nrights++;
@@ -668,6 +694,7 @@ kernel_init(void)
 	 * fall back to -- one stack, ours, on every platform.
 	 */
 	have_eth = platform_have_eth();
+	have_net = platform_have_net();
 	have_hci = platform_have_hci();
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
@@ -823,7 +850,17 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_HCI, .devport = hciport, .devrecv = 1,
 		  .what = "bluetooth (raw hci)", .enabled = have_hci,
 		  .capname = "hci" },
-		/* ip, tcp and dhcp are not here. Each owns no device and
+		/* tcp from the machine rather than from lib/tcp4.lua: a
+		 * platform with connections but no frames to build them out
+		 * of. Everything above holds a right to this task and cannot
+		 * tell which stack answered, which is what lets one machine
+		 * take the protocol from below and another build it in Lua.
+		 */
+		{ .path = "/task/tcp.lua", .chunkname = "=tcp",
+		  .priv = PRIV_TCP, .devport = netport, .devrecv = 1,
+		  .what = "networking (tcp from the host)",
+		  .enabled = have_net, .capname = "tcp" },
+		/* ip, tcp4 and dhcp are not here. Each owns no device and
 		 * holds only a send right to the task below it, so they
 		 * come off the filesystem, started from a machine's
 		 * /etc/services.lua.
@@ -1453,6 +1490,7 @@ kernel_run(void)
 
 		expire_timers();
 		pump_eth();
+		pump_net();
 		pump_hci();
 		pump_keyboard();
 		pump_devkbd();

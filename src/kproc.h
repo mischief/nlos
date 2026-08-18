@@ -347,6 +347,14 @@ enum {
 	PRIV_BLK	= 1 << 8,
 	PRIV_FLASH	= 1 << 9,
 	PRIV_HCI	= 1 << 10,
+
+	/* tcp as the machine gives it, rather than as lib/tcp4.lua builds
+	 * it. A platform that has no wire to put frames on may still have
+	 * connections to offer; hosted takes them from the host's
+	 * sockets. Everything above holds a right to the one task that
+	 * owns this and cannot tell which stack answered.
+	 */
+	PRIV_TCP	= 1 << 11,
 };
 
 /* does this cpu hold a given bucket, every bucket, or any bucket at

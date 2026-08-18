@@ -18,6 +18,13 @@ int	console_infd(void);
  */
 unsigned long long hosted_now_us(void);
 
+/* the sockets with an operation outstanding, for the idle wait. Fills
+ * `out` and returns how many, never more than NET_POLLMAX.
+ */
+#define NET_POLLMAX 256
+struct pollfd;
+int	net_pollfds(struct pollfd *out, int max);
+
 /* sleep this long, giving the cpu back for the whole of it. */
 void	hosted_stall_us(unsigned long us);
 

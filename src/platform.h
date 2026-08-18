@@ -57,6 +57,17 @@ int	platform_have_esp(void);
  */
 int	platform_have_eth(void);
 
+/* can this machine make tcp connections without frames to build them
+ * from? Hosted answers yes, from the host's sockets; everyone else
+ * answers no and builds tcp in Lua.
+ */
+int	platform_have_net(void);
+
+/* can some outstanding operation make progress now? Only outstanding
+ * ones: a socket nobody waits on would say yes forever and never idle.
+ */
+int	platform_net_ready(void);
+
 /* is there a bluetooth controller to exchange HCI packets with? esp32
  * only, where the radio does BLE beside wifi. Everything above HCI is
  * Lua in lib/ble, so this hands over whole packets and no more.

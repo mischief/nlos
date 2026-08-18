@@ -85,11 +85,22 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 	unsigned long long now = hosted_now_us();
 	unsigned long long next = (now / period_us + 1) * period_us;
 	int ms = (int)((next - now + 999) / 1000);
-	struct pollfd pfd = { .fd = console_infd(), .events = POLLIN };
+
+	/* the console, plus whatever socket has an operation outstanding.
+	 * Without the sockets here the machine still works and answers a
+	 * tick late every time, which is a wait of milliseconds on every
+	 * packet.
+	 */
+	struct pollfd pfd[NET_POLLMAX + 1];
+	int nfd = net_pollfds(pfd + 1, NET_POLLMAX) + 1;
+
+	pfd[0].fd = console_infd();
+	pfd[0].events = POLLIN;
+	pfd[0].revents = 0;
 
 	if (ms < 1)
 		ms = 1;
-	while (poll(&pfd, 1, ms) < 0 && errno == EINTR)
+	while (poll(pfd, (nfds_t)nfd, ms) < 0 && errno == EINTR)
 		;
 	if (index)
 		*index = 0;

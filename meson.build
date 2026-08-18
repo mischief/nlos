@@ -238,6 +238,7 @@ if platform == 'hosted'
     'src/platform/hosted/fs.c',
     'src/platform/hosted/machine.c',
     'src/platform/hosted/main.c',
+    'src/platform/hosted/net.c',
   )
 
   # the tree, carried in the binary, so --no-host-fs has a root. The
@@ -884,6 +885,15 @@ foreach t : ['dev', 'prog', 'vi', 'xd']
   test('hosted-' + t, lua_interp,
     args: [hosted_boottest, luaos_hosted,
       files('test/boot/test_' + t + '.lua'), '--writable'],
+    protocol: 'tap', timeout: 60, env: hosted_env,
+  )
+endforeach
+
+# this machine's own, because no other has tcp from the platform.
+foreach t : ['tcp']
+  test('hosted-' + t, lua_interp,
+    args: [hosted_boottest, luaos_hosted,
+      files('test/boot/hosted_' + t + '.lua')],
     protocol: 'tap', timeout: 60, env: hosted_env,
   )
 endforeach

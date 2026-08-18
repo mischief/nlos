@@ -123,6 +123,7 @@ extern int luaopen_los_platform_p9(lua_State *L);	/* drivers.c: microvm only, no
 extern int luaopen_los_platform_eth(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_blk(lua_State *L);	/* drivers.c: microvm only, no-op elsewhere */
 extern int luaopen_los_platform_hci(lua_State *L);	/* drivers.c: esp32 only, absent elsewhere */
+extern int luaopen_los_platform_tcp(lua_State *L);	/* net.c: hosted only, empty elsewhere */
 extern int luaopen_los_platform_flash(lua_State *L);	/* drivers.c: esp32 only, no-op elsewhere */
 extern int luaopen_los_platform_wifi(lua_State *L);	/* drivers.c: esp32 only, no-op elsewhere */
 extern int luaopen_los_platform_fb(lua_State *L);	/* gop.c: efi only, no-op elsewhere */
