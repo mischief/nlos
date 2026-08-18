@@ -1,6 +1,6 @@
 -- wifi: pick a network, and remember it.
---   > wifi                      ask, join, and remember
---   > wifi labratory hunter2    join without asking
+--   > wifi -j                   ask for a network, then join it
+--   > wifi -j labratory hunter2 join that one
 --   > wifi -s                   the networks saved, best first
 --   > wifi -l                   what is in range
 --   > wifi -f labratory         forget one
@@ -121,13 +121,34 @@ local function prompt(what, default)
 	return l
 end
 
+local USAGE = table.concat({
+	"usage: wifi -j [ssid [passphrase]]   ask for a network, or join one",
+	"       wifi -s                       the networks saved, best first",
+	"       wifi -l                       what is in range",
+	"       wifi -f ssid                  forget one",
+}, "\n") .. "\n"
+
+-- no arguments is a question, not an instruction: joining a network is
+-- the one thing here that changes what the machine does, so it is asked
+-- for by name rather than being what happens by default.
+if not arg[1] then
+	out(USAGE)
+	os.exit(0)
+end
+
 local args = {}
+local joining = false
 local i = 1
 
 while arg[i] do
 	local a = arg[i]
 
-	if a == "-l" or a == "-s" or a == "-f" then
+	if a == "-h" then
+		out(USAGE)
+		os.exit(0)
+	end
+
+	if a == "-l" or a == "-s" or a == "-f" or a == "-j" then
 		if not WIFI then
 			die("no radio in this namespace")
 		end
@@ -168,14 +189,20 @@ while arg[i] do
 		ctl("forget", arg[i])
 		out(("forgot %s\n"):format(arg[i]))
 		os.exit(0)
+	elseif a == "-j" then
+		joining = true
+	elseif a:match("^%-") then
+		out(USAGE)
+		die("no such option: " .. a)
 	else
 		args[#args + 1] = a
 	end
 	i = i + 1
 end
 
-if not WIFI then
-	die("no radio in this namespace")
+if not joining then
+	out(USAGE)
+	die("nothing to do; -j joins")
 end
 
 -- the one it is on, or the one it prefers: both are better guesses at
