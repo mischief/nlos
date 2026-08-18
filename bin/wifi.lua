@@ -1,34 +1,26 @@
 -- wifi: pick a network, and remember it.
---
---   > wifi                      ask, save, and join
---   > wifi labratory hunter2    save and join without asking
---   > wifi -s                   say what is saved
+--   > wifi                      ask, join, and remember
+--   > wifi labratory hunter2    join without asking
+--   > wifi -s                   the networks saved, best first
 --   > wifi -l                   what is in range
---
--- Writes /config/wifi/networks.lua, which init joins at startup, and
--- joins now through /net/wifi/ctl where the namespace has it. Without
--- that mount it still saves, and says so.
---
--- The passphrase is echoed as it is typed, and stored in the clear.
--- lib/console.lua's readline draws what it edits and has no way not to,
--- and there is no secure element here to store a key in -- it would
--- have to be readable by this machine to be usable, and the flash can
--- be read out over USB by whoever is holding the board.
+--   > wifi -f labratory         forget one
+
+-- Everything goes through /net/wifi/ctl: task/wifisrv.lua holds the
+-- list and writes it, a join is saved before the radio is told, and it
+-- goes to the front. A second writer here would reduce a list of
+-- networks to whichever of the two wrote last.
+
+-- The passphrase is echoed as it is typed and stored in the clear.
+-- lib/console.lua's readline draws what it edits, and the flash can be
+-- read out over USB by whoever is holding the board.
 
 -- Through the namespace rather than io.open: an unprivileged proc has
--- none (kernel_strip_io takes it), and the posix shim's open walks
--- before it opens, so it cannot make a file that is not there yet.
--- prog.ns() is the namespace this program was handed, and readfile and
--- writefile are what it already has.
+-- none, and the posix shim's open walks before it opens, so it cannot
+-- make a file that is not there yet.
 local unistd = require("posix.unistd")
 local prog = require("prog")
 
 local N = assert(prog.ns(), "wifi: no namespace")
-
--- /config is the partition a reflash does not write, so a network saved
--- there survives one. A machine without that volume keeps its network
--- in /etc, and loses it the next time the filesystem is rebuilt.
-local CONF = N:stat("/config") and "/config/wifi/networks.lua" or "/etc/wifi.lua"
 
 local function out(s)
 	unistd.write(1, s)
@@ -39,78 +31,48 @@ local function die(s)
 	os.exit(1)
 end
 
--- what is saved, or an empty table. A file that will not load is worth
--- saying so about rather than silently overwriting: it may be someone's
--- hand-written one with a typo in it.
-local function saved()
-	local src = N:readfile(CONF)
-
-	if not src then
-		return {}
-	end
-
-	local chunk, err = load(src, "=" .. CONF, "t", {})
-
-	if not chunk then
-		out("wifi: " .. CONF .. ": " .. tostring(err) .. "\n")
-		return {}
-	end
-
-	local ok, conf = pcall(chunk)
-
-	return (ok and type(conf) == "table") and conf or {}
-end
-
--- One read is one line.
---
--- A console stream ignores the byte count and replies with the line its
--- own editor has just finished, newline already stripped -- see
--- lib/prog.lua's PortStream. So asking for a byte at a time does not
--- get a byte: it gets the whole line, which is then not a newline, and
--- the reader waits for a second line to end the first. Every prompt
--- needed Enter twice.
---
--- An empty answer and end of input are both "", and both mean "keep
--- what is there", which is what pressing Enter at a prompt should do.
-local function readline()
-	local l = unistd.read(0, 512)
-
-	if l == nil or l == "" then
-		return nil
-	end
-	return (l:gsub("[\r\n]+$", ""))
-end
-
-local function ask(prompt, default)
-	if default and default ~= "" then
-		out(("%s [%s]: "):format(prompt, default))
-	else
-		out(prompt .. ": ")
-	end
-
-	local l = readline()
-
-	if l == nil or l == "" then
-		return default
-	end
-	return l
-end
-
--- the radio, where this namespace has it. WIFI is nil on a machine
--- whose interface has nothing to associate, and every use below is
--- guarded by that rather than by asking what platform this is.
+-- the radio, where this namespace has it. A session that should not
+-- retune it is given a namespace without this mount, so its absence is
+-- an answer and not a fault.
 local WIFI = N:stat("/net/wifi/ctl") and "/net/wifi" or nil
 
-local function scanlines()
-	local txt = N:readfile(WIFI .. "/scan")
+local function lines(name)
+	local txt = WIFI and N:readfile(WIFI .. "/" .. name)
+	local out = {}
 
-	if not txt then
-		return {}
+	for line in (txt or ""):gmatch("[^\n]+") do
+		out[#out + 1] = line
 	end
+	return out
+end
 
+-- "psk ssid" or "open ssid", best first
+local function knownlist()
+	local nets = {}
+
+	for _, line in ipairs(lines("known")) do
+		local auth, ssid = line:match("^(%S+) (.*)$")
+
+		if ssid and ssid ~= "" then
+			nets[#nets + 1] = { ssid = ssid, open = auth == "open" }
+		end
+	end
+	return nets
+end
+
+-- the radio scans one at a time, so a scan that could not run answers
+-- with why, as a comment. Saying so beats printing nothing: the reason
+-- is usually that another scan was in flight, and asking again works.
+local function scanlist()
 	local aps = {}
 
-	for line in txt:gmatch("[^\n]+") do
+	for _, line in ipairs(lines("scan")) do
+		local why = line:match("^%-%-%s*(.*)$")
+
+		if why then
+			return nil, why
+		end
+
 		local rssi, auth, ssid = line:match("^(-?%d+) (%S+) (.*)$")
 
 		if rssi and ssid ~= "" then
@@ -121,84 +83,145 @@ local function scanlines()
 	return aps
 end
 
-local args = {}
+local function ctl(...)
+	local wok, werr = N:writefile(WIFI .. "/ctl",
+	    table.concat({ ... }, "\n"))
 
-for _, a in ipairs(arg) do
-	if a == "-l" then
+	if not wok then
+		die(tostring(werr))
+	end
+end
+
+-- One read is one line. A console stream ignores the byte count and
+-- replies with the line its editor just finished, newline already
+-- stripped -- see lib/prog.lua's PortStream. Asking for a byte at a
+-- time therefore gets a whole line, which is not a newline, and the
+-- reader then waits for a second line to end the first.
+local function readline()
+	local l = unistd.read(0, 512)
+
+	if l == nil or l == "" then
+		return nil
+	end
+	return (l:gsub("[\r\n]+$", ""))
+end
+
+local function prompt(what, default)
+	if default and default ~= "" then
+		out(("%s [%s]: "):format(what, default))
+	else
+		out(what .. ": ")
+	end
+
+	local l = readline()
+
+	if l == nil or l == "" then
+		return default
+	end
+	return l
+end
+
+local args = {}
+local i = 1
+
+while arg[i] do
+	local a = arg[i]
+
+	if a == "-l" or a == "-s" or a == "-f" then
 		if not WIFI then
-			die("no radio on this machine")
+			die("no radio in this namespace")
 		end
+	end
+
+	if a == "-l" then
 		out("scanning...\n")
-		for _, ap in ipairs(scanlines()) do
+
+		local aps, why = scanlist()
+
+		if not aps then
+			die(why)
+		end
+		if #aps == 0 then
+			out("nothing in range\n")
+		end
+		for _, ap in ipairs(aps) do
 			out(("%4d dBm  %-4s %s\n"):format(ap.rssi,
 			    ap.open and "open" or "psk", ap.ssid))
 		end
 		os.exit(0)
 	elseif a == "-s" then
-		local c = saved()
+		local nets = knownlist()
 
-		if c.ssid then
-			out(("ssid %s\npsk %s\n"):format(c.ssid,
-			    (c.psk and c.psk ~= "") and c.psk or "(open)"))
-		else
-			out("no network saved\n")
+		if #nets == 0 then
+			out("no networks saved\n")
 		end
+		for n, net in ipairs(nets) do
+			out(("%d. %-4s %s\n"):format(n,
+			    net.open and "open" or "psk", net.ssid))
+		end
+		os.exit(0)
+	elseif a == "-f" then
+		i = i + 1
+		if not arg[i] then
+			die("-f wants an ssid")
+		end
+		ctl("forget", arg[i])
+		out(("forgot %s\n"):format(arg[i]))
 		os.exit(0)
 	else
 		args[#args + 1] = a
 	end
+	i = i + 1
 end
 
-local have = saved()
-local ssid = args[1] or ask("ssid", have.ssid)
+if not WIFI then
+	die("no radio in this namespace")
+end
+
+-- the one it is on, or the one it prefers: both are better guesses at
+-- what somebody retyping this means than nothing at all.
+local function suggest()
+	for _, line in ipairs(lines("status")) do
+		local ssid = line:match("^ssid (.+)$")
+
+		if ssid and ssid ~= "" then
+			return ssid
+		end
+	end
+
+	local nets = knownlist()
+
+	return nets[1] and nets[1].ssid
+end
+
+local ssid = args[1] or prompt("ssid", suggest())
 
 if ssid == nil or ssid == "" then
 	die("no ssid")
 end
 
-local psk = args[2] or ask("passphrase", have.psk)
-
--- %q rather than quotes of our own: a passphrase is exactly the kind of
--- string that has a quote or a backslash in it, and %q writes something
--- lua reads back as what went in.
-local ok, err = N:writefile(CONF,
-    ("-- written by wifi\nreturn {\n\tssid = %q,\n\tpsk = %q,\n}\n")
-    :format(ssid, psk or ""))
-
-if not ok then
-	die(CONF .. ": " .. tostring(err))
-end
-
-out(("saved %s\n"):format(CONF))
-
-if not WIFI then
-	out(("joins %s at next boot\n"):format(ssid))
-	os.exit(0)
-end
+local psk = args[2] or prompt("passphrase")
 
 -- one field a line: a passphrase is a sentence as often as it is a
 -- word, and an ssid may hold a space too.
-local wok, werr = N:writefile(WIFI .. "/ctl",
-    "join\n" .. ssid .. "\n" .. ((psk and psk ~= "") and psk or ""))
+ctl("join", ssid, psk or "")
 
-if not wok then
-	die("join: " .. tostring(werr))
-end
-
--- association is asynchronous, so report what it settled on rather than
--- that the write succeeded -- a wrong passphrase fails here, not above.
 out("joining " .. ssid .. "...\n")
-for _ = 1, 20 do
-	local st = N:readfile(WIFI .. "/status") or ""
-	local state = st:match("state (%S+)")
+
+local thread = require("los.thread")
+
+for _ = 1, 30 do
+	local state
+
+	for _, line in ipairs(lines("status")) do
+		state = line:match("^state (%S+)$") or state
+	end
 
 	if state == "joined" then
-		out("joined " .. ssid .. "\n")
+		out(("joined %s, and saved\n"):format(ssid))
 		os.exit(0)
-	elseif state == "failed" then
-		out(("failed: reason %s\n"):format(st:match("reason (%S+)") or "?"))
-		os.exit(1)
 	end
-	require("los.thread").sleep(250)
+	thread.sleep(500)
 end
+
 out("still joining; " .. WIFI .. "/status says how it ends\n")
