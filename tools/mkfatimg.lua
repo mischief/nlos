@@ -20,10 +20,12 @@ local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 
 package.path = scriptdir .. "/../lib/?.lua;" .. package.path
 
--- lib/fat holds a sector in a los.buf, which is a C module: built for
--- the host as build/los.so, beside the one the guest links in. Without
--- it this tool cannot load the filesystem it writes.
-package.cpath = scriptdir .. "/../build/?.so;" .. package.cpath
+-- lib/fat holds a sector in a los.buf, a C module built for the host.
+-- LUAOS_HOSTLIB names the directory holding it, so a second build
+-- directory cannot quietly supply a different one than the caller meant.
+local hostlib = os.getenv("LUAOS_HOSTLIB") or (scriptdir .. "/../build")
+
+package.cpath = hostlib .. "/?.so;" .. package.cpath
 
 local fat = require("fat")
 local io_dev = require("gefs.io")

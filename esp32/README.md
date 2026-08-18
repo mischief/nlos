@@ -114,12 +114,19 @@ runs `tools/mkfatimg.lua` over those four directories, taking both the
 offset and the size from the row in `partitions.csv`, so neither number
 is written down twice. Adding a program under `bin/` rebuilds it.
 
-It hangs off flashing rather than off the build, because mkfatimg holds
-a sector in a `los.buf` and loads it from `build/los.so`, which meson
-builds for the host. `idf.py build` therefore needs no host build;
-`idf.py flash` does. To make the image alone, without a board:
+The image is part of `all`, so `idf.py build` makes both halves of the
+system. They are flashed as a pair and a build that made only one is
+how an image goes stale unnoticed. To make the image alone:
 
     ninja -C build-tdeck luafs
+
+mkfatimg holds a sector in a `los.buf` and loads it from `los.so`,
+which meson builds for the host, so a firmware build needs one:
+
+    meson setup build && ninja -C build los.so
+
+Configuring says so if it is missing. `-DLUAOS_HOSTLIB=<dir>` names a
+different build directory to take it from.
 
 The sector is 4096 bytes, matching the flash erase block, so a sector
 write is one erase and one program. The tool reopens the image and

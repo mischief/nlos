@@ -25,9 +25,12 @@ project(luaos)
 # the size from the same line here -- because mkfatimg takes the size it
 # is told and cannot catch an image written to the wrong offset.
 #
-# It hangs off flash and not off all: mkfatimg loads lib/fat through
-# build/los.so, which meson builds for the host, and a firmware build
-# has no reason to need one.
+# It is part of all, not of flash alone. The two partitions are one
+# system, and a build that reports success having made half of it is
+# how an image goes stale without anyone noticing.
+#
+# The cost is that mkfatimg needs los.so, which meson builds for the
+# host: checked below, where it is an error a message can fix.
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/partitions.csv" luafs_table)
 if(NOT luafs_table MATCHES
@@ -36,9 +39,23 @@ if(NOT luafs_table MATCHES
 endif()
 math(EXPR luafs_size "${CMAKE_MATCH_2}")
 
+set(luafs_root "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# los.so is the host build of los.buf, which lib/fat holds its sectors
+# in. Checked while configuring rather than when the image is built, so
+# it is not a failure at the end of a long compile.
+set(LUAOS_HOSTLIB "${luafs_root}/build" CACHE PATH
+    "directory holding the host build of los.so, for mkfatimg")
+if(NOT EXISTS "${LUAOS_HOSTLIB}/los.so")
+    message(FATAL_ERROR
+        "${LUAOS_HOSTLIB}/los.so not found -- mkfatimg needs the host "
+        "build of los.buf to make the luafs image.\n"
+        "  meson setup build && ninja -C build los.so\n"
+        "Or point -DLUAOS_HOSTLIB=<dir> at a build directory that has one.")
+endif()
+
 # CONFIGURE_DEPENDS: a new program is missing from the board otherwise,
 # and the build still reports success.
-set(luafs_root "${CMAKE_CURRENT_SOURCE_DIR}/..")
 file(GLOB_RECURSE luafs_sources CONFIGURE_DEPENDS
     "${luafs_root}/bin/*" "${luafs_root}/lib/*"
     "${luafs_root}/task/*" "${luafs_root}/etc/*"
@@ -64,7 +81,8 @@ get_property(luafs_version GLOBAL PROPERTY LUAOS_VERSION_TXT)
 
 set(luafs_img "${CMAKE_BINARY_DIR}/luafs.img")
 add_custom_command(OUTPUT "${luafs_img}"
-    COMMAND "${LUA_EXE}" tools/mkfatimg.lua "${luafs_img}" "${luafs_size}"
+    COMMAND ${CMAKE_COMMAND} -E env "LUAOS_HOSTLIB=${LUAOS_HOSTLIB}"
+        "${LUA_EXE}" tools/mkfatimg.lua "${luafs_img}" "${luafs_size}"
         --exclude-from "${luafs_skip}"
         bin/=/bin lib/=/lib task/=/task etc/=/etc
         # what this board runs. The path is /etc/services.lua on every
@@ -79,7 +97,7 @@ add_custom_command(OUTPUT "${luafs_img}"
         ${luafs_sources} "${luafs_version}"
     WORKING_DIRECTORY "${luafs_root}"
     VERBATIM)
-add_custom_target(luafs DEPENDS "${luafs_img}")
+add_custom_target(luafs ALL DEPENDS "${luafs_img}")
 
 # The first argument is the flash target, not the executable: IDF holds
 # the image list as a property on the target that flashes it.
