@@ -32,7 +32,9 @@ local function recv(h)
 	end
 end
 
-local job = recv()
+-- started either way: the launcher hands the job to the chunk as its
+-- argument; started by hand from the repl, it arrives in a message.
+local job = ... or recv()
 
 -- rights arrive wrapped, as task/gefssrv.lua unwraps its blk: what
 -- travels in a message is {__right = h}, not the handle.

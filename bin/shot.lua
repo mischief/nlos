@@ -32,31 +32,20 @@ if not cons then
 	os.exit(1)
 end
 
-local N = prog.ns()
-local src = N and N:readfile("/task/shot.lua")
-
-if not src then
-	io.stderr:write("shot: /task/shot.lua is not here\n")
-	os.exit(1)
-end
-
--- proc.spawn rather than sys.spawn: the sender requires lib/zmodem.lua,
+-- proc.start rather than sys.spawn: the sender requires lib/zmodem.lua,
 -- and a raw spawn gives the child no namespace to find it in.
-local pid, right = proc.spawn(src,
-    { name = "shot", ns = N:describe() })
-
-if not pid then
-	io.stderr:write("shot: cannot start the sender\n")
-	os.exit(1)
-end
-
-sys.send(right, {
+local pid, right = proc.start("/task/shot.lua", {
 	cons = { __right = cons },
 	fb = { __right = fb },
 	name = name,
 	rows = tonumber(args[3]),
 	done = { __right = sys.SELF },
-})
+}, { name = "shot" })
+
+if not pid then
+	io.stderr:write("shot: " .. tostring(right) .. "\n")
+	os.exit(1)
+end
 sys.close(right)
 
 -- the death as well as the answer: a sender that raises never sends

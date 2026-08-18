@@ -900,23 +900,11 @@ if kbd then
 end
 
 local function startterm(a, entry, desc)
-	local src, serr = N:readfile(entry.cmd)
-
-	if not src then
-		return nil, tostring(serr)
-	end
-
 	if not kbd then
 		return nil, "no keyboard on this machine"
 	end
 
-	local pid, h = proc.spawn(src, { name = a.name, ns = desc })
-
-	if not pid then
-		return nil, "spawn failed"
-	end
-
-	sys.send(h, {
+	local pid, h = proc.start(entry.cmd, {
 		fb = { __right = a.fbport },
 		-- the pointer, for the programs it runs rather than for
 		-- itself: a shell reads keys, and scribble reads this.
@@ -938,7 +926,11 @@ local function startterm(a, entry, desc)
 		-- the ip task, which is also the udp server: bin/host.lua
 		-- and bin/date.lua ask a server one question each.
 		ip = ip and { __right = ip } or nil,
-	})
+	}, { name = a.name, ns = desc })
+
+	if not pid then
+		return nil, tostring(h)
+	end
 	-- the handle is kept, not closed: it is a right to the app's
 	-- own port, and sys.kill asks whether the caller holds one. Drop
 	-- it and the tray can start an app it can never stop -- which is

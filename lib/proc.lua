@@ -94,4 +94,49 @@ function M.spawn(src, opts)
 	})
 end
 
+-- start(path, caps, opts) -> pid, handle, or nil and why
+--
+-- The raw ABI's launcher, for a caller holding rights of its own rather
+-- than a machine-wide granted table. lib/svc.lua is the same thing
+-- driven by a config file.
+
+-- caps become the chunk's `...`, as they do for a service, so they are
+-- there before its first line -- which is usually a require. A right
+-- travels as { __right = h }, and is copied rather than moved.
+
+-- The source is read from this proc's namespace. opts is M.spawn's:
+-- opts.ns says what the child adopts, and defaults to the same one.
+function M.start(path, caps, opts)
+	local N = require("ns").current()
+
+	if not N then
+		return nil, "no namespace"
+	end
+
+	local src, err = N:readfile(path)
+
+	if not src then
+		return nil, path .. ": " .. tostring(err or "not here")
+	end
+
+	local o = {}
+
+	for k, v in pairs(opts or {}) do
+		o[k] = v
+	end
+	o.arg = caps
+	o.name = o.name or path:match("([^/]+)%.lua$") or path
+	-- false means the child gets none; only nil means "the same one"
+	if o.ns == nil then
+		o.ns = N:describe()
+	end
+
+	local pid, h = M.spawn(src, o)
+
+	if not pid then
+		return nil, "cannot spawn " .. path
+	end
+	return pid, h
+end
+
 return M

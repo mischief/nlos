@@ -24,25 +24,9 @@ if not kbd then
 	os.exit(1)
 end
 
-local N = prog.ns()
-local src = N and N:readfile("/task/fbterm.lua")
-
-if not src then
-	io.stderr:write("term: /task/fbterm.lua is not here\n")
-	os.exit(1)
-end
-
-local pid, right = proc.spawn(src,
-    { name = "fbterm", ns = N:describe() })
-
-if not pid then
-	io.stderr:write("term: cannot start the terminal\n")
-	os.exit(1)
-end
-
 -- what the shell was lent goes on, so a program run on the panel
 -- reaches the same network this one would.
-sys.send(right, {
+local pid, right = proc.start("/task/fbterm.lua", {
 	fb = { __right = fb },
 	kbd = { __right = kbd },
 	cons = cons and { __right = cons } or nil,
@@ -51,6 +35,11 @@ sys.send(right, {
 	dns = ctx.dns and { __right = ctx.dns } or nil,
 	power = ctx.power and { __right = ctx.power } or nil,
 	seed = prog.rand() and prog.rand()(32) or nil,
-})
+}, { name = "fbterm" })
+
+if not pid then
+	io.stderr:write("term: " .. tostring(right) .. "\n")
+	os.exit(1)
+end
 sys.close(right)
 print("term: pid " .. pid)

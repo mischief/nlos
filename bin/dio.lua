@@ -34,12 +34,6 @@ if not N then
 	die("no namespace")
 end
 
-local src = N:readfile("/task/dio.lua")
-
-if not src then
-	die("/task/dio.lua is not here")
-end
-
 -- dio's keyboard, which this fills from the console. It is a port
 -- because that is what dio reads; the keys in it are this program's,
 -- lent for as long as it runs.
@@ -50,30 +44,26 @@ sys.name("dio.keys")
 local kbd = sys.newport("dio.kbd")
 local kbdsend = sys.sendright(kbd)
 
-local pid, ctl = proc.spawn(src, {
-	name = "dio",
-	ns = N:describe(),
-	arg = {
-		fb = { __right = ctx.fb },
-		ptr = { __right = ptr },
-		kbd = { __right = kbd },
-		-- our own stderr as its console: dio says what went wrong
-		-- with {op="write"}, which is what a stream takes, and
-		-- without one its failures go nowhere.
-		cons = ctx.stderr and { __right = ctx.stderr.h } or nil,
-		-- what this program was lent, lent onward: dio hands it to
-		-- each terminal it starts, so a shell on the glass reaches
-		-- the same stack as the shell that typed "dio".
-		tcp = ctx.net and { __right = ctx.net } or nil,
-		ip = ctx.udp and { __right = ctx.udp } or nil,
-		dns = ctx.dns and { __right = ctx.dns } or nil,
-		power = ctx.power and { __right = ctx.power } or nil,
-		seed = rand and rand(32) or nil,
-	},
-})
+local pid, ctl = proc.start("/task/dio.lua", {
+	fb = { __right = ctx.fb },
+	ptr = { __right = ptr },
+	kbd = { __right = kbd },
+	-- our own stderr as its console: dio says what went wrong
+	-- with {op="write"}, which is what a stream takes, and
+	-- without one its failures go nowhere.
+	cons = ctx.stderr and { __right = ctx.stderr.h } or nil,
+	-- what this program was lent, lent onward: dio hands it to
+	-- each terminal it starts, so a shell on the glass reaches
+	-- the same stack as the shell that typed "dio".
+	tcp = ctx.net and { __right = ctx.net } or nil,
+	ip = ctx.udp and { __right = ctx.udp } or nil,
+	dns = ctx.dns and { __right = ctx.dns } or nil,
+	power = ctx.power and { __right = ctx.power } or nil,
+	seed = rand and rand(32) or nil,
+}, { name = "dio" })
 
 if not pid then
-	die("cannot start dio")
+	die(tostring(ctl))
 end
 
 -- said on the way in, because the screen may not be where this is
