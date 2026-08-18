@@ -21,6 +21,7 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local mouse = require("mouse")
 local font = require("los.font")
+local battery = require("battery")
 
 local N = prog.ns()
 local fb = prog.screen()
@@ -43,13 +44,15 @@ local FW, FH = 6, 12		-- los.font's cell
 local ROWH = FH + 2
 local MARGIN = 4
 
-local function text(x, y, s, fg, bg)
+-- room is in pixels from x, so a column can say where it ends. Without
+-- one the window's own edge is the limit.
+local function text(x, y, s, fg, bg, room)
 	s = tostring(s or "")
 	if s == "" then
 		return
 	end
 
-	local room = (W - x) // FW
+	room = ((room or (W - x))) // FW
 
 	if room < 1 then
 		return
@@ -107,23 +110,43 @@ local function wifi()
 	    txt:match("ssid ([^\n]*)") or ""
 end
 
--- the rows, rebuilt on each paint: what is being shown is a machine
+-- the sections, rebuilt on each paint: what is being shown is a machine
 -- that moves, and a cached line is a line that goes stale on the glass.
-local function lines()
+--
+-- Sections rather than one list, because the layout below flows them
+-- into however many columns the window has room for and a section is
+-- what must not be split across two.
+local function sections()
 	local s = sys.stats()
 	local out = {}
+	local cur
 
 	local function row(label, value, color)
-		out[#out + 1] = { label = label, value = value,
+		cur[#cur + 1] = { label = label, value = value,
 		    color = color }
 	end
 
 	local function head(name)
-		out[#out + 1] = { head = name }
+		cur = {}
+		out[#out + 1] = { name = name, rows = cur }
+	end
+
+	-- the battery first: it is the one figure a handheld is picked up
+	-- to check, and it is absent on a machine with a wall socket.
+	local mv, pct, chg = battery.read()
+
+	if mv then
+		head("battery")
+		cur[#cur + 1] = { bar = pct }
+		row("charge", string.format("%d%%  %.2fV", pct, mv / 1000))
+		row("source", chg and "usb" or "pack", chg and HEAD or FG)
 	end
 
 	head("machine")
-	row("version", _VERSION .. " on " .. tostring(s.arch))
+	-- one fact per row: a column is narrow, and a row that says two
+	-- things is the row that loses its tail off the edge.
+	row("version", _VERSION)
+	row("arch", tostring(s.arch))
 	row("uptime", since(sys.uptime_ms()))
 	row("cpus", tostring(s.cpus or 1))
 
@@ -143,8 +166,8 @@ local function lines()
 	-- the heap has taken from the pool to serve them. lib/ps.lua
 	-- reports both, and reporting both here is what made this read
 	-- as a puzzle instead of an answer.
-	row("in use", kb(s.lua_live) .. " by " .. tostring(s.procs) ..
-	    " procs")
+	row("in use", kb(s.lua_live))
+	row("procs", tostring(s.procs))
 	if (s.broke or 0) > 0 then
 		row("broke", tostring(s.broke), WARN)
 	end
@@ -177,9 +200,12 @@ local function lines()
 	if state or addr then
 		head("network")
 		if state then
-			row("wifi", state == "joined" and
-			    (state .. " " .. ssid) or state,
-			    state == "joined" and FG or WARN)
+			row("wifi", state, state == "joined" and FG or WARN)
+			-- the name on its own row: an ssid is as long as
+			-- whoever named it felt like making it.
+			if state == "joined" and ssid ~= "" then
+				row("ssid", ssid)
+			end
 		end
 		if addr then
 			row("address", addr)
@@ -197,9 +223,71 @@ local function lines()
 	return out
 end
 
+-- ---- layout ----
+
+-- as many columns as the window has room for. A column is a label field
+-- and enough after it for the values above; two of them is what fills a
+-- 320-wide panel, and one is what a narrow window falls back to.
+local COLGAP = 8
+local MINCOL = 20 * FW
+local NCOL = math.max(1, (W - MARGIN) // (MINCOL + COLGAP))
+local COLW = (W - MARGIN - (NCOL - 1) * COLGAP) // NCOL
+
+-- the label field is as wide as the widest label plus a space, rather
+-- than a fixed guess: every character it does not spend is one the
+-- value gets, and a value that runs off the edge is what a fixed field
+-- costs. Set by place() below, since it depends on what is being shown.
+local LABELW = 8 * FW
+
+-- how many rows land on the glass, which is what a section is flowed
+-- against and where a scroll stops.
+local PAGE = (H - MARGIN) // ROWH
+
+local function colx(c)
+	return MARGIN + (c - 1) * (COLW + COLGAP)
+end
+
+-- flow the sections into the columns, top to bottom and then across.
+-- A section is kept whole: it moves to the next column rather than
+-- being split, since a heading in one column over its rows in another
+-- says something untrue. The last column takes whatever is left over
+-- and scrolls, which only a very small window reaches.
+local function place(secs)
+	local out = {}
+	local col, at = 1, 0
+	local widest = 0
+
+	for _, sec in ipairs(secs) do
+		for _, r in ipairs(sec.rows) do
+			if r.label and #r.label > widest then
+				widest = #r.label
+			end
+		end
+	end
+	LABELW = (widest + 1) * FW
+
+	for _, sec in ipairs(secs) do
+		local need = 1 + #sec.rows
+
+		if at > 0 and at + need > PAGE and col < NCOL then
+			col = col + 1
+			at = 0
+		end
+		at = at + 1
+		out[#out + 1] = { col = col, at = at, head = sec.name }
+		for _, r in ipairs(sec.rows) do
+			at = at + 1
+			r.col, r.at = col, at
+			out[#out + 1] = r
+		end
+		at = at + 1	-- a blank line between sections
+	end
+	return out
+end
+
 -- ---- drawing ----
 
-local rows = {}
+local items = {}
 local off = 0
 local visible = true
 
@@ -211,22 +299,41 @@ local visible = true
 -- makes a panel flicker. Most rows are the same second to second.
 local shown = {}
 
-local function rowat(i)
-	return MARGIN + (i - off - 1) * ROWH
+local function rowat(r)
+	return MARGIN + (r.at - off - 1) * ROWH
 end
 
-local function paintrow(i)
-	local r = rows[i]
-	local y = rowat(i)
+-- the gauge: a filled proportion of the column, since a bar answers
+-- "how much is left" at a glance and three digits do not. Red when
+-- there is little enough left to act on.
+local BARH = 6
+local FULL, LOW = 0x60c060, 0xc06060
 
-	fb.fill({ x = 0, y = y, w = W, h = ROWH }, BG, true)
+local function paintbar(r, x, y)
+	local w = COLW - LABELW // 2
+	local fill = w * math.min(r.bar, 100) // 100
+
+	fb.fill({ x = x, y = y + (ROWH - BARH) // 2, w = w, h = BARH }, DIM)
+	if fill > 0 then
+		fb.fill({ x = x, y = y + (ROWH - BARH) // 2, w = fill,
+		    h = BARH }, r.bar <= 15 and LOW or FULL)
+	end
+end
+
+local function paint(r)
+	local x = colx(r.col)
+	local y = rowat(r)
+
+	fb.fill({ x = x, y = y, w = COLW, h = ROWH }, BG, true)
 	if r.head then
-		text(MARGIN, y, r.head, HEAD)
-		fb.fill({ x = MARGIN, y = y + ROWH - 2,
-		    w = W - MARGIN * 2, h = 1 }, DIM)
+		text(x, y, r.head, HEAD, nil, COLW)
+		fb.fill({ x = x, y = y + ROWH - 2, w = COLW, h = 1 }, DIM)
+	elseif r.bar then
+		paintbar(r, x, y)
 	else
-		text(MARGIN, y, r.label, DIM)
-		text(MARGIN + 9 * FW, y, r.value, r.color or FG)
+		text(x, y, r.label, DIM, nil, LABELW)
+		text(x + LABELW, y, r.value, r.color or FG, nil,
+		    COLW - LABELW)
 	end
 end
 
@@ -236,8 +343,15 @@ local function rowkey(r)
 	if r.head then
 		return "h\0" .. r.head
 	end
+	if r.bar then
+		return "b\0" .. r.bar
+	end
 	return "r\0" .. r.label .. "\0" .. r.value .. "\0" ..
 	    tostring(r.color)
+end
+
+local function slot(r)
+	return r.col .. "\0" .. r.at
 end
 
 local function draw(all)
@@ -251,36 +365,43 @@ local function draw(all)
 
 	local seen = {}
 
-	for i = off + 1, #rows do
-		if rowat(i) + ROWH > H then
-			break
-		end
-		local k = rowkey(rows[i])
+	for _, r in ipairs(items) do
+		local y = rowat(r)
 
-		seen[i] = k
-		if shown[i] ~= k then
-			paintrow(i)
+		if y >= 0 and y + ROWH <= H then
+			local k = slot(r)
+
+			seen[k] = rowkey(r)
+			if shown[k] ~= seen[k] then
+				paint(r)
+			end
 		end
 	end
 
 	-- a row that scrolled off or vanished leaves its pixels behind,
 	-- so what is no longer listed is cleared rather than forgotten.
-	for i in pairs(shown) do
-		if not seen[i] then
-			local y = rowat(i)
+	for k in pairs(shown) do
+		if not seen[k] then
+			local c, at = k:match("^(%d+)\0(%d+)$")
+			local y = MARGIN + (tonumber(at) - off - 1) * ROWH
 
 			if y >= 0 and y + ROWH <= H then
-				fb.fill({ x = 0, y = y, w = W, h = ROWH },
-				    BG, true)
+				fb.fill({ x = colx(tonumber(c)), y = y,
+				    w = COLW, h = ROWH }, BG, true)
 			end
 		end
 	end
 	shown = seen
 end
 
+-- a wider label moves every value, so what is on the glass is no longer
+-- where the diff believes it is: that repaints the window rather than
+-- the rows that changed.
 local function refresh()
-	rows = lines()
-	draw(false)
+	local was = LABELW
+
+	items = place(sections())
+	draw(LABELW ~= was)
 end
 
 -- ---- input ----
@@ -299,10 +420,18 @@ end
 
 -- the furthest this scrolls: the offset at which the last row still
 -- lands on the screen, so a roll stops with the end in view rather than
--- running the list off the top into blank glass.
+-- running the list off the top into blank glass. Measured against the
+-- deepest column, which the flow above fills last.
 local function scroll(by)
-	local fits = (H - MARGIN) // ROWH
-	local most = #rows - fits
+	local deepest = 0
+
+	for _, r in ipairs(items) do
+		if r.at > deepest then
+			deepest = r.at
+		end
+	end
+
+	local most = deepest - PAGE
 	local to = off + by
 
 	if most < 0 then
@@ -352,7 +481,7 @@ end
 -- recvtimeout rather than await: nothing arrives on an idle panel, so a
 -- plain receive would hold the last figures until a finger touched it.
 thread.spawn(function()
-	rows = lines()
+	items = place(sections())
 	draw(true)
 
 	while true do
