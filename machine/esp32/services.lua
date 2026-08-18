@@ -10,7 +10,12 @@ return {
 	-- kernel driver; each of these owns no device and holds one send
 	-- right to the layer below it. They start before the radio has
 	-- associated and carry nothing until it does.
-	{ path = "/task/ip.lua", capname = "ip", caps = { "eth" } },
+	-- ns = false: this one resolves no path. A namespace costs ~100K a
+	-- proc, and what a service without one still reaches is the
+	-- ambient searcher over the firmware image -- which is where every
+	-- lib it requires already lives.
+	{ path = "/task/ip.lua", capname = "ip", caps = { "eth" },
+	  ns = false },
 
 	-- capname "tcp", not "tcp4": a client asks for the protocol, and
 	-- lib/http.lua and lib/ssh cannot tell what implements it.
@@ -18,7 +23,8 @@ return {
 
 	-- the address, and keeping it. What it serves is the /net mounted
 	-- below.
-	{ path = "/task/dhcpd.lua", capname = "dhcpd", caps = { "ip" } },
+	{ path = "/task/dhcpd.lua", capname = "dhcpd", caps = { "ip" },
+	  ns = false },
 
 	-- the lease as a filesystem: addr, mask, gw, dns, ntp, domain, one
 	-- per file. `from` mounts a capability the kernel already started,
@@ -28,8 +34,10 @@ return {
 	-- names for rights, at /srv. Early, because the mount it declares
 	-- is inherited by everything after it. No esp to post here: this
 	-- board's volume is flash, and fatsrv already serves it at /.
+	-- ns = false here too: it serves /srv rather than reading it, and
+	-- the mount it declares is built in whoever inherits it.
 	{ path = "/task/srvd.lua", name = "srv",
-	  mount = "/srv", mountfs = "srvfs",
+	  mount = "/srv", mountfs = "srvfs", ns = false,
 	  post = { net = "dhcpd" } },
 
 	-- names to addresses, for anything above it. Early, because a
