@@ -476,7 +476,7 @@ local function install(ctx)
 					return nil
 				end
 				v = function(cmd, mode)
-					return M.popen(ctx, cmd, mode)
+					return M.popen(ctx, fds, cmd, mode)
 				end
 			elseif k == "tmpfile" then
 				v = function()
@@ -684,10 +684,10 @@ local function findprog(ctx, name)
 	return nil
 end
 
-function M.popen(ctx, cmd, mode)
+function M.popen(ctx, fds, cmd, mode)
 	mode = tostring(mode or "r"):gsub("b", "")
-	if mode ~= "r" then
-		return nil, "io.popen: only 'r' is supported"
+	if mode ~= "r" and mode ~= "w" then
+		return nil, "io.popen: mode is 'r' or 'w'"
 	end
 	if type(cmd) ~= "string" then
 		return nil, "io.popen: a command is a string"
@@ -721,17 +721,33 @@ function M.popen(ctx, cmd, mode)
 		return nil, "io.popen: spawn failed"
 	end
 	sys.monitor(pid)
-	sys.send(h, {
+	local msg = {
 		path = path,
 		name = argv[1],
 		args = argv,
 		env = ctx.env,
 		cwd = ctx.cwd,
 		nsdesc = desc,
-		-- the write end is the CHILD's, which is what makes the
-		-- hangup mean end-of-output rather than nothing at all.
-		stdout = { __right = port },
-	})
+	}
+
+	-- the pipe is the CHILD's end, which is what makes the hangup mean
+	-- end of output rather than nothing at all. Reading, it is the
+	-- child's stdout; writing, its stdin.
+	if mode == "r" then
+		msg.stdout = { __right = port }
+	else
+		msg.stdin = { __right = port }
+		if fds[1] and fds[1].h then
+			msg.stdout = { __right = fds[1].h }
+		end
+	end
+
+	-- stderr is the CALLER's, as popen's is: what the command
+	-- complains about belongs on the terminal, not in the pipe.
+	if fds[2] and fds[2].h then
+		msg.stderr = { __right = fds[2].h }
+	end
+	sys.send(h, msg)
 	sys.close(h)
 
 	local f = require("nsio").stream(M.pipestream(port, true), "popen")
@@ -741,7 +757,14 @@ function M.popen(ctx, cmd, mode)
 	-- pipe ends when the child drops its right, so eof comes first and
 	-- the notice after.
 	f.close = function(self)
-		while self:read(4096) ~= nil do
+		-- reading, drain to the end; writing, drop our end so the
+		-- child reads eof. Either way the command finishes before
+		-- its status is asked for.
+		if mode == "r" then
+			while self:read(4096) ~= nil do
+			end
+		else
+			getmetatable(self).close(self)
 		end
 		while status == nil do
 			local m = thread.recv(sys.SELF)

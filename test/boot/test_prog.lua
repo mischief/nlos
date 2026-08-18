@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(41)
+tap.plan(43)
 
 local N = ns.new()
 
@@ -441,5 +441,24 @@ o = run("/bin/lua.lua", { "lua", "-e",
 
 tap.ok(o and o:find("not found", 1, true) ~= nil,
     "and a missing command says so -> " .. tostring(o))
+
+-- the child's stderr is the CALLER's, not the pipe's: run() gives both
+-- of ours the one collector, so a forwarded complaint shows up here
+-- and a swallowed one does not.
+o = run("/bin/lua.lua", { "lua", "-e",
+    'local f = io.popen("seq bogus"); local d = f:read("a"); f:close();' ..
+    'io.write("pipe=[", d, "]")' })
+
+tap.ok(o and o:find("seq:", 1, true) ~= nil and
+    o:find("pipe=[]", 1, true) ~= nil,
+    "stderr goes to the caller, not into the pipe -> " .. tostring(o))
+
+-- "w": we write, the command reads, and its output is ours
+o = run("/bin/lua.lua", { "lua", "-e",
+    'local f = io.popen("cat", "w"); f:write("through");' ..
+    'local ok = f:close(); io.write(" ok=", tostring(ok))' })
+
+tap.ok(o and o:find("through", 1, true) ~= nil,
+    "a command reads what we write to it -> " .. tostring(o))
 
 tap.done()
