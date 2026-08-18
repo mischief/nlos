@@ -52,10 +52,15 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 # emulator. See tools/README or the qemu target for the invocation.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
-# kernel_run never returns and does its own idle sleep, so the watchdog
-# has nothing to feed it. The scheduler yields to FreeRTOS on every idle
-# lap (idf_shim's WaitForEvent), which is what keeps the idle task alive.
+# The task WDT is armed by platform_watchdog rather than at startup:
+# IDF's own init subscribes the idle tasks, which this kernel reaches
+# only when it idles, so a quiet machine would reset itself.
 CONFIG_ESP_TASK_WDT_INIT=n
+
+# openocd resets the chip on attach while this is on, which is exactly
+# when a hung board must not be disturbed. The kernel is the only thing
+# running here, so there is no second image to protect the first from.
+CONFIG_ESP_SYSTEM_MEMPROT_FEATURE=n
 
 # lua wants a real stack: the parser recurses, and a proc's first
 # require happens on app_main's.

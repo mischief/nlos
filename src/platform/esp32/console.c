@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <esp_task_wdt.h>
 #include <esp_vfs.h>
 
 #include <sdkconfig.h>
@@ -339,11 +340,41 @@ console_getchar(void)
 	return -1;
 }
 
-/* IDF owns this board's watchdog: the task WDT, set in sdkconfig. */
+/* the task WDT, over the task that runs the scheduler. IDF's own init
+ * subscribes the idle tasks, which this kernel reaches only when it
+ * idles, so the window is armed here and kernel_run's pet is the only
+ * thing feeding it. The backtrace on a timeout is the running core's,
+ * so it names the idle task when the stall is a deadlock, not a spin.
+ */
 void
 platform_watchdog(unsigned secs)
 {
-	(void)secs;
+	static unsigned armed;
+	esp_task_wdt_config_t cfg = {
+		.timeout_ms = secs * 1000,
+		.idle_core_mask = 0,
+		.trigger_panic = true,
+	};
+
+	if (secs == 0) {
+		if (armed) {
+			esp_task_wdt_delete(NULL);
+			esp_task_wdt_deinit();
+			armed = 0;
+		}
+		return;
+	}
+
+	if (armed == 0) {
+		if (esp_task_wdt_init(&cfg) != ESP_OK ||
+		    esp_task_wdt_add(NULL) != ESP_OK)
+			return;
+		armed = secs;
+	} else if (armed != secs) {
+		esp_task_wdt_reconfigure(&cfg);
+		armed = secs;
+	}
+	esp_task_wdt_reset();
 }
 
 _Noreturn void
