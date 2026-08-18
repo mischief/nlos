@@ -1,4 +1,5 @@
-# An ESP32-C5 devkit: a bare board with a radio and nothing else on it.
+# A Waveshare ESP32-C5-WiFi6-Kit-NxRx: a bare board with a dual-band
+# radio and nothing else on it.
 #
 # Layered over sdkconfig.defaults, which describes the T-Deck:
 #

@@ -15,13 +15,18 @@
 
 #include <sdkconfig.h>
 
+/* outside the guard below: esp_gpio_isr is every board's, not this
+ * one's.
+ */
+#include <driver/gpio.h>
+#include <esp_err.h>
+
 #if CONFIG_LUAOS_BOARD_TDECK
 
 #include <esp_adc/adc_cali.h>
 #include <esp_adc/adc_cali_scheme.h>
 #include <esp_adc/adc_oneshot.h>
 
-#include <driver/gpio.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
 #include <freertos/FreeRTOS.h>

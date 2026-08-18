@@ -720,7 +720,7 @@ if esp32_idf != ''
 
   # cardputer is not here: 8MB of flash and no PSRAM, which this does
   # not fit in. The README still says how to build one by hand.
-  foreach board : ['tdeck', 'c5', 'qemu']
+  foreach board : ['tdeck', 'c5', 'freenove', 'qemu']
     run_target('esp32-' + board,
       command: [esp32_sh, esp32_idf, board, 'build'],
       env: esp32_env,

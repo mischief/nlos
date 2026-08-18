@@ -42,6 +42,10 @@ c5)
 	    -DIDF_TARGET=esp32c5 \
 	    -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.c5" "$@"
 	;;
+freenove)
+	set -- -B build-freenove -DSDKCONFIG=build-freenove.sdkconfig \
+	    -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.freenove" "$@"
+	;;
 qemu)
 	set -- -B build-qemu \
 	    -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.qemu" "$@"

@@ -1,0 +1,21 @@
+# A Freenove FNK0085: an ESP32-S3-WROOM on a carrier with a camera and
+# a microSD slot. 16MB flash and 8MB PSRAM, the same as the T-Deck.
+#
+# Layered over sdkconfig.defaults, which describes the T-Deck, so only
+# the disagreements are here. The chip and its memory are already right.
+
+# No display and no keyboard. sdkconfig.defaults names the T-Deck, and
+# probing for a display that is not on the bus does not answer no -- it
+# hangs before the kernel starts. The camera and the card are not
+# wired up here either; a driver for them says so itself.
+CONFIG_LUAOS_BOARD_NONE=y
+
+# and so nothing to keep a copy of
+CONFIG_LUAOS_FB_SHADOW=n
+
+# The console is on UART0, behind the carrier's serial bridge. The
+# T-Deck speaks over the chip's own USB and sdkconfig.defaults says so,
+# so this overrides it. An image built for the wrong one is silent,
+# which looks the same as a board that failed to boot.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

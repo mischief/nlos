@@ -1032,6 +1032,13 @@ luaos_lcd_load(int x, int y, int w, int h, const unsigned char *pix)
 }
 
 int
+luaos_lcd_load16(int x, int y, int w, int h, const unsigned char *pix)
+{
+	(void)x; (void)y; (void)w; (void)h; (void)pix;
+	return -1;
+}
+
+int
 luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h)
 {
 	(void)x; (void)y; (void)tox; (void)toy; (void)w; (void)h;
