@@ -75,3 +75,18 @@ option('ubsan', type: 'boolean', value: false,
 # -- so it is rarely on PATH and usually has to be named outright.
 option('btvirt', type: 'string', value: 'btvirt',
   description: 'path to bluez emulator/btvirt, for the ble tests')
+
+# esp32 is built by ESP-IDF's own cmake, which owns the toolchain, the
+# Kconfig that every component compiles against, and the closed wifi
+# libraries. Pointing at one adds targets that drive it, so a board is
+# built and flashed from this build directory rather than by hand:
+#
+#     ninja -C build esp32-tdeck
+#     ninja -C build esp32-tdeck-flash
+#
+# Empty means the targets do not exist and nothing else changes.
+option('esp32_idf', type: 'string', value: '',
+  description: 'path to esp-idf; adds the esp32-<board> targets')
+
+option('esp32_port', type: 'string', value: '',
+  description: 'default port for esp32-<board>-flash; ESPPORT overrides it')

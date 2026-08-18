@@ -49,8 +49,26 @@ qemu -- upstream has no esp32 machine:
 
 ## Building
 
+From the meson build directory, which is where the rest of the system
+is built and where `mkfatimg` finds the host module it needs:
+
+    meson setup build -Desp32_idf=$HOME/src/esp-idf
+    ninja -C build esp32-tdeck
+    ESPPORT=/dev/ttyACM0 ninja -C build esp32-tdeck-flash
+
+`ESPPORT` is IDF's own variable and is named per flash, because two of
+the same board are often plugged in at once and flashing the wrong one
+succeeds quietly. Flashing with no port set is refused rather than
+guessed; `-Desp32_port=` configures a default for a single-board setup.
+
+Those run `idf.py` through `tools/esp32.sh`, which sources IDF's
+`export.sh` for the toolchain and python environment. IDF still owns
+the build: its Kconfig, its FreeRTOS port and the closed wifi libraries
+are not things another build system can take over.
+
 The board is a build-time choice, so each target gets its own build
 directory. `sdkconfig.defaults` is the T-Deck; the others layer over it.
+To drive IDF directly instead:
 
     # T-Deck: ESP32-S3-WROOM-1 N16R8, 16MB flash, 8MB octal PSRAM
     idf.py -B build-tdeck build
