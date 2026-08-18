@@ -212,6 +212,36 @@ function ops.remove(S, m)
 	return { ok = true }
 end
 
+-- the name, on a fid the client keeps: unlike remove, a wstat does not
+-- spend it, so the file goes on being reachable through it.
+function ops.wstat(S, m)
+	local h = S.fids[m.fid]
+
+	if h == nil then
+		dev.error(dev.Ebadfid)
+	end
+	if not S.B.wstat then
+		dev.error(dev.Enotimpl)
+	end
+	S.B.wstat(h, { name = m.name })
+	return { ok = true }
+end
+
+-- two directory fids, so this is the move 9P has no message for. The
+-- server holds both ends, which is what makes it one operation.
+function ops.rename(S, m)
+	local src, dst = S.fids[m.fid], S.fids[m.newfid]
+
+	if src == nil or dst == nil then
+		dev.error(dev.Ebadfid)
+	end
+	if not S.B.rename then
+		dev.error(dev.Enotimpl)
+	end
+	S.B.rename(src, m.name, dst, m.newname)
+	return { ok = true }
+end
+
 function ops.clunk(S, m)
 	local h = S.fids[m.fid]
 

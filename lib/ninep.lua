@@ -59,6 +59,23 @@ function M.packstat(st)
 	return spack("<I2", #body) .. body
 end
 
+-- a stat for Twstat, where every field left out means "do not change
+-- it". 9P spells that all-ones for a number and empty for a string, so
+-- packstat's zeros would ask to set the mode to zero and the length to
+-- nothing. Only what the caller names is asked for.
+function M.packwstat(st)
+	local q = st.qid or {}
+	local body = spack("<I2I4", 0xffff, 0xffffffff) ..
+	    spack("<BI4I8", q.type or 0xff, q.vers or 0xffffffff,
+		q.path or -1) ..
+	    spack("<I4I4I4I8", st.mode or 0xffffffff, st.atime or 0xffffffff,
+		st.mtime or 0xffffffff, st.length or -1) ..
+	    puts(st.name or "") .. puts(st.uid or "") ..
+	    puts(st.gid or "") .. puts(st.muid or "")
+
+	return spack("<I2", #body) .. body
+end
+
 -- the inverse of packstat: sb is one stat record's bytes, WITHOUT the
 -- outer stat[n2] wrapper length (M.decode's Rstat branch already
 -- strips that into m.statbytes; a directory Tread's raw entries are
@@ -122,7 +139,17 @@ function M.decode(msg)
 	elseif typ == M.Tclunk or typ == M.Tremove or typ == M.Tstat then
 		m.fid = sunpack("<I4", msg, off)
 	elseif typ == M.Twstat then
-		m.fid = sunpack("<I4", msg, off)
+		-- fid, then a stat double-wrapped exactly as Rstat's is: an
+		-- outer count around a record carrying its own size.
+		local n
+
+		m.fid, off = sunpack("<I4", msg, off)
+		_, off = sunpack("<I2", msg, off)
+		n, off = sunpack("<I2", msg, off)
+		if off + n - 1 > #msg then
+			return nil
+		end
+		m.statbytes = msg:sub(off, off + n - 1)
 
 	-- ---- R-messages: the client side's half of decode ----
 	elseif typ == M.Rerror then
@@ -327,6 +354,16 @@ end
 
 function M.tstat(tag, fid)
 	return frame(M.Tstat, tag, spack("<I4", fid))
+end
+
+-- change what a fid names. `st` carries only the fields to change, so
+-- {name = "new"} is a rename within the file's own directory -- which is
+-- as far as wstat reaches, the stat having a name and no path.
+function M.twstat(tag, fid, st)
+	local sb = M.packwstat(st)
+
+	return frame(M.Twstat, tag,
+	    spack("<I4", fid) .. spack("<I2", #sb) .. sb)
 end
 
 -- ---- synthetic filesystem tree ----

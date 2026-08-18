@@ -70,8 +70,9 @@
 -- within its own directory, which is all 9P's Twstat can carry.
 
 -- OPTIONAL: rename(dsrc, name, ddst, newname), moving an entry between
--- two directories of the SAME backend. 9P has no message for this, so a
--- mount cannot offer it and ns falls back to wstat or refuses.
+-- two directories of the SAME backend. 9P has no message for it, so a
+-- p9fs mount cannot offer it; srv/mnt carry calls rather than 9P bytes
+-- and do.
 
 -- dev.check demands none of the three. check before calling.
 --

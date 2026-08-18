@@ -373,6 +373,23 @@ function M.new(right)
 		rpc({ op = "remove", fid = fid })
 	end
 
+	-- the fid survives, so unlike remove it is not forgotten here.
+	function B.wstat(h, st)
+		if not st or st.name == nil then
+			return true
+		end
+		rpc({ op = "wstat", fid = h.fid, name = st.name })
+		return true
+	end
+
+	-- both directories are fids of this one server, so the move it
+	-- cannot express over 9P it can express over a port.
+	function B.rename(dsrc, name, ddst, newname)
+		rpc({ op = "rename", fid = dsrc.fid, newfid = ddst.fid,
+		    name = name, newname = newname })
+		return true
+	end
+
 	function B.clunk(h)
 		local sess = session:peek()
 

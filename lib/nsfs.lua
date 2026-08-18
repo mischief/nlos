@@ -226,6 +226,32 @@ function M.new(ns, root)
 		must(ns:remove(nspath(h.path)))
 	end
 
+	-- both forms go to the namespace below, which decides whether the
+	-- backend under it can do them. A walk this holds is dropped: it
+	-- names a file that has moved.
+	local function under(dirpath, name)
+		return (dirpath == "/" and "" or dirpath) .. "/" .. name
+	end
+
+	function B.wstat(h, st)
+		if not st or st.name == nil then
+			return true
+		end
+
+		local p = nspath(h.path)
+
+		h.wc = nil
+		must(ns:rename(p, under(p:match("^(.*)/[^/]+$") or "/", st.name)))
+		return true
+	end
+
+	function B.rename(dsrc, name, ddst, newname)
+		dsrc.wc, ddst.wc = nil, nil
+		must(ns:rename(under(nspath(dsrc.path), name),
+		    under(nspath(ddst.path), newname)))
+		return true
+	end
+
 	function B.readdir(h)
 		-- what the backend below returned is already the shape this
 		-- one answers in, and NS:readdir built the list for us alone.

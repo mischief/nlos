@@ -676,6 +676,7 @@ lua_payload = files(
   'bin/stats.lua',
   'bin/p.lua',
   'bin/rm.lua',
+  'bin/mv.lua',
   'bin/fetch.lua',
   'bin/reboot.lua',
   'bin/top.lua',

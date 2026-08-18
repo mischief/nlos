@@ -12,7 +12,7 @@ local dev = require("dev")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(42)
+tap.plan(44)
 
 -- ---- the conformance suite, run against anything claiming to be a dev
 local function conforms(what, B, known, knowncontent, knowndir)
@@ -203,8 +203,14 @@ tap.is(tostring(mh2), "custom", "closable preserves __tostring")
 tap.ok(getmetatable(mh2).__close ~= nil, "and still added __close")
 
 -- ---- not-implemented is absence, not a raising stub ----
--- remove/wstat are checkable before calling, which a stub would destroy.
-tap.ok(dev.mem({}).remove == nil, "remove is absent, not a stub")
+-- what a backend will not do is checkable before calling, which a stub
+-- would destroy. The in-memory tree does all three; a read-only one
+-- offers none of them.
+local ro = dev.readonly(dev.mem({}))
+
+tap.ok(ro.remove == nil, "remove is absent, not a stub")
+tap.ok(ro.wstat == nil, "and so is wstat")
+tap.ok(ro.rename == nil, "and rename")
 tap.ok(espfs.new("/").remove == nil, "espfs remove is absent too")
 
 -- ---- walkmany: used when offered, and the loop when not ----

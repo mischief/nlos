@@ -182,7 +182,7 @@ function M.responder(backend)
 			local mode = lo == 0 and "r" or lo == 1 and "w" or "rw"
 			local ok, oh = pcall(backend.open, f.h, mode)
 			if not ok then return err(m.tag, oh) end
-			f.h = oh
+			f.h, f.open = oh, true
 			local ok2, st = pcall(backend.stat, oh)
 			local q = qidof(f.path, ok2 and st or { dir = f.dir })
 			return p9.ropen(m.tag, q, msize - 24)
@@ -245,14 +245,46 @@ function M.responder(backend)
 			return p9.rstat(m.tag, statbytes(f.path, st))
 
 		elseif m.type == p9.Twstat then
-			-- accepted and ignored: the dev interface has no wstat,
-			-- so mode, mtime and rename cannot be applied yet. A
-			-- client that sets them (tar's utime and chmod) needs the
-			-- accept not to fail; truncate and rename over 9P wait on
-			-- dev growing wstat, the same way directory create waited
-			-- on create growing a flag.
-			if not fids[m.fid] then
+			-- the name is applied; mode and the times are accepted
+			-- and dropped, because a client that sets them (tar's
+			-- utime and chmod) needs the accept not to fail and no
+			-- backend here keeps them.
+			local f = fids[m.fid]
+
+			if not f then
 				return p9.rerror(m.tag, dev.Ebadfid)
+			end
+
+			local st = m.statbytes and p9.unpackstat(m.statbytes)
+
+			if not st or st.name == nil or st.name == "" then
+				return p9.rwstat(m.tag)
+			end
+			if not backend.wstat then
+				return p9.rerror(m.tag, dev.Enotimpl)
+			end
+
+			local ok, werr = pcall(backend.wstat, f.h,
+			    { name = st.name })
+
+			if not ok then
+				return err(m.tag, werr)
+			end
+			-- 9P says the fid still names the file. Most backends
+			-- here key a handle on its path, so one is walked again
+			-- at the new name -- an open fid is left alone, since a
+			-- fresh walk would give back an unopened handle.
+			local dir = f.path:match("^(.*)/[^/]*$") or ""
+
+			f.path = dir .. "/" .. st.name
+			if not f.open then
+				local walked, nh = pcall(dev.walkpath, backend,
+				    backend.attach(), f.path)
+
+				if walked then
+					pcall(backend.clunk, f.h)
+					f.h = nh
+				end
 			end
 			return p9.rwstat(m.tag)
 

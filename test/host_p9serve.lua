@@ -112,5 +112,28 @@ rpc(p9.topen(42, 41, 0))
 ok(rpc(p9.tread(43, 41, 0, 100)).data == "hello over 9p\n",
     "a cloned file fid opens and reads (the 9pfuse path)")
 
+-- Twstat: the rename 9P can express, and the fields it cannot apply.
+rpc(p9.twalk(50, 0, 50, { "README" }))
+ok(rpc(p9.twstat(51, 50, { name = "READYOU" })).type == p9.Rwstat,
+    "Twstat renames within a directory")
+ok(rpc(p9.twalk(52, 0, 52, { "READYOU" })).type == p9.Rwalk,
+    "the file answers to its new name")
+ok(rpc(p9.twalk(53, 0, 53, { "README" })).type == p9.Rerror,
+    "and not to the old one")
+
+-- the fid was not clunked by the rename, so it still names the file
+ok(p9.unpackstat(rpc(p9.tstat(54, 50)).statbytes).name == "READYOU",
+    "the fid follows the file to its new name")
+
+-- a wstat that changes nothing a backend keeps is accepted, because
+-- tar sets a mode and a time after every file it writes.
+ok(rpc(p9.twstat(55, 50, { mode = 0x1ff, mtime = 1 })).type == p9.Rwstat,
+    "a mode and time wstat is accepted and dropped")
+
+ok(rpc(p9.twstat(56, 50, { name = "sub" })).type == p9.Rerror,
+    "renaming onto a name in use is refused")
+ok(rpc(p9.twstat(57, 999, { name = "x" })).type == p9.Rerror,
+    "and a wstat on an unknown fid is Rerror")
+
 io.write("1.." .. count .. "\n")
 if failed > 0 then os.exit(1) end

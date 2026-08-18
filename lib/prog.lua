@@ -441,6 +441,27 @@ osbuild.remove = function()
 	end
 end
 
+-- nil plus a message, as os.rename does everywhere. Crossing a mount
+-- fails here exactly as it fails on unix, and for the same reason: see
+-- NS:rename. bin/mv.lua is what copies instead.
+osbuild.rename = function()
+	return function(from, to)
+		local N = ns.current()
+
+		if not N then
+			return nil, tostring(from) .. ": no namespace"
+		end
+
+		local ok, err = N:rename(from, to)
+
+		if not ok then
+			return nil, ("%s -> %s: %s"):format(tostring(from),
+			    tostring(to), tostring(err or "cannot rename"))
+		end
+		return true
+	end
+end
+
 -- one locale, and it is C. nil for any other is what a caller checks
 -- before it formats anything.
 osbuild.setlocale = function()
@@ -455,7 +476,6 @@ end
 -- what is absent says why. "attempt to call a nil value" names the
 -- line that used it and not the reason it is not there.
 local noos = {
-	rename = "no filesystem here implements wstat",
 	execute = "no shell to run one; see prog.spawn",
 	tmpname = "this machine has no /tmp",
 }

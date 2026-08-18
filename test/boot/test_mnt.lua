@@ -24,7 +24,7 @@ local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
 
-tap.plan(37)
+tap.plan(42)
 
 -- ---- the server proc ----
 --
@@ -429,6 +429,25 @@ sys.close(dh)
 -- 3. and the LIVE mount is unaffected by all of that
 tap.is(N:readfile("/host/hello"), "hello from another proc\n",
     "the healthy mount still works afterwards")
+
+-- ---- rename over a mount, which 9P could not carry ----
+--
+-- srv/mnt marshal dev calls rather than 9P bytes, so both the wstat
+-- form and the cross-directory move cross the port. The server holds
+-- both directories, which is what makes the move one operation.
+
+tap.ok(N:rename("/host/hello", "/host/greeting"),
+    "wstat renames a file inside a mount")
+tap.is(N:readfile("/host/greeting"), "hello from another proc\n",
+    "and it reads back through the new name")
+
+tap.ok(N:rename("/host/greeting", "/host/sub/greeting"),
+    "a cross-directory rename crosses the port")
+tap.is(N:readfile("/host/sub/greeting"), "hello from another proc\n",
+    "and the file is there afterwards")
+
+tap.ok(not N:rename("/host/sub/greeting", "/host/sub/deep"),
+    "renaming onto a name in use is refused over the mount")
 
 -- ---- claim 5: the server exits when its last client goes ----
 
