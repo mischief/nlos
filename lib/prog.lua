@@ -469,13 +469,18 @@ local function install(ctx)
 				v = function(...)
 					return require("nsio").type(...)
 				end
-			elseif k == "popen" or k == "tmpfile" then
-				-- said rather than absent: a caller that
-				-- tests io.popen finds out here.
+			elseif k == "popen" then
+				-- a proc, and so needs a namespace to find
+				-- the command in, exactly as open does.
+				if not ctx.ns then
+					return nil
+				end
+				v = function(cmd, mode)
+					return M.popen(ctx, cmd, mode)
+				end
+			elseif k == "tmpfile" then
 				v = function()
-					return nil, k == "popen" and
-					    "no shell to run one; see prog.spawn" or
-					    "this machine has no /tmp"
+					return nil, "this machine has no /tmp"
 				end
 			else
 				return nil
@@ -610,6 +615,150 @@ end
 
 -- resolve a program-supplied path against its cwd, so a relative path
 -- means what the program expects
+-- ---- io.popen ----
+--
+-- One command, run as a PROC. A proc because both ends of a pipe
+-- cannot live in one of them: sys.hungup asks whether anyone ELSE
+-- holds the port, so a reader whose writer is a thread beside it is
+-- told the pipe is finished. See test/boot/test_selfpipe.lua.
+
+-- No pipeline, no redirection: those are the shell's, and running a
+-- shell here would put the writer back inside this proc. Refused by
+-- name rather than parsed and ignored.
+local SHELLISH = "[|<>&;]"
+
+-- lua's own splitting, quotes included, so `io.popen('cat "a b"')`
+-- means what it means at a prompt. Not dos.split: requiring the shell
+-- for one function would load all of it.
+local function argvof(line)
+	local words, cur, inq = {}, nil, nil
+
+	local function flush()
+		if cur then
+			words[#words + 1] = cur
+			cur = nil
+		end
+	end
+
+	for i = 1, #line do
+		local c = line:sub(i, i)
+
+		if inq then
+			if c == inq then
+				inq = nil
+			else
+				cur = (cur or "") .. c
+			end
+		elseif c == '"' or c == "'" then
+			inq = c
+			cur = cur or ""
+		elseif c:match("%s") then
+			flush()
+		else
+			cur = (cur or "") .. c
+		end
+	end
+	flush()
+	return words
+end
+
+-- the shell's own rule (dos's Sh:find), so a name means the same thing
+-- from a program as it does at a prompt: a slash is a path, otherwise
+-- PATH, and ".lua" is tried before the bare name.
+local function findprog(ctx, name)
+	local N = ctx.ns
+
+	if name:find("/") then
+		local p = M.abspath(ctx, name)
+
+		return N:stat(p) and p or nil
+	end
+	for dir in (ctx.env and ctx.env.PATH or "/bin"):gmatch("[^:]+") do
+		for _, cand in ipairs({ dir .. "/" .. name .. ".lua",
+		    dir .. "/" .. name }) do
+			if N:stat(cand) then
+				return cand
+			end
+		end
+	end
+	return nil
+end
+
+function M.popen(ctx, cmd, mode)
+	mode = tostring(mode or "r"):gsub("b", "")
+	if mode ~= "r" then
+		return nil, "io.popen: only 'r' is supported"
+	end
+	if type(cmd) ~= "string" then
+		return nil, "io.popen: a command is a string"
+	end
+	if cmd:find(SHELLISH) then
+		return nil, "io.popen: no pipeline or redirection here"
+	end
+
+	local argv = argvof(cmd)
+
+	if #argv == 0 then
+		return nil, "io.popen: no command"
+	end
+
+	local path = findprog(ctx, argv[1])
+
+	if not path then
+		return nil, argv[1] .. ": not found"
+	end
+
+	local thread = require("los.thread")
+	local port = sys.newport("popen")
+	-- described once: proc.spawn adopts it before the child's first
+	-- line runs, and the ABI message carries the same thing.
+	local desc = ctx.ns:describe()
+	local pid, h = require("proc").spawn('require("prog").main()',
+	    { name = argv[1], ns = desc })
+
+	if not pid then
+		sys.close(port)
+		return nil, "io.popen: spawn failed"
+	end
+	sys.monitor(pid)
+	sys.send(h, {
+		path = path,
+		name = argv[1],
+		args = argv,
+		env = ctx.env,
+		cwd = ctx.cwd,
+		nsdesc = desc,
+		-- the write end is the CHILD's, which is what makes the
+		-- hangup mean end-of-output rather than nothing at all.
+		stdout = { __right = port },
+	})
+	sys.close(h)
+
+	local f = require("nsio").stream(M.pipestream(port, true), "popen")
+	local status = nil
+
+	-- lua's close on a popen handle answers the COMMAND's status. The
+	-- pipe ends when the child drops its right, so eof comes first and
+	-- the notice after.
+	f.close = function(self)
+		while self:read(4096) ~= nil do
+		end
+		while status == nil do
+			local m = thread.recv(sys.SELF)
+
+			if type(m) == "table" and m.exit == pid then
+				status = m.normal and (m.status or 0) or 1
+			end
+		end
+		getmetatable(self).close(self)
+		if status == 0 then
+			return true, "exit", 0
+		end
+		return nil, "exit", status
+	end
+	return f
+end
+
 function M.abspath(ctx, path)
 	path = tostring(path)
 	if path:sub(1, 1) == "/" then

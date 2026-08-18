@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(38)
+tap.plan(41)
 
 local N = ns.new()
 
@@ -419,5 +419,27 @@ o = run("/bin/lua.lua", { "lua", "-e",
 
 tap.is(o, "closed file true", "a line reads, and close is visible -> " ..
     tostring(o))
+
+-- ---- io.popen: one command, run as a proc ----
+o = run("/bin/lua.lua", { "lua", "-e",
+    'local f = io.popen("seq 1 3"); local d = f:read("a");' ..
+    'local ok, how, code = f:close();' ..
+    'io.write("[", (d:gsub("%s", "|")), "] ", tostring(ok), " ",' ..
+    'tostring(code))' })
+
+tap.is(o, "[1|2|3|] true 0", "popen reads a command's output -> " ..
+    tostring(o))
+
+o = run("/bin/lua.lua", { "lua", "-e",
+    'local f, e = io.popen("seq 1 3 | cat"); io.write(tostring(f), " ", e)' })
+
+tap.ok(o and o:find("no pipeline", 1, true) ~= nil,
+    "a pipeline is refused by name -> " .. tostring(o))
+
+o = run("/bin/lua.lua", { "lua", "-e",
+    'local f, e = io.popen("nosuchcmd"); io.write(tostring(f), " ", e)' })
+
+tap.ok(o and o:find("not found", 1, true) ~= nil,
+    "and a missing command says so -> " .. tostring(o))
 
 tap.done()
