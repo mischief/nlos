@@ -497,7 +497,7 @@ thread.spawn(function()
 				-- dio keeps no pixels for an app that was
 				-- not in front, so coming back is a fresh
 				-- window rather than the one left behind.
-				rows = lines()
+				items = place(sections())
 				draw(true)
 			end
 		elseif m == "q" then
