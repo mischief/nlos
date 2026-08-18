@@ -142,7 +142,7 @@ local function main()
 			reaped = true
 			break
 		end
-		os.execute("sleep 0.5")
+		hostutil.sleep(0.05)
 	end
 	if not ok(up, "guest mcp server came up") then
 		return 1

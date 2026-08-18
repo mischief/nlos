@@ -314,6 +314,27 @@ l_free_port(lua_State *L)
 	return 1;
 }
 
+/* wait, without forking /bin/sleep to do it. A poll loop that shells
+ * out cannot go finer than a process spawn, so waiting for a guest to
+ * come up cost half a second of latency after it already had.
+ */
+static int
+l_sleep(lua_State *L)
+{
+	double sec = luaL_checknumber(L, 1);
+	struct timespec ts;
+
+	if (sec < 0)
+		sec = 0;
+	ts.tv_sec = (time_t)sec;
+	ts.tv_nsec = (long)((sec - (double)ts.tv_sec) * 1e9);
+
+	/* a signal must not shorten the wait: resume what is left */
+	while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
+		;
+	return 0;
+}
+
 static int
 l_getpid(lua_State *L)
 {
@@ -671,6 +692,7 @@ static const luaL_Reg hostutil[] = {
 	{ "close", l_close },
 	{ "free_port", l_free_port },
 	{ "getpid", l_getpid },
+	{ "sleep", l_sleep },
 	{ "spawn", l_spawn },
 	{ "kill", l_kill },
 	{ "wait", l_wait },

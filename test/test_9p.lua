@@ -178,7 +178,7 @@ local function main()
 			c = Client.new(sock_path)
 			break
 		end
-		os.execute("sleep 0.5")
+		hostutil.sleep(0.05)
 	end
 	if not ok(c ~= nil, "guest 9p server came up") then
 		return 1
