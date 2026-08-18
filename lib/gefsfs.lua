@@ -225,10 +225,11 @@ function M.new(mnt)
 		mnt:removepath(h.path)
 	end
 
-	-- the name only. A dirent's key is (parent, name), so gefs renames
-	-- within one directory by deleting and inserting -- and no rename()
-	-- here, because moving between directories would rewrite the key's
-	-- other half along with the super entry that points back at it.
+	-- the name only, because Mount:wstat is shaped around 9P's wstat.
+	-- Nothing in the format forbids the move: a dirent's parent lives
+	-- in its key and not in its value, so changing it is the same
+	-- delete-and-insert with the other half of the key rewritten. It
+	-- would be atomic too, one upsert batch. It is simply not written.
 	function B.wstat(h, st)
 		if isctl(h) or h.path == "/" then
 			dev.error(dev.Eperm)

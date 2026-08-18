@@ -91,9 +91,9 @@ end
 
 -- ---- the suite every backend answers the same way ----
 --
--- crossdir says whether this backend can move an entry between two of
--- its own directories. gefs cannot: a dirent's key is (parent, name),
--- so the move rewrites the half wstat does not carry.
+-- crossdir says whether this backend moves an entry between two of its
+-- own directories. gefs does not, because its wstat is shaped around
+-- 9P's -- not because the format is in the way.
 local function suite(label, build, crossdir)
 	local function fresh()
 		local N = ns.new()
