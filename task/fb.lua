@@ -328,6 +328,14 @@ if platform.unload1 then
 	end
 end
 
+-- diagnostic: how many transfer completions the driver's accounting
+-- loses when more than it plans for are outstanding.
+if platform.spiprobe then
+	function ops.spiprobe(m)
+		return platform.spiprobe(m.extra, m.settle)
+	end
+end
+
 -- fmt reaches the driver, which is where the pad is best left off: the
 -- channels are already eight bits wide inside an unload, so a driver
 -- that knows "rgb" pays nothing for it. Nothing but a caller writing a
@@ -405,6 +413,7 @@ end
 local GLASS = {
 	unload = true, unload1 = true, setmode = true,
 	cursor = true, place = true, session = true,
+	spiprobe = true,
 }
 
 -- a session whose client has gone: sys.hungup is sole_holder, so it is

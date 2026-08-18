@@ -57,4 +57,9 @@ int luaos_lcd_scroll(int x, int y, int tox, int toy, int w, int h);
  */
 int luaos_lcd_cursor(int x, int y, int on);
 
+/* queue NBAND transfers plus `extra`, wait `settle` ms, then drain.
+ * Answers how many completions the semaphore refused.
+ */
+int luaos_lcd_spiprobe(int extra, int settle);
+
 #endif

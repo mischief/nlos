@@ -17,17 +17,20 @@
 
 #if CONFIG_LUAOS_BOARD_CARDPUTER || CONFIG_LUAOS_BOARD_TDECK
 
+#include <stdio.h>
 #include <string.h>
 
 #include <driver/gpio.h>
 #include <driver/spi_master.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <esp_heap_caps.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 
+#include "kernel.h"
 #include "platform.h"
 #include "esp32.h"
 #include "lcd.h"
@@ -130,6 +133,14 @@ static int probed, present;
  */
 static SemaphoreHandle_t sent;
 
+/* completions the semaphore was too full to hold, and the most
+ * transfers ever outstanding at once. The second may not exceed NBAND;
+ * if it does, the first is how the machine stops.
+ */
+static volatile int refused;
+static int peakinflight;
+static int said;
+
 static bool
 transdone(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ed,
     void *arg)
@@ -139,8 +150,14 @@ transdone(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ed,
 	(void)io;
 	(void)ed;
 	(void)arg;
-	if (sent != NULL)
-		xSemaphoreGiveFromISR(sent, &woke);
+	if (sent != NULL) {
+		/* a give the semaphore cannot hold is a completion nobody
+		 * will ever be told about, and drain would then wait for
+		 * it forever. Counted rather than dropped in silence.
+		 */
+		if (xSemaphoreGiveFromISR(sent, &woke) != pdTRUE)
+			refused++;
+	}
 	return woke == pdTRUE;
 }
 
@@ -153,11 +170,36 @@ static int inflight;
 /* wait for every outstanding transfer. Needed before a buffer that is
  * not one of ours is handed to the DMA, and before reading the panel.
  */
+#define WAITMS 2000
+
+/* one completion, or a report and a reset. This task is the scheduler,
+ * so an unbounded wait here is the whole machine stopping: better to
+ * say what the counts were and go on with them cleared, since a lost
+ * give makes every later wait wrong by the same amount.
+ */
+static int
+waitone(const char *who)
+{
+	char msg[128];
+
+	if (xSemaphoreTake(sent, pdMS_TO_TICKS(WAITMS)) == pdTRUE)
+		return 0;
+
+	snprintf(msg, sizeof msg,
+	    "lcd: %s: no completion in %dms, inflight=%d count=%d "
+	    "refused=%d peak=%d", who, WAITMS, inflight,
+	    (int)uxSemaphoreGetCount(sent), refused, peakinflight);
+	kernel_log(msg);
+	inflight = 0;
+	return -1;
+}
+
 static void
 drain(void)
 {
 	while (inflight > 0) {
-		xSemaphoreTake(sent, portMAX_DELAY);
+		if (waitone("drain") != 0)
+			return;
 		inflight--;
 	}
 }
@@ -165,6 +207,21 @@ drain(void)
 /* the next staging buffer to fill. Blocks only when every one of them
  * is still with the DMA.
  */
+/* wait until another transfer may be queued. NBAND is the depth of
+ * both the driver's queue and the completion semaphore, so going past
+ * it means a give the semaphore cannot hold -- a completion nobody is
+ * told about, and a later wait for it that never ends.
+ */
+static void
+room(void)
+{
+	while (inflight >= NBAND) {
+		if (waitone("room") != 0)
+			break;
+		inflight--;
+	}
+}
+
 static uint16_t *
 bandnext(void)
 {
@@ -174,10 +231,7 @@ bandnext(void)
 	 * order, so the one coming round again is the oldest: fewer
 	 * outstanding than there are buffers means it has been sent.
 	 */
-	while (inflight >= NBAND) {
-		xSemaphoreTake(sent, portMAX_DELAY);
-		inflight--;
-	}
+	room();
 	b = bands[bandi];
 	bandi = (bandi + 1) % NBAND;
 	return b;
@@ -190,10 +244,25 @@ bandnext(void)
 static int
 sendband(int x, int y, int w, int h, const uint16_t *px)
 {
+	/* every route in, so no caller can push the count past what the
+	 * semaphore holds.
+	 */
+	room();
 	if (esp_lcd_panel_draw_bitmap(panel, x, y, x + w, y + h,
 	    (void *)px) != ESP_OK)
 		return -1;
 	inflight++;
+	if (inflight > peakinflight)
+		peakinflight = inflight;
+	if (refused && !said) {
+		char msg[96];
+
+		said = 1;
+		snprintf(msg, sizeof msg,
+		    "lcd: a completion was refused: refused=%d peak=%d",
+		    refused, peakinflight);
+		kernel_log(msg);
+	}
 	return 0;
 }
 
@@ -674,6 +743,43 @@ cursor_hit(int x, int y, int w, int h)
 	return !(x >= cx + cw || x + w <= cx || y >= cy + ch || y + h <= cy);
 }
 
+/* build the state a band loop plus a cursor blit leaves behind, and
+ * report whether it loses a completion. `extra` is what follows the
+ * band loop; a positive `settle` queues it raw and waits that many ms
+ * with nobody taking, a negative one sends it the way cursor_blit
+ * does. Returns the refusals caused, so 0 says the accounting held.
+ */
+int
+luaos_lcd_spiprobe(int extra, int settle)
+{
+	int i;
+
+	if (!present)
+		return -1;
+
+	drain();
+	refused = 0;
+	said = 0;
+
+	for (i = 0; i < NBAND; i++) {
+		uint16_t *b = bandnext();
+
+		memset(b, 0, (size_t)LCD_W * sizeof *b);
+		sendband(0, 0, LCD_W, 1, b);
+	}
+	for (i = 0; i < extra; i++) {
+		if (settle < 0)
+			sendrect(0, 0, LCD_W, 1, bands[0]);
+		else
+			sendband(0, 0, LCD_W, 1, bands[0]);
+	}
+
+	if (settle > 0)
+		vTaskDelay(pdMS_TO_TICKS(settle));
+	drain();
+	return refused;
+}
+
 /* move the cursor, show it, or hide it.
  *
  * on < 0 leaves the visibility alone, which is what a move is.
@@ -936,6 +1042,13 @@ int
 luaos_lcd_cursor(int x, int y, int on)
 {
 	(void)x; (void)y; (void)on;
+	return -1;
+}
+
+int
+luaos_lcd_spiprobe(int extra, int settle)
+{
+	(void)extra; (void)settle;
 	return -1;
 }
 

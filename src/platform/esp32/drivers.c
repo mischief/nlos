@@ -989,6 +989,23 @@ fb_cursor(lua_State *L)
 	return 1;
 }
 
+/* fb.spiprobe(extra, settle) -> refusals. Diagnostic: it builds the
+ * transfer backlog a band loop plus a cursor blit leaves and reports
+ * whether the completion accounting survives it.
+ */
+static int
+fb_spiprobe(lua_State *L)
+{
+	lua_Integer extra = luaL_optinteger(L, 1, 1);
+	lua_Integer settle = luaL_optinteger(L, 2, 200);
+	int n = luaos_lcd_spiprobe((int)extra, (int)settle);
+
+	if (n < 0)
+		return luaL_error(L, "fb.spiprobe: no screen here");
+	lua_pushinteger(L, n);
+	return 1;
+}
+
 /* fb.unload1(x,y,w,h) -> packed 1bpp, MSB first.
  *
  * Not part of the shared fb protocol: an efi framebuffer has colour and
@@ -1033,7 +1050,8 @@ static const luaL_Reg fb_lib[] = {
 	{ "unload", fb_unload },
 	{ "unload1", fb_unload1 },
 	{ "scroll", fb_scroll },
-		{ "cursor", fb_cursor },
+	{ "cursor", fb_cursor },
+	{ "spiprobe", fb_spiprobe },
 	{ NULL, NULL },
 };
 
