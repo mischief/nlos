@@ -996,8 +996,18 @@ local function start(i, openarg)
 				-- task answers datagrams, and bin/host.lua
 				-- and bin/date.lua each ask a server one
 				-- question over one.
-				ip = entry.net and ip and
+				-- named udp, which is what lib/prog.lua
+				-- reads: the ip task is what answers a
+				-- datagram, and the ABI calls the capability
+				-- after what it does.
+				udp = entry.net and ip and
 				    { __right = ip } or nil,
+				-- the machine itself, where the entry asks:
+				-- what spends it is bin/reboot.lua, and a
+				-- program you have to be holding the board
+				-- to run may restart it.
+				power = entry.power and power and
+				    { __right = power } or nil,
 				-- entropy of its own, drawn from ours: a
 				-- program that makes a key needs one, and
 				-- two apps must not draw the same bytes.

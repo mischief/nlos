@@ -144,11 +144,11 @@ end
 --
 -- PTR and KBD are send rights minted from the rights the repl holds,
 -- which is ordinary and is what makes this need no new authority.
--- `panel` rather than sys.granted(): the repl is a proc init spawns, so
--- its rights arrive in its grant message. What the kernel granted is
--- init's, and this console's own table is empty.
+-- Where they come from depends on the prompt: the repl holds them in a
+-- `panel` grant table, and bin/lua.lua is an ordinary program holding
+-- them in its prog context. sys.granted() has neither.
 local SETUP = [[
-do local g = panel
+do local g = rawget(_G, "panel") or (require("prog").ctx or {})
 PTR = g.ptr and sys.sendright(g.ptr)
 KBD = g.kbd and sys.sendright(g.kbd)
 function P(x, y, b)

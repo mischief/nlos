@@ -20,6 +20,8 @@
 --	keys	give this one the keyboard while it is in front. Off by
 --		default: an app is reached with the pointer, and keys sent
 --		to a program that never reads them would fill a port.
+--	power	let this one restart the machine, which bin/reboot.lua
+--		spends. Off by default.
 --	ble	lend this one the bluetooth adapter. Off by default and
 --		named per entry rather than given to everything: the
 --		radio is a singleton, and a program that never asked for
@@ -46,6 +48,7 @@ return {
 		-- so the machine comes up at a prompt rather than at a
 		-- tray and an empty rectangle.
 		{ name = "term", cmd = "/bin/term.lua", keys = true,
+		  net = true, power = true,
 		  boot = true, label = ">", color = 0x0074d9, category = "shell",
 		  desc = "a shell, and everything run from one" },
 
