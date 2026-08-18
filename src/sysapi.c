@@ -18,6 +18,7 @@
 #include "luaheap.h"
 #include "debug.h"
 #include "kernel.h"
+#include "revision.h"
 #include "kproc.h"
 #include "serialize.h"
 #include "timer.h"
@@ -2403,6 +2404,14 @@ los_sys_open(lua_State *L)
 	 */
 	lua_pushinteger(L, MAXMSG);
 	lua_setfield(L, -2, "MAXMSG");
+
+	/* the revision this kernel was built from, which /VERSION.app and
+	 * each filesystem image also carry. Answering from the binary
+	 * rather than from a file is what lets a machine with nothing
+	 * mounted still say what it is.
+	 */
+	lua_pushstring(L, LUAOS_REV);
+	lua_setfield(L, -2, "rev");
 	return 1;
 }
 

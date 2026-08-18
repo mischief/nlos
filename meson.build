@@ -174,8 +174,29 @@ inc = include_directories('include', 'src', 'lua', 'src' / arch,
 # and one list is what stops them drifting apart unnoticed.
 sources_lua = files('tools/sources.lua')
 
+# the revision, generated once and consumed three ways: revision.h for
+# the C symbol, /VERSION.app in the embedded tree, and /VERSION.fs on
+# every filesystem image. One producer is what makes comparing them
+# mean something -- three generators could each be right and disagree.
+#
+# Always stale, because the answer depends on the tree rather than on
+# any file a build system could watch. version.lua rewrites it only
+# when it changed, so this does not relink the kernel every build.
+version_txt = custom_target('version.txt',
+  output: 'version.txt',
+  command: [lua_interp, files('tools/version.lua'), '@OUTPUT@'],
+  build_always_stale: true,
+)
+
+version_h = custom_target('revision.h',
+  input: version_txt,
+  output: 'revision.h',
+  command: [lua_interp, files('tools/version_h.lua'), '@INPUT@', '@OUTPUT@'],
+)
+
 kernel_src = files(run_command(lua_interp, sources_lua, 'kernel', check: true)
   .stdout().strip().split('\n'))
+kernel_src += version_h
 if platform == 'efi'
   kernel_src += files(
     'src/platform/efi/blk.c',
@@ -396,10 +417,14 @@ else
   foreach f : embed_files
     embed_args += '/' + f + '=' + meson.current_source_dir() / f
   endforeach
+  # the revision, beside the modules rather than among them: it is
+  # generated, so it is named by path and not through embed_files.
+  embed_args += '/VERSION.app=' + version_txt.full_path()
   embedfs_src = custom_target('embedfs.c',
     output: 'embedfs.c',
     input: files(embed_files) + files(boot_payload),
     command: [lua_interp, files('tools/gen_embedfs.lua'), '@OUTPUT@'] + embed_args,
+    depends: version_txt,
   )
   kernel_src += embedfs_src
 endif
@@ -680,6 +705,7 @@ lua_payload = files(
   'bin/p.lua',
   'bin/rm.lua',
   'bin/mv.lua',
+  'bin/rev.lua',
   'bin/fetch.lua',
   'bin/reboot.lua',
   'bin/top.lua',
@@ -915,8 +941,9 @@ endif
 
 gefs_img = custom_target('gefs.img',
   output: 'gefs.img',
-  command: [lua_interp, files('tools/mkgefs.lua'), '@OUTPUT@'],
-  depends: gefs_img_deps,
+  command: [lua_interp, files('tools/mkgefs.lua'), '@OUTPUT@',
+            '--version', version_txt.full_path()],
+  depends: gefs_img_deps + [version_txt],
 )
 
 # gpt disk: an esp, and a gefs partition after it holding gefs_img.
@@ -932,10 +959,11 @@ luaos_img = custom_target('luaos.img',
   input: [luaos_efi] + lua_payload,
   output: 'luaos.img',
   command: [lua_interp, files('tools/mkimage.lua'), '@OUTPUT@', '@INPUT@',
-            '--install', machine_services, '/etc/services.lua'],
+            '--install', machine_services, '/etc/services.lua',
+            '--install', version_txt.full_path(), '/VERSION.fs'],
   depend_files: machine_services,
   env: {'BOOT_EFI': boot_efi, 'GEFS_IMG': gefs_img.full_path()},
-  depends: gefs_img,
+  depends: [gefs_img, version_txt],
   build_by_default: true,
 )
 
@@ -1032,7 +1060,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'replyright', 'rightsundo', 'procpriv', 'portlimit', 'trace',
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'serialize', 'mntshare', 'althup', 'dio', 'ninepc',
-              'efigefs', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
+              'efigefs', 'version', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
               'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr']

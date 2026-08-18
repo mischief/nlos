@@ -314,8 +314,36 @@ if(CONFIG_LUAOS_PRECOMPILE)
     list(REMOVE_DUPLICATES PRECOMPILED)
 endif()
 
-set(embed_args /boot/esp32.lua=${LUAOS_PAYLOAD})
-set(embed_deps ${LUAOS_PAYLOAD})
+# the revision, generated once and consumed three ways: revision.h for
+# the C symbol, /VERSION.app in the embedded tree, and /VERSION.fs on
+# the luafs image that ../CMakeLists.txt builds. One producer is what
+# makes comparing them mean something.
+#
+# A target rather than a command, so it runs every build: the answer
+# depends on the tree, not on a file cmake could watch. version.lua
+# rewrites it only when it changed, so this does not relink each time.
+set(LUAOS_VERSION_TXT ${CMAKE_BINARY_DIR}/version.txt)
+set_property(GLOBAL PROPERTY LUAOS_VERSION_TXT ${LUAOS_VERSION_TXT})
+
+add_custom_target(luaos_version ALL
+    BYPRODUCTS ${LUAOS_VERSION_TXT}
+    COMMAND ${LUA_EXE} ${LUAOS_ROOT}/tools/version.lua ${LUAOS_VERSION_TXT}
+    WORKING_DIRECTORY ${LUAOS_ROOT}
+    VERBATIM)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/revision.h
+    COMMAND ${LUA_EXE} ${LUAOS_ROOT}/tools/version_h.lua
+            ${LUAOS_VERSION_TXT} ${CMAKE_CURRENT_BINARY_DIR}/revision.h
+    DEPENDS ${LUAOS_VERSION_TXT} luaos_version
+            ${LUAOS_ROOT}/tools/version_h.lua
+    VERBATIM)
+add_custom_target(luaos_revision_h
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/revision.h)
+
+set(embed_args /boot/esp32.lua=${LUAOS_PAYLOAD}
+    /VERSION.app=${LUAOS_VERSION_TXT})
+set(embed_deps ${LUAOS_PAYLOAD} ${LUAOS_VERSION_TXT})
 
 foreach(f ${PRECOMPILED})
     string(REPLACE "/" "_" flat ${f})
@@ -344,3 +372,7 @@ add_custom_command(
     VERBATIM)
 add_custom_target(embedfs DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/embedfs.c)
 add_dependencies(${COMPONENT_LIB} embedfs)
+# src/sysapi.c includes revision.h, so it has to exist before the
+# component compiles rather than merely before it links.
+add_dependencies(${COMPONENT_LIB} luaos_revision_h)
+add_dependencies(embedfs luaos_version)

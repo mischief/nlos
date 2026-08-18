@@ -60,6 +60,8 @@ set(luafs_skip "${CMAKE_BINARY_DIR}/luafs.exclude")
 string(REPLACE ";" "\n" luafs_skip_text "${luafs_embedded}")
 file(GENERATE OUTPUT "${luafs_skip}" CONTENT "${luafs_skip_text}\n")
 
+get_property(luafs_version GLOBAL PROPERTY LUAOS_VERSION_TXT)
+
 set(luafs_img "${CMAKE_BINARY_DIR}/luafs.img")
 add_custom_command(OUTPUT "${luafs_img}"
     COMMAND "${LUA_EXE}" tools/mkfatimg.lua "${luafs_img}" "${luafs_size}"
@@ -69,8 +71,12 @@ add_custom_command(OUTPUT "${luafs_img}"
         # machine, so the build picks the list and the boot payload
         # reads one name -- see machine/.
         machine/esp32/services.lua=/etc/services.lua
+        # the build's revision, which the kernel and the embedded tree
+        # also carry. Flashing this partition without the other is what
+        # makes them disagree, and bin/rev is what says so.
+        "${luafs_version}=/VERSION.fs"
     DEPENDS "${luafs_root}/tools/mkfatimg.lua" "${luafs_skip}"
-        ${luafs_sources}
+        ${luafs_sources} "${luafs_version}"
     WORKING_DIRECTORY "${luafs_root}"
     VERBATIM)
 add_custom_target(luafs DEPENDS "${luafs_img}")

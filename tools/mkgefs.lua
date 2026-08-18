@@ -9,9 +9,25 @@ package.path = scriptdir .. "/../lib/?.lua;" .. package.path
 
 local gefs = require "gefs"
 
-local out = arg[1] or error("usage: mkgefs.lua OUTPUT [size] [user]", 0)
-local size = tonumber(arg[2]) or (48 * 1024 * 1024)
-local user = arg[3] or "glenda"
+-- --version FILE puts the build's revision at /VERSION.fs, the same
+-- string the kernel and the embedded tree carry, so a volume can be
+-- told apart from one an older build left behind.
+local pos, version = {}, nil
+local i = 1
+
+while i <= #arg do
+	if arg[i] == "--version" then
+		version = arg[i + 1]
+		i = i + 2
+	else
+		pos[#pos + 1] = arg[i]
+		i = i + 1
+	end
+end
+
+local out = pos[1] or error("usage: mkgefs.lua OUTPUT [size] [user]", 0)
+local size = tonumber(pos[2]) or (48 * 1024 * 1024)
+local user = pos[3] or "glenda"
 
 local dev = assert(gefs.io.create(out, size))
 gefs.ream(dev, { user = user })
@@ -20,6 +36,15 @@ local fs = gefs.open(dev)
 local m = fs:mount("main")
 m:createfile("/README")
 m:writefile("/README", "hello from a gefs partition\n")
+
+if version then
+	local f = assert(io.open(version, "r"))
+	local rev = f:read("a")
+
+	f:close()
+	m:createfile("/VERSION.fs")
+	m:writefile("/VERSION.fs", rev)
+end
 fs:sync()
 dev:close()
 
