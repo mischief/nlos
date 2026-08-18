@@ -138,6 +138,10 @@ M.Enotimpl   = "not implemented"
 -- copying. the guarantee rename makes -- one name or the other, never
 -- neither -- is exactly what no two backends can jointly keep.
 M.Exdev      = "cross-device link"
+-- unix's EINVAL for rename: a directory cannot be moved inside itself.
+-- The subtree would be reachable from nothing, and the check has to be
+-- made before the move rather than found by a later fsck.
+M.Eloop      = "cannot move a directory into itself"
 -- not from error.h: this is the string plan 9's own 9P servers send for
 -- a fid they do not know, and lib/srv.lua raises it for the same reason.
 M.Ebadfid    = "unknown fid"

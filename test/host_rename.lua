@@ -139,6 +139,19 @@ local function suite(label, build, crossdir)
 	N = fresh()
 	ok(N:rename("/sub", "/moved"), label .. ": a directory renames too")
 	is(N:readfile("/moved/x"), "deep", label .. ": and keeps its contents")
+
+	-- into its own subtree, which detaches everything under it. FAT
+	-- did this and answered true, leaving the clusters unreachable.
+	N = fresh()
+	okr, err = N:rename("/sub", "/sub/inner")
+	ok(not okr, label .. ": a directory cannot move into itself")
+	is(err, dev.Eloop, label .. ": and says which rule that is")
+	is(N:readfile("/sub/x"), "deep", label .. ": the subtree is untouched")
+
+	-- the same file twice does nothing, as rename(2) promises when
+	-- both names resolve to one file.
+	ok(N:rename("/sub", "/sub"), label .. ": onto its own path is a no-op")
+	is(N:readfile("/sub/x"), "deep", label .. ": and it is still there")
 end
 
 suite("ramfs", memfs, true)

@@ -461,6 +461,12 @@ function Fs:rename(from, to)
   local e, err = self:walk(from)
   if not e then return nil, err end
   if e.root then return nil, "cannot rename the root" end
+  -- A directory cannot go inside itself: the entry that would move is
+  -- on the path to where it is going, so the subtree ends up reachable
+  -- from nothing and its clusters are simply lost.
+  if to:sub(1, #from + 1) == from .. "/" then
+    return nil, "cannot move a directory into itself"
+  end
   local sd = select(1, self:walkparent(from))
   local td, name = self:walkparent(to)
   if not td then return nil, name end

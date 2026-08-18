@@ -421,6 +421,20 @@ function NS:rename(from, to)
 	adir = adir ~= "" and adir or "/"
 	bdir = bdir ~= "" and bdir or "/"
 
+	-- the same file twice does nothing and says so, which is what
+	-- rename(2) promises when both names resolve to one file.
+	if b == a then
+		return true
+	end
+
+	-- into its own subtree: what would move is also what holds the
+	-- destination, so the whole of it becomes reachable from nothing.
+	-- Both paths are cleaned and rooted, so this compares them
+	-- directly. The filesystems check it too, for callers below here.
+	if b:sub(1, #a + 1) == a .. "/" then
+		return nil, dev.Eloop
+	end
+
 	local ok, res = pcall(function()
 		local da <close> = self:walk(adir)
 		local db <close> = self:walk(bdir)
