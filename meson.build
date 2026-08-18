@@ -1757,6 +1757,14 @@ test('slide-board', lua_interp,
   timeout: 20,
 )
 
+# lua's io read formats, ours against the host's own io. The reference
+# is what lua answers, not a table of expectations written here.
+test('io-formats', lua_interp,
+  args: [files('test/host_nsio.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # rename over all three backends that have one, plus two mounts, because
 # the refusal to rename across them is the rule no filesystem can show.
 test('ns-rename', lua_interp,

@@ -218,17 +218,18 @@ local function main()
 	ok(out:find("help", 1, true) ~= nil,
 	    "an unknown command points at help -> " .. out)
 
-	-- THE sandbox assertion. a visitor's program must not be able to
-	-- reach the disk behind its namespace. proc_new nils io.open /
-	-- loadfile / dofile for every proc but PRIV_BOOT, and prog.lua adds
-	-- back only io.write -- so this is checking the property the whole
-	-- public-shell idea rests on, in the one place a visitor can
-	-- actually run code.
+	-- THE sandbox assertion, and it is about reach rather than about
+	-- which functions exist. A visitor has io.open, and what it opens
+	-- is its namespace: the site tree, never the machine holding it.
+	-- loadfile and dofile stay gone, having no namespace to go
+	-- through. This is the one place a visitor runs code.
 	rr, out = line("probe")
-	ok(out:find("io.open=false", 1, true) ~= nil and
+	ok(out:find("io.open=true", 1, true) ~= nil and
+	    out:find("inns=true", 1, true) ~= nil and
+	    out:find("escape=false", 1, true) ~= nil and
 	    out:find("loadfile=false", 1, true) ~= nil and
 	    out:find("dofile=false", 1, true) ~= nil,
-	    "a visitor's program has no ambient file access -> " .. out)
+	    "a visitor reads its namespace and nothing under it -> " .. out)
 
 	-- a session is ONE proc: programs run as coroutines beside the
 	-- shell (dos coro=true), so two runs report the same pid. under the

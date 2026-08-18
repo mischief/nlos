@@ -374,23 +374,116 @@ local function install(ctx)
 		error(M.EXIT, 0)
 	end
 
-	-- io.write/io.stderr must reach the ABI's streams, not the raw
-	-- console: a program in a pipeline whose io.write went straight to
-	-- the terminal would bypass the pipe entirely.
-	G.io = {}
-	G.io.write = function(...)
-		for _, v in ipairs({ ... }) do
-			fds[1]:write(tostring(v))
+	-- lua's io, over the ABI's streams rather than the raw console: a
+	-- program in a pipeline whose io.write went to the terminal would
+	-- bypass the pipe. Built on use, like os above -- a program that
+	-- writes a line does not pay for the file half.
+	local std = {}
+
+	-- One handle shape for all three, and for a file, so io.type
+	-- answers "file" for any of them as lua's does. nsio is loaded by
+	-- the namespace anyway -- ns.adopt installs it -- so a lighter
+	-- object for stdout would save nothing.
+	local function out(fd, name)
+		if not std[fd] then
+			std[fd] = require("nsio").stream(fds[fd], name)
 		end
+		return std[fd]
 	end
-	G.io.stdout = { write = function(_, ...) G.io.write(...) end }
-	G.io.stderr = {
-		write = function(_, ...)
-			for _, v in ipairs({ ... }) do
-				fds[2]:write(tostring(v))
+
+	local function stdin()
+		return out(0, "stdin")
+	end
+
+	G.io = setmetatable({}, {
+		__index = function(t, k)
+			local v
+
+			if k == "stdin" then
+				v = stdin()
+			elseif k == "stdout" then
+				v = out(1, "stdout")
+			elseif k == "stderr" then
+				v = out(2, "stderr")
+			elseif k == "write" then
+				v = function(...)
+					return t.output():write(...)
+				end
+			elseif k == "read" then
+				v = function(...)
+					return t.input():read(...)
+				end
+			elseif k == "input" then
+				v = function(f)
+					if f then
+						t.__in = type(f) == "string" and
+						    assert(require("nsio").open(f,
+						    "r", rootedns(ctx))) or f
+					end
+					t.__in = t.__in or stdin()
+					return t.__in
+				end
+			elseif k == "output" then
+				v = function(f)
+					if f then
+						t.__out = type(f) == "string" and
+						    assert(require("nsio").open(f,
+						    "w", rootedns(ctx))) or f
+					end
+					t.__out = t.__out or out(1, "stdout")
+					return t.__out
+				end
+			elseif k == "lines" then
+				v = function(path, ...)
+					if not path then
+						return t.input():lines(...)
+					end
+					if not ctx.ns then
+						error("no namespace", 2)
+					end
+					return require("nsio").lines(path,
+					    ..., rootedns(ctx))
+				end
+			elseif k == "close" then
+				v = function(f)
+					return (f or t.output()):close()
+				end
+			elseif k == "flush" then
+				v = function()
+					return t.output():flush()
+				end
+			elseif k == "open" then
+				-- absent rather than failing, and only over a
+				-- namespace: proc_new nils the file half for
+				-- every proc but boot, and having somewhere
+				-- to point it is what puts it back. A visitor
+				-- given none probes and finds nothing.
+				if not ctx.ns then
+					return nil
+				end
+				v = function(path, mode)
+					return require("nsio").open(path,
+					    mode, rootedns(ctx))
+				end
+			elseif k == "type" then
+				v = function(...)
+					return require("nsio").type(...)
+				end
+			elseif k == "popen" or k == "tmpfile" then
+				-- said rather than absent: a caller that
+				-- tests io.popen finds out here.
+				v = function()
+					return nil, k == "popen" and
+					    "no shell to run one; see prog.spawn" or
+					    "this machine has no /tmp"
+				end
+			else
+				return nil
 			end
+			rawset(t, k, v)
+			return v
 		end,
-	}
+	})
 	-- print goes to stdout like everything else
 	G.print = function(...)
 		local parts = {}

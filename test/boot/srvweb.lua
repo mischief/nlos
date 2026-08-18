@@ -98,7 +98,20 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 			-- run twice, this is the same pid iff programs are
 			-- coroutines in the shell's proc rather than procs
 			out[#out + 1] = "pid=" .. tostring(sys.self())
+			-- io.open exists and is the namespace's: what a
+			-- visitor may read is what its namespace holds,
+			-- which is the site tree and nothing of the
+			-- machine under it.
 			out[#out + 1] = "io.open=" .. tostring(io.open ~= nil)
+
+			local inns = io.open("/README")
+
+			out[#out + 1] = "inns=" .. tostring(inns ~= nil)
+			if inns then
+				inns:close()
+			end
+			out[#out + 1] = "escape=" ..
+			    tostring(io.open("/lib/prog.lua") ~= nil)
 			-- rawget: reading an unbound global raises rather
 			-- than answering nil (src/linit.c), and being
 			-- unbound is exactly what this probe reports.

@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(36)
+tap.plan(38)
 
 local N = ns.new()
 
@@ -400,5 +400,24 @@ local sent = pcall(sys.send, keptsend, { op = "write", data = "gone" })
 tap.ok(not sent, "and closing an owned one drops the right")
 
 sys.close(kept)
+
+-- ---- lua's io, over the program's own streams ----
+--
+-- One handle shape for stdin, stdout and a file, so io.type answers for
+-- all of them. io.open resolves in the program's namespace, which is
+-- what a confined proc may reach and nothing else.
+local o = run("/bin/lua.lua", { "lua", "-e",
+    'local _ = io.write(io.type(io.stdout), " ",' ..
+    ' io.type(io.open("/init.lua")))' })
+
+tap.is(o, "file file", "stdout and an opened file are both files -> " ..
+    tostring(o))
+
+o = run("/bin/lua.lua", { "lua", "-e",
+    'local f = io.open("/init.lua"); local l = f:read("l"); f:close();' ..
+    'io.write(io.type(f), " ", tostring(#l > 0))' })
+
+tap.is(o, "closed file true", "a line reads, and close is visible -> " ..
+    tostring(o))
 
 tap.done()
