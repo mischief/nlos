@@ -297,7 +297,6 @@ else
     'task/power.lua',
     'lib/stdout.lua',
     'lib/ninep.lua',
-    'lib/dev.lua',
     'lib/srv.lua',
     'lib/mnt.lua',
     'lib/ns.lua',
@@ -389,7 +388,6 @@ else
     'task/ip.lua',
     'task/tcp4.lua',
     'task/dhcpd.lua',
-    'lib/dev.lua',
     'lib/srv.lua',
     'lib/sync/once.lua',
     'lib/sync/sema.lua',
@@ -613,6 +611,19 @@ if lua54_dep.found()
     meson.current_build_dir() / '?.so', separator: ';')
   host_deps += buf_native_host
 
+  # dev, which every filesystem lib requires. The guest preloads it; on
+  # the host it has to be a module the loader can find, or lib/fat and
+  # lib/gefs cannot be tested here at all.
+  dev_native_host = shared_module('dev',
+    ['src/dev.c', 'src/buf.c', 'test/hostbuf.c'],
+    name_prefix: '',
+    include_directories: include_directories('src'),
+    dependencies: lua54_dep,
+    native: true,
+    build_by_default: true,
+  )
+  host_deps += dev_native_host
+
   # the same primitives the guest preloads, so lib/crypto and what sits
   # on it can be tested here rather than only on a board.
   crypto_native_host = shared_module('crypto',
@@ -820,7 +831,6 @@ lua_payload = files(
   'lib/lazy.lua',
   'lib/devtree.lua',
   'lib/chan.lua',
-  'lib/dev.lua',
   # the block device and the gefs filesystem over it. blksrv is spawned
   # by the kernel when platform_have_blk() finds a disk (now true on efi
   # too, via src/platform/efi/blk.c); the rest is the same stack microvm

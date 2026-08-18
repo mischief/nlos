@@ -114,6 +114,7 @@ extern int luaopen_los_buf(lua_State *L);		/* buf.c: byte buffers */
 extern int luaopen_los_rom(lua_State *L);		/* vfs.c: the embed set */
 extern int luaopen_ssh_crypto_native(lua_State *L);	/* native.c */
 extern int luaopen_gefs_native(lua_State *L);	/* gefs_native.c */
+extern int luaopen_dev(lua_State *L);		/* dev.c */
 extern int luaopen_los_platform_cons(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_wire(lua_State *L);	/* drivers.c */
 extern int luaopen_los_platform_power(lua_State *L);	/* drivers.c */

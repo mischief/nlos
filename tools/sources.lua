@@ -33,6 +33,7 @@ groups.kernel = {
 	"src/ninep.c",
 	"src/crc.c",
 	"src/buf.c",
+	"src/dev.c",
 	"src/font.c",
 	"src/kernel.c",
 	"src/serialize.c",

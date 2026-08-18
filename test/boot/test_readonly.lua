@@ -125,7 +125,7 @@ if caps.esp then
 	tap.ok(init and #init > 0,
 	    "esp read-only: reads a real file (" .. tostring(init and #init) ..
 	    " bytes)")
-	tap.ok(E:readfile("/lib/dev.lua") ~= nil,
+	tap.ok(E:readfile("/lib/ns.lua") ~= nil,
 	    "esp read-only: can read /lib, so a namespace over it is adoptable")
 
 	local ec, eerr = E:create("/pwned.txt", "rw")

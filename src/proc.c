@@ -1321,6 +1321,14 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	lua_pushcfunction(p->L, luaopen_gefs_native);
 	lua_setfield(p->L, -2, "gefs.native");
 
+	/* dev: the backend interface, in C so a proc with a namespace does
+	 * not carry a copy of it. Registered under the bare name, so
+	 * require("dev") finds it here: package.preload is consulted
+	 * before the namespace searcher.
+	 */
+	lua_pushcfunction(p->L, luaopen_dev);
+	lua_setfield(p->L, -2, "dev");
+
 	/* los.inet (src/inet.c), ambient for the same reason as the one
 	 * above: the internet checksum is arithmetic on a string the
 	 * caller already has, and it reaches nothing. Withholding it would

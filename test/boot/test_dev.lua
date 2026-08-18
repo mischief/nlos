@@ -13,7 +13,7 @@ local devtree = require("devtree")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(44)
+tap.plan(47)
 
 -- ---- the conformance suite, run against anything claiming to be a dev
 local function conforms(what, B, known, knowncontent, knowndir)
@@ -279,6 +279,50 @@ do
 
 	tap.ok(not ok and tostring(err):find("'nope'", 1, true) ~= nil,
 	    "a deep walk names the element that failed: " .. tostring(err))
+end
+
+-- ---- a backend that parks ----
+
+-- Every real one does: mnt waits for a 9P reply, fatsrv for the device.
+-- dev calls backends from C, and a C frame refuses a yield unless it
+-- was made with a continuation. Without one this fails as "attempt to
+-- yield across a C-call boundary", which a backend catches and reports
+-- as an i/o error.
+do
+	local thread = require("los.thread")
+	local slow = {
+		walk = function(h, name)
+			thread.sleep(1)
+			return { name = name }
+		end,
+		read = function(h, off, n)
+			thread.sleep(1)
+			return ("x"):rep(n)
+		end,
+		write = function(h, off, d)
+			thread.sleep(1)
+			return #d
+		end,
+	}
+	local wok, werr, rok, rlen, ook, owrote
+
+	thread.spawn(function()
+		wok, werr = pcall(dev.walkall, slow, {}, { "a", "b" })
+		rok, rlen = pcall(dev.readloop, 64, function(o, n)
+			return slow.read(nil, o, n)
+		end, 0, 200)
+		ook, owrote = pcall(dev.writeloop, 64, function(o, c)
+			return slow.write(nil, o, c)
+		end, 0, ("y"):rep(200))
+	end)
+	thread.run()
+
+	tap.ok(wok, "walkall yields through a parking backend: " ..
+	    tostring(werr))
+	tap.ok(rok and #tostring(rlen) > 0 and #rlen == 200,
+	    "readloop does too, over four chunks: " .. tostring(rok and #rlen))
+	tap.ok(ook and owrote == 200,
+	    "and writeloop: " .. tostring(owrote))
 end
 
 tap.done()
