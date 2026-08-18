@@ -2,9 +2,9 @@
 --
 -- the ported utilities (seq, cat) run unchanged because the posix sliver
 -- in lib/prog.lua covers what they use. ls is where that stops: the
--- original wants posix.pwd, posix.grp, getopt and isatty -- users,
--- groups and terminal detection none of which exist here. rewriting is
--- 40 lines; faking a passwd database to avoid it would be worse.
+-- original wants posix.pwd, posix.grp and getopt, and users and groups
+-- do not exist here. Terminal detection does, under another name:
+-- prog.tty() is nil where isatty would be false.
 local prog = require("prog")
 
 local N = prog.ns()
@@ -27,7 +27,75 @@ if #paths == 0 then
 	paths[1] = prog.cwd()
 end
 
+-- How wide to lay out in. prog.tty() is nil when the output was piped
+-- or the caller has no console, which is where one name a line is the
+-- right answer. A console that cannot measure itself -- a serial line
+-- has no way to ask -- says nil, and 80 is the convention to fall back
+-- on rather than a measurement.
+local WIDTH = 80
+
+local function width()
+	local t = prog.tty()
+
+	if not t then
+		return nil
+	end
+
+	local cols = t.size()
+
+	return (type(cols) == "number" and cols > 0) and cols or WIDTH
+end
+
+local cols = long and nil or width()
+
+-- Down the column and then across, as ls has always done: a reader
+-- looking for a name scans one column rather than jigging along a row.
+--
+-- Bytes are not cells for anything above ASCII, so the count is
+-- characters where the name is valid utf8 and bytes where it is not.
+local function textwidth(s)
+	return utf8.len(s) or #s
+end
+
+local function columns(names, avail)
+	local widest = 0
+
+	for _, s in ipairs(names) do
+		local w = textwidth(s)
+
+		if w > widest then
+			widest = w
+		end
+	end
+
+	local colw = widest + 2
+	local ncols = math.max(1, avail // colw)
+	local nrows = (#names + ncols - 1) // ncols
+
+	for r = 1, nrows do
+		local line = {}
+
+		for c = 0, ncols - 1 do
+			local name = names[c * nrows + r]
+
+			if name then
+				line[#line + 1] = name
+				-- no padding after the last one on a row,
+				-- so a name at the right margin does not
+				-- wrap on trailing blanks
+				if names[(c + 1) * nrows + r] then
+					line[#line + 1] = string.rep(" ",
+					    colw - textwidth(name))
+				end
+			end
+		end
+		io.write(table.concat(line), "\n")
+	end
+end
+
 local function show(path, ents)
+	local names = {}
+
 	if #paths > 1 then
 		io.write(path .. ":\n")
 	end
@@ -37,9 +105,19 @@ local function show(path, ents)
 				io.write(string.format("%s %8d %s\n",
 				    e.dir and "d" or "-", e.size, e.name))
 			else
-				io.write(e.name .. (e.dir and "/" or "") .. "\n")
+				names[#names + 1] = e.name ..
+				    (e.dir and "/" or "")
 			end
 		end
+	end
+
+	if #names == 0 then
+		return
+	end
+	if cols then
+		columns(names, cols)
+	else
+		io.write(table.concat(names, "\n"), "\n")
 	end
 end
 
