@@ -1779,6 +1779,12 @@ kmem_victim(void)
 {
 	struct kproc *worst = 0;
 
+	/* The chosen proc stops being expendable before the lock drops.
+	 * Every cpu runs laps, so two could otherwise pick the same one
+	 * and both call proc_kill, which does not check: two lua_close
+	 * on one state.
+	 */
+	ipclock_enter();
 	for (int i = 0; i < prochigh; i++) {
 		struct kproc *p = procv[i];
 
@@ -1789,6 +1795,9 @@ kmem_victim(void)
 		if (!worst || p->mem_used > worst->mem_used)
 			worst = p;
 	}
+	if (worst)
+		worst->expendable = 0;	/* claimed: see above */
+	ipclock_leave();
 	return worst;
 }
 
