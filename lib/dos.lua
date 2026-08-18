@@ -601,8 +601,10 @@ end
 function Sh:pipecoro(stages)
 	local prog = require("prog")
 	-- the console is another proc either way, so it stays a port
-	-- stream. never closed: it is not ours, and every stage shares it.
-	local cons = prog.pipestream(self.cons)
+	-- stream. Not ours to close, and shared by every stage: the stream
+	-- is told so, or a stage calling close(1) takes the shell's console
+	-- with it.
+	local cons = prog.pipestream(self.cons, false)
 	local done = thread.chancreate(#stages)
 	local status = {}
 	local closers = {}

@@ -12,7 +12,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(34)
+tap.plan(36)
 
 local N = ns.new()
 
@@ -381,5 +381,24 @@ tap.ok(arrived, "and a full queue parks the write instead of dropping it")
 
 sys.close(fullsend)
 sys.close(full)
+
+-- ---- a stream closes only a handle it owns ----
+--
+-- dos builds a stream over the console right it keeps and shares, so a
+-- stage calling close(1) must not take the shell's console with it.
+local kept = sys.newport("test_prog.kept")
+local keptsend = sys.sendright(kept)
+
+prog.pipestream(keptsend, false):close()
+tap.ok(sys.send(keptsend, { op = "write", data = "still here" }),
+    "closing a borrowed stream leaves the handle open")
+
+prog.pipestream(keptsend):close()
+
+local sent = pcall(sys.send, keptsend, { op = "write", data = "gone" })
+
+tap.ok(not sent, "and closing an owned one drops the right")
+
+sys.close(kept)
 
 tap.done()
