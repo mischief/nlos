@@ -1110,7 +1110,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'replyright', 'rightsundo', 'procpriv', 'portlimit', 'trace',
               'wakeup', 'nesting', 'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls',
               'layout', 'strictglobals', 'bufout', 'bufmove', 'serialize', 'mntshare', 'althup', 'dio', 'ninepc',
-              'efigefs', 'version', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
+              'efigefs', 'version', 'oom', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
               'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr']

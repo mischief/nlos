@@ -273,30 +273,11 @@ end
 
 -- what stops another app being started.
 --
--- The count is the backstop; the memory is the real answer, because
--- what a program costs is not something a number written here can know.
---
--- The memory to ask about is the pool the lua heaps come from, which on
--- this board is PSRAM and is not the one sys.stats calls memavail. A
--- terminal and its shell are about half a megabyte of heap and some 3KB
--- of internal sram, so watching the sram would let six of them fill the
--- heap while the figure being watched barely moved.
+-- A count, and nothing about memory. The kernel gives up the largest
+-- expendable proc when the machine runs short, and an app is spawned
+-- expendable, so the answer to "is there room" is found by trying.
 local MAXAPPS = 6
-local APPHEAP = 512 * 1024
-local HEAPFLOOR = 2 * APPHEAP
 
--- what the pool has left, or nil where the machine cannot say -- then
--- the count above is the whole of the limit.
-local function heapleft()
-	local ok, st = pcall(sys.stats)
-	local avail = ok and type(st) == "table" and
-	    (st.chunkavail or st.memavail)
-
-	if type(avail) ~= "number" or avail <= 0 then
-		return nil
-	end
-	return avail
-end
 
 local function slotof(id)
 	for k, v in ipairs(order) do
@@ -953,12 +934,6 @@ local function start(i, openarg)
 		    :format(MAXAPPS)
 	end
 
-	local left = heapleft()
-
-	if left and left < HEAPFLOOR + APPHEAP then
-		return nil, ("%dK of heap left is not enough to start another")
-		    :format(left // 1024)
-	end
 
 	entry.idx = i
 	local a = newapp(i)
@@ -978,7 +953,7 @@ local function start(i, openarg)
 		local h
 
 		pid, h = proc.spawn('require("prog").main()',
-		    { name = a.name, ns = desc })
+		    { name = a.name, ns = desc, expendable = true })
 		if pid then
 			-- a program's own output goes to the serial line
 			-- rather than to the console on the glass, which

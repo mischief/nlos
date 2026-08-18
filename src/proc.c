@@ -390,11 +390,67 @@ static const struct luaheap_ops kalloc_ops = {
 	.chunk_free = kalloc_free_chunk,
 };
 
+/* A failed allocation kills whichever proc asked next, more often a
+ * busy service than whatever ate the memory. Serving it from a reserve
+ * keeps that proc alive; the scheduler deals with the shortage at the
+ * top of a lap, where killing is safe.
+ */
+
+/* Nothing is freed or killed in here: lua_close runs the victim's
+ * finalizers, arbitrary lua reaching port_unref, inside somebody
+ * else's allocation. See lua_gc(LUA_GCSTOP) in proc_new.
+ */
+
+/* TODO: the proc that discovers the shortage still dies of it. Keeping
+ * it alive needs a reserve to serve that one allocation from, and the
+ * reserve only bridges to the next lap -- so a proc allocating hard
+ * without yielding outruns it anyway. Wants PSRAM-only storage too:
+ * on a board without any, this would be internal sram it cannot spare.
+ */
+
+/* is the machine still short? Asked after the caches have gone back,
+ * because a shortage that a release answered must not cost a proc.
+ * One chunk, taken and given straight back: what a heap would ask for.
+ */
+int
+kmem_short(void)
+{
+	void *p = platform_chunk_alloc(LUAHEAP_CHUNK);
+
+	if (!p)
+		return 1;
+	platform_chunk_free(p, LUAHEAP_CHUNK);
+	return 0;
+}
+
+/* Atomic: written inside an allocation on one cpu, read at another's
+ * lap top.
+ */
+static atomic_int lowmem;
+
+/* a shortage was met from the reserve and has not been dealt with. */
+int
+kmem_low(void)
+{
+	return atomic_load(&lowmem);
+}
+
+void
+kmem_low_clear(void)
+{
+	atomic_store(&lowmem, 0);
+}
+
 static void *
 kalloc_chunk(void *ud, size_t n)
 {
+	void *p;
+
 	(void)ud;
-	return platform_chunk_alloc(n);
+	p = platform_chunk_alloc(n);
+	if (!p)
+		atomic_store(&lowmem, 1);
+	return p;
 }
 
 static void
@@ -1670,6 +1726,28 @@ proc_break(struct kproc *p, const char *why)
 		proc_reap(oldest);
 }
 
+
+/* the biggest expendable proc, which is the one whose death returns
+ * the most. Only what was marked expendable at spawn is ever a
+ * candidate, so a service cannot be chosen however large it grows.
+ */
+struct kproc *
+kmem_victim(void)
+{
+	struct kproc *worst = 0;
+
+	for (int i = 0; i < prochigh; i++) {
+		struct kproc *p = procv[i];
+
+		if (!p || !p->expendable)
+			continue;
+		if (p->status == DEAD || p->status == BROKE)
+			continue;
+		if (!worst || p->mem_used > worst->mem_used)
+			worst = p;
+	}
+	return worst;
+}
 
 size_t
 proc_heaps_release(void)

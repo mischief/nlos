@@ -1517,6 +1517,7 @@ api_spawn(lua_State *L)
 	int trace = 0;
 	int port_limit = 0;
 	size_t mem_limit = 0;
+	int expendable = 0;
 	char chunkname[32] = "=spawn";
 
 	if (!lua_isnoneornil(L, 2)) {
@@ -1546,6 +1547,10 @@ api_spawn(lua_State *L)
 		if (!lua_isnil(L, -1))
 			port_limit = (int)luaL_checkinteger(L, -1);
 		lua_pop(L, 1);
+		lua_getfield(L, 2, "expendable");
+		if (lua_toboolean(L, -1))
+			expendable = 1;
+		lua_pop(L, 1);
 		/* both budgets are clamped to the parent's below, so a
 		 * child is never less contained than whoever spawned it.
 		 */
@@ -1572,6 +1577,13 @@ api_spawn(lua_State *L)
 		mem_limit = p->mem_limit;
 	if (p->port_limit && (port_limit == 0 || port_limit > p->port_limit))
 		port_limit = p->port_limit;
+
+	/* one way, like the budgets: a child of something expendable is
+	 * expendable, and nothing can declare itself otherwise. A subtree
+	 * that could opt out is a subtree that outlives what started it.
+	 */
+	if (p->expendable)
+		expendable = 1;
 
 	/* opts.arg: one value handed to the child before its chunk runs,
 	 * arriving as the chunk's `...`. A message cannot do this job,
@@ -1617,6 +1629,9 @@ api_spawn(lua_State *L)
 	int pid = proc_new(code, n, chunkname, 0, reductions, mem_limit,
 	    port_limit, PRIV_NONE);
 	struct kproc *child = pid >= 0 ? find_proc(pid) : 0;
+
+	if (child)
+		child->expendable = expendable;
 
 	ipclock_leave();
 

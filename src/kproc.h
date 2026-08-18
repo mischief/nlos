@@ -290,6 +290,11 @@ struct kproc {
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
 	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
 	int priv;		/* PRIV_*; only PRIV_BOOT keeps raw file access */
+	/* may be killed to reclaim memory. A property of the proc, given
+	 * at spawn by whoever knows it is expendable -- dio does, for the
+	 * apps it starts. Inherited, so a child of an app goes with it.
+	 */
+	int expendable;
 };
 
 /* proc states. see docs/proc.md */

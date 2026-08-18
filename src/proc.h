@@ -84,6 +84,18 @@ size_t	kbuf_pooled(void);
 /* release every proc's large-block cache on a quiet machine. */
 size_t	proc_heaps_release(void);
 
+/* a chunk allocation failed. Answered at the top of a lap, which is
+ * the only place a proc may be killed.
+ */
+int	kmem_low(void);
+void	kmem_low_clear(void);
+int	kmem_short(void);
+
+/* the proc to give up when memory runs short, or nil where nothing is
+ * expendable. Only procs marked so at spawn are ever chosen.
+ */
+struct kproc *kmem_victim(void);
+
 /* the C modules a proc may be given, registered in package.preload by
  * proc_new. Which ones depend on its privilege -- see docs/proc.md.
  */

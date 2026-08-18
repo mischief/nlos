@@ -1485,6 +1485,29 @@ kernel_run(void)
 		 */
 		gc_idle_sweep(me);
 
+		/* memory ran short since the last lap. The cached chunks
+		 * are given back first, because that costs nothing and
+		 * often answers it; a shortage that survives that takes
+		 * the largest proc marked expendable.
+		 */
+		if (kmem_low()) {
+			kmem_low_clear();
+			proc_heaps_release();
+
+			/* asked after the release, not before: a shortage
+			 * the caches answered must not cost a proc. And
+			 * asked rather than inferred from another failure,
+			 * because a proc that took the memory and parked
+			 * makes no further ones.
+			 */
+			if (kmem_short()) {
+				struct kproc *v = kmem_victim();
+
+				if (v)
+					proc_kill(v, "killed: out of memory");
+			}
+		}
+
 		/* a quiet machine gives its heap back: the large-block
 		 * cache is held against a next request that is not coming.
 		 * Once per spell, since the sweep walks the free lists and
