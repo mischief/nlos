@@ -272,7 +272,7 @@ function ops.session(S)
 	-- readonly, which do not block, while every read and walk a client
 	-- makes arrives here.
 	thread.spawn(function()
-		M.serve(ro and dev.readonly(S.B) or S.B, recv,
+		M.serve(ro and require("devtree").readonly(S.B) or S.B, recv,
 		    { establish = false, workers = S.workers,
 		      lock = S.lock })
 		-- serve returns when the client has gone. Closed by this

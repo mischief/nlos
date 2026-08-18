@@ -9,6 +9,7 @@
 local sys = require("los.sys")
 local tcpc = require("client.tcp")
 local dev = require("dev")
+local devtree = require("devtree")
 local ns = require("ns")
 local webterm = require("webterm")
 local caps_of = sys.granted()
@@ -140,7 +141,7 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 -- and for the "mem" kind it is the tree itself.
 local N = ns.new()
 
-assert(N:mount("/", dev.mem(site), "mem", { tree = site }))
+assert(N:mount("/", devtree.mem(site), "mem", { tree = site }))
 
 webterm.serve(tcp, 7777, N:describe(), {
 	-- a visitor arrives with no context at all -- no man pages, no

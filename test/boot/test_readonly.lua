@@ -11,6 +11,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local devtree = require("devtree")
 local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
@@ -20,8 +21,9 @@ tap.plan(22)
 -- a writable server over a mem tree
 local SERVER = [[
 local dev = require("dev")
+local devtree = require("devtree")
 require("srv").main(function()
-	return dev.mem({ ["hello.txt"] = "readable\n", sub = { deep = "d\n" } })
+	return devtree.mem({ ["hello.txt"] = "readable\n", sub = { deep = "d\n" } })
 end)
 ]]
 

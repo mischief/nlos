@@ -1,13 +1,8 @@
--- the parts of the dev interface a client does not need.
+-- devtree: building, mounting and serving a tree.
 --
--- Everything here is used when a tree is built, mounted or served:
--- check() at mount time, subtree() for a mount that names a root,
--- readonly() for a server offering one backend at two authority levels,
--- and mem() for a synthetic tree. A program that opens a file uses none
--- of them, and reached them anyway while they lived in lib/dev.lua.
---
--- Reached through dev, which forwards the four names here on first
--- call, so a caller writes dev.mem() and never names this file.
+-- check() validates a backend at mount time, subtree() roots a mount
+-- below a prefix, readonly() offers one backend at two authority
+-- levels, and mem() makes a synthetic tree from nested tables.
 
 local dev = require("dev")
 
@@ -121,7 +116,7 @@ end
 -- doubles as the executable definition of the interface. a tree is
 -- nested tables; a string leaf is a file's contents:
 --
---   dev.mem({ README = "hi\n", lib = { ["a.lua"] = "-- a" } })
+--   devtree.mem({ README = "hi\n", lib = { ["a.lua"] = "-- a" } })
 --
 -- writes go to the in-memory copy and are lost on exit, which is the
 -- point: it is for tests, for synthetic trees, and for proving the

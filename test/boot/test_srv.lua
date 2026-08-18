@@ -28,10 +28,11 @@ tap.ok(srvd ~= nil, "srvd starts")
 local server = select(2, sys.spawn([[
 	local a = ...
 	local dev = require("dev")
+	local devtree = require("devtree")
 	local srv = require("srv")
 
 	srv.main(function()
-		return dev.mem({ ["hello"] = "from the named server\n" })
+		return devtree.mem({ ["hello"] = "from the named server\n" })
 	end)
 ]], { name = "memsrv" }))
 
@@ -120,10 +121,11 @@ W:mount("/srv", srvfs.new(srvd), "srvfs", { port = { __right = srvd } })
 
 local second = select(2, sys.spawn([[
 	local dev = require("dev")
+	local devtree = require("devtree")
 	local srv = require("srv")
 
 	srv.main(function()
-		return dev.mem({ ["hello"] = "posted by writing a handle\n" })
+		return devtree.mem({ ["hello"] = "posted by writing a handle\n" })
 	end)
 ]], { name = "memsrv2" }))
 

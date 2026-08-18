@@ -9,6 +9,7 @@
 
 local ns = require("ns")
 local dev = require("dev")
+local devtree = require("devtree")
 local nsfs = require("nsfs")
 local p9serve = require("p9serve")
 local p9fs = require("p9fs")
@@ -18,9 +19,9 @@ tap.plan(7)
 
 -- construct a namespace: two in-memory trees, mounted at two points
 local N = ns.new()
-N:mount("/a", dev.mem({ hello = "from a\n",
+N:mount("/a", devtree.mem({ hello = "from a\n",
     sub = { deep = "nested\n" } }), "mem")
-N:mount("/b", dev.mem({ world = "from b\n" }), "mem")
+N:mount("/b", devtree.mem({ world = "from b\n" }), "mem")
 
 -- export a subtree of N over 9P, mount it back with p9fs (loopback), and
 -- hand the client namespace back for readfile/readdir

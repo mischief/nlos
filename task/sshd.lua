@@ -140,7 +140,7 @@ do
 	}
 	local V = ns.new()
 
-	assert(V:mount("/", dev.mem(site), "mem", { tree = site }))
+	assert(V:mount("/", require("devtree").mem(site), "mem", { tree = site }))
 
 	-- one subtree mount per mount this proc has at "/", in the order
 	-- it has them: a union of an image under a filesystem must stay a
@@ -169,7 +169,7 @@ do
 				-- image has no /bin -- is left out, instead
 				-- of raising inside a walk that the next
 				-- mount in the union would have answered.
-				if ok and pcall(dev.subtree(b, dir).attach) then
+				if ok and pcall(require("devtree").subtree(b, dir).attach) then
 					V:mount(dir, b, m.kind, args, "after")
 				end
 			end

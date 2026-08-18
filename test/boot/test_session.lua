@@ -12,6 +12,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local devtree = require("devtree")
 local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
@@ -20,8 +21,9 @@ tap.plan(19)
 
 local SERVER = [[
 local dev = require("dev")
+local devtree = require("devtree")
 require("srv").main(function()
-	return dev.mem({ a = "alpha\n", b = "bravo\n" })
+	return devtree.mem({ a = "alpha\n", b = "bravo\n" })
 end)
 ]]
 
@@ -181,6 +183,7 @@ tap.ok(sys.stats().ports <= before,
 
 local EXCL = [[
 local dev = require("dev")
+local devtree = require("devtree")
 
 require("srv").main(function()
 	local B = {}

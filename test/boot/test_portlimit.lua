@@ -163,10 +163,11 @@ sys.close(h4)
 
 local SRV = [[
 local dev = require("dev")
+local devtree = require("devtree")
 local srv = require("srv")
 
 srv.main(function()
-	return dev.mem({ a = "alpha\n" })
+	return devtree.mem({ a = "alpha\n" })
 end)
 ]]
 

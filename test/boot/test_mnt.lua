@@ -20,6 +20,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local devtree = require("devtree")
 local ns = require("ns")
 local mnt = require("mnt")
 local tap = require("tap")
@@ -34,10 +35,11 @@ tap.plan(42)
 
 local SERVER = [[
 local dev = require("dev")
+local devtree = require("devtree")
 local srv = require("srv")
 
 srv.main(function()
-	local base = dev.mem({
+	local base = devtree.mem({
 		hello = "hello from another proc\n",
 		clunks = "0",
 		sub = { deep = "deep file\n" },
@@ -76,7 +78,7 @@ tap.ok(pid and h, "spawned a file server proc; its right is the mount")
 
 local N = ns.new()
 
-N:mount("/", dev.mem({ ["init.lua"] = "-- local\n" }), "mem",
+N:mount("/", devtree.mem({ ["init.lua"] = "-- local\n" }), "mem",
     { tree = { ["init.lua"] = "-- local\n" } })
 
 local ok, err = N:mount("/host", mnt.new(h), "mnt", { port = { __right = h } })
@@ -125,7 +127,7 @@ tap.ok(table.concat(rootnames, " "):find("host", 1, true) ~= nil,
 
 local S = ns.new()
 
-S:mount("/", dev.mem({ ["init.lua"] = "-- local\n" }), "mem",
+S:mount("/", devtree.mem({ ["init.lua"] = "-- local\n" }), "mem",
     { tree = { ["init.lua"] = "-- local\n" } })
 S:mount("/deep", mnt.new(h), "mnt", { port = { __right = h },
     root = "/sub" })
@@ -283,10 +285,11 @@ tap.ok(done[1] == rounds and done[2] == rounds,
 
 local COUNTING = [[
 local dev = require("dev")
+local devtree = require("devtree")
 local srv = require("srv")
 
 srv.main(function()
-	local base = dev.mem({
+	local base = devtree.mem({
 		deep = { three = { ["levels.txt"] = "down here\n" } },
 		walks = "0",
 		attaches = "0",

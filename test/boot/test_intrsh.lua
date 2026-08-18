@@ -19,6 +19,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local devtree = require("devtree")
 local ns = require("ns")
 local dos = require("dos")
 local tap = require("tap")
@@ -39,7 +40,7 @@ sys.block(sys.newport("sleeper.wait"))
 -- a tree holding one file.
 local N = ns.current() or ns.new()
 
-tap.ok(N:mount("/", dev.mem({ bin = { ["sleeper.lua"] = SLEEPER } })),
+tap.ok(N:mount("/", devtree.mem({ bin = { ["sleeper.lua"] = SLEEPER } })),
     "a namespace holding one program that never exits")
 
 -- one round, inside the scheduler. Returns the exit status run() came

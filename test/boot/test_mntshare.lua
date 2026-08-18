@@ -15,10 +15,11 @@ tap.plan(10)
 
 local SERVER = [[
 local dev = require("dev")
+local devtree = require("devtree")
 local srv = require("srv")
 
 srv.main(function()
-	return dev.mem({
+	return devtree.mem({
 		hello = "hello\n",
 		bin = { echo = "echo program\n" },
 	})

@@ -12,6 +12,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local devtree = require("devtree")
 local ns = require("ns")
 local espfs = require("espfs")
 local tap = require("tap")
@@ -21,7 +22,7 @@ tap.plan(18)
 local N = ns.new()
 
 N:mount("/", espfs.new("/"), "espfs", { root = "/" })
-N:mount("/synth", dev.mem({
+N:mount("/synth", devtree.mem({
 	["hello.txt"] = "line one\nline two\nline three\n",
 	["empty.txt"] = "",
 }), "mem", { tree = {} })
@@ -70,8 +71,9 @@ end
 
 local SERVER = [[
 local dev = require("dev")
+local devtree = require("devtree")
 require("srv").main(function()
-	return dev.mem({ ["served.txt"] = "this came from another proc\n" })
+	return devtree.mem({ ["served.txt"] = "this came from another proc\n" })
 end)
 ]]
 
@@ -106,7 +108,7 @@ tap.is(N:readfile("/synth/made.txt"), "written through io\n",
 local rp = sys.newport("test_nsio.rp")
 local Empty = ns.new()
 
-Empty:mount("/tmp", dev.mem({ only = "in the mount\n" }), "mem",
+Empty:mount("/tmp", devtree.mem({ only = "in the mount\n" }), "mem",
     { tree = { only = "in the mount\n" } })
 
 require("proc").spawn([[

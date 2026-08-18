@@ -7,6 +7,7 @@ local udpc = require("client.udp")
 local http = require("http")
 local ns = require("ns")
 local dev = require("dev")
+local devtree = require("devtree")
 local caps_of = sys.granted()
 
 local tcp = tcpc.new(caps_of.tcp)
@@ -37,7 +38,7 @@ end
 -- larger than one WRITECHUNK, so streaming has to cross a boundary.
 local N = ns.new()
 
-N:mount("/", dev.mem({
+N:mount("/", devtree.mem({
 	files = {
 		["hello.txt"] = "static file contents\n",
 		["big.bin"] = string.rep("x", 200000),

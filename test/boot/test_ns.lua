@@ -8,6 +8,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local devtree = require("devtree")
 local chan = require("chan")
 local ns = require("ns")
 local espfs = require("espfs")
@@ -26,12 +27,12 @@ tap.is(ns.clean("/a/../../.."), "/", "cannot climb past root by repeating")
 -- ---- a two-mount namespace ----
 local N = ns.new()
 
-tap.ok(N:mount("/", dev.mem({
+tap.ok(N:mount("/", devtree.mem({
 	["hello.txt"] = "from root\n",
 	sub = { ["deep.txt"] = "deeper\n" },
 })), "mount / succeeds")
 
-tap.ok(N:mount("/mnt/other", dev.mem({
+tap.ok(N:mount("/mnt/other", devtree.mem({
 	["hello.txt"] = "from the other mount\n",
 })), "mount /mnt/other succeeds")
 
@@ -111,8 +112,8 @@ tap.ok(mst ~= nil and mst.dir,
 -- ---- unions: several backends at one prefix ----
 local U = ns.new()
 
-U:mount("/", dev.mem({ a = "from first\n", shared = "first wins\n" }))
-U:mount("/", dev.mem({ b = "from second\n", shared = "second loses\n" }),
+U:mount("/", devtree.mem({ a = "from first\n", shared = "first wins\n" }))
+U:mount("/", devtree.mem({ b = "from second\n", shared = "second loses\n" }),
     nil, nil, "after")
 
 local unames = {}
@@ -131,12 +132,12 @@ tap.is(U:readfile("/shared"), "first wins\n",
     "on a duplicate name the earlier member wins")
 
 -- "before" puts a backend ahead of what is already there
-U:mount("/", dev.mem({ shared = "jumped the queue\n" }), nil, nil, "before")
+U:mount("/", devtree.mem({ shared = "jumped the queue\n" }), nil, nil, "before")
 tap.is(U:readfile("/shared"), "jumped the queue\n",
     "mounting before takes precedence")
 
 -- "replace" evicts the whole union at that prefix
-U:mount("/", dev.mem({ only = "alone\n" }))
+U:mount("/", devtree.mem({ only = "alone\n" }))
 local ronly = {}
 
 for _, e in ipairs(U:readdir("/") or {}) do
@@ -159,7 +160,7 @@ local parent = ns.new()
 
 parent:mount("/", require("mnt").new(espcaps.esp), "mnt",
     { port = { __right = espcaps.esp } })
-parent:mount("/tmp", dev.mem({ note = "in memory" }), "mem",
+parent:mount("/tmp", devtree.mem({ note = "in memory" }), "mem",
     { tree = { note = "in memory" } })
 
 local desc = parent:describe()
@@ -255,7 +256,7 @@ tap.is(N:readfile("/mnt/other/hello.txt"), "from the other mount\n",
 tap.ok(N:unmount("/mnt/other"), "unmount drops the mount and its root")
 tap.ok(N:readfile("/mnt/other/hello.txt") == nil,
     "the path is gone once unmounted")
-tap.ok(N:mount("/mnt/other", dev.mem({ ["hello.txt"] = "second time\n" })),
+tap.ok(N:mount("/mnt/other", devtree.mem({ ["hello.txt"] = "second time\n" })),
     "remounting at the same prefix succeeds")
 tap.is(N:readfile("/mnt/other/hello.txt"), "second time\n",
     "and resolves through a freshly attached root")
@@ -278,7 +279,7 @@ local R = ns.new()
 
 R:mount("/", require("mnt").new(espcaps.esp), "mnt",
     { port = { __right = espcaps.esp } })
-R:mount("/", dev.mem({
+R:mount("/", devtree.mem({
 	lib = {
 		["synthetic.lua"] =
 		    "return { origin = 'from the namespace' }\n",
@@ -348,7 +349,7 @@ end
 do
 	local BIG = 512 * 1024
 	local body = string.rep("0123456789abcdef", BIG // 16)
-	local base = dev.mem({ ["big.bin"] = body })
+	local base = devtree.mem({ ["big.bin"] = body })
 	local B, reads = counting(base)
 	local CN = ns.new()
 

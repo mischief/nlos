@@ -17,6 +17,7 @@ local tcpc = require("client.tcp")
 local http = require("http")
 local ns = require("ns")
 local dev = require("dev")
+local devtree = require("devtree")
 local ip4 = require("ip4")
 
 local granted = sys.granted()
@@ -50,7 +51,7 @@ local tcp = tcpc.new(granted.tcp)
 -- crosses a write chunk boundary.
 local N = ns.new()
 
-N:mount("/", dev.mem({
+N:mount("/", devtree.mem({
 	files = {
 		["hello.txt"] = "static file contents\n",
 		["big.bin"] = string.rep("x", 200000),

@@ -122,7 +122,7 @@ function NS:mount(prefix, backend, kind, args, order)
 		return nil, err
 	end
 	if args and args.root and args.root ~= "/" then
-		backend = dev.subtree(backend, args.root)
+		backend = require("devtree").subtree(backend, args.root)
 	end
 	prefix = clean(prefix)
 	order = order or "replace"
@@ -872,7 +872,7 @@ end)
 
 M.register("mem", function(args)
 	-- the tree is plain data, so it genuinely does survive the trip
-	return dev.mem((args and args.tree) or {})
+	return require("devtree").mem((args and args.tree) or {})
 end)
 
 -- srvfs is the second kind whose state lives elsewhere, and it rebuilds

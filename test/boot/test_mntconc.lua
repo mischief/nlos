@@ -28,6 +28,7 @@ local tap = require("tap")
 local ns = require("ns")
 local mnt = require("mnt")
 local dev = require("dev")
+local devtree = require("devtree")
 
 tap.plan(5)
 
@@ -35,6 +36,7 @@ local NFILE, ROUNDS = 6, 8
 
 local SERVER = [[
 local dev = require("dev")
+local devtree = require("devtree")
 local srv = require("srv")
 
 srv.main(function()
@@ -43,7 +45,7 @@ srv.main(function()
 	for i = 1, ]] .. NFILE .. [[ do
 		t["f" .. i] = "contents of f" .. i .. "\n"
 	end
-	return dev.mem(t)
+	return devtree.mem(t)
 end, { workers = 8 })
 ]]
 
@@ -54,7 +56,7 @@ tap.ok(sys.set_torture(pid, true), "and its workers are cut everywhere")
 
 local N = ns.new()
 
-N:mount("/", dev.mem({ ["init.lua"] = "-- local\n" }), "mem",
+N:mount("/", devtree.mem({ ["init.lua"] = "-- local\n" }), "mem",
     { tree = { ["init.lua"] = "-- local\n" } })
 tap.ok(N:mount("/w", mnt.new(h), "mnt", { port = { __right = h } }),
     "mounted it, and nothing has read through it yet")

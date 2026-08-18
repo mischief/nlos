@@ -10,6 +10,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
+local devtree = require("devtree")
 local ns = require("ns")
 local tap = require("tap")
 
@@ -17,7 +18,7 @@ tap.plan(13)
 
 local Jail = ns.new()
 
-Jail:mount("/", dev.mem({ ["only.txt"] = "nothing else here\n" }), "mem",
+Jail:mount("/", devtree.mem({ ["only.txt"] = "nothing else here\n" }), "mem",
     { tree = { ["only.txt"] = "nothing else here\n" } })
 
 local rp = sys.newport("test_escape.rp")

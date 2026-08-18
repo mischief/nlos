@@ -69,7 +69,7 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 
 local V = ns.new()
 
-assert(V:mount("/", dev.mem(site), "mem", { tree = site }))
+assert(V:mount("/", require("devtree").mem(site), "mem", { tree = site }))
 
 webterm.serve(tcp, port, V:describe(), {
 	banner = "lua-os " .. sys.stats().arch ..

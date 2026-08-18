@@ -23,6 +23,7 @@ package.preload["los.thread"] = function()
 end
 
 local dev = require("dev")
+local devtree = require("devtree")
 local ns = require("ns")
 local fat = require("fat")
 local fatfs = require("fatfs")
@@ -52,7 +53,7 @@ end
 -- ---- the backends, each with the same small tree in it ----
 
 local function memfs()
-	return dev.mem({
+	return devtree.mem({
 		a = "first",
 		b = "second",
 		sub = { x = "deep" },
@@ -163,7 +164,7 @@ suite("gefs", gefsvol, false)
 local N = ns.new()
 
 N:mount("/", memfs())
-N:mount("/other", dev.mem({ c = "elsewhere" }))
+N:mount("/other", devtree.mem({ c = "elsewhere" }))
 
 local okr, err = N:rename("/a", "/other/a")
 
@@ -174,7 +175,7 @@ ok(exists(N, "/a"), "the source survives a refusal")
 -- a read-only mount offers neither method, so it refuses rather than
 -- half-renames.
 N = ns.new()
-N:mount("/", dev.readonly(dev.mem({ a = "one", d = {} })))
+N:mount("/", devtree.readonly(devtree.mem({ a = "one", d = {} })))
 ok(not N:rename("/a", "/z"), "a read-only mount refuses rename")
 ok(not N:rename("/a", "/d/a"), "and refuses the cross-directory form too")
 

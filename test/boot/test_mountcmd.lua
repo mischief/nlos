@@ -9,6 +9,7 @@ local sys = require("los.sys")
 local tap = require("tap")
 local ns = require("ns")
 local dev = require("dev")
+local devtree = require("devtree")
 local dos = require("dos")
 local srvc = require("srvc")
 local srvfs = require("srvfs")
@@ -19,10 +20,11 @@ local srvd = select(2, sys.spawn(
     string.dump(assert(loadfile("/task/srvd.lua"))), { name = "srvtest" }))
 local server = select(2, sys.spawn([[
 	local dev = require("dev")
+	local devtree = require("devtree")
 	local srv = require("srv")
 
 	srv.main(function()
-		return dev.mem({ ["hello"] = "mounted by name\n" })
+		return devtree.mem({ ["hello"] = "mounted by name\n" })
 	end)
 ]], { name = "memsrv" }))
 
@@ -32,7 +34,7 @@ tap.ok(srvc.post(srvd, "mem", sys.sendright(server)), "server posted as 'mem'")
 -- ---- a shell with a namespace and the registry ----
 local N = ns.new()
 
-N:mount("/", dev.mem({ ["motd"] = "local root\n" }), "mem",
+N:mount("/", devtree.mem({ ["motd"] = "local root\n" }), "mem",
     { tree = { ["motd"] = "local root\n" } })
 N:mount("/srv", srvfs.new(srvd), "srvfs")
 

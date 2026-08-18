@@ -9,6 +9,7 @@
 --    no lua position prefix -- because an Rerror reading "espfs.lua:88:"
 --    would be nonsense to a 9P client.
 local dev = require("dev")
+local devtree = require("devtree")
 local espfs = require("espfs")
 local tap = require("tap")
 
@@ -95,7 +96,7 @@ local function conforms(what, B, known, knowncontent, knowndir)
 	    name("reading a directory raises Eisdir: " .. tostring(derr)))
 end
 
-conforms("mem", dev.mem({
+conforms("mem", devtree.mem({
 	["README"] = "hello from mem\n",
 	lib = { ["a.lua"] = "-- a" },
 }), "README", "hello from mem\n", "lib")
@@ -113,7 +114,7 @@ conforms("espfs", espfs.new("/"), "init.lua",
 -- the whole reason to prefer it over plan 9's waserror bookkeeping: an
 -- error thrown mid-scope must still clunk the handle.
 local clunked = false
-local watched = dev.mem({ f = "xyz" })
+local watched = devtree.mem({ f = "xyz" })
 local realclunk = watched.clunk
 
 watched.clunk = function(h)
@@ -133,7 +134,7 @@ tap.ok(not uok, "<close>: the error did propagate out")
 tap.ok(clunked, "<close>: the handle was clunked during unwinding")
 
 -- ---- writes, which only mem can do without a disk capability ----
-local m = dev.mem({ f = "0123456789" })
+local m = devtree.mem({ f = "0123456789" })
 local mh = m.open(dev.walkpath(m, m.attach(), "f"), "rw")
 
 tap.ok(m.write(mh, 0, "AB") == 2, "mem: write reports bytes written")
@@ -141,7 +142,7 @@ tap.ok(m.read(mh, 0, 10) == "AB23456789", "mem: write lands at the offset")
 tap.ok(m.write(mh, 8, "XY") == 2, "mem: write near the end")
 tap.ok(m.read(mh, 0, 10) == "AB234567XY", "mem: second write lands too")
 
-local cm = dev.mem({})
+local cm = devtree.mem({})
 local ch = cm.create(cm.attach(), "new.txt", "rw")
 
 tap.ok(ch ~= nil and cm.write(ch, 0, "fresh") == 5,
@@ -185,7 +186,7 @@ tap.ok(not (dev.protect(dev.check, "not a table")),
 -- ---- closable must not eat a backend's own metatable ----
 -- dev.closable is called by every backend, so a plain setmetatable there
 -- would silently delete an __index or __tostring the backend relies on.
-local marked = dev.mem({ f = "z" })
+local marked = devtree.mem({ f = "z" })
 local realopen = marked.open
 
 marked.open = function(h, mode)
@@ -206,7 +207,7 @@ tap.ok(getmetatable(mh2).__close ~= nil, "and still added __close")
 -- what a backend will not do is checkable before calling, which a stub
 -- would destroy. The in-memory tree does all three; a read-only one
 -- offers none of them.
-local ro = dev.readonly(dev.mem({}))
+local ro = devtree.readonly(devtree.mem({}))
 
 tap.ok(ro.remove == nil, "remove is absent, not a stub")
 tap.ok(ro.wstat == nil, "and so is wstat")
@@ -219,7 +220,7 @@ tap.ok(espfs.new("/").remove == nil, "espfs remove is absent too")
 -- call. a backend with none must still resolve a deep path.
 
 local tree = { a = { b = { c = "leaf\n" } } }
-local plain = dev.mem(tree)
+local plain = devtree.mem(tree)
 local nwalk = 0
 
 tap.ok(plain.walkmany == nil, "dev.mem offers no walkmany")

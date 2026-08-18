@@ -421,23 +421,4 @@ function M.check(backend, name)
 	return backend
 end
 
--- ---- building, mounting and serving a tree ----
---
--- check() at mount time, subtree() for a mount that names a root,
--- readonly() for one backend served at two authority levels, and mem()
--- for a synthetic one. A program that opens a file calls none of them,
--- so they live in lib/devtree.lua and load on first call.
---
--- Forwarded by hand rather than through lib/lazy.lua: requiring a module
--- to defer four names costs every client the module.
-local function fwd(name)
-	return function(...)
-		return require("devtree")[name](...)
-	end
-end
-
-M.subtree = fwd("subtree")
-M.readonly = fwd("readonly")
-M.mem = fwd("mem")
-
 return M
