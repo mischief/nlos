@@ -142,5 +142,43 @@ do
 	ok(n == 3, "lines('L') keeps the newlines")
 end
 
+-- ---- how many reads one line costs ----
+--
+-- The source is what a mount is: every read is a round trip, 1.3ms on
+-- the board. A line read a byte at a time is the defect this buffering
+-- exists for, so the count is asserted rather than the timing.
+do
+	local reads = 0
+	local body = ("x"):rep(300) .. "\n" .. ("y"):rep(300) .. "\n"
+	local at = 1
+	local counting = {
+		read = function(_, n)
+			reads = reads + 1
+			if at > #body then
+				return ""
+			end
+
+			local out = body:sub(at, at + n - 1)
+
+			at = at + #out
+			return out
+		end,
+		write = function() return true end,
+		close = function() end,
+	}
+	local h = nsio.stream(counting, "counted")
+	local line = h:read("l")
+
+	ok(#line == 300, "a 300-byte line reads whole (" .. #line .. ")")
+	ok(reads == 1, "and costs one read of the source, not 300 (" ..
+	    reads .. ")")
+
+	local before = reads
+
+	h:read("l")
+	ok(reads - before == 0, "the second line comes out of the buffer (" ..
+	    (reads - before) .. " reads)")
+end
+
 io.write("1.." .. count .. "\n")
 os.exit(failed == 0 and 0 or 1)
