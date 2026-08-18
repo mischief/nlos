@@ -58,7 +58,7 @@ sys.send(caps_of.cons, { op = "claim_input" })
 -- diagnostics are a different stream from output: sys.log lands in the
 -- kernel's ring, stamped and tagged with this proc's name, alongside
 -- what the kernel writes there itself.
-sys.log("entropy: %s", rng and "los.platform.rng" or
+sys.say("entropy: %s", rng and "los.platform.rng" or
     ("none (" .. tostring(rng == nil and ok_rng) .. ")"))
 local rootns = nsmod.new()
 
@@ -82,7 +82,7 @@ else
 	local rok, rerr = rootns:mount("/", require("romfs").new(), "romfs")
 
 	if not rok then
-		sys.log("boot: no root: %s", tostring(rerr))
+		sys.say("boot: no root: %s", tostring(rerr))
 	end
 end
 
@@ -95,7 +95,7 @@ if caps_of.flash then
 		    "mnt", { port = { __right = caps_of.flash } }, "before"))
 	end)
 
-	sys.log("luafs: %s", fok and "mounted over the image" or
+	sys.say("luafs: %s", fok and "mounted over the image" or
 	    tostring(ferr))
 end
 
@@ -122,7 +122,7 @@ do
 		names[#names + 1] = k
 	end
 	table.sort(names)
-	sys.log("granted: %s", table.concat(names, " "))
+	sys.say("granted: %s", table.concat(names, " "))
 end
 
 if efi.firmware then
@@ -219,7 +219,7 @@ do
 		if ok and type(roesp) == "number" then
 			grants.espro = roesp
 		else
-			sys.log("svc: no read-only esp right (%s)", tostring(roesp))
+			sys.say("svc: no read-only esp right (%s)", tostring(roesp))
 		end
 	end
 	-- fw_cfg WINS over the disk. a host can therefore configure what
@@ -258,7 +258,7 @@ do
 
 				return inj or rootns:readfile(p)
 			end,
-			log = sys.log,
+			log = sys.say,
 			-- where a service that serves a filesystem belongs.
 			-- One callback for every machine, because
 			-- /etc/services.lua is one file for both machines: a
@@ -305,7 +305,7 @@ do
 	elseif why and not why:match("^no ") then
 		-- a missing config is a machine with no services, which is
 		-- fine. a config that failed to load is a mistake worth saying.
-		sys.log("svc: %s", tostring(why))
+		sys.say("svc: %s", tostring(why))
 	end
 end
 

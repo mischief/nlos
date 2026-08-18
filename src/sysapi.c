@@ -773,8 +773,12 @@ api_kill(lua_State *L)
 	return 1;
 }
 
+/* one diagnostic. `loud` decides whether it reaches the console as
+ * well as the ring, and logmirror can still veto that -- the console
+ * task clears it while the line carries a transfer.
+ */
 static int
-api_log(lua_State *L)
+logline(lua_State *L, int loud)
 {
 	struct kproc *p = self(L);
 	const char *s = luaL_checkstring(L, 1);
@@ -811,10 +815,34 @@ api_log(lua_State *L)
 	/* a truncated line still ends one, or the next runs into it */
 	if (buf[len - 1] != '\n')
 		buf[len - 1] = '\n';
-	if (logmirror)
+	if (loud && logmirror)
 		kputs(buf);
 	logput(buf, len);
 	return 0;
+}
+
+/* sys.log(fmt, ...) -- a diagnostic, kept and not shown.
+ *
+ * The ring is the transcript, and sys.dmesg reads it. A service that
+ * retries every fifteen seconds would otherwise own the console, so
+ * the default is quiet and saying something is the deliberate act.
+ */
+static int
+api_log(lua_State *L)
+{
+	return logline(L, 0);
+}
+
+/* sys.say(fmt, ...) -- a diagnostic the console sees too.
+ *
+ * For what a person watching the machine come up needs: init says what
+ * it granted and what it started. A driver reporting on itself uses
+ * sys.log, and dmesg is where that is read.
+ */
+static int
+api_say(lua_State *L)
+{
+	return logline(L, 1);
 }
 
 /* sys.logmirror(on) -- whether a diagnostic also goes to the console.
@@ -2402,6 +2430,7 @@ static const luaL_Reg kapi[] = {
 	{ "ticks", api_ticks },
 	{ "uptime_ms", api_uptime_ms },
 	{ "log", api_log },
+	{ "say", api_say },
 	{ "logmirror", api_logmirror },
 	{ "dmesg", api_dmesg },
 	{ "loginfo", api_loginfo },
