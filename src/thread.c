@@ -338,6 +338,7 @@ altcase(lua_State *L, int set, int n, lua_Integer h, lua_Integer need, int hup)
 		lua_rawseti(L, set, n);
 	}
 	c = lua_gettop(L);
+
 	lua_pushinteger(L, h);
 	lua_setfield(L, c, "port");
 	if (need >= 0)
@@ -511,33 +512,6 @@ readyall(lua_State *L, struct sched *s)
 			ready(L, s, -1);
 	}
 	lua_pop(L, 1);
-}
-
-/* Wake the threads parked on ports that have hung up. Returns 1 if any
- * woke. altset is exactly the ports this proc is parked on, so it is
- * the whole question the proc can have about hangups.
- */
-static int
-wakehungup(lua_State *L, struct sched *s)
-{
-	int woke = 0, i;
-
-	for (i = 1; i <= s->altn; i++) {
-		lua_Integer h;
-
-		pushref(L, s->altset);
-		lua_rawgeti(L, -1, i);
-		h = lua_tointeger(L, -1);
-		lua_pop(L, 2);
-
-		pushref(L, s->hungup);
-		lua_pushinteger(L, h);
-		lua_call(L, 1, 1);
-		if (lua_toboolean(L, -1) && readyon(L, s, h))
-			woke = 1;
-		lua_pop(L, 1);
-	}
-	return woke;
 }
 
 /* Register the running coroutine's park and decide whether to yield.
@@ -889,13 +863,16 @@ run_k(lua_State *L, int status, lua_KContext ctx)
 		    lua_tostring(L, -1) : NULL;
 		int woke = 0;
 
-		if (why && why[0] != 'h') {
-			/* ready, not taken: the thread reads it itself */
+		if (why) {
+			/* ready but not taken, or hung up: either way the
+			 * case that answered is the one to wake, and the
+			 * thread on it looks again for itself.
+			 */
 			lua_Integer h = altset_at(L, s,
 			    (int)lua_tointeger(L, -3));
 
 			woke = readyon(L, s, h);
-		} else if (!why && !lua_isnil(L, -3)) {
+		} else if (!lua_isnil(L, -3)) {
 			lua_Integer h = altset_at(L, s,
 			    (int)lua_tointeger(L, -3));
 
@@ -906,11 +883,12 @@ run_k(lua_State *L, int status, lua_KContext ctx)
 			woke = 1;
 		}
 		lua_pop(L, 3);
-		/* asked every time: a hangup and a message can arrive in
-		 * one wake, and taking the message consumes it
+		/* a hangup that shared a wake with this one is not lost:
+		 * alt asks about every case that wants one before it
+		 * sleeps, so the next park finds it. Polling all of them
+		 * here instead cost a walk of this proc's rights per case
+		 * per wake.
 		 */
-		if (wakehungup(L, s))
-			woke = 1;
 		/* a wake we cannot attribute to a port of ours still has to
 		 * be safe, so everyone gets to look. Only where a send wait
 		 * was in the set: a plain recv accounts for every wake.
