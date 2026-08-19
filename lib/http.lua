@@ -282,6 +282,7 @@ end
 function M.connect(tcp, dns, url, opts)
 	local host, port, _, scheme = parse_url(url)
 
+	opts = opts or {}
 	if not host then
 		return nil, "bad url"
 	end
@@ -291,6 +292,15 @@ function M.connect(tcp, dns, url, opts)
 		if not ok then
 			return nil, "no tls on this machine: " ..
 			    tostring(tlstcp)
+		end
+		-- entropy is data, handed down from the boot proc, and a
+		-- caller lent none cannot open a tls connection. Answered
+		-- rather than raised: tlstcp.new asserts, and an assert
+		-- through here is a crash where every other failure in this
+		-- function is a returned error.
+		if not opts.rand then
+			return nil, "tls: needs entropy, and this caller " ..
+			    "was lent no seed"
 		end
 		tcp = tlstcp.new(tcp, opts)
 	end
