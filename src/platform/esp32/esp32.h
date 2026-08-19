@@ -28,6 +28,11 @@ void	console_setraw(int on);
  */
 void	vfs_embed_register(void);
 
+/* the USB host controller, where the board has a port free for it.
+ * Nothing where CONFIG_LUAOS_USB_HOST is off.
+ */
+void	esp_usb_start(void);
+
 #if CONFIG_LUAOS_BOARD_TDECK
 
 /* T-Deck wiring. From clm's esp32 firmware (board_tdeck.c) and the
@@ -87,6 +92,7 @@ int	esp_tdeck_battery_mv(void);
 
 /* the gpio interrupt service, installed once for every driver here */
 int	esp_gpio_isr(void);
+
 
 #endif
 

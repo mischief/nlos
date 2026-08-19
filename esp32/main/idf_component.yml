@@ -1,0 +1,10 @@
+## Managed components, fetched from components.espressif.com.
+##
+## IDF 6 moved the USB host stack out of the tree, so a host controller
+## is a dependency rather than a component that is simply there. Nothing
+## else here comes from the registry.
+dependencies:
+  espressif/usb:
+    version: "^1.0.0"
+    rules:
+      - if: "target in [esp32s2, esp32s3]"

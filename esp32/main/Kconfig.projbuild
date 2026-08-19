@@ -36,6 +36,19 @@ config LUAOS_BOARD_CARDPUTER
 
 endchoice
 
+config LUAOS_USB_HOST
+	bool "drive the OTG port as a host"
+	default n
+	help
+	  Enumerate what is plugged into the chip's own USB port.
+
+	  Off by default because it needs two things the board decides.
+	  The port has to source 5V on VBUS: a board that only charges
+	  through it cannot power a device, and a bus-powered one will
+	  not enumerate. And the port has to be free -- where the console
+	  is the chip's USB, host mode takes the console with it, so the
+	  console must move to a UART first.
+
 config LUAOS_PRECOMPILE
 	bool "ship embedded lua as stripped bytecode"
 	default n

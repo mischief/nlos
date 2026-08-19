@@ -27,3 +27,5 @@ esp32/*.sdkconfig
 # etc/. Output, and flashed separately from the firmware -- see
 # esp32/README.md.
 *.img
+esp32/managed_components/
+esp32/dependencies.lock

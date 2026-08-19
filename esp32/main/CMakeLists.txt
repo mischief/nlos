@@ -48,6 +48,7 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/tdeck.c
     ${LUAOS_ROOT}/src/platform/esp32/ball.c
     ${LUAOS_ROOT}/src/platform/esp32/touch.c
+    ${LUAOS_ROOT}/src/platform/esp32/usb.c
     ${LUAOS_ROOT}/src/platform/esp32/main.c
     ${LUAOS_ROOT}/src/platform/esp32/vfs.c
     ${LUAOS_ROOT}/src/platform/esp32/wifi.c
@@ -60,6 +61,13 @@ set(PLATFORM_SRC
 # setting in sdkconfig.defaults is dropped with a warning and a
 # successful build. On a board whose whole memory argument is the 8MB,
 # that failure is silent and expensive.
+# The USB host stack is a managed component and exists only where the
+# chip has an OTG controller. See idf_component.yml.
+set(USB_REQ "")
+if(CONFIG_IDF_TARGET_ESP32S2 OR CONFIG_IDF_TARGET_ESP32S3)
+    set(USB_REQ usb)
+endif()
+
 idf_component_register(
     SRCS ${KERNEL_SRC} ${LUA_SRC} ${PLATFORM_SRC} ${CMAKE_CURRENT_BINARY_DIR}/embedfs.c
     INCLUDE_DIRS
@@ -82,6 +90,7 @@ idf_component_register(
             # out. Not NimBLE, for the reason lwip is absent above.
             bt
             sdmmc esp_driver_sdspi esp_driver_spi esp_driver_gpio
+            ${USB_REQ}
 )
 
 # lua's own hook for injecting a header: it redefines LUA_EXTRASPACE and

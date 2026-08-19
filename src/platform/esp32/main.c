@@ -51,6 +51,11 @@ app_main(void)
 	 */
 	vfs_embed_register();
 
+	/* its own FreeRTOS task, so a port with nothing on it does not
+	 * delay the boot.
+	 */
+	esp_usb_start();
+
 	if (kernel_init() != 0)
 		platform_abort("kernel_init failed");
 

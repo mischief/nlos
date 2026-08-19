@@ -19,3 +19,7 @@ CONFIG_LUAOS_FB_SHADOW=n
 # which looks the same as a board that failed to boot.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# The carrier has two USB-C ports. The console is on the bridge, so the
+# chip's own port is free to be a host.
+CONFIG_LUAOS_USB_HOST=y
