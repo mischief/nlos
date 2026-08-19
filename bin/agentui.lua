@@ -342,9 +342,16 @@ local client = llm.new({
 	instructions = agent.INSTRUCTIONS .. BRIEF,
 })
 
+-- what a tool is lent is what this app was lent, and no more: the
+-- rights dio handed us, passed down rather than kept. A spawn with an
+-- empty table here is a fetch that cannot reach anything.
 local A = agent.new({
 	client = client,
-	caps = {},
+	caps = {
+		tcp = prog.ctx and prog.ctx.net,
+		dns = prog.ctx and prog.ctx.dns,
+		rand = prog.rand(),
+	},
 	ns = N,
 	-- the call on its own rows and the result on its own, wrapped
 	-- rather than cut: a call and its result on one 53-column row

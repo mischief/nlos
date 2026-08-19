@@ -209,6 +209,9 @@ function Agent:spawn(args)
 		stderr = { __right = send },
 		net = self.caps.tcp and { __right = self.caps.tcp } or nil,
 		dns = self.caps.dns and { __right = self.caps.dns } or nil,
+		-- entropy travels as bytes, never as the draw itself, so
+		-- each tool starts from its own and none holds the source.
+		seed = self.caps.rand and self.caps.rand(32) or nil,
 	})
 	sys.close(h)
 	-- ours is closed now: rights are copied on send, and a writer we
@@ -369,7 +372,9 @@ end
 -- new(opts) -> agent
 --
 --   client   an llm client, made stateful where the endpoint has it
---   caps     sys.granted(), for what a spawned program is lent
+--   caps     what a spawned tool is lent: tcp and dns as rights, rand
+--            as a bytes function. A tool that fetches needs all three,
+--            since tls will not start without a seed.
 --   ns       the namespace, defaulting to this proc's
 --   turns    how many tool rounds before answering from what it has.
 --            Reading a tree one file at a time spends these fast, so
