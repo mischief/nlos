@@ -30,14 +30,16 @@ local CAL = 3750 / 3500
 -- ratio above lifts one board's 4.2V nearer 4.5 than 4.2.
 local CHARGING = 4600
 
--- of(mv) -> millivolts, percent, charging: the conversion on its own,
--- so a caller that already has a voltage can ask what it means.
+-- of(mv) -> millivolts, percent, charging. Charging answers no percent:
+-- metered with USB in, ours rose 25mV while the cell fell 100, so the
+-- divider is on the charger's side of the path and the reading is not
+-- the battery at all.
 function M.of(mv)
 	if not mv then
 		return nil
 	end
 	if mv >= CHARGING then
-		return mv, 100, true
+		return mv, nil, true
 	end
 	if mv <= CURVE[1][1] then
 		return mv, 0, false

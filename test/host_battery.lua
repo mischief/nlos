@@ -94,7 +94,8 @@ ok(battery.read() == nil, "and still reports nothing where no pack is")
 mv = 4666
 local _, cpct, cchg = battery.read()
 
-ok(cchg == true and cpct == 100, "the charger's node reads as charging")
+ok(cchg == true and cpct == nil,
+    "the charger's node reads as charging, with no charge claimed")
 
 -- the stats line carries it, and says nothing where there is no pack.
 mv = nil
@@ -108,10 +109,9 @@ local line = tostring(ps.stats)
 ok(line:find("bat=60%% 3%.80V") ~= nil,
     "the stats line reports the battery")
 ok(not line:find("chg"), "and says nothing of a charger that is absent")
-
 mv = 4666
-ok(tostring(ps.stats):find("chg") ~= nil,
-    "the stats line says when it is charging")
+ok(tostring(ps.stats):find("bat=charging") ~= nil,
+    "the stats line says charging rather than a figure it cannot know")
 
 -- the plug-in transient, through the meter: a caller that polls carries
 -- the history, and read() itself keeps none.

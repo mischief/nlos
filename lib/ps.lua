@@ -185,9 +185,16 @@ stats_mt.__tostring = function()
 
 	-- the battery, where there is one. Absent on every machine that
 	-- runs on wall power, which is most of them.
-	local mv, pct, chg = M.battery()
-	local bat = mv and string.format(" bat=%d%% %.2fV%s", pct,
-	    mv / 1000, chg and " chg" or "") or ""
+	-- on the charger there is no charge to report: the pin is reading
+	-- the charger and not the pack, so it says so and stops.
+	local mv, pct = M.battery()
+	local bat = ""
+
+	if mv and pct then
+		bat = string.format(" bat=%d%% %.2fV", pct, mv / 1000)
+	elseif mv then
+		bat = " bat=charging"
+	end
 
 	-- max is the largest single free run. Free bytes scattered below
 	-- what a chunk costs buy nothing, and say nothing about it.

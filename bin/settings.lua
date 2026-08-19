@@ -137,8 +137,16 @@ local function sections()
 
 	if mv then
 		head("battery")
-		cur[#cur + 1] = { bar = pct }
-		row("charge", string.format("%d%%  %.2fV", pct, mv / 1000))
+		-- no bar and no figure on the charger: the pin reads the
+		-- charger's node there, not the cell, so there is nothing
+		-- honest to draw.
+		if pct then
+			cur[#cur + 1] = { bar = pct }
+			row("charge", string.format("%d%%  %.2fV", pct,
+			    mv / 1000))
+		else
+			row("charge", "unknown", DIM)
+		end
 		row("source", chg and "usb" or "pack", chg and HEAD or FG)
 	end
 

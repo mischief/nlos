@@ -63,8 +63,12 @@ while true do
 	local line
 
 	if mv then
-		line = string.format("battery mv=%d pct=%d chg=%d up=%d\n",
-		    mv, pct, chg and 1 or 0, sys.uptime_ms())
+		-- the millivolts go out either way, since a charging trace
+		-- is still worth watching; only the charge is withheld,
+		-- because on the charger the pin is not reading the pack.
+		line = string.format("battery mv=%d pct=%s chg=%d up=%d\n",
+		    mv, pct and tostring(pct) or "?", chg and 1 or 0,
+		    sys.uptime_ms())
 	else
 		line = string.format("battery none up=%d\n", sys.uptime_ms())
 	end
