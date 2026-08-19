@@ -999,6 +999,17 @@ api_newport(lua_State *L)
 	port = over ? 0 : port_new();
 	if (port)
 		h = right_new(p, port, 1);
+	/* stamped in here, not after the errors below: the port is
+	 * published the moment the region ends, and sys.ports on another
+	 * cpu reads these two as lua strings. strncpy neither raises nor
+	 * allocates, so it is legal company for the rest.
+	 */
+	if (port) {
+		strncpy(port->tag, tag, sizeof port->tag - 1);
+		port->tag[sizeof port->tag - 1] = 0;
+		strncpy(port->where, where, sizeof port->where - 1);
+		port->where[sizeof port->where - 1] = 0;
+	}
 	ipclock_leave();
 
 	/* told apart, because they are different faults: the machine is
@@ -1011,11 +1022,6 @@ api_newport(lua_State *L)
 		return luaL_error(L, "out of ports");
 	if (h < 0)
 		return luaL_error(L, "out of rights");
-
-	strncpy(port->tag, tag, sizeof port->tag - 1);
-	port->tag[sizeof port->tag - 1] = 0;
-	strncpy(port->where, where, sizeof port->where - 1);
-	port->where[sizeof port->where - 1] = 0;
 
 	lua_pushinteger(L, h);
 	return 1;
@@ -2129,9 +2135,9 @@ api_stats(lua_State *L)
 	} else {
 		ipclock_enter();
 		for (int i = 0; i < prochigh; i++) {
-			if (!procv[i] || !procv[i]->heap)
+			if (!procv[i] || !KSTAT_GET(procv[i]->heap))
 				continue;
-			luaheap_stats(procv[i]->heap, &one);
+			luaheap_stats(KSTAT_GET(procv[i]->heap), &one);
 			hs.live += one.live;
 			hs.peak += one.peak;
 			hs.mapped += one.mapped;

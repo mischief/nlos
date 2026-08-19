@@ -591,7 +591,7 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	size_t real_osize = ptr ? osize : 0;
 
 	if (nsize == 0) {
-		luaheap_realloc(p->heap, ptr, real_osize, 0);
+		luaheap_realloc(KSTAT_GET(p->heap), ptr, real_osize, 0);
 		KSTAT_SET(p->mem_used, KSTAT_GET(p->mem_used) - real_osize);
 		return 0;
 	}
@@ -604,7 +604,7 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	    KSTAT_GET(p->mem_used) - real_osize + nsize > p->mem_limit)
 		return 0;
 
-	void *q = luaheap_realloc(p->heap, ptr, real_osize, nsize);
+	void *q = luaheap_realloc(KSTAT_GET(p->heap), ptr, real_osize, nsize);
 
 	if (!q)
 		return 0;
@@ -758,9 +758,9 @@ proc_freestate(struct kproc *p)
 	/* after lua_close, never before: the finalizers it runs are
 	 * still allocating and freeing in this heap.
 	 */
-	if (p->heap && p->heap != shared_heap) {
-		luaheap_destroy(p->heap);
-	} else if (p->heap) {
+	if (KSTAT_GET(p->heap) && KSTAT_GET(p->heap) != shared_heap) {
+		luaheap_destroy(KSTAT_GET(p->heap));
+	} else if (KSTAT_GET(p->heap)) {
 		/* a shared heap keeps what this proc was using, because
 		 * the chunks it sat in belong to the machine rather than
 		 * to the proc. This is the one moment worth looking: a
@@ -771,9 +771,9 @@ proc_freestate(struct kproc *p)
 		 * Per-proc heaps need none of this -- destroy hands every
 		 * chunk back at once.
 		 */
-		luaheap_reclaim(p->heap);
+		luaheap_reclaim(KSTAT_GET(p->heap));
 	}
-	p->heap = 0;
+	KSTAT_SET(p->heap, 0);
 	/* lua_close frees every coroutine through kernel_cofree, so the
 	 * list is already empty; re-init rather than trust that, since a
 	 * reused slot would inherit whatever is left
@@ -1244,13 +1244,13 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * other proc's too. See the comment at shared_heap.
 	 */
 	if (NCPU > 1) {
-		p->heap = luaheap_new(&kalloc_ops, 0);
+		KSTAT_SET(p->heap, luaheap_new(&kalloc_ops, 0));
 	} else {
 		if (!shared_heap)
 			shared_heap = luaheap_new(&kalloc_ops, 0);
-		p->heap = shared_heap;
+		KSTAT_SET(p->heap, shared_heap);
 	}
-	if (!p->heap)
+	if (!KSTAT_GET(p->heap))
 		return -1;
 	p->L = lua_newstate(kalloc, p);
 	if (!p->L)
@@ -2008,7 +2008,7 @@ proc_heaps_release(void)
 		 * turn is taken by another cpu's dispatch, which aborts
 		 * on finding it already in hand.
 		 */
-		if (!p || !p->heap || p->frozen ||
+		if (!p || !KSTAT_GET(p->heap) || p->frozen ||
 		    (!mine && (p->oncpu || KSTAT_GET(p->status) != BLOCKED || p->onq))) {
 			unlock(&schedlock);
 			ipclock_leave();
@@ -2019,7 +2019,7 @@ proc_heaps_release(void)
 		unlock(&schedlock);
 		ipclock_leave();
 
-		freed += luaheap_release(p->heap);
+		freed += luaheap_release(KSTAT_GET(p->heap));
 
 		/* woken while it was held: make_ready saw the claim and
 		 * left the enqueue here, as dispatch does.

@@ -22,6 +22,14 @@ local thread = require("los.thread")
 
 tap.plan(20)
 
+-- sys.procs lists a pid, and by the time this asks for its name the
+-- corpse cap on another cpu can have retired it. Absent, not an error.
+local function named(pid)
+	local ok, nm = pcall(sys.name, pid)
+
+	return ok and nm or nil
+end
+
 local _, h = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
@@ -34,7 +42,7 @@ local _, h = sys.spawn([[
 
 local pid
 for _, p in ipairs(sys.procs()) do
-	if sys.name(p) == "faulter" then pid = p end
+	if named(p) == "faulter" then pid = p end
 end
 tap.ok(pid ~= nil, "the target proc started")
 if not pid then tap.done() return end
@@ -134,7 +142,7 @@ local _, h2 = sys.spawn([[
 
 local spid
 for _, p in ipairs(sys.procs()) do
-	if sys.name(p) == "stuck" then spid = p end
+	if named(p) == "stuck" then spid = p end
 end
 tap.ok(spid ~= nil, "the threaded proc started")
 sys.monitor(spid)
@@ -171,7 +179,7 @@ local _, h3 = sys.spawn([[
 
 local hpid
 for _, p in ipairs(sys.procs()) do
-	if sys.name(p) == "hog" then hpid = p end
+	if named(p) == "hog" then hpid = p end
 end
 
 sys.monitor(hpid)
@@ -196,7 +204,7 @@ local pids = {}
 for i = 1, 3 do
 	local _, hh = sys.spawn([[error("bang")]], { name = "bang" .. i })
 	for _, p in ipairs(sys.procs()) do
-		if sys.name(p) == "bang" .. i then pids[i] = p end
+		if named(p) == "bang" .. i then pids[i] = p end
 	end
 	sys.monitor(pids[i])
 

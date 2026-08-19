@@ -227,7 +227,13 @@ struct kproc {
 	 */
 	unsigned char wpriv[MAXWATCH];
 	int nwatch;
-	struct luaheap *heap;	/* this proc's lua heap; see kalloc */
+	/* this proc's lua heap; see kalloc. Atomic because proc_freestate
+	 * clears it outside every lock -- it cannot hold one across
+	 * lua_close -- while the reclaim sweep reads it to decide whether
+	 * a proc has one at all. What makes the sweep's *use* safe is the
+	 * claim it takes after; this is only the look.
+	 */
+	_Atomic(struct luaheap *) heap;
 	/* which cpu dispatches this proc -- not p->cpu, which is a
 	 * percentage. queues live on the home cpu, so make_ready enqueues
 	 * against this from whichever cpu is sending.
