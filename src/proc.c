@@ -436,40 +436,33 @@ static const struct luaheap_ops kalloc_ops = {
  */
 #define KMEM_RESERVE 16
 
-/* is the machine still short? Asked after the caches have gone back,
- * because a shortage that a release answered must not cost a proc.
- *
- * Asked of the figures rather than by taking a chunk. Taking one
- * answers whether a single allocation fits, which a machine down to
- * its last percent still says yes to -- so a proc that took everything
- * and parked was never noticed, because nothing else was allocating to
- * ask again. It also spent memory to find out whether memory was
- * short, at the moment there was least of it.
- *
- * Both figures, because either alone lies. `avail` misses the fragmented
- * case platform.h describes -- 100KB free in 2KB pieces refuses a chunk
- * -- and `largest` alone calls a machine with one chunk left healthy,
- * which is what taking a chunk did.
- *
- * chunkinfo and not meminfo: on a board with PSRAM the heaps are there
- * and the rest is internal sram, so meminfo reports a pool the chunks
- * never come from.
+/* is the machine still short? Asked after the caches have gone back.
+ * Both figures: `avail` misses fragmentation, `largest` alone calls one
+ * chunk left healthy; together they see a proc that took memory and
+ * parked. Then a chunk, because efi's figures come from the uefi map,
+ * which does not move as AllocatePool fills.
  */
 int
 kmem_short(void)
 {
 	unsigned long long total = 0, avail = 0, largest = 0;
+	void *p;
 
 	platform_chunkinfo(&total, &avail, &largest);
 
-	/* a platform that answers nothing leaves this to the caller's
-	 * other evidence rather than killing on a zero.
-	 */
-	if (total == 0)
-		return 0;
-	if (largest < LUAHEAP_CHUNK)
+	/* a platform that answers nothing is left to the chunk below. */
+	if (total != 0) {
+		if (largest < LUAHEAP_CHUNK)
+			return 1;
+		if (avail < total / KMEM_RESERVE)
+			return 1;
+	}
+
+	p = platform_chunk_alloc(LUAHEAP_CHUNK);
+	if (!p)
 		return 1;
-	return avail < total / KMEM_RESERVE;
+	platform_chunk_free(p, LUAHEAP_CHUNK);
+	return 0;
 }
 
 /* Atomic: written inside an allocation on one cpu, read at another's
