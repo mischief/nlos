@@ -38,6 +38,7 @@ endchoice
 
 config LUAOS_USB_HOST
 	bool "drive the OTG port as a host"
+	depends on SOC_USB_OTG_SUPPORTED
 	default n
 	help
 	  Enumerate what is plugged into the chip's own USB port.
