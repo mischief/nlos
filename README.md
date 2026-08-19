@@ -2,13 +2,14 @@
 
 Lua 5.4 running on the bare machine — a cursed fusion of Lua, Mach, and
 Plan 9. Most logic in Lua, small C glue. Isolated Lua states as
-processes, capabilities for all IPC, 9P at every boundary facing the
-outside world.
+processes, capabilities for all IPC, and a namespace per proc that is
+the only thing it can reach.
 
-Three machines, one system above the platform layer: UEFI (x86_64,
-aarch64, riscv64), qemu's firmware-less `microvm`, and an ESP32-S3
-handheld (the LilyGO T-Deck). They differ in `src/platform/` and in
-which services they start; `init.lua` is the same file on all of them.
+Four machines, one system above the platform layer: UEFI (x86_64,
+aarch64, riscv64), qemu's firmware-less `microvm`, an ESP32-S3 handheld
+(the LilyGO T-Deck), and a linux process. They differ in
+`src/platform/` and in which services they start; `init.lua` is the
+same file on all of them.
 
 Built from scratch — no gnu-efi, no mingw, no EDK II, no glibc. Vanilla
 Lua 5.4 as an unpatched submodule; everything else is ours.
@@ -74,7 +75,31 @@ repl, reachable on host tcp/8090.
 
 On real hardware: `dd` `build/luaos.img` to a USB stick and UEFI-boot it.
 
-## The other two machines
+## The other machines
+
+```sh
+meson setup build-hosted -Dplatform=hosted
+ninja -C build-hosted
+build-hosted/src/platform/hosted/luaos-hosted        # as a process
+build-hosted/src/platform/hosted/luaos-hosted --gui  # and with a window
+```
+
+`--help` lists the rest: `-r` the directory served as `/`, `-d` a file
+as the disk, `-w` to allow writes into the root, `-m` the memory
+ceiling, `--no-host-fs` to boot the tree built into the binary.
+
+The machine is a process: the terminal is the console, a host directory
+(or the tree built into the binary) is the root, and a file named with
+`-d` is the disk. It links the host libc rather than `src/libc`, so the
+three ways a guest could have reached the host through it are closed
+deliberately — stdio replaced with streams over the console, `fopen`
+wrapped and rooted, and the environment cleared before any state
+exists. It has no frames, so tcp and udp come from the host's sockets
+rather than from `lib/ip4.lua`.
+
+It is also how you find out quickly whether something works: the suite
+runs in about five seconds there against a minute on the firmware
+machines.
 
 ```sh
 meson setup build-microvm -Dplatform=microvm
@@ -184,7 +209,19 @@ meson test -C build boot-proc           # one test
 meson test -C build --print-errorlogs
 ```
 
-Three kinds of test, all real boots:
+The same payloads run on the hosted machine, where a test costs
+milliseconds rather than a boot — 143 of them in about five seconds,
+against 154 in about a minute on efi:
+
+```sh
+meson test -C build-hosted
+```
+
+A name in one suite and not the other is a machine saying what it has
+not got: no firmware, no NIC, no framebuffer. Both lists sit together
+in `test/meson.build` so the difference is readable.
+
+Four kinds of test, three of them real boots:
 
 - **boot tests** (`test/boot/test_*.lua`) — injected via qemu fw_cfg as
   `opt/org.luaos.test`, replacing `/init.lua` as the boot payload. The
@@ -197,6 +234,9 @@ Three kinds of test, all real boots:
   drives the guest: plan9port-compatible 9P over the com2 socket, and
   HTTP/JSON-RPC over a forwarded port. A guest cannot test its own TCP
   server, because qemu's usermode network does not hairpin.
+- **host-native tests** (`test/host_*.lua`) — the Lua in `lib/` against
+  the host's own interpreter, and the C with no kernel in it. No
+  machine is involved, so they register whatever `-Dplatform` says.
 
 `tools/boottest.lua` extracts the TAP and dumps the whole serial trace
 as diagnostics on failure, keeping that log and printing its path --
@@ -239,6 +279,18 @@ machine/ one services list per machine. The build installs the one it
 tools/   host-side. builds and runs the image; never reaches the guest.
 test/    boot/ is guest payloads; the rest are host-side drivers.
 fonts/   the panel's glyphs, as the bdf they were made from.
+```
+
+The build says the same thing about itself. The root `meson.build`
+chooses a machine and descends once; everything else is beside what it
+builds:
+
+```
+meson.build                     project, options, the shared lists
+src/platform/<machine>/         that machine's sources, link and image
+src/<arch>/                     the flags and sources only that arch has
+test/meson.build                every test, both suites in one file
+esp32/                          an IDF project of its own -- see below
 ```
 
 `lib/` is the half that can be checked, so test/boot/test_layout.lua

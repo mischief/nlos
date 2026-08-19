@@ -5,11 +5,11 @@ neutral documentation — its audience is whoever (or whatever) is about
 to edit this repo next.
 
 Lua 5.4 on the bare machine: Lua, Mach and Plan 9 fused. Isolated Lua
-states as processes, Mach-style ports and rights for all IPC, 9P at
-every boundary facing outward. Three machines — UEFI, qemu's
-firmware-less `microvm`, and an ESP32-S3 handheld — differing in
-`src/platform/` and in which services they start, above which the
-system is one tree. A playground with discipline — toy
+states as processes, Mach-style ports and rights for all IPC, and a
+namespace per proc that bounds what it can reach. Four machines — UEFI,
+qemu's firmware-less `microvm`, an ESP32-S3 handheld, and a linux
+process — differing in `src/platform/` and in which services they
+start, above which the system is one tree. A playground with discipline — toy
 scope, real protocols, real isolation, real tests. The point is to find
 out how much OS fits in Lua, not to ship a product.
 
@@ -145,6 +145,14 @@ than raised.
 /proc/4/stack` (`lib/procfs.lua`). `sys.set_trace` is on the other side
 because it *writes*: it frees and reallocates a ring the target's own
 hook is filling. Ask which side a new call is on before adding it.
+
+`sys.battery` is on the reading side for the same reason: a voltage is
+an observation of the machine and reaches nothing, so it needs no
+right. It answers millivolts and nothing else — what counts as empty is
+a curve over a chemistry, and that lives in `lib/battery.lua` where a
+pushed file can correct it. The ADC reads low by a per-board amount, so
+that file also carries the one measured correction; see its comment
+before trusting a reading to better than about 100mV.
 
 A death notice splits the same way. That a proc exited is ambient — a
 child watching the parent it must not outlive (`lib/webterm.lua`) holds no
@@ -394,10 +402,12 @@ preferred over hand-rolled code; vendored libraries are not. This
 extends to protocols — DNS, HTTP and JSON are hand-rolled in Lua for
 the same reason 9P is.
 
-**Arch code lives in `src/<arch>/`.** The kernel, libc and all Lua are
-arch-blind. x86_64, aarch64 and riscv64 are ported; `meson.build` picks
-the directory from `host_machine.cpu_family()`, which a `--cross-file
-cross/<arch>.txt` sets. Meson then *tells* `tools/arch.lua` and
+**Arch code lives in `src/<arch>/`, and so does its build.** The
+kernel, libc and all Lua are arch-blind. x86_64, aarch64 and riscv64
+are ported; the root `meson.build` picks the directory from
+`host_machine.cpu_family()`, which a `--cross-file cross/<arch>.txt`
+sets, and descends into `src/<arch>/meson.build` for the flags and the
+sources only that architecture has. Meson then *tells* `tools/arch.lua` and
 `test/qemuarch.lua` which arch it built, via `LUAOS_ARCH`. They must
 never work it out from `uname` again: under a cross build the host arch
 is the wrong answer, and riscv64 has only ever been cross-built.
@@ -705,10 +715,49 @@ at thousands of timers, and `MAXPROCS` is 32.
 
 ## Testing
 
-`meson test -C build`. See README.md for invocations. Three kinds, all
-real boots: fw_cfg-injected boot payloads emitting TAP over com1; the
-same with `NET=1` for a real NIC; and host-driven tests where an
-external client drives the guest.
+`meson test -C build`. See README.md for invocations. Four kinds: the
+fw_cfg-injected boot payloads emitting TAP over com1, the same with
+`NET=1` for a real NIC, host-driven tests where an external client
+drives the guest, and host-native tests that run `lib/` against the
+host's own interpreter with no machine at all.
+
+**Run the hosted suite first.** The same boot payloads run as a process
+there, and the whole suite is about five seconds against a minute on
+efi. A defect in anything above `src/platform/` shows up there just as
+well, and the fast loop is what makes it worth running at all. Verify
+on efi before you claim it fixed; the two lists differ where the
+machines differ, not by accident.
+
+**Both test lists live in `test/meson.build`, side by side on purpose.**
+A name in one and not the other says a machine has not got the
+hardware — no firmware, no NIC, no framebuffer. Kept apart, the two
+lists drift and nobody sees it.
+
+## Where the build says what
+
+One rule: **each concern's build lives beside what it builds.** The
+root `meson.build` holds `project()`, the options, the toolchain and
+arch choice, the shared source lists, and then descends once —
+`subdir('src/platform' / platform)`. It is 400 lines and should stay
+that way.
+
+- `src/platform/<machine>/meson.build` — that machine's sources, its
+  compile and link, the image and the targets that run it.
+- `src/<arch>/meson.build` — the flags and sources only that arch has.
+- `test/meson.build` — every `test()` and `benchmark()`.
+- `esp32/` stays a project of its own: IDF's cmake owns that build, and
+  its `meson.build` calls `project()`, which a subdir may not. Only the
+  run targets that *drive* it live in `src/platform/esp32/`.
+
+**Flags belong to targets, not to the project.** There is no
+`add_project_arguments`: `plat_args` is named by the four targets built
+for the guest, and everything else — hostutil, the native modules,
+every test binary — is `native: true` and was never getting them.
+
+**A path in a subdir means something different.** `meson.current_source_dir()`
+is that subdir, not the root; use `meson.project_source_root()` where
+the root is meant. This cost 112 hosted failures once, silently, while
+efi stayed green.
 
 **A TCP server cannot test itself** — qemu's usermode network does not
 hairpin, so a guest dialing its own address times out. Network servers
