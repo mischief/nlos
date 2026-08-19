@@ -102,6 +102,29 @@ keydown(SDL_Keycode key, SDL_Keymod mod)
 	}
 }
 
+/* window coordinates are not the guest's once the window has been
+ * resized: the screen is a fixed size and SDL scales it to fit, so a
+ * click has to come back through the same transform or the pointer
+ * drifts further from the cursor the larger the window gets.
+ */
+static void
+ptrpos(float wx, float wy)
+{
+	float lx = wx, ly = wy;
+
+	SDL_RenderCoordinatesFromWindow(renderer, wx, wy, &lx, &ly);
+	ptrx = (int)lx;
+	ptry = (int)ly;
+	if (ptrx < 0)
+		ptrx = 0;
+	if (ptry < 0)
+		ptry = 0;
+	if (ptrx >= fbw)
+		ptrx = fbw - 1;
+	if (ptry >= fbh)
+		ptry = fbh - 1;
+}
+
 static int
 buttonbit(int b)
 {
@@ -144,9 +167,21 @@ fb_pump(void)
 			for (const char *p = e.text.text; *p; p++)
 				keypush((unsigned char)*p);
 			break;
+		/* the host asking for the screen back: uncovered, resized,
+		 * unminimised. Nothing in the guest has changed, so only a
+		 * repaint is owed -- and without this the window keeps
+		 * whatever the compositor last had, which is usually black.
+		 */
+		case SDL_EVENT_WINDOW_EXPOSED:
+		case SDL_EVENT_WINDOW_RESIZED:
+		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+		case SDL_EVENT_WINDOW_SHOWN:
+		case SDL_EVENT_WINDOW_RESTORED:
+			dirty = 1;
+			lastframe = 0;		/* repaint now, not next frame */
+			break;
 		case SDL_EVENT_MOUSE_MOTION:
-			ptrx = (int)e.motion.x;
-			ptry = (int)e.motion.y;
+			ptrpos(e.motion.x, e.motion.y);
 			ptrmoved = 1;
 			break;
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -193,7 +228,7 @@ fb_open(int w, int h)
 		kernel_log("fb: SDL_Init failed");
 		return -1;
 	}
-	window = SDL_CreateWindow("lua-os", w, h, 0);
+	window = SDL_CreateWindow("lua-os", w, h, SDL_WINDOW_RESIZABLE);
 	if (!window) {
 		kernel_log("fb: no window");
 		return -1;
@@ -222,6 +257,14 @@ fb_open(int w, int h)
 	}
 	fbw = w;
 	fbh = h;
+
+	/* the screen keeps the size it booted with however the window is
+	 * dragged: a mode change is the guest's to make, not the window
+	 * manager's. Letterboxed rather than stretched, so a resize
+	 * cannot quietly change the aspect the guest is drawing for.
+	 */
+	SDL_SetRenderLogicalPresentation(renderer, w, h,
+	    SDL_LOGICAL_PRESENTATION_LETTERBOX);
 	SDL_StartTextInput(window);
 	dirty = 1;
 	fb_flush();
