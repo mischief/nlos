@@ -189,6 +189,10 @@ dbg_costate(struct kproc *p, int co)
 	return 0;
 }
 
+/* how many procs have a debugger attached. dbg_sweep reads it every lap
+ * on every cpu and does nothing at all while it is zero. */
+atomic_int ndbg;
+
 /* All of it under the wide lock, which is what dbg_sweep reads p->dbg
  * inside: clearing and freeing anywhere else is a use-after-free on the
  * cpu walking the table. Callers hold nothing, or hold it already.
@@ -202,6 +206,8 @@ dbg_free(struct kproc *p)
 	ipclock_enter();
 	d = p->dbg;
 	p->dbg = 0;
+	if (d)
+		atomic_fetch_sub_explicit(&ndbg, 1, memory_order_release);
 	port = d ? dbg_port(d) : 0;
 	free(d);
 	if (port)
@@ -467,19 +473,21 @@ dbg_status_body(lua_State *L)
 void
 dbg_sweep(void)
 {
-	for (int i = 0; i < prochigh; i++) {
+	/* nothing is attached, which is the usual state of the machine:
+	 * one atomic load per lap and no walk. What this replaces is a
+	 * scan of the proc table reading each slot with no lock, which
+	 * raced every spawn -- and taking the wide lock per slot instead
+	 * would put a machine-wide acquisition in every lap of every cpu.
+	 */
+	if (atomic_load_explicit(&ndbg, memory_order_acquire) == 0)
+		return;
+
+	ipclock_enter();
+	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
+	    memory_order_relaxed); i < n_; i++) {
 		struct kproc *p = procv[i];
 
-		/* the one unlocked read of the proc table: this runs on
-		 * every lap of every cpu. Safe because proc_new zeroes a
-		 * slot before publishing it, so dbg reads as a pointer or
-		 * null, and it is read again under the lock below.
-		 */
-		if (!p || !p->dbg)
-			continue;
-
-		ipclock_enter();
-		if (p->dbg) {
+		if (p && p->dbg) {
 			int reason = atomic_exchange_explicit(
 			    &p->dbg->notify, DBG_RUN, memory_order_relaxed);
 
@@ -487,8 +495,8 @@ dbg_sweep(void)
 				dbg_notify(p, reason, 0);
 			dbg_mark_orphan(p);
 		}
-		ipclock_leave();
 	}
+	ipclock_leave();
 }
 
 static int
@@ -568,6 +576,7 @@ api_dbg_attach_k(lua_State *L, int status, lua_KContext ctx)
 		return luaL_error(L, "that right cannot be received on");
 	}
 	p->dbg = d;
+	atomic_fetch_add_explicit(&ndbg, 1, memory_order_release);
 	proc_thaw(p);
 	lua_pushboolean(L, 1);
 	return 1;

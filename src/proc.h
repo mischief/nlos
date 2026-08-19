@@ -9,14 +9,22 @@
 
 #include "lua.h"
 #include "kproc.h"
+#include "lock.h"
 
 /* the proc table. A dead proc keeps its slot until the reaper runs at
  * the top of a lap, because dispatch reads its status right after a
  * resume that may have killed it.
  */
 extern struct kproc *procv[MAXPROCS];	/* ipclock covers every walk */
-extern int prochigh;		/* one past the highest slot ever used */
-extern int nlive;		/* procs that are not DEAD */
+/* one past the highest slot ever used. Atomic because the sweeps read
+ * it to bound a walk without ipclock, where proc_new raises it holding
+ * ipclock; release/acquire so a slot published under it is visible to a
+ * reader that sees the higher bound. */
+extern atomic_int prochigh;
+/* procs that are not DEAD. Atomic because both dispatch loops read it
+ * as their condition with no lock, where proc_new and the reaper move
+ * it under ipclock. */
+extern atomic_int nlive;
 
 /* the machine-wide lua heap, where NCPU is 1. Null above that, and that
  * is the test for whether a proc owns the heap it points at.

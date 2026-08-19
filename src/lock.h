@@ -66,31 +66,44 @@
  * cons proc, and neither is pinned anywhere.
  */
 
+#include <stdatomic.h>
+
 #include "machine.h"
 
 #ifndef NCPU
 #define NCPU 1
 #endif
 
+/* a counter with one writer -- a lock.s holder, or the cpu a proc or a
+ * cpu record belongs to -- and readers elsewhere building a report.
+ * Atomic for those readers, never read-modify-written, so the writer
+ * pays a relaxed load and store.
+ */
+#define KSTAT_GET(f)		atomic_load_explicit(&(f), memory_order_relaxed)
+#define KSTAT_SET(f, v)		atomic_store_explicit(&(f), (v), memory_order_relaxed)
+#define KSTAT_ADD(f, n)		KSTAT_SET(f, KSTAT_GET(f) + (n))
+
+static inline void
+lock_bump(atomic_ullong *c, unsigned long long by)
+{
+	atomic_store_explicit(c, atomic_load_explicit(c, memory_order_relaxed) +
+	    by, memory_order_relaxed);
+}
+
 #if NCPU > 1
 
-#include <stdatomic.h>
-
-/* the counters are plain, not atomic, and they are written after the
- * lock is held. That is what makes them safe: the holder is alone, so
- * these are as protected as anything else the lock guards.
- *
- * Only the waiting is timed, never the acquiring. Reading the cycle
- * counter on every take would make the fast path several times its own
- * length and measure the measurement instead.
- */
+/* one writer at a time -- the holder is alone -- but sys.stats() reads
+ * these from another cpu holding nothing. Atomic for that reader, never
+ * read-modify-written, so the holder pays a relaxed load and store:
+ * plain instructions here. Only the waiting is timed; reading the cycle
+ * counter on every take would measure the measurement. */
 struct lock {
 	atomic_uint next;	/* the ticket the next arrival takes */
 	atomic_uint owner;	/* the ticket being served */
-	int held;		/* for holding(); see the uniprocessor half */
-	unsigned long long nlock;	/* acquisitions */
-	unsigned long long ncontend;	/* of those, ones that had to wait */
-	unsigned long long spin;	/* cycles spent waiting */
+	atomic_int held;	/* for holding(); see the uniprocessor half */
+	atomic_ullong nlock;	/* acquisitions */
+	atomic_ullong ncontend;	/* of those, ones that had to wait */
+	atomic_ullong spin;	/* cycles spent waiting */
 };
 
 #define LOCK_INIT { 0, 0, 0, 0, 0, 0 }
@@ -110,11 +123,11 @@ lock(struct lock *l)
 		while (atomic_load_explicit(&l->owner,
 		    memory_order_acquire) != t);
 	}
-	l->held = 1;
-	l->nlock++;
+	atomic_store_explicit(&l->held, 1, memory_order_relaxed);
+	lock_bump(&l->nlock, 1);
 	if (t0) {
-		l->ncontend++;
-		l->spin += machine_cycles() - t0;
+		lock_bump(&l->ncontend, 1);
+		lock_bump(&l->spin, machine_cycles() - t0);
 	}
 }
 
@@ -123,7 +136,7 @@ unlock(struct lock *l)
 {
 	unsigned t = atomic_load_explicit(&l->owner, memory_order_relaxed);
 
-	l->held = 0;
+	atomic_store_explicit(&l->held, 0, memory_order_relaxed);
 	atomic_store_explicit(&l->owner, t + 1, memory_order_release);
 }
 
@@ -141,8 +154,8 @@ canlock(struct lock *l)
 	if (!atomic_compare_exchange_strong_explicit(&l->next, &n, t + 1,
 	    memory_order_acquire, memory_order_relaxed))
 		return 0;
-	l->held = 1;
-	l->nlock++;
+	atomic_store_explicit(&l->held, 1, memory_order_relaxed);
+	lock_bump(&l->nlock, 1);
 	return 1;
 }
 
@@ -153,9 +166,9 @@ canlock(struct lock *l)
  * itself, so the weaker question answers the same bug.
  */
 static inline int
-holding(const struct lock *l)
+holding(struct lock *l)
 {
-	return l->held;
+	return atomic_load_explicit(&l->held, memory_order_relaxed);
 }
 
 #else	/* NCPU == 1 */
@@ -171,21 +184,43 @@ holding(const struct lock *l)
  * microvm.
  */
 struct lock {
-	int held;
-	unsigned long long nlock;	/* acquisitions */
-	unsigned long long ncontend;	/* always zero: one cpu cannot wait */
-	unsigned long long spin;	/* always zero, for the same reason */
+	atomic_int held;
+	atomic_ullong nlock;		/* acquisitions */
+	atomic_ullong ncontend;		/* always zero: one cpu cannot wait */
+	atomic_ullong spin;		/* always zero, for the same reason */
 };
 
 #define LOCK_INIT { 0, 0, 0, 0 }
 
 #define barrier() __asm__ volatile ("" ::: "memory")
 
-static inline void lock(struct lock *l) { barrier(); l->held = 1; l->nlock++; }
-static inline void unlock(struct lock *l) { l->held = 0; barrier(); }
-static inline int canlock(struct lock *l)
-{ barrier(); l->held = 1; l->nlock++; return 1; }
-static inline int holding(const struct lock *l) { return l->held; }
+static inline void
+lock(struct lock *l)
+{
+	barrier();
+	atomic_store_explicit(&l->held, 1, memory_order_relaxed);
+	lock_bump(&l->nlock, 1);
+}
+
+static inline void
+unlock(struct lock *l)
+{
+	atomic_store_explicit(&l->held, 0, memory_order_relaxed);
+	barrier();
+}
+
+static inline int
+canlock(struct lock *l)
+{
+	lock(l);
+	return 1;
+}
+
+static inline int
+holding(struct lock *l)
+{
+	return atomic_load_explicit(&l->held, memory_order_relaxed);
+}
 
 #endif
 

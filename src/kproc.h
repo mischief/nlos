@@ -105,7 +105,14 @@ struct kport {
 	atomic_int nrecv;
 	int dead;	/* no receive right left; sends are dropped */
 	size_t qbytes;	/* queued payload, against MAXQUEUE */
-	struct kmsg *head, *tail;
+	/* head is atomic and tail is not: sys.anyready probes it with no
+	 * lock, being the cheap "is a sweep worth doing" question a
+	 * running proc asks every round. Writers hold the port's bucket,
+	 * so relaxed suffices -- plain instructions for them, and a stale
+	 * answer for the prober is one it already tolerates.
+	 */
+	_Atomic(struct kmsg *) head;
+	struct kmsg *tail;
 
 	/* counters for sys.ports(). full and dead are different faults: a
 	 * slow reader, against a receive right closed mid-send. qpeak
@@ -220,17 +227,17 @@ struct kproc {
 	 * percentage. queues live on the home cpu, so make_ready enqueues
 	 * against this from whichever cpu is sending.
 	 */
-	unsigned home;
+	atomic_uint home;
 	int reductions;		/* instruction budget per slice */
 	/* args on co's stack for the first resume only: sys.spawn's `arg`,
 	 * received by the chunk as `...`. zeroed after that resume.
 	 */
 	int nargs;
-	size_t mem_used;	/* live bytes in this proc's lua heap, plus its
+	atomic_size_t mem_used;	/* live bytes in this proc's lua heap, plus its
 				 * pooled buffer bytes -- see kbuf_charge */
 	size_t buf_used;	/* the pooled half of mem_used, on its own */
 	size_t buf_debt;	/* pooled bytes since the last collector step */
-	size_t mem_peak;
+	atomic_size_t mem_peak;
 	size_t mem_limit;	/* 0 = unlimited */
 	/* receive rights held, against a cap inherited like mem_limit.
 	 * counted as what the proc holds rather than what it made, which
@@ -260,7 +267,13 @@ struct kproc {
 	/* scheduling feedback. cputime/reds are raw accumulators; cpu is
 	 * the decaying fair-share estimate derived from them.
 	 */
-	unsigned long long cputime;	/* tsc cycles actually spent running */
+	/* written by the cpu running this proc, with no lock: dispatch
+	 * resumes lua holding nothing. Read by updatecpu under schedlock,
+	 * from a cpu waking the proc while it runs. Atomic because that is
+	 * a real overlap, relaxed because it is an accumulator nobody
+	 * orders anything against.
+	 */
+	atomic_ullong cputime;		/* tsc cycles actually spent running */
 	unsigned long long lastupdate;	/* uptime_ms at the last updatecpu */
 	unsigned long long lastcpu;	/* cputime as of that update */
 	unsigned cpu;			/* per-mille of wall time, decayed */
@@ -270,7 +283,7 @@ struct kproc {
 	 * long: the same milliseconds over thousands of resumes is a proc
 	 * round-tripping on ipc, over a handful is one working in a block.
 	 */
-	unsigned long long nresume;
+	atomic_ullong nresume;
 	/* named capabilities, read by name through sys.granted(). a list
 	 * because the boot payload holds a dozen and every other proc
 	 * holds none. appended at spawn, walked whole, never indexed.

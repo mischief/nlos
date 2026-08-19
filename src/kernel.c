@@ -372,7 +372,7 @@ pump_eth(void)
 	 * queue, and this says only "ask again".
 	 */
 	ipclock_enter();
-	if (have_eth && ethport && !ethport->head)
+	if (have_eth && ethport && !atomic_load_explicit(&ethport->head, memory_order_relaxed))
 		port_push(ethport, (const unsigned char *)"N", 1, 0, 0);
 	ipclock_leave();
 }
@@ -384,10 +384,7 @@ pump_eth(void)
 static void
 pump_net(void)
 {
-	int wantnet = have_net && netport && !netport->head;
-	int wantudp = have_udp && udpport && !udpport->head;
-
-	if (!wantnet && !wantudp)
+	if (!have_net && !have_udp)
 		return;
 	/* one readiness question for both: it answers for every
 	 * outstanding operation, so a udp datagram wakes the tcp task
@@ -396,10 +393,14 @@ pump_net(void)
 	 */
 	if (!platform_net_ready())
 		return;
+	/* the queue is read under the lock that writes it, as pump_eth
+	 * reads its own: port_push_owned sets head with the port's bucket
+	 * held, so asking from outside races every send.
+	 */
 	ipclock_enter();
-	if (wantnet && !netport->head)
+	if (have_net && netport && !atomic_load_explicit(&netport->head, memory_order_relaxed))
 		port_push(netport, (const unsigned char *)"N", 1, 0, 0);
-	if (wantudp && !udpport->head)
+	if (have_udp && udpport && !atomic_load_explicit(&udpport->head, memory_order_relaxed))
 		port_push(udpport, (const unsigned char *)"N", 1, 0, 0);
 	ipclock_leave();
 }
@@ -420,7 +421,7 @@ pump_hci(void)
 		return;
 	seen = now;
 	ipclock_enter();
-	if (have_hci && hciport && !hciport->head)
+	if (have_hci && hciport && !atomic_load_explicit(&hciport->head, memory_order_relaxed))
 		port_push(hciport, (const unsigned char *)"N", 1, 0, 0);
 	ipclock_leave();
 }
@@ -1067,15 +1068,15 @@ run_proc(struct kproc *p)
 		dbg_settle(p);
 
 		ran = 1;
-		cpu_self()->ndispatch++;
+		KSTAT_ADD(cpu_self()->ndispatch, 1);
 		/* where it ran, recorded rather than decided -- nothing
 		 * placed it here, this cpu simply took it. Written
 		 * outside schedlock because only the cpu running p
 		 * writes it, and a reader racing it gets the previous
 		 * cpu, which was equally true a moment ago.
 		 */
-		p->home = cpu_self()->idx;
-		p->nresume++;
+		KSTAT_SET(p->home, cpu_self()->idx);
+		KSTAT_ADD(p->nresume, 1);
 
 		int nres = 0;
 
@@ -1093,7 +1094,8 @@ run_proc(struct kproc *p)
 
 		p->nargs = 0;	/* first resume only; see struct kproc */
 
-		p->cputime += platform_ticks() - t0;
+		atomic_fetch_add_explicit(&p->cputime,
+		    platform_ticks() - t0, memory_order_relaxed);
 		p->resumed = 0;
 
 		/* drain the 16-byte rx fifo, on a deadline rather than
@@ -1131,7 +1133,17 @@ run_proc(struct kproc *p)
 			 */
 			if (dbg_commit(p))
 				break;	/* held by a debugger */
-			if (p->status != READY)
+
+			/* under the lock that writes it: make_ready sets
+			 * READY from whichever cpu woke this proc, and
+			 * dispatch reads it again there to decide the
+			 * requeue. Reading it here unlocked raced both.
+			 */
+			lock(&schedlock);
+			int ready = p->status == READY;
+			unlock(&schedlock);
+
+			if (!ready)
 				break;	/* now BLOCKED */
 			continue;	/* spend more weight */
 		}
@@ -1318,7 +1330,8 @@ gc_idle_sweep(struct cpu *me)
 	if (wait < (unsigned long long)quantum_ms * GCIDLE_QUANTA)
 		wait = (unsigned long long)quantum_ms * GCIDLE_QUANTA;
 
-	for (int i = 0; i < prochigh; i++) {
+	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
+	    memory_order_acquire); i < n_; i++) {
 		struct kproc *p;
 
 		/* ipclock for the slot, because proc_new wipes a recycled
@@ -1423,15 +1436,15 @@ kernel_run_ap(void)
 	struct cpu *me = cpu_self();
 
 	lock(&schedlock);
-	me->dispatching = 1;
+	KSTAT_SET(me->dispatching, 1);
 	unlock(&schedlock);
 
-	while (nlive > 0) {
-		me->nlaps++;
+	while (atomic_load_explicit(&nlive, memory_order_relaxed) > 0) {
+		KSTAT_ADD(me->nlaps, 1);
 		if (ipcheld_any())	/* see kernel_run; the same check */
 			platform_abort("ipclock held across a lap");
 		if (dispatch_lap(me)) {
-			me->ndispatch++;
+			KSTAT_ADD(me->ndispatch, 1);
 			continue;
 		}
 
@@ -1452,19 +1465,19 @@ kernel_run_ap(void)
 			platform_intr_on();
 			continue;
 		}
-		me->idle = 1;
+		KSTAT_SET(me->idle, 1);
 		unlock(&schedlock);
 
-		me->nidle++;
+		KSTAT_ADD(me->nidle, 1);
 		platform_cpu_idle();	/* returns with interrupts on */
 
 		lock(&schedlock);
-		me->idle = 0;
+		KSTAT_SET(me->idle, 0);
 		unlock(&schedlock);
 	}
 
 	lock(&schedlock);
-	me->dispatching = 0;
+	KSTAT_SET(me->dispatching, 0);
 	unlock(&schedlock);
 }
 
@@ -1491,14 +1504,14 @@ kernel_run(void)
 		tick = 0;
 
 	lock(&schedlock);
-	cpu_self()->dispatching = 1;
+	KSTAT_SET(cpu_self()->dispatching, 1);
 	unlock(&schedlock);
 
-	while (nlive > 0) {
+	while (atomic_load_explicit(&nlive, memory_order_relaxed) > 0) {
 		struct cpu *me = cpu_self();
 		int ran;
 
-		cpu_self()->nlaps++;
+		KSTAT_ADD(cpu_self()->nlaps, 1);
 
 		/* nothing may hold the ipc lock across the top of a lap.
 		 * This catches the release a lua error jumped past, which
@@ -1617,7 +1630,7 @@ kernel_run(void)
 			 * a driver publishing no event, and then the tick is
 			 * the bound again.
 			 */
-			cpu_self()->nidle++;
+			KSTAT_ADD(cpu_self()->nidle, 1);
 			if (tick) {
 				UINTN n = 0;
 

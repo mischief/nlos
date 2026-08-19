@@ -72,9 +72,9 @@ self(lua_State *L)
  * dispatch a dangling pointer.
  */
 struct kproc *procv[MAXPROCS];
-int prochigh;
+atomic_int prochigh;
 
-int nlive;
+atomic_int nlive;
 
 static int nextpid;
 
@@ -109,7 +109,8 @@ struct kproc *
 find_proc(int pid)
 {
 	IPC_ASSERT_LOCKED();
-	for (int i = 0; i < prochigh; i++)
+	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
+	    memory_order_acquire); i < n_; i++)
 		if (procv[i] && procv[i]->status != DEAD &&
 		    procv[i]->id == pid)
 			return procv[i];
@@ -516,11 +517,11 @@ kbuf_charge(lua_State *L, size_t n)
 {
 	struct kproc *p = self(L);
 
-	if (p->mem_limit && p->mem_used + n > p->mem_limit)
+	if (p->mem_limit && KSTAT_GET(p->mem_used) + n > p->mem_limit)
 		return 0;
-	p->mem_used += n;
-	if (p->mem_used > p->mem_peak)
-		p->mem_peak = p->mem_used;
+	KSTAT_ADD(p->mem_used, n);
+	if (KSTAT_GET(p->mem_used) > KSTAT_GET(p->mem_peak))
+		KSTAT_SET(p->mem_peak, KSTAT_GET(p->mem_used));
 	p->buf_used += n;
 
 	/* pace the collector by these bytes: a proc that only receives
@@ -537,7 +538,7 @@ kbuf_uncharge(lua_State *L, size_t n)
 {
 	struct kproc *p = self(L);
 
-	p->mem_used -= n;
+	KSTAT_SET(p->mem_used, KSTAT_GET(p->mem_used) - n);
 	p->buf_used -= n;
 }
 
@@ -562,7 +563,8 @@ kbuf_pooled(void)
 	size_t total = 0;
 
 	ipclock_enter();
-	for (int i = 0; i < prochigh; i++)
+	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
+	    memory_order_acquire); i < n_; i++)
 		if (procv[i])
 			total += procv[i]->buf_used;
 	ipclock_leave();
@@ -582,7 +584,7 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 
 	if (nsize == 0) {
 		luaheap_realloc(p->heap, ptr, real_osize, 0);
-		p->mem_used -= real_osize;
+		KSTAT_SET(p->mem_used, KSTAT_GET(p->mem_used) - real_osize);
 		return 0;
 	}
 	/* enforce the limit only on growth so gc/shrink always succeeds.
@@ -591,16 +593,16 @@ kalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	 * before this allocator existed.
 	 */
 	if (p->mem_limit && nsize > real_osize &&
-	    p->mem_used - real_osize + nsize > p->mem_limit)
+	    KSTAT_GET(p->mem_used) - real_osize + nsize > p->mem_limit)
 		return 0;
 
 	void *q = luaheap_realloc(p->heap, ptr, real_osize, nsize);
 
 	if (!q)
 		return 0;
-	p->mem_used += nsize - real_osize;
-	if (p->mem_used > p->mem_peak)
-		p->mem_peak = p->mem_used;
+	KSTAT_ADD(p->mem_used, nsize - real_osize);
+	if (KSTAT_GET(p->mem_used) > KSTAT_GET(p->mem_peak))
+		KSTAT_SET(p->mem_peak, KSTAT_GET(p->mem_used));
 	/* growth only, and the test is what makes it so: gc_owed is
 	 * unsigned, so adding a shrink wraps it to near SIZE_MAX.
 	 */
@@ -932,7 +934,8 @@ static void
 trace_put(struct kproc *p, struct ktrace *t, int line, int src, int co)
 {
 	unsigned long long now = platform_ticks();
-	unsigned long long cpu = p->cputime +
+	unsigned long long cpu = atomic_load_explicit(&p->cputime,
+	    memory_order_relaxed) +
 	    (p->resumed && now > p->resumed ? now - p->resumed : 0);
 	struct tracent *e;
 
@@ -1184,8 +1187,9 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 			memset(procv[i], 0, sizeof *procv[i]);
 		}
 		p = procv[i];
-		if (i >= prochigh)
-			prochigh = i + 1;
+		if (i >= atomic_load_explicit(&prochigh, memory_order_relaxed))
+			atomic_store_explicit(&prochigh, i + 1,
+			    memory_order_release);
 		break;
 	}
 	if (!p)
@@ -1194,9 +1198,9 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	memset(p->rights, 0, sizeof p->rights);
 	p->nwatch = 0;
 	p->reductions = reductions > 0 ? reductions : default_reductions;
-	p->mem_used = 0;
+	KSTAT_SET(p->mem_used, 0);
 	p->buf_used = 0;
-	p->mem_peak = 0;
+	KSTAT_SET(p->mem_peak, 0);
 	/* the limit goes live only after setup: base state + libraries
 	 * are counted but never refused, so a tiny limit can't panic
 	 * openlibs. the chunk's first over-limit allocation then fails
@@ -1217,7 +1221,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * it today; it answers "which cpu is this on" for the smp tests,
 	 * and soft affinity would be a use of exactly this field.
 	 */
-	p->home = 0;
+	KSTAT_SET(p->home, 0);
 
 	/* before lua_newstate, which allocates through kalloc, which
 	 * reaches this proc's heap -- and, where there is one cpu, every
@@ -1538,7 +1542,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	p->mem_limit = mem_limit;
 	p->port_limit = port_limit;
 	p->weight = 1;
-	p->cputime = 0;
+	atomic_store_explicit(&p->cputime, 0, memory_order_relaxed);
 	p->cpu = 0;
 	p->pri = 0;
 	p->resumed = 0;
@@ -1558,7 +1562,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * half-built proc and races the creator for its stack.
 	 */
 	p->status = HATCHING;
-	nlive++;
+	atomic_fetch_add_explicit(&nlive, 1, memory_order_relaxed);
 	return p->id;
 }
 
@@ -1677,7 +1681,7 @@ proc_detach(struct kproc *p, const char *why, const char *reason, int broke)
 {
 	wait_clear(p);
 	proc_unqueue(p);
-	nlive--;
+	atomic_fetch_sub_explicit(&nlive, 1, memory_order_relaxed);
 
 	/* release every right this proc held; ports lose refs, orphaned
 	 * queues flush, unreferenced ports free
@@ -1797,7 +1801,8 @@ proc_break(struct kproc *p, const char *why)
 	p->status = BROKE;
 	p->brokeseq = ++brokeseq;
 
-	for (int i = 0; i < prochigh; i++) {
+	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
+	    memory_order_acquire); i < n_; i++) {
 		struct kproc *q = procv[i];
 
 		if (!q || q->status != BROKE)
@@ -1830,14 +1835,15 @@ kmem_victim(void)
 	 * on one state.
 	 */
 	ipclock_enter();
-	for (int i = 0; i < prochigh; i++) {
+	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
+	    memory_order_acquire); i < n_; i++) {
 		struct kproc *p = procv[i];
 
 		if (!p || !p->expendable)
 			continue;
 		if (p->status == DEAD || p->status == BROKE)
 			continue;
-		if (!worst || p->mem_used > worst->mem_used)
+		if (!worst || KSTAT_GET(p->mem_used) > KSTAT_GET(worst->mem_used))
 			worst = p;
 	}
 	if (worst)
@@ -1853,13 +1859,52 @@ proc_heaps_release(void)
 
 	if (shared_heap)
 		return luaheap_release(shared_heap);
-	/* the walk takes ipclock; the release itself touches only the one
-	 * heap and the physical allocator under it.
-	 */
-	ipclock_enter();
-	for (int i = 0; i < prochigh; i++)
-		if (procv[i] && procv[i]->heap)
-			freed += luaheap_release(procv[i]->heap);
-	ipclock_leave();
+
+	/* a heap belongs to whichever cpu runs its proc, and that cpu holds
+	 * nothing while it allocates -- dispatch resumes lua with no lock
+	 * on purpose. ipclock therefore does not make this walk safe: it
+	 * claims each proc as gc_idle_sweep does, and skips the ones
+	 * another cpu has in hand. */
+	unsigned me = cpu_self()->idx + 1;
+
+	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
+	    memory_order_acquire); i < n_; i++) {
+		struct kproc *p;
+		int mine;
+
+		ipclock_enter();
+		lock(&schedlock);
+		p = procv[i];
+		mine = p && p->oncpu == me;
+		/* our own is safe and is usually the point: nothing else
+		 * is inside its allocator. Anything else must be parked
+		 * and off both queues to be claimed -- a proc waiting its
+		 * turn is taken by another cpu's dispatch, which aborts
+		 * on finding it already in hand.
+		 */
+		if (!p || !p->heap || p->frozen ||
+		    (!mine && (p->oncpu || p->status != BLOCKED || p->onq))) {
+			unlock(&schedlock);
+			ipclock_leave();
+			continue;
+		}
+		if (!mine)
+			p->oncpu = me;	/* claimed; see gc_idle_sweep */
+		unlock(&schedlock);
+		ipclock_leave();
+
+		freed += luaheap_release(p->heap);
+
+		/* woken while it was held: make_ready saw the claim and
+		 * left the enqueue here, as dispatch does.
+		 */
+		if (!mine) {
+			lock(&schedlock);
+			p->oncpu = 0;
+			if (p->status == READY && !p->onq)
+				rq_add(donq, p);
+			unlock(&schedlock);
+		}
+	}
 	return freed;
 }

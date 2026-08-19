@@ -100,7 +100,9 @@ updatecpu(struct kproc *p)
 	if (n < 10)
 		return;
 
-	unsigned long long used = p->cputime - p->lastcpu;
+	unsigned long long cput = atomic_load_explicit(&p->cputime,
+	    memory_order_relaxed);
+	unsigned long long used = cput - p->lastcpu;
 	unsigned long long window = n > SCHED_DECAY_MS ? SCHED_DECAY_MS : n;
 	/* straight from cycles, never through whole milliseconds: the
 	 * truncation is a systematic undercount at lap scale, where the
@@ -116,7 +118,7 @@ updatecpu(struct kproc *p)
 	    (SCHED_DECAY_MS - window) + (unsigned long long)frac * window) /
 	    SCHED_DECAY_MS);
 	p->lastupdate = now;
-	p->lastcpu = p->cputime;
+	p->lastcpu = cput;
 }
 
 /* dynamic priority: inversely proportional to recent cpu use against an
@@ -379,7 +381,7 @@ make_ready(struct kproc *p)
 	for (unsigned i = 0; i < platform_ncpu(); i++) {
 		struct cpu *c = cpu_at(i);
 
-		if (c && c->idle && c != cpu_self()) {
+		if (c && KSTAT_GET(c->idle) && c != cpu_self()) {
 			wake = i;
 			break;
 		}

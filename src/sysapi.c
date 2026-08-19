@@ -175,7 +175,7 @@ altready(lua_State *L, struct kproc *p)
 			if (r->port->dead ||
 			    r->port->qbytes + (size_t)need <= MAXQUEUE)
 				return i;
-		} else if (r->recv && r->port->head) {
+		} else if (r->recv && atomic_load_explicit(&r->port->head, memory_order_relaxed)) {
 			return i;
 		}
 	}
@@ -200,7 +200,7 @@ alt_take_at(lua_State *L, struct kproc *p, int i)
 	struct right *r = right_get(p, (int)lua_tointeger(L, -1));
 
 	lua_pop(L, 1);
-	if (!r || !r->recv || !r->port->head)
+	if (!r || !r->recv || !atomic_load_explicit(&r->port->head, memory_order_relaxed))
 		return 0;	/* cannot happen today; see the note above */
 	lua_pushinteger(L, i);
 
@@ -274,7 +274,7 @@ alt_hup(lua_State *L, struct kproc *p, int n)
 		 */
 		if (altneed(L, i) >= 0)
 			continue;
-		if (r && r->recv && !r->port->head &&
+		if (r && r->recv && !atomic_load_explicit(&r->port->head, memory_order_relaxed) &&
 		    sole_holder(p, r->port)) {
 			lua_pushinteger(L, i);
 			lua_pushnil(L);
@@ -387,7 +387,7 @@ api_alt(lua_State *L)
 			lua_pushstring(L, wake ? "ready" : "send");
 			return 3;
 		}
-		if (!send && r->port->head != 0 && wake) {
+		if (!send && atomic_load_explicit(&r->port->head, memory_order_relaxed) != 0 && wake) {
 			wait_clear(p);
 			ipclock_leave();
 			lua_pushinteger(L, i);
@@ -395,7 +395,7 @@ api_alt(lua_State *L)
 			lua_pushliteral(L, "ready");
 			return 3;
 		}
-		if (!send && r->port->head != 0) {
+		if (!send && atomic_load_explicit(&r->port->head, memory_order_relaxed) != 0) {
 			int rc = alt_take_at(L, p, i);
 
 			wait_clear(p);
@@ -474,7 +474,7 @@ api_anyready(lua_State *L)
 	for (int i = 0; i < p->rhigh; i++) {
 		struct right *r = right_slot(p, i);
 
-		if (r && r->used && r->recv && r->port->head) {
+		if (r && r->used && r->recv && atomic_load_explicit(&r->port->head, memory_order_relaxed)) {
 			lua_pushboolean(L, 1);
 			return 1;
 		}
@@ -542,7 +542,7 @@ api_block(lua_State *L)
 		goto out;
 	}
 	ipclock_enter_port(r->port);
-	if (r->port->head)
+	if (atomic_load_explicit(&r->port->head, memory_order_relaxed))
 		rc = HAVEMSG;		/* already there, don't sleep */
 	else if (!SLIST_EMPTY(&p->waiters))
 		rc = TWICE;
@@ -889,8 +889,8 @@ api_meminfo(lua_State *L)
 	 * sys.stats instead. Reporting it here would attribute the whole
 	 * machine's heap to whichever proc was asked about.
 	 */
-	lua_pushinteger(L, (lua_Integer)p->mem_used);
-	lua_pushinteger(L, (lua_Integer)p->mem_peak);
+	lua_pushinteger(L, (lua_Integer)KSTAT_GET(p->mem_used));
+	lua_pushinteger(L, (lua_Integer)KSTAT_GET(p->mem_peak));
 	lua_pushinteger(L, (lua_Integer)p->mem_limit);
 	/* the pooled part of mem_used, so a proc holding buffers can be
 	 * told from one holding lua objects. */
@@ -1027,11 +1027,11 @@ api_pidstat(lua_State *L)
 	 * share of one; reported so placement can be seen from a test
 	 * rather than inferred from timing.
 	 */
-	lua_pushinteger(L, (lua_Integer)p->home);
+	lua_pushinteger(L, (lua_Integer)KSTAT_GET(p->home));
 	lua_setfield(L, -2, "home");
-	lua_pushinteger(L, (lua_Integer)p->mem_used);
+	lua_pushinteger(L, (lua_Integer)KSTAT_GET(p->mem_used));
 	lua_setfield(L, -2, "used");
-	lua_pushinteger(L, (lua_Integer)p->mem_peak);
+	lua_pushinteger(L, (lua_Integer)KSTAT_GET(p->mem_peak));
 	lua_setfield(L, -2, "peak");
 	lua_pushinteger(L, (lua_Integer)p->mem_limit);
 	lua_setfield(L, -2, "limit");
@@ -1059,13 +1059,27 @@ api_pidstat(lua_State *L)
 	 * hot path, and what the wall clock has that the sum does not is
 	 * the kernel's.
 	 */
-	lua_pushinteger(L, (lua_Integer)p->cputime);
+	lua_pushinteger(L, (lua_Integer)atomic_load_explicit(&p->cputime,
+	    memory_order_relaxed));
 	lua_setfield(L, -2, "cputime");
-	lua_pushinteger(L, reprioritize(p, count_runnable()));
+	/* under schedlock, and taken here rather than around the whole
+	 * report: reprioritize writes the proc's decay state and
+	 * count_runnable reads every cpu's current, so asking from a
+	 * report raced the scheduler and moved it. Pushed after the
+	 * release, since a push can raise and a raise would keep the lock.
+	 */
+	int pri, cpu;
+
+	lock(&schedlock);
+	pri = reprioritize(p, count_runnable());
+	cpu = (int)p->cpu;
+	unlock(&schedlock);
+
+	lua_pushinteger(L, pri);
 	lua_setfield(L, -2, "pri");
-	lua_pushinteger(L, (lua_Integer)p->cpu);
+	lua_pushinteger(L, cpu);
 	lua_setfield(L, -2, "cpu");
-	lua_pushinteger(L, (lua_Integer)p->nresume);
+	lua_pushinteger(L, (lua_Integer)KSTAT_GET(p->nresume));
 	lua_setfield(L, -2, "resumes");
 	push_wchan(L, p);
 	lua_setfield(L, -2, "wchan");
@@ -1174,7 +1188,8 @@ api_procname(lua_State *L)
 static int
 api_procs(lua_State *L)
 {
-	int room = prochigh > 0 ? prochigh : 1, n = 0;
+	int high = atomic_load_explicit(&prochigh, memory_order_acquire);
+	int room = high > 0 ? high : 1, n = 0;
 	int *ids = lua_newuserdatauv(L, room * sizeof *ids, 0);
 
 	/* the pids are copied out first and the table built after the
@@ -1183,7 +1198,7 @@ api_procs(lua_State *L)
 	 * than a malloc, for the same reason -- nothing to leak.
 	 */
 	ipclock_enter();
-	for (int i = 0; i < prochigh && n < room; i++)
+	for (int i = 0; i < high && n < room; i++)
 		if (procv[i] && procv[i]->status != DEAD)
 			ids[n++] = procv[i]->id;
 	ipclock_leave();
@@ -1936,11 +1951,11 @@ api_stats(lua_State *L)
 	unsigned long long tfull = 0, tdead = 0;
 
 	for (unsigned i = 0; cpu_at(i); i++) {
-		tidle += cpu_at(i)->nidle;
-		tlaps += cpu_at(i)->nlaps;
-		tdisp += cpu_at(i)->ndispatch;
-		tfull += cpu_at(i)->ndrop_full;
-		tdead += cpu_at(i)->ndrop_dead;
+		tidle += KSTAT_GET(cpu_at(i)->nidle);
+		tlaps += KSTAT_GET(cpu_at(i)->nlaps);
+		tdisp += KSTAT_GET(cpu_at(i)->ndispatch);
+		tfull += KSTAT_GET(cpu_at(i)->ndrop_full);
+		tdead += KSTAT_GET(cpu_at(i)->ndrop_dead);
 	}
 	lua_pushinteger(L, (lua_Integer)tidle);
 	lua_setfield(L, -2, "idles");
@@ -2107,13 +2122,13 @@ api_stats(lua_State *L)
 		lua_createtable(L, 0, 5);
 		lua_pushinteger(L, (lua_Integer)c->apicid);
 		lua_setfield(L, -2, "apicid");
-		lua_pushboolean(L, c->dispatching);
+		lua_pushboolean(L, KSTAT_GET(c->dispatching));
 		lua_setfield(L, -2, "dispatching");
-		lua_pushinteger(L, (lua_Integer)c->nlaps);
+		lua_pushinteger(L, (lua_Integer)KSTAT_GET(c->nlaps));
 		lua_setfield(L, -2, "laps");
-		lua_pushinteger(L, (lua_Integer)c->ndispatch);
+		lua_pushinteger(L, (lua_Integer)KSTAT_GET(c->ndispatch));
 		lua_setfield(L, -2, "dispatched");
-		lua_pushinteger(L, (lua_Integer)c->nidle);
+		lua_pushinteger(L, (lua_Integer)KSTAT_GET(c->nidle));
 		lua_setfield(L, -2, "idles");
 		lua_rawseti(L, -2, (lua_Integer)i + 1);
 	}
@@ -2149,11 +2164,14 @@ api_stats(lua_State *L)
 		lua_setfield(L, -2, "ipc");
 
 		lua_createtable(L, 0, 3);
-		lua_pushinteger(L, (lua_Integer)schedlock.nlock);
+		lua_pushinteger(L, (lua_Integer)atomic_load_explicit(
+		    &schedlock.nlock, memory_order_relaxed));
 		lua_setfield(L, -2, "locks");
-		lua_pushinteger(L, (lua_Integer)schedlock.ncontend);
+		lua_pushinteger(L, (lua_Integer)atomic_load_explicit(
+		    &schedlock.ncontend, memory_order_relaxed));
 		lua_setfield(L, -2, "contended");
-		lua_pushinteger(L, (lua_Integer)schedlock.spin);
+		lua_pushinteger(L, (lua_Integer)atomic_load_explicit(
+		    &schedlock.spin, memory_order_relaxed));
 		lua_setfield(L, -2, "spin");
 		lua_setfield(L, -2, "sched");
 	}
@@ -2356,7 +2374,7 @@ call_k(lua_State *L, int status, lua_KContext ctx)
 		ipclock_leave();
 		return luaL_error(L, "call: reply right went away");
 	}
-	if (!rr->port->head) {
+	if (!atomic_load_explicit(&rr->port->head, memory_order_relaxed)) {
 		/* nobody left who could answer: our right is the last one, so
 		 * the one that rode out with the request is gone. checked
 		 * before parking again, since the wake that brought us here is

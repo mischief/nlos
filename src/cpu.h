@@ -66,21 +66,21 @@ struct cpu {
 	 * it, which is what keeps a proc off a cpu that is still parked
 	 * in hlt and would never run it.
 	 */
-	int dispatching;
+	atomic_int dispatching;
 
 	/* parked in the platform's idle sleep and needs an interrupt to
 	 * come out. Set before sleeping and cleared on waking, so a cpu
 	 * queueing work here knows whether to send one.
 	 */
-	int idle;
+	atomic_int idle;
 
-	unsigned long long nlaps, ndispatch, nidle;
+	atomic_ullong nlaps, ndispatch, nidle;
 
 	/* sends this cpu refused, since a port's own counts die with it
 	 * and short-lived ports are where backpressure shows. Per cpu
 	 * because port_push holds one ipc bucket, not all of them.
 	 */
-	unsigned long long ndrop_full, ndrop_dead;
+	atomic_ullong ndrop_full, ndrop_dead;
 };
 
 /* this cpu. */

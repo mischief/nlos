@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "hosted.h"
+#include "lock.h"
 #include "lauxlib.h"
 #include "lua.h"
 #include "platform.h"
@@ -37,7 +38,7 @@
 struct conn {
 	int fd;
 	int listening;
-	int closed;
+	atomic_int closed;
 };
 
 enum { OP_DIAL = 1, OP_ACCEPT, OP_SEND, OP_RECV, OP_USEND, OP_URECV };
@@ -51,7 +52,7 @@ enum { OP_DIAL = 1, OP_ACCEPT, OP_SEND, OP_RECV, OP_USEND, OP_URECV };
 struct token {
 	int kind;
 	struct conn *c;
-	int done;
+	atomic_int done;
 
 	/* send: what is left to write, and how much went. recv: the most
 	 * to ask for. Both are small and fixed, so the token owns them.
@@ -69,7 +70,7 @@ struct token {
 	 * failure, so whoever is parked on it is answered rather than
 	 * left there.
 	 */
-	int cancelled;
+	atomic_int cancelled;
 };
 
 /* every live token, so platform_net_ready can ask the host about all of
@@ -82,21 +83,31 @@ struct token {
 static struct token *live[MAXTOKENS];
 static int nlive;
 
+/* the list has two sides: the task owning the sockets adds and removes
+ * as its cpu runs it, and the kernel's pump walks it from whichever cpu
+ * reached the idle path. Nothing raises while holding this.
+ */
+static struct lock netlock = LOCK_INIT;
+
 static void
 live_add(struct token *t)
 {
+	lock(&netlock);
 	if (nlive < MAXTOKENS)
 		live[nlive++] = t;
+	unlock(&netlock);
 }
 
 static void
 live_del(struct token *t)
 {
+	lock(&netlock);
 	for (int i = 0; i < nlive; i++)
 		if (live[i] == t) {
 			live[i] = live[--nlive];
-			return;
+			break;
 		}
+	unlock(&netlock);
 }
 
 /* which way a token's socket has to move before it can make progress */
@@ -122,7 +133,8 @@ token_events(const struct token *t)
 static int
 token_pending(const struct token *t)
 {
-	return !t->done && t->c && !t->c->closed && !t->cancelled;
+	return !KSTAT_GET(t->done) && t->c && !KSTAT_GET(t->c->closed) &&
+	    !KSTAT_GET(t->cancelled);
 }
 
 int
@@ -141,11 +153,14 @@ int
 platform_net_ready(void)
 {
 	struct pollfd pfd[MAXTOKENS];
-	int n = 0;
+	int n = 0, cancelled = 0;
 
+	lock(&netlock);
 	for (int i = 0; i < nlive; i++) {
-		if (live[i]->cancelled && !live[i]->done)
-			return 1;
+		if (KSTAT_GET(live[i]->cancelled) && !KSTAT_GET(live[i]->done)) {
+			cancelled = 1;
+			break;
+		}
 		if (!token_pending(live[i]))
 			continue;
 		pfd[n].fd = live[i]->c->fd;
@@ -153,6 +168,13 @@ platform_net_ready(void)
 		pfd[n].revents = 0;
 		n++;
 	}
+	unlock(&netlock);
+
+	/* the poll itself outside the lock: it is a syscall, and the task
+	 * this is asking on behalf of must not wait behind it.
+	 */
+	if (cancelled)
+		return 1;
 	if (n == 0)
 		return 0;
 	return poll(pfd, (nfds_t)n, 0) > 0;
@@ -163,6 +185,7 @@ net_pollfds(struct pollfd *out, int max)
 {
 	int n = 0;
 
+	lock(&netlock);
 	for (int i = 0; i < nlive && n < max; i++) {
 		if (!token_pending(live[i]))
 			continue;
@@ -171,6 +194,7 @@ net_pollfds(struct pollfd *out, int max)
 		out[n].revents = 0;
 		n++;
 	}
+	unlock(&netlock);
 	return n;
 }
 
@@ -189,7 +213,7 @@ newconn(lua_State *L, int fd, int listening)
 
 	c->fd = fd;
 	c->listening = listening;
-	c->closed = 0;
+	KSTAT_SET(c->closed, 0);
 	luaL_setmetatable(L, CONNMT);
 	return c;
 }
@@ -199,7 +223,7 @@ checkconn(lua_State *L, int idx)
 {
 	struct conn *c = luaL_checkudata(L, idx, CONNMT);
 
-	if (c->closed)
+	if (KSTAT_GET(c->closed))
 		luaL_error(L, "the connection is closed");
 	return c;
 }
@@ -227,7 +251,7 @@ newtoken(lua_State *L, int kind, struct conn *c)
 static void
 finish(struct token *t)
 {
-	t->done = 1;
+	KSTAT_SET(t->done, 1);
 	live_del(t);
 	free(t->buf);
 	t->buf = NULL;
@@ -238,9 +262,9 @@ conn_gc(lua_State *L)
 {
 	struct conn *c = luaL_checkudata(L, 1, CONNMT);
 
-	if (!c->closed && c->fd >= 0)
+	if (!KSTAT_GET(c->closed) && c->fd >= 0)
 		close(c->fd);
-	c->closed = 1;
+	KSTAT_SET(c->closed, 1);
 	return 0;
 }
 
@@ -249,7 +273,7 @@ token_gc(lua_State *L)
 {
 	struct token *t = luaL_checkudata(L, 1, TOKENMT);
 
-	if (!t->done)
+	if (!KSTAT_GET(t->done))
 		finish(t);
 	free(t->buf);
 	t->buf = NULL;
@@ -330,7 +354,7 @@ l_dial_poll(lua_State *L)
 	int err = 0;
 	socklen_t elen = sizeof err;
 
-	if (t->done)
+	if (KSTAT_GET(t->done))
 		return 0;
 	if (poll(&pfd, 1, 0) <= 0)
 		return 0;
@@ -360,7 +384,7 @@ l_accept_poll(lua_State *L)
 	struct token *t = luaL_checkudata(L, 1, TOKENMT);
 	int fd;
 
-	if (t->done)
+	if (KSTAT_GET(t->done))
 		return 0;
 	fd = accept(t->c->fd, NULL, NULL);
 	if (fd < 0) {
@@ -419,7 +443,7 @@ l_send_poll(lua_State *L)
 {
 	struct token *t = luaL_checkudata(L, 1, TOKENMT);
 
-	if (t->done)
+	if (KSTAT_GET(t->done))
 		return 0;
 	while (t->off < t->len) {
 		ssize_t w = send(t->c->fd, t->buf + t->off, t->len - t->off,
@@ -475,7 +499,7 @@ l_recv_poll(lua_State *L)
 	static char buf[NET_MAXIO];
 	ssize_t r;
 
-	if (t->done)
+	if (KSTAT_GET(t->done))
 		return 0;
 	do {
 		r = recv(t->c->fd, buf, t->want, 0);
@@ -500,9 +524,9 @@ l_close(lua_State *L)
 {
 	struct conn *c = luaL_checkudata(L, 1, CONNMT);
 
-	if (!c->closed && c->fd >= 0)
+	if (!KSTAT_GET(c->closed) && c->fd >= 0)
 		close(c->fd);
-	c->closed = 1;
+	KSTAT_SET(c->closed, 1);
 	return 0;
 }
 
@@ -695,9 +719,9 @@ l_udp_send_poll(lua_State *L)
 	struct token *t = luaL_checkudata(L, 1, TOKENMT);
 	ssize_t w;
 
-	if (t->done)
+	if (KSTAT_GET(t->done))
 		return 0;
-	if (t->cancelled) {
+	if (KSTAT_GET(t->cancelled)) {
 		finish(t);
 		lua_pushboolean(L, 1);
 		return 1;
@@ -741,9 +765,9 @@ l_udp_recv_poll(lua_State *L)
 	socklen_t flen = sizeof from;
 	ssize_t r;
 
-	if (t->done)
+	if (KSTAT_GET(t->done))
 		return 0;
-	if (t->cancelled) {
+	if (KSTAT_GET(t->cancelled)) {
 		finish(t);
 		lua_pushboolean(L, 1);
 		return 1;
@@ -780,9 +804,11 @@ l_udp_cancel(lua_State *L)
 {
 	struct conn *c = luaL_checkudata(L, 1, CONNMT);
 
+	lock(&netlock);
 	for (int i = 0; i < nlive; i++)
-		if (live[i]->c == c && !live[i]->done)
-			live[i]->cancelled = 1;
+		if (live[i]->c == c && !KSTAT_GET(live[i]->done))
+			KSTAT_SET(live[i]->cancelled, 1);
+	unlock(&netlock);
 	return 0;
 }
 

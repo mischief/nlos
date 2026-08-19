@@ -40,7 +40,10 @@ struct ipcbucket {
 	 * two together say whether splitting further would buy
 	 * anything. Owner-only, like depth.
 	 */
-	unsigned long long held, t0;
+	/* held is written by the bucket.s holder and read by sys.stats
+	 * from another cpu; t0 never leaves the holder. */
+	atomic_ullong held;
+	unsigned long long t0;
 };
 
 /* zero is the initial state of every field, LOCK_INIT included, so
@@ -174,7 +177,7 @@ ipclock_leave_one(struct ipcbucket *b)
 {
 	if (--b->depth > 0)
 		return;
-	b->held += machine_cycles() - b->t0;
+	lock_bump(&b->held, machine_cycles() - b->t0);
 	atomic_store_explicit(&b->owner, 0, memory_order_relaxed);
 	unlock(&b->lk);
 }
@@ -310,9 +313,10 @@ msg_free(struct kmsg *m)
 void
 port_flush(struct kport *port)
 {
-	struct kmsg *m = port->head;
+	struct kmsg *m = atomic_load_explicit(&port->head, memory_order_relaxed);
 
-	port->head = port->tail = 0;
+	atomic_store_explicit(&port->head, 0, memory_order_relaxed);
+	port->tail = 0;
 	port->qbytes = 0;
 	while (m) {
 		struct kmsg *next = m->next;
@@ -684,7 +688,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 	IPC_ASSERT_PORT(port);
 	if (port->dead) {
 		port->ndrop_dead++;
-		cpu_self()->ndrop_dead++;
+		KSTAT_ADD(cpu_self()->ndrop_dead, 1);
 		return -3;
 	}
 
@@ -696,7 +700,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 
 	if (port->qbytes + cost > MAXQUEUE) {
 		port->ndrop_full++;
-		cpu_self()->ndrop_full++;
+		KSTAT_ADD(cpu_self()->ndrop_full, 1);
 		return -2;		/* full, distinct from out of memory */
 	}
 
@@ -720,7 +724,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 	if (port->tail)
 		port->tail->next = m;
 	else
-		port->head = m;
+		atomic_store_explicit(&port->head, m, memory_order_relaxed);
 	port->tail = m;
 	port->qbytes += cost;
 	if (port->qbytes > port->qpeak)
@@ -778,10 +782,11 @@ port_pop(struct kport *port)
 	struct kmsg *m;
 
 	ipclock_enter_port(port);
-	m = port->head;
+	m = atomic_load_explicit(&port->head, memory_order_relaxed);
 	if (m) {
-		port->head = m->next;
-		if (!port->head)
+		atomic_store_explicit(&port->head, m->next,
+		    memory_order_relaxed);
+		if (!m->next)
 			port->tail = 0;
 		port->qbytes -= m->qcost;
 		/* room freed: this is the ordinary backpressure wakeup */
@@ -857,10 +862,14 @@ ipclock_stats(unsigned long long *nlock, unsigned long long *ncontend,
 {
 	*nlock = *ncontend = *spin = *held = 0;
 	for (unsigned i = 0; i < NIPCLOCK; i++) {
-		*nlock += ipcbuckets[i].lk.nlock;
-		*ncontend += ipcbuckets[i].lk.ncontend;
-		*spin += ipcbuckets[i].lk.spin;
-		*held += ipcbuckets[i].held;
+		*nlock += atomic_load_explicit(&ipcbuckets[i].lk.nlock,
+		    memory_order_relaxed);
+		*ncontend += atomic_load_explicit(&ipcbuckets[i].lk.ncontend,
+		    memory_order_relaxed);
+		*spin += atomic_load_explicit(&ipcbuckets[i].lk.spin,
+		    memory_order_relaxed);
+		*held += atomic_load_explicit(&ipcbuckets[i].held,
+		    memory_order_relaxed);
 	}
 }
 
