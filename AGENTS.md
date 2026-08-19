@@ -337,6 +337,23 @@ before it runs. The TSC is 64-bit -- ~195 years at 3GHz -- so there is
 nothing to guard against; the 4.7s wrap belongs to the 24-bit ACPI PM
 timer, a different counter.
 
+**An app is a library with two faces.** The work goes in `lib/`, which
+must load and run with no framebuffer. On top of it goes the human
+interface, `bin/*ui.lua`, which draws and reads keys and holds no logic
+of its own. Underneath goes the machine one, `bin/<name>.lua`, which
+takes arguments and writes text. `wifi`/`wifiui` and `stats`/`settings`
+are the shape.
+
+The machine face is not a courtesy. It is what runs on a headless
+board, what a test can drive, and what an agent can call without
+reading pixels. A bug that only the panel can reach is a bug nobody
+finds: `bin/agentui.lua` passed an empty capability table to every tool
+it spawned, and the terminal version found that in one run.
+
+A program that is only pixels -- a game, a doodle -- needs no second
+face, and inventing one to satisfy the rule helps nobody. What is not
+optional is that the logic stay out of the drawing.
+
 **A Chan carries its name.** `lib/chan.lua` is (backend, handle, Cname)
 -- Plan 9's Chan, spelled the same on purpose. The name is the *caller's*
 cleaned path and never anything a backend reports, because a backend has
