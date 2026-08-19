@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "buf.h"
+#include "lock.h"
 #include "hosted.h"
 #include "kernel.h"
 #include "lauxlib.h"
@@ -39,6 +40,14 @@ static int fbw, fbh;
 
 static int dirty;
 static unsigned long long lastframe;
+
+/* the screen and the input queues both: the task owning the device runs
+ * on whichever cpu took it, the pumps on whichever reached the idle
+ * path. One lock, because a display is not contended and a second would
+ * only add an order to get wrong. Nothing raises while holding it -- a
+ * lua error would leave it held.
+ */
+static struct lock fblock = LOCK_INIT;
 
 /* keys, as a ring: the guest reads one character per call and a burst
  * of typing must not be lost between reads.
@@ -144,8 +153,8 @@ buttonbit(int b)
  * idle wait, so a window stays answerable whether the machine is busy
  * or asleep.
  */
-void
-fb_pump(void)
+static void
+pump_locked(void)
 {
 	SDL_Event e;
 
@@ -217,8 +226,8 @@ fb_pump(void)
  * than a rectangle because SDL uploads a full 1024x768 in well under
  * the frame time, and a union of rectangles is a thing to get wrong.
  */
-void
-fb_flush(void)
+static void
+flush_locked(void)
 {
 	unsigned long long now;
 
@@ -233,6 +242,26 @@ fb_flush(void)
 	SDL_RenderClear(renderer);
 	SDL_RenderCopy(renderer, texture, NULL, NULL);
 	SDL_RenderPresent(renderer);
+}
+
+void
+fb_pump(void)
+{
+	if (!window)
+		return;
+	lock(&fblock);
+	pump_locked();
+	unlock(&fblock);
+}
+
+void
+fb_flush(void)
+{
+	if (!window)
+		return;
+	lock(&fblock);
+	flush_locked();
+	unlock(&fblock);
 }
 
 int
@@ -303,14 +332,18 @@ platform_have_kbd(void)
 int
 platform_kbd_read(void)
 {
-	fb_pump();
-	fb_flush();
-	if (keyhead == keytail)
+	int c = -1;
+
+	if (!window)
 		return -1;
-
-	int c = keys[keyhead];
-
-	keyhead = (keyhead + 1) % KEYRING;
+	lock(&fblock);
+	pump_locked();
+	flush_locked();
+	if (keyhead != keytail) {
+		c = keys[keyhead];
+		keyhead = (keyhead + 1) % KEYRING;
+	}
+	unlock(&fblock);
 	return c;
 }
 
@@ -326,14 +359,21 @@ platform_have_ptr(void)
 int
 platform_ptr_read(int *x, int *y, int *buttons)
 {
-	fb_pump();
-	if (!ptrmoved)
+	int moved;
+
+	if (!window)
 		return 0;
-	ptrmoved = 0;
-	*x = ptrx;
-	*y = ptry;
-	*buttons = ptrbuttons;
-	return 1;
+	lock(&fblock);
+	pump_locked();
+	moved = ptrmoved;
+	if (moved) {
+		ptrmoved = 0;
+		*x = ptrx;
+		*y = ptry;
+		*buttons = ptrbuttons;
+	}
+	unlock(&fblock);
+	return moved;
 }
 
 static void
@@ -403,11 +443,13 @@ l_fill(lua_State *L)
 	lua_Integer color = luaL_checkinteger(L, 5);
 	unsigned char px[4];
 
-	checkrect(L, x, y, w, h);
+	checkrect(L, x, y, w, h);	/* raises, so before the lock */
 	px[0] = (unsigned char)(color & 0xff);		/* blue */
 	px[1] = (unsigned char)((color >> 8) & 0xff);	/* green */
 	px[2] = (unsigned char)((color >> 16) & 0xff);	/* red */
 	px[3] = 0;
+
+	lock(&fblock);
 	for (lua_Integer row = 0; row < h; row++) {
 		unsigned char *p = shadow + ((y + row) * fbw + x) * 4;
 
@@ -415,6 +457,8 @@ l_fill(lua_State *L)
 			memcpy(p, px, 4);
 	}
 	dirty = 1;
+	unlock(&fblock);
+
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -440,10 +484,13 @@ l_load(lua_State *L)
 	if (n != (size_t)(w * h * 4))
 		return luaL_error(L, "want %d bytes for %dx%d, got %d",
 		    (int)(w * h * 4), (int)w, (int)h, (int)n);
+	lock(&fblock);
 	for (lua_Integer row = 0; row < h; row++)
 		memcpy(shadow + ((y + row) * fbw + x) * 4,
 		    pixels + row * w * 4, (size_t)w * 4);
 	dirty = 1;
+	unlock(&fblock);
+
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -470,8 +517,12 @@ l_unload(lua_State *L)
 		return 1;
 	}
 
+	/* the buffer before the lock: luaL_buffinitsize can raise, and a
+	 * lua error out of here would leave the lock held.
+	 */
 	char *out = luaL_buffinitsize(L, &b, (size_t)w * h * bpp);
 
+	lock(&fblock);
 	for (lua_Integer row = 0; row < h; row++) {
 		const unsigned char *src = shadow + ((y + row) * fbw + x) * 4;
 
@@ -487,6 +538,8 @@ l_unload(lua_State *L)
 			p[2] = (char)src[col * 4 + 0];	/* blue */
 		}
 	}
+	unlock(&fblock);
+
 	luaL_pushresultsize(&b, (size_t)w * h * bpp);
 	return 1;
 }
@@ -507,6 +560,8 @@ l_scroll(lua_State *L)
 
 	checkrect(L, sx, sy, w, h);
 	checkrect(L, dx, dy, w, h);
+
+	lock(&fblock);
 	if (dy <= sy)
 		for (lua_Integer row = 0; row < h; row++)
 			memmove(shadow + ((dy + row) * fbw + dx) * 4,
@@ -518,6 +573,8 @@ l_scroll(lua_State *L)
 			    shadow + ((sy + row) * fbw + sx) * 4,
 			    (size_t)w * 4);
 	dirty = 1;
+	unlock(&fblock);
+
 	lua_pushboolean(L, 1);
 	return 1;
 }

@@ -128,7 +128,12 @@ static int have_flash;
 static int have_wire;
 static int have_esp;
 
-static unsigned long long last_uart_drain;
+/* when the wire was last drained. Every cpu runs procs and so reaches
+ * the drain below, which made this a plain word two cpus wrote at once.
+ * Atomic, and claimed by exchange rather than by two steps, so exactly
+ * one cpu drains per window instead of however many arrive together.
+ */
+static atomic_ullong last_uart_drain;
 
 /* time a known number of VM instructions and pick a hook period worth
  * about an eighth of a quantum. the loop body is a local increment, so
@@ -1103,10 +1108,13 @@ run_proc(struct kproc *p)
 		 */
 		unsigned long long now = platform_ticks();
 
-		if (now - last_uart_drain >= uart_drain_cycles) {
+		unsigned long long last = atomic_load_explicit(
+		    &last_uart_drain, memory_order_relaxed);
+
+		if (now - last >= uart_drain_cycles &&
+		    atomic_compare_exchange_strong_explicit(&last_uart_drain,
+		    &last, now, memory_order_relaxed, memory_order_relaxed))
 			uart_poll();
-			last_uart_drain = platform_ticks();
-		}
 		/* sys.exit, taken at the yield after it: a proc parking
 		 * counts, so threads still waiting on ports do not keep a
 		 * proc that has said it is done.
