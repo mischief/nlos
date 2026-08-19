@@ -34,58 +34,10 @@ end
 -- the radio, where this namespace has it. A session that should not
 -- retune it is given a namespace without this mount, so its absence is
 -- an answer and not a fault.
-local WIFI = N:stat("/net/wifi/ctl") and "/net/wifi" or nil
-
-local function lines(name)
-	local txt = WIFI and N:readfile(WIFI .. "/" .. name)
-	local out = {}
-
-	for line in (txt or ""):gmatch("[^\n]+") do
-		out[#out + 1] = line
-	end
-	return out
-end
-
--- "psk ssid" or "open ssid", best first
-local function knownlist()
-	local nets = {}
-
-	for _, line in ipairs(lines("known")) do
-		local auth, ssid = line:match("^(%S+) (.*)$")
-
-		if ssid and ssid ~= "" then
-			nets[#nets + 1] = { ssid = ssid, open = auth == "open" }
-		end
-	end
-	return nets
-end
-
--- the radio scans one at a time, so a scan that could not run answers
--- with why, as a comment. Saying so beats printing nothing: the reason
--- is usually that another scan was in flight, and asking again works.
-local function scanlist()
-	local aps = {}
-
-	for _, line in ipairs(lines("scan")) do
-		local why = line:match("^%-%-%s*(.*)$")
-
-		if why then
-			return nil, why
-		end
-
-		local rssi, auth, ssid = line:match("^(-?%d+) (%S+) (.*)$")
-
-		if rssi and ssid ~= "" then
-			aps[#aps + 1] = { rssi = tonumber(rssi),
-			    open = auth == "open", ssid = ssid }
-		end
-	end
-	return aps
-end
+local W = require("wifi").new(N)
 
 local function ctl(...)
-	local wok, werr = N:writefile(WIFI .. "/ctl",
-	    table.concat({ ... }, "\n"))
+	local wok, werr = W:ctl(...)
 
 	if not wok then
 		die(tostring(werr))
@@ -149,7 +101,7 @@ while arg[i] do
 	end
 
 	if a == "-l" or a == "-s" or a == "-f" or a == "-j" then
-		if not WIFI then
+		if not W then
 			die("no radio in this namespace")
 		end
 	end
@@ -157,7 +109,7 @@ while arg[i] do
 	if a == "-l" then
 		out("scanning...\n")
 
-		local aps, why = scanlist()
+		local aps, why = W:scan()
 
 		if not aps then
 			die(why)
@@ -171,7 +123,7 @@ while arg[i] do
 		end
 		os.exit(0)
 	elseif a == "-s" then
-		local nets = knownlist()
+		local nets = W:known()
 
 		if #nets == 0 then
 			out("no networks saved\n")
@@ -208,15 +160,13 @@ end
 -- the one it is on, or the one it prefers: both are better guesses at
 -- what somebody retyping this means than nothing at all.
 local function suggest()
-	for _, line in ipairs(lines("status")) do
-		local ssid = line:match("^ssid (.+)$")
+	local ssid = W:status().ssid
 
-		if ssid and ssid ~= "" then
-			return ssid
-		end
+	if ssid ~= "" then
+		return ssid
 	end
 
-	local nets = knownlist()
+	local nets = W:known()
 
 	return nets[1] and nets[1].ssid
 end
@@ -238,17 +188,11 @@ out("joining " .. ssid .. "...\n")
 local thread = require("los.thread")
 
 for _ = 1, 30 do
-	local state
-
-	for _, line in ipairs(lines("status")) do
-		state = line:match("^state (%S+)$") or state
-	end
-
-	if state == "joined" then
+	if W:status().state == "joined" then
 		out(("joined %s, and saved\n"):format(ssid))
 		os.exit(0)
 	end
 	thread.sleep(500)
 end
 
-out("still joining; " .. WIFI .. "/status says how it ends\n")
+out("still joining; /net/wifi/status says how it ends\n")

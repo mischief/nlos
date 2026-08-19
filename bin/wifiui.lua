@@ -25,7 +25,9 @@ if not fb then
 	io.stderr:write("wifiui: no framebuffer on this machine\n")
 	os.exit(1)
 end
-if not N or not N:stat("/net/wifi/ctl") then
+local W = N and require("wifi").new(N)
+
+if not W then
 	io.stderr:write("wifiui: no /net/wifi in this namespace\n")
 	os.exit(1)
 end
@@ -93,56 +95,21 @@ local function bars(rssi)
 	return string.rep("|", n) .. string.rep(".", 4 - n)
 end
 
--- ---- the radio, as files ----
+-- ---- the radio ----
+--
+-- lib/wifi.lua parses /net/wifi; what is left here is the shape this
+-- screen wants. `known` is a set because a row asks "is this one
+-- saved" rather than walking a list.
 
 local function status()
-	local txt = N:readfile("/net/wifi/status") or ""
-
-	return {
-		state = txt:match("state (%S+)") or "unknown",
-		ssid = txt:match("ssid ([^\n]*)") or "",
-		reason = txt:match("reason (%S+)") or "0",
-	}
+	return W:status()
 end
 
-local function scan()
-	local txt = N:readfile("/net/wifi/scan") or ""
-	local aps = {}
-
-	for line in txt:gmatch("[^\n]+") do
-		local rssi, auth, ssid = line:match("^(-?%d+) (%S+) (.*)$")
-
-		if rssi and ssid ~= "" then
-			aps[#aps + 1] = { rssi = tonumber(rssi),
-			    open = auth == "open", ssid = ssid }
-		end
-	end
-	return aps
-end
-
--- one field a line: both an ssid and a passphrase hold spaces in
--- practice, and neither holds a newline.
-local function join(ssid, psk)
-	return N:writefile("/net/wifi/ctl",
-	    "join\n" .. ssid .. "\n" .. ((psk and psk ~= "") and psk or ""))
-end
-
-local function forget(ssid)
-	return N:writefile("/net/wifi/ctl", "forget\n" .. ssid .. "\n")
-end
-
--- what wifisrv has saved. Read rather than kept: it is the one that
--- writes them, and joining from here is what changes the list.
 local function known()
-	local txt = N:readfile("/net/wifi/known") or ""
 	local out = {}
 
-	for line in txt:gmatch("[^\n]+") do
-		local ssid = line:match("^%S+ (.*)$")
-
-		if ssid and ssid ~= "" then
-			out[ssid] = true
-		end
+	for _, n in ipairs(W:known()) do
+		out[n.ssid] = true
 	end
 	return out
 end
@@ -373,7 +340,7 @@ local function activate()
 	msg = "joining " .. ap.ssid
 	paint()
 
-	local ok, err = join(ap.ssid, psk)
+	local ok, err = W:join(ap.ssid, psk)
 
 	if not ok then
 		msg = "join: " .. tostring(err)
@@ -404,9 +371,12 @@ local function rescan()
 	msg = "scanning..."
 	paintmsg()
 	fb.sync()
-	aps, sel, top = scan(), 1, 1
+	local found, why = W:scan()
+
+	aps, sel, top = found or {}, 1, 1
 	saved = known()
-	msg = #aps .. " networks  enter join  f forget  q quit"
+	msg = why and ("scan: " .. why) or
+	    (#aps .. " networks  enter join  f forget  q quit")
 	refresh()
 	paint()
 end
@@ -423,7 +393,7 @@ local function onkey(k)
 		local ap = aps[sel]
 
 		if ap and saved[ap.ssid] then
-			forget(ap.ssid)
+			W:forget(ap.ssid)
 			saved = known()
 			msg = "forgot " .. ap.ssid
 			paintrow(sel)

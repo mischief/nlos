@@ -526,6 +526,13 @@ test('wifi-config', lua_interp,
   timeout: 20,
 )
 
+# /net/wifi, parsed once for both faces of the app.
+test('wifi', lua_interp,
+  args: [files('host_wifi.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # lib/dhcp.lua's options, built by hand. A server offers what it is
 # configured to offer, so the ones this machine's server does not send
 # are reachable here and nowhere else.
