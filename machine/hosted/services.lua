@@ -37,6 +37,13 @@ return {
 	{ path = "/task/dns.lua", caps = { ip = "udp" }, ns = false,
 	  args = { resolver = resolver } },
 
+	-- the panel, where --gui opened a window: a tray of apps, one of
+	-- them a terminal. Naming fb, kbd and ptr is what decides it --
+	-- a machine started headless has none of the three and skips this,
+	-- and comes up on its console alone.
+	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
+	  optcaps = { "tcp", "dns", "power" } },
+
 	-- No ip or tcp4 task: raw ethernet is not something an
 	-- unprivileged process gets, so there are no frames to build them
 	-- on. tcp and udp come from the kernel instead, as capabilities
