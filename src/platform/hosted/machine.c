@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
-#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -63,11 +62,11 @@ platform_arch(void)
 
 static unsigned long long memcap, memused;
 
-/* how much memory this machine has, counted at the chunk allocator
- * rather than set as an rlimit. A limit on the process bounds every
- * mapping the host's libraries make -- SDL's GL stack reserves hundreds
- * of megabytes before the guest allocates anything -- where this bounds
- * the guest's heap, which is what the figure means. */
+/* how much memory this machine has. Not an rlimit: that bounds the
+ * process, so every mapping the host's own libraries make would count
+ * against the guest, and SDL's GL stack reserves hundreds of megabytes
+ * before the guest has allocated anything. The figure is the fake
+ * machine's, so it is counted where the guest's memory comes from. */
 void
 hosted_setmem(unsigned long long bytes)
 {
@@ -175,10 +174,11 @@ hosted_random(void *buf, size_t n)
 	return 0;
 }
 
-/* the ceiling is enforced here, which is where the lua heaps come from
- * and so where a runaway guest asks for memory. Refusing is what the
- * kernel is written to survive: it frees its caches and, if that is not
- * enough, gives up the largest expendable proc.
+/* everything a guest can grow without bound arrives here: luaheap's
+ * chunks and los.buf's buffers both. What does not is the kernel's own
+ * tables, which MAXPROCS and MAXPORTS bound instead. Refusing is what
+ * the kernel is written to survive -- it releases its caches, and if
+ * that is not enough gives up the largest expendable proc.
  */
 void *
 platform_chunk_alloc(size_t n)
