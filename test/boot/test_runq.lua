@@ -17,13 +17,24 @@ tap.plan(10)
 
 local N = 20
 local rp = sys.newport("test_runq.rp")
+local gp = sys.newport("test_runq.gp")
 local pids = {}
 
+-- each proc waits for a go, so all N are runnable together and none can
+-- finish before the weights below are set. The wait loops because every
+-- later spawn drops an in-flight right on gp, and a dropped reference
+-- wakes the port's receivers to re-check for a hangup.
 for i = 1, N do
 	local pid = sys.spawn([[
 		local sys = require("los.sys")
 		local a = ...
 		local n = 0
+		local go
+
+		repeat
+			sys.block(a.go.__right)
+			go = sys.tryrecv(a.go.__right)
+		until go
 
 		-- yield in a loop: stays runnable, so every lap must run it
 		for _ = 1, 200 do
@@ -31,7 +42,8 @@ for i = 1, N do
 			sys.yield()
 		end
 		sys.send(a.out.__right, { i = a.i, n = n })
-	]], { name = "fair" .. i, arg = { out = { __right = rp }, i = i } })
+	]], { name = "fair" .. i,
+	    arg = { out = { __right = rp }, go = { __right = gp }, i = i } })
 
 	pids[#pids + 1] = pid
 end
@@ -43,6 +55,10 @@ local ok1 = pcall(sys.set_priority, pids[1], 1)
 local ok2 = pcall(sys.set_priority, pids[N], 16)
 
 tap.ok(ok1 and ok2, "set extreme weights on two of them")
+
+for _ = 1, N do
+	sys.send(gp, { go = true })
+end
 
 local seen, rounds = {}, 0
 local deadline = sys.uptime_ms() + 15000

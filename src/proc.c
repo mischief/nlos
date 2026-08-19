@@ -1164,14 +1164,21 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * against another cpu's -- and against every walk of the table.
 	 */
 	IPC_ASSERT_LOCKED();
+	/* schedlock as well as ipclock, for oncpu below: a slot goes DEAD
+	 * while the cpu running it is still in dispatch, and wiping it
+	 * there would hand that cpu the new occupant.
+	 */
+	lock(&schedlock);
 	for (int i = 0; i < MAXPROCS; i++) {
-		if (procv[i] && procv[i]->status != DEAD)
+		if (procv[i] && (procv[i]->status != DEAD || procv[i]->oncpu))
 			continue;
 		if (!procv[i]) {
 			struct kproc *np = malloc(sizeof *np);
 
-			if (!np)
+			if (!np) {
+				unlock(&schedlock);
 				return -1;
+			}
 			/* zeroed before the slot points at it: dbg_sweep
 			 * reads procv without the lock, and malloc's
 			 * leavings would read as a debugger attached.
@@ -1192,6 +1199,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 			    memory_order_release);
 		break;
 	}
+	unlock(&schedlock);
 	if (!p)
 		return -1;
 
@@ -1775,8 +1783,29 @@ proc_kill(struct kproc *p, const char *why)
 void
 proc_reap(struct kproc *p)
 {
-	if (p->status != BROKE)
+	/* claimed under the lock. Two cpus reach the same corpse -- sys.reap
+	 * on one, the corpse cap on another -- and both would free its heap,
+	 * handing back chunks a live proc has since been given. A proc
+	 * broken from another cpu is also BROKE while the cpu running it is
+	 * still inside the resume, so that cpu takes the teardown instead.
+	 */
+	ipclock_enter();
+	lock(&schedlock);
+	if (p->status != BROKE || p->reaping) {
+		unlock(&schedlock);
+		ipclock_leave();
 		return;
+	}
+	if (p->oncpu && p->oncpu != cpu_self()->idx + 1) {
+		p->reapreq = 1;
+		unlock(&schedlock);
+		ipclock_leave();
+		return;
+	}
+	p->reaping = 1;
+	unlock(&schedlock);
+	ipclock_leave();
+
 	/* the same split proc_kill makes: the state closes outside the
 	 * lock, because lua_close runs this corpse's finalizers, and the
 	 * slot is released under it.
@@ -1784,6 +1813,7 @@ proc_reap(struct kproc *p)
 	proc_freestate(p);
 	ipclock_enter();
 	p->status = DEAD;
+	p->reaping = 0;
 	ipclock_leave();
 }
 
@@ -1796,11 +1826,11 @@ proc_break(struct kproc *p, const char *why)
 
 	proc_logdeath(p, why, reason, sizeof reason);
 
+	/* room is made before the death is announced, not after: the
+	 * notice wakes whoever was watching, and on another cpu that
+	 * reader counts corpses while this one is still reaping.
+	 */
 	ipclock_enter();
-	proc_detach(p, why, reason, 1);
-	p->status = BROKE;
-	p->brokeseq = ++brokeseq;
-
 	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
 	    memory_order_acquire); i < n_; i++) {
 		struct kproc *q = procv[i];
@@ -1815,8 +1845,14 @@ proc_break(struct kproc *p, const char *why)
 	/* outside: proc_reap frees the corpse's state, which is
 	 * lua_close again and the same finalizer problem.
 	 */
-	if (n > MAXBROKE && oldest)
+	if (n + 1 > MAXBROKE && oldest)
 		proc_reap(oldest);
+
+	ipclock_enter();
+	proc_detach(p, why, reason, 1);
+	p->status = BROKE;
+	p->brokeseq = ++brokeseq;
+	ipclock_leave();
 }
 
 

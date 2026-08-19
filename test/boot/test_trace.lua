@@ -37,7 +37,7 @@ local _, h = sys.spawn([[
 	local i = 0
 	while true do
 		i = step(i)
-		sys.sleep(1)
+		sys.yield()
 	end
 ]], { name = "walker" })
 

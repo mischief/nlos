@@ -298,6 +298,16 @@ struct kproc {
 	 */
 	unsigned int calls[NSYSCALL];
 	unsigned int brokeseq;	/* death order, so the cap reaps the oldest */
+	/* a corpse being torn down. Set under ipclock, and the only thing
+	 * that keeps two cpus reaching the same corpse -- sys.reap on one,
+	 * the corpse cap on another -- from freeing its heap twice.
+	 */
+	int reaping;
+	/* a reap that arrived while the corpse was still in a cpu's hands.
+	 * That cpu takes the teardown with it as it lets the proc go; see
+	 * dispatch_phase.
+	 */
+	int reapreq;
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
 	int exiting;		/* sys.exit(); the dispatch loop ends it */
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */

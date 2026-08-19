@@ -46,8 +46,21 @@ local cpid, wc = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
 	local m = thread.recv(sys.SELF)
-	local greedy = sys.spawn("", { mem = 64 * 1024 * 1024 })
-	local silent = sys.spawn("")
+
+	-- both wait for a go rather than run out: another cpu finishes an
+	-- empty chunk before meminfo below can ask about it, and a proc
+	-- that is gone has no stats. The wait loops because a dropped
+	-- right wakes a port's receivers to re-check for a hangup.
+	local PARK = [==[
+		local sys = require("los.sys")
+		local go
+		repeat
+			sys.block(0)
+			go = sys.tryrecv(0)
+		until go
+	]==]
+	local greedy, gh = sys.spawn(PARK, { mem = 64 * 1024 * 1024 })
+	local silent, sh = sys.spawn(PARK)
 	local _, _, gl = sys.meminfo(greedy)
 	local _, _, sl = sys.meminfo(silent)
 
@@ -55,6 +68,8 @@ local cpid, wc = sys.spawn([[
 	-- moment this reply lands
 	sys.monitor(greedy)
 	sys.monitor(silent)
+	sys.send(gh, { go = true })
+	sys.send(sh, { go = true })
 	local left = 2
 
 	repeat

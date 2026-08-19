@@ -1289,6 +1289,29 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 		 */
 		if (run_proc(p))
 			ran = 1;
+
+		/* a corpse is nobody's, and is let go here rather than at
+		 * the top of the next turn: a reap on another cpu frees
+		 * the state of anything it can see is BROKE, and the step
+		 * below would follow that pointer. A reap that arrived
+		 * while this cpu held it left the teardown here.
+		 */
+		lock(&schedlock);
+		int gone = p->status == DEAD || p->status == BROKE;
+		int reap = 0;
+
+		if (gone) {
+			me->current = 0;
+			p->oncpu = 0;
+			reap = p->reapreq;
+			p->reapreq = 0;
+		}
+		unlock(&schedlock);
+		if (gone) {
+			if (reap)
+				proc_reap(p);
+			continue;
+		}
 		/* the collector's safe point, and the only one. Here
 		 * rather than inside run_proc because nothing is held
 		 * here, and no C local holds anything reachable only from
