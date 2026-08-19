@@ -56,95 +56,15 @@ else
   endif
 endif
 
+# the architecture: its flags and the sources only it has. A process
+# takes the host toolchain's defaults and has no boot stub at all, so
+# it is the one machine that descends nowhere.
 if platform == 'hosted'
   arch_args = []
   arch_src = []
   boot_efi = ''
-elif arch == 'x86_64'
-  # no red zone (efi), sse4.1 so floor/ceil are single instructions
-  # (qemu wants -cpu max)
-  arch_args = ['-mno-red-zone', '-msse4.1']
-  boot_efi = 'bootx64.efi'
-  # a pc: fw_cfg and com2 are both at fixed io ports, and x87 has the
-  # transcendentals in hardware. microvm supplies its own uart.c (com1,
-  # not com2 -- no firmware console to share the machine with) but
-  # reuses fwcfg.c/math.c unchanged, since both are already plain PIO/
-  # x87 with no EFI dependency.
-  arch_src = plat_src + files(
-    'src/x86_64/fwcfg.c',
-    'src/x86_64/math.c',
-  )
-  if platform == 'microvm'
-    # the only configuration with more than one cpu; everything else
-    # takes lock.h's uniprocessor path.
-    arch_args += '-DNCPU=8'
-  endif
-  if platform == 'efi'
-    arch_src += files('src/x86_64/uart.c')
-  else
-    arch_src += files(
-      'src/platform/microvm/boot.S',
-      'src/platform/microvm/idt_stubs.S',
-      'src/platform/microvm/idt.c',
-      'src/platform/microvm/lapic.c',
-      'src/platform/microvm/ioapic.c',
-      'src/platform/microvm/i8259.c',
-      'src/platform/microvm/i8253.c',
-      'src/platform/microvm/intr.c',
-      'src/platform/microvm/pci.c',
-      'src/platform/microvm/tsc.c',
-      'src/platform/microvm/pmm.c',
-      'src/platform/microvm/smp.c',
-      'src/platform/microvm/smp_trampoline.S',
-      'src/platform/microvm/uart.c',
-      'src/platform/microvm/reset.c',
-      'src/platform/microvm/efi_shim.c',
-      'src/platform/microvm/virtio.c',
-      'src/platform/microvm/virtio_mmio.c',
-      'src/platform/microvm/virtio_pci.c',
-      'src/platform/microvm/virtio_rng.c',
-      'src/platform/microvm/virtio_9p.c',
-      'src/platform/microvm/virtio_net.c',
-      'src/platform/microvm/virtio_blk.c',
-    )
-  endif
-elif arch == 'aarch64'
-  # fp/simd is baseline on aarch64 and edk2 enables it before running
-  # an application, so floor/ceil/sqrt are single instructions with no
-  # flag. outline atomics are the one thing that would pull libgcc in.
-  arch_args = ['-mno-outline-atomics']
-  boot_efi = 'bootaa64.efi'
-  # qemu's virt machine: fw_cfg is mmio, the wire is a pci card, and
-  # there is no instruction above fsqrt.
-  arch_src = plat_src + files(
-    'src/libc/softmath.c',
-    'src/virt/fwcfg.c',
-    'src/virt/uart.c',
-  )
-  arch_args += '-DFWCFG_BASE=0x09020000UL'
-elif arch == 'riscv64'
-  # rv64gc with the hard-float abi, since lua is doubles all the way
-  # down. medany because we are position-independent and relocate
-  # ourselves to wherever the firmware put us, which medlow's
-  # "everything within 2GiB of zero" cannot describe. -fno-math-errno
-  # so __builtin_sqrt stays a bare fsqrt.d instead of keeping a call to
-  # sqrt() on the negative-argument path.
-  arch_args = [
-    '-march=rv64imafdc',
-    '-mabi=lp64d',
-    '-mcmodel=medany',
-    '-fno-math-errno',
-  ]
-  boot_efi = 'bootriscv64.efi'
-  # same virt machine as aarch64, at a different fw_cfg address; plus
-  # the rounding floor D has no instruction for.
-  arch_src = plat_src + files(
-    'src/libc/softmath.c',
-    'src/riscv64/math.c',
-    'src/virt/fwcfg.c',
-    'src/virt/uart.c',
-  )
-  arch_args += '-DFWCFG_BASE=0x10100000UL'
+elif arch == 'x86_64' or arch == 'aarch64' or arch == 'riscv64'
+  subdir('src' / arch)
 else
   error('no src/' + arch + ': x86_64, aarch64 and riscv64 are ported')
 endif
@@ -448,11 +368,6 @@ endif
 # one branch, and the machine describes itself: its sources, its
 # compile and link, the image built from it and the targets that run
 # it all live beside the C they belong to.
-subdir('src/platform' / platform)
-
-subdir('src/platform/esp32')
-
-
 # tests that ask nothing of either platform's hardware, so the same file
 # runs on both and is named without a platform prefix. Keeping one copy
 # is the point: close() truncating everything past the send window lived
@@ -473,4 +388,9 @@ shared_tests = [
 # the tests that need neither platform: lua on the host, and the C that
 # has no kernel in it. They register for every -Dplatform, because
 # nothing about them is one.
+subdir('src/platform' / platform)
+
+subdir('src/platform/esp32')
+
+
 subdir('test')

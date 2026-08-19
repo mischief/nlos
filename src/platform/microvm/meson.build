@@ -4,7 +4,6 @@
 kernel_src += files(
   '../../../src/platform/microvm/console.c',
   '../../../src/platform/microvm/drivers.c',
-  '../../../src/platform/microvm/efi_shim.c',
   '../../../src/platform/microvm/fs.c',
   '../../../src/platform/microvm/main.c',
   '../../../src/platform/microvm/malloc.c',
