@@ -87,8 +87,13 @@ if not udph then
 end
 dhcpd = type(a) == "table" and a.dhcpd and a.dhcpd.__right or nil
 
-if type(a) == "table" and type(a.resolver) == "string" then
-	local w, x, y, z = a.resolver:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+-- scalars sit under `args` when lib/svc.lua starts this from a service
+-- list, and beside the rights when a payload sends them; svcarg is the
+-- one place that knows which.
+local cfg = type(a) == "table" and (a.args or a) or {}
+
+if type(cfg.resolver) == "string" then
+	local w, x, y, z = cfg.resolver:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
 
 	if w then
 		CONFIGURED = { tonumber(w), tonumber(x), tonumber(y),

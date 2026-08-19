@@ -159,6 +159,23 @@ while true do
 				platform.close(conns[m.connid])
 				conns[m.connid] = nil
 			end
+		elseif m.op == "localaddr" then
+			-- which address this machine's traffic leaves from,
+			-- as text: the one spelling that means the same in
+			-- both address families. The prefix comes with it
+			-- where the interface has one.
+			local a, p = platform.localaddr(m.to)
+
+			sys.send(reply, a and { addr = a, prefix = p } or nil)
+			sys.close(reply)
+		else
+			-- an op this stack does not have. Answering nil is
+			-- what makes that a refusal rather than a caller
+			-- parked forever on a reply that is never sent.
+			if reply then
+				sys.send(reply, nil)
+				sys.close(reply)
+			end
 		end
 	end
 

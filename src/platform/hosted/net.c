@@ -7,6 +7,9 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -503,6 +506,112 @@ l_close(lua_State *L)
 	return 0;
 }
 
+/* which address this machine's traffic leaves from, and the netmask of
+ * the interface carrying it. Asked of the routing table rather than
+ * guessed: connecting a udp socket picks a source without sending
+ * anything. Parsing /proc/net/route would be reimplementing that
+ * choice, badly, for a multi-homed host. */
+/* the bytes of an address, whichever family it is in */
+static const void *
+rawaddr(const struct sockaddr *sa, size_t *len)
+{
+	if (sa->sa_family == AF_INET) {
+		*len = 4;
+		return &((const struct sockaddr_in *)sa)->sin_addr;
+	}
+	if (sa->sa_family == AF_INET6) {
+		*len = 16;
+		return &((const struct sockaddr_in6 *)sa)->sin6_addr;
+	}
+	*len = 0;
+	return NULL;
+}
+
+/* a netmask as a prefix length, which is the one spelling that means
+ * the same thing in both families.
+ */
+static int
+prefixlen(const struct sockaddr *mask)
+{
+	size_t len;
+	const unsigned char *p = rawaddr(mask, &len);
+	int n = 0;
+
+	if (!p)
+		return -1;
+	for (size_t i = 0; i < len; i++)
+		for (int bit = 7; bit >= 0; bit--)
+			if (p[i] & (1 << bit))
+				n++;
+			else
+				return n;
+	return n;
+}
+
+static int
+l_localaddr(lua_State *L)
+{
+	const char *to = luaL_optstring(L, 1, "192.0.2.1");
+	struct addrinfo hint, *ai = NULL;
+	struct sockaddr_storage me;
+	socklen_t melen = sizeof me;
+	char text[INET6_ADDRSTRLEN];
+	int fd;
+
+	memset(&hint, 0, sizeof hint);
+	hint.ai_family = AF_UNSPEC;
+	hint.ai_socktype = SOCK_DGRAM;
+	if (getaddrinfo(to, "53", &hint, &ai) != 0 || !ai)
+		return 0;
+
+	fd = socket(ai->ai_family, SOCK_DGRAM, 0);
+	if (fd < 0) {
+		freeaddrinfo(ai);
+		return 0;
+	}
+	if (connect(fd, ai->ai_addr, ai->ai_addrlen) != 0 ||
+	    getsockname(fd, (struct sockaddr *)&me, &melen) != 0) {
+		close(fd);
+		freeaddrinfo(ai);
+		return 0;
+	}
+	close(fd);
+	freeaddrinfo(ai);
+
+	if (getnameinfo((struct sockaddr *)&me, melen, text, sizeof text,
+	    NULL, 0, NI_NUMERICHOST) != 0)
+		return 0;
+	lua_pushstring(L, text);
+
+	/* the prefix belongs to whichever interface holds that address. No
+	 * match means we know the address and not the prefix, which is
+	 * worth saying rather than guessing one.
+	 */
+	struct ifaddrs *ifa, *p;
+	size_t melen2, ilen;
+	const void *mine = rawaddr((struct sockaddr *)&me, &melen2);
+
+	if (!mine || getifaddrs(&ifa) != 0)
+		return 1;
+	for (p = ifa; p; p = p->ifa_next) {
+		const void *theirs;
+
+		if (!p->ifa_addr || p->ifa_addr->sa_family != me.ss_family)
+			continue;
+		theirs = rawaddr(p->ifa_addr, &ilen);
+		if (!theirs || ilen != melen2 || memcmp(theirs, mine, ilen) != 0)
+			continue;
+		if (p->ifa_netmask && prefixlen(p->ifa_netmask) >= 0) {
+			lua_pushinteger(L, prefixlen(p->ifa_netmask));
+			freeifaddrs(ifa);
+			return 2;
+		}
+		break;
+	}
+	freeifaddrs(ifa);
+	return 1;
+}
+
 /* the machine has no NIC of its own to name, and the host owns the
  * address. A dhcp client would want both; nothing here runs one.
  */
@@ -719,6 +828,7 @@ static const luaL_Reg netlib[] = {
 	{ "recv_poll", l_recv_poll },
 	{ "close", l_close },
 	{ "hwaddr", l_hwaddr },
+	{ "localaddr", l_localaddr },
 	{ "setaddr", l_setaddr },
 	{ NULL, NULL }
 };

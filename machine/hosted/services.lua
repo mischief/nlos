@@ -8,8 +8,13 @@
 -- with firmware. Absent is normal: a machine told nothing runs with
 -- what its defaults give it.
 local ok_efi, efi = pcall(require, "los.efi")
-local resolver = ok_efi and type(efi) == "table" and efi.fwcfg and
-    efi.fwcfg("opt/org.luaos.resolver") or nil
+local function param(name)
+	return ok_efi and type(efi) == "table" and efi.fwcfg and
+	    efi.fwcfg("opt/org.luaos." .. name) or nil
+end
+
+local resolver = param("resolver")
+local domain = param("domain")
 
 return {
 	-- names for rights, at /srv. Early, because the mount it declares
@@ -28,6 +33,13 @@ return {
 	{ path = "/task/gefssrv.lua", name = "gefs",
 	  caps = { blk = "part" }, args = { label = "main" },
 	  mount = "/n/gefs" },
+
+	-- the machine's addresses as files, which is where a program looks
+	-- for them. Not a lease: the values are the host's, read when the
+	-- file is read. Everything after this inherits the mount.
+	{ path = "/task/netfs.lua", name = "netfs", caps = { "tcp" },
+	  args = { resolver = resolver, domain = domain },
+	  mount = "/net" },
 
 	-- names to addresses, over the udp the kernel granted. Named `ip`
 	-- because that is what task/dns.lua calls whatever gives it udp.

@@ -23,6 +23,14 @@ function M.new(handle)
 		    ma = ma, mb = mb, mc = mc, md = md,
 		    ga = ga, gb = gb, gc = gc, gd = gd })
 	end
+	-- which address this machine's traffic leaves from, as
+	-- {addr=, prefix=}, or nil where the stack cannot say. Text
+	-- rather than octets: one spelling for both address families.
+	-- `to` names where the traffic would be going, since a host with
+	-- more than one route has more than one answer.
+	function n.localaddr(to)
+		return req({ op = "localaddr", to = to })
+	end
 	function n.listen(port)
 		return req({ op = "listen", port = port })
 	end

@@ -93,14 +93,20 @@ parse_args(int argc, char **argv, const char **root, int *writable,
 	return payload;
 }
 
+/* the host's files, opened as the host's: a plain fopen here goes
+ * through __wrap_fopen and is answered from the guest's root, or from
+ * the embedded tree before there is a root at all. Same reason fs.c's
+ * own opens take the real one. */
+FILE *__real_fopen64(const char *path, const char *mode);
+
 /* the host's own nameserver, which is the one a guest sharing its
- * sockets should ask. Read before clearenv and before any root exists,
- * because it is the host's file and not the guest's. */
+ * sockets should ask. Read before clearenv, because it is the host's
+ * file and not the guest's. */
 static char *
 host_resolver(void)
 {
 	static char ip[64];
-	FILE *f = fopen("/etc/resolv.conf", "r");
+	FILE *f = __real_fopen64("/etc/resolv.conf", "r");
 	char line[256];
 
 	if (!f)
@@ -113,6 +119,28 @@ host_resolver(void)
 	}
 	fclose(f);
 	return NULL;
+}
+
+/* the search domain, from the same file. `search` wins over `domain`
+ * where a host has both, which is what resolv.conf says happens. */
+static char *
+host_domain(void)
+{
+	static char dom[256];
+	FILE *f = __real_fopen64("/etc/resolv.conf", "r");
+	char line[256];
+	char *found = NULL;
+
+	if (!f)
+		return NULL;
+	while (fgets(line, sizeof line, f)) {
+		if (sscanf(line, " domain %255s", dom) == 1 && !found)
+			found = dom;
+		if (sscanf(line, " search %255s", dom) == 1)
+			found = dom;
+	}
+	fclose(f);
+	return found;
 }
 
 /* what SDL needs to find a display, saved across clearenv and put back
@@ -236,6 +264,7 @@ main(int argc, char **argv)
 	if (!dns)
 		dns = host_resolver();
 	hosted_setfwcfg("opt/org.luaos.resolver", dns);
+	hosted_setfwcfg("opt/org.luaos.domain", host_domain());
 
 	/* the guest inherits nothing from the shell. package.path is read
 	 * from LUA_PATH where one is set, so a host with luarocks installed
@@ -264,6 +293,12 @@ main(int argc, char **argv)
 	kernel_say(line);
 	snprintf(line, sizeof line, "mem: %luM", mb);
 	kernel_say(line);
+
+	snprintf(line, sizeof line, "net: resolver %s, domain %s",
+	    dns ? dns : "(none)",
+	    hosted_fwcfg("opt/org.luaos.domain") ?
+	    hosted_fwcfg("opt/org.luaos.domain") : "(none)");
+	kernel_log(line);
 
 	if (fs_config(config) != 0)
 		snprintf(line, sizeof line,
