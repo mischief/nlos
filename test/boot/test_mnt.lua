@@ -458,6 +458,13 @@ local dead = false
 
 sys.monitor(pid)
 N:unmount("/host")
+
+-- the fids claim 4 abandoned, and the two narrowed mounts above, are
+-- unreachable but not yet finalized, and each still holds a right. This
+-- proc is about to spin in a yield loop, where nothing allocates and so
+-- nothing collects, and the server would wait on rights no one can
+-- reach. Collect first, so what follows is really the last one.
+collectgarbage("collect")
 sys.close(h)
 -- the child's right went away when it exited; ours just did. nobody can
 -- send again, so serve() returns and the proc ends.
