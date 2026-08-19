@@ -73,6 +73,14 @@ if sdl_dep.found()
   endforeach
 endif
 
+# the park and wake path under many threads: p9bench's concurrent
+# phase with no transport under it. Here because this is the platform a
+# profiler can see into.
+test('hosted-altbench', lua_interp,
+  args: [hosted_boottest, luaos_hosted, files('boot/hosted_altbench.lua')],
+  protocol: 'tap', timeout: 60, env: hosted_env,
+)
+
 # this machine's own, because no other takes tcp and udp from the
 # platform rather than building them on frames.
 foreach t : ['tcp', 'udp']
