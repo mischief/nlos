@@ -1054,7 +1054,7 @@ run_proc(struct kproc *p)
 	 * before dispatch moves on. The whole programmable-scheduler
 	 * surface is this loop bound reading an int.
 	 */
-	for (int w = 0; w < p->weight; w++) {
+	for (int w = 0; w < KSTAT_GET(p->weight); w++) {
 		/* collect the waits left behind by whoever woke this proc,
 		 * before any lua runs. Before the resume rather than
 		 * after, because the double-block test reads the same
@@ -1140,7 +1140,7 @@ run_proc(struct kproc *p)
 			 * requeue. Reading it here unlocked raced both.
 			 */
 			lock(&schedlock);
-			int ready = p->status == READY;
+			int ready = KSTAT_GET(p->status) == READY;
 			unlock(&schedlock);
 
 			if (!ready)
@@ -1249,7 +1249,7 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 		if (prev) {
 			me->current = 0;
 			prev->oncpu = 0;
-			if (prev->status == READY && !prev->onq)
+			if (KSTAT_GET(prev->status) == READY && !prev->onq)
 				rq_add(donq, prev);
 			prev = 0;
 		}
@@ -1297,7 +1297,7 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 		 * while this cpu held it left the teardown here.
 		 */
 		lock(&schedlock);
-		int gone = p->status == DEAD || p->status == BROKE;
+		int gone = KSTAT_GET(p->status) == DEAD || KSTAT_GET(p->status) == BROKE;
 		int reap = 0;
 
 		if (gone) {
@@ -1366,7 +1366,7 @@ gc_idle_sweep(struct cpu *me)
 		ipclock_enter();
 		lock(&schedlock);
 		p = procv[i];
-		if (!p || p->status != BLOCKED || p->oncpu || p->frozen ||
+		if (!p || KSTAT_GET(p->status) != BLOCKED || p->oncpu || p->frozen ||
 		    p->onq || p->gc_idle_owed < GCIDLE_MIN ||
 		    now - p->gc_idle_ms < wait) {
 			unlock(&schedlock);
@@ -1383,7 +1383,7 @@ gc_idle_sweep(struct cpu *me)
 		lock(&schedlock);
 		me->current = 0;
 		p->oncpu = 0;
-		if (p->status == READY && !p->onq)
+		if (KSTAT_GET(p->status) == READY && !p->onq)
 			rq_add(donq, p);
 		unlock(&schedlock);
 	}

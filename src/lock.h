@@ -68,20 +68,12 @@
 
 #include <stdatomic.h>
 
+#include "kstat.h"
 #include "machine.h"
 
 #ifndef NCPU
 #define NCPU 1
 #endif
-
-/* a counter with one writer -- a lock.s holder, or the cpu a proc or a
- * cpu record belongs to -- and readers elsewhere building a report.
- * Atomic for those readers, never read-modify-written, so the writer
- * pays a relaxed load and store.
- */
-#define KSTAT_GET(f)		atomic_load_explicit(&(f), memory_order_relaxed)
-#define KSTAT_SET(f, v)		atomic_store_explicit(&(f), (v), memory_order_relaxed)
-#define KSTAT_ADD(f, n)		KSTAT_SET(f, KSTAT_GET(f) + (n))
 
 static inline void
 lock_bump(atomic_ullong *c, unsigned long long by)

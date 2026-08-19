@@ -137,7 +137,7 @@ reprioritize(struct kproc *p, int nrunnable)
 
 	unsigned fair = 1000u / (unsigned)nrunnable;
 	unsigned n = p->cpu ? p->cpu : 1;
-	unsigned cap = (unsigned)p->weight * PRI_BASE;
+	unsigned cap = (unsigned)KSTAT_GET(p->weight) * PRI_BASE;
 	unsigned long long r = ((unsigned long long)fair * cap) / n;
 
 	return (int)(r > cap ? cap : r);
@@ -262,7 +262,7 @@ proc_block(struct kproc *p)
 {
 	IPC_ASSERT_ANY();
 	lock(&schedlock);
-	p->status = BLOCKED;
+	KSTAT_SET(p->status, BLOCKED);
 	rq_del(p);
 	unlock(&schedlock);
 }
@@ -309,7 +309,7 @@ make_ready(struct kproc *p)
 	 * The wake is not lost: the waiter stays linked and the message
 	 * queued, and cont resumes into the block that re-polls.
 	 */
-	if (p->status == STOPPED || p->status == BROKE) {
+	if (KSTAT_GET(p->status) == STOPPED || KSTAT_GET(p->status) == BROKE) {
 		unlock(&schedlock);
 		return;
 	}
@@ -318,10 +318,10 @@ make_ready(struct kproc *p)
 	 * wakes into the stop rather than into execution. dbg_sweep
 	 * sends the notice; here we hold schedlock and a bucket.
 	 */
-	if (p->dbg && p->status == BLOCKED &&
+	if (p->dbg && KSTAT_GET(p->status) == BLOCKED &&
 	    atomic_exchange_explicit(&p->dbg->stopreq, 0,
 	    memory_order_relaxed)) {
-		p->status = STOPPED;
+		KSTAT_SET(p->status, STOPPED);
 		p->dbg->reason = DBG_REQ;
 		atomic_store_explicit(&p->dbg->notify, DBG_REQ,
 		    memory_order_relaxed);
@@ -346,7 +346,7 @@ make_ready(struct kproc *p)
 	 * proc_running.
 	 */
 	if (p->oncpu) {
-		p->status = READY;
+		KSTAT_SET(p->status, READY);
 		p->pri = reprioritize(p, count_runnable() + 1);
 		unlock(&schedlock);
 		return;
@@ -354,7 +354,7 @@ make_ready(struct kproc *p)
 
 	if (keep)
 		rq_del(p);		/* pri is about to change; rebucket */
-	p->status = READY;
+	KSTAT_SET(p->status, READY);
 	/* +1 because p has just been taken off its bucket and so is not in
 	 * the count, but it is runnable and the fair share has to include it
 	 */
@@ -407,7 +407,7 @@ count_runnable(void)
 	for (unsigned i = 0; i < platform_ncpu(); i++) {
 		struct cpu *c = cpu_at(i);
 
-		if (c && c->current && c->current->status == READY &&
+		if (c && c->current && KSTAT_GET(c->current->status) == READY &&
 		    !c->current->onq)
 			running++;
 	}

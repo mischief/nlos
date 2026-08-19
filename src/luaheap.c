@@ -14,6 +14,7 @@
 #endif
 #endif
 
+#include "kstat.h"
 #include "luaheap.h"
 
 /* lua's own alignment requirement is LUAI_MAXALIGN, which is the widest
@@ -145,15 +146,23 @@ struct luaheap {
 	 */
 	void *largefree[NLARGECLASS];
 	unsigned char nlargefree[NLARGECLASS];
+	/* bytes on those lists, kept rather than walked: sys.stats reads
+	 * this from another cpu, and the lists are pointer chases the
+	 * owning cpu is rethreading. See kstat.h.
+	 */
+	atomic_size_t largecached;
 
-	size_t live, peak, mapped;
-	unsigned long nchunks, nlarges;
+	/* one writer, the cpu whose proc owns this heap, and sys.stats
+	 * reading from another. See kstat.h.
+	 */
+	atomic_size_t live, peak, mapped;
+	atomic_ulong nchunks, nlarges;
 
 	/* sum of the class sizes of live small blocks, and of what lua
 	 * asked for in live large ones, so the rounding cost can be told
 	 * apart from chunk tails when reporting
 	 */
-	size_t rounded, large_asked;
+	atomic_size_t rounded, large_asked;
 };
 
 /* the smallest class that fits, or NCLASS for the large path.
@@ -215,7 +224,7 @@ luaheap_new(const struct luaheap_ops *ops, void *ud)
 	memset(h, 0, sizeof *h);
 	h->ops = ops;
 	h->ud = ud;
-	h->mapped = sizeof *h;	/* the heap is part of what the heap costs */
+	KSTAT_SET(h->mapped, sizeof *h);	/* the heap is part of what the heap costs */
 	return h;
 }
 
@@ -324,8 +333,8 @@ newchunk(struct luaheap *h, size_t need)
 
 	h->bump = (char *)c + sizeof *c;
 	h->bumpleft = want - sizeof *c;
-	h->mapped += want;
-	h->nchunks++;
+	KSTAT_ADD(h->mapped, want);
+	KSTAT_ADD(h->nchunks, 1);
 	return 1;
 }
 
@@ -338,7 +347,7 @@ small_alloc(struct luaheap *h, size_t ci)
 	if (p) {
 		/* the link lives in the free block's own first word */
 		h->freelist[ci] = *(void **)p;
-		h->rounded += want;
+		KSTAT_ADD(h->rounded, want);
 		return p;
 	}
 	if (h->bumpleft < want && !newchunk(h, want))
@@ -347,7 +356,7 @@ small_alloc(struct luaheap *h, size_t ci)
 	p = h->bump;
 	h->bump += want;
 	h->bumpleft -= want;
-	h->rounded += want;
+	KSTAT_ADD(h->rounded, want);
 	return p;
 }
 
@@ -356,7 +365,7 @@ small_free(struct luaheap *h, void *ptr, size_t ci)
 {
 	*(void **)ptr = h->freelist[ci];
 	h->freelist[ci] = ptr;
-	h->rounded -= classes[ci];
+	KSTAT_SET(h->rounded, KSTAT_GET(h->rounded) - classes[ci]);
 }
 
 static void *
@@ -372,11 +381,14 @@ large_alloc(struct luaheap *h, size_t n)
 	 */
 	if (ci < NLARGECLASS && h->largefree[ci]) {
 		void *p = h->largefree[ci];
+		const struct large *cl = (const struct large *)((char *)p -
+		    sizeof(struct large));
 
 		h->largefree[ci] = *(void **)p;
 		h->nlargefree[ci]--;
-		h->nlarges++;
-		h->large_asked += n;
+		KSTAT_SET(h->largecached, KSTAT_GET(h->largecached) - cl->size);
+		KSTAT_ADD(h->nlarges, 1);
+		KSTAT_ADD(h->large_asked, n);
 		return p;
 	}
 
@@ -388,9 +400,9 @@ large_alloc(struct luaheap *h, size_t n)
 	l->size = want;
 	l->next = h->larges;
 	h->larges = l;
-	h->mapped += want;
-	h->nlarges++;
-	h->large_asked += n;
+	KSTAT_ADD(h->mapped, want);
+	KSTAT_ADD(h->nlarges, 1);
+	KSTAT_ADD(h->large_asked, n);
 	return (char *)l + sizeof *l;
 }
 
@@ -466,8 +478,8 @@ release_freechunks(struct luaheap *h)
 		}
 
 		*cp = c->next;
-		h->mapped -= c->size;
-		h->nchunks--;
+		KSTAT_SET(h->mapped, KSTAT_GET(h->mapped) - c->size);
+		KSTAT_SET(h->nchunks, KSTAT_GET(h->nchunks) - 1);
 		freed += c->size;
 		h->ops->chunk_free(h->ud, c, c->size);
 	}
@@ -513,6 +525,8 @@ release_largefree(struct luaheap *h)
 
 			h->largefree[ci] = *(void **)ptr;
 			h->nlargefree[ci]--;
+			KSTAT_SET(h->largecached,
+			    KSTAT_GET(h->largecached) - l->size);
 
 			/* a cached block kept its place on h->larges, so
 			 * releasing it for real means unlinking it here.
@@ -522,7 +536,7 @@ release_largefree(struct luaheap *h)
 			if (!*pp)
 				continue;
 			*pp = l->next;
-			h->mapped -= l->size;
+			KSTAT_SET(h->mapped, KSTAT_GET(h->mapped) - l->size);
 			freed += l->size;
 			h->ops->chunk_free(h->ud, l, l->size);
 		}
@@ -549,7 +563,9 @@ large_free(struct luaheap *h, void *ptr, size_t asked)
 	size_t ci = largeclassof(l->size);
 	struct large **pp;
 
-	h->large_asked -= asked < h->large_asked ? asked : h->large_asked;
+	size_t la = KSTAT_GET(h->large_asked);
+
+	KSTAT_SET(h->large_asked, la - (asked < la ? asked : la));
 
 	/* the common case: hold it for the next request of its size. The
 	 * block keeps its place on h->larges, so this walks nothing.
@@ -558,7 +574,8 @@ large_free(struct luaheap *h, void *ptr, size_t asked)
 		*(void **)ptr = h->largefree[ci];
 		h->largefree[ci] = ptr;
 		h->nlargefree[ci]++;
-		h->nlarges--;
+		KSTAT_ADD(h->largecached, l->size);
+		KSTAT_SET(h->nlarges, KSTAT_GET(h->nlarges) - 1);
 		return;
 	}
 
@@ -571,8 +588,8 @@ large_free(struct luaheap *h, void *ptr, size_t asked)
 	if (!*pp)
 		return;		/* not ours; caller lied about the size */
 	*pp = l->next;
-	h->mapped -= l->size;
-	h->nlarges--;
+	KSTAT_SET(h->mapped, KSTAT_GET(h->mapped) - l->size);
+	KSTAT_SET(h->nlarges, KSTAT_GET(h->nlarges) - 1);
 	h->ops->chunk_free(h->ud, l, l->size);
 }
 
@@ -591,7 +608,7 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 				small_free(h, ptr, oc);
 			else
 				large_free(h, ptr, osize);
-			h->live -= osize;
+			KSTAT_SET(h->live, KSTAT_GET(h->live) - osize);
 		}
 		return 0;
 	}
@@ -603,9 +620,9 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 		p = nc < NCLASS ? small_alloc(h, nc) : large_alloc(h, nsize);
 		if (!p)
 			return 0;
-		h->live += nsize;
-		if (h->live > h->peak)
-			h->peak = h->live;
+		KSTAT_ADD(h->live, nsize);
+		if (KSTAT_GET(h->live) > KSTAT_GET(h->peak))
+			KSTAT_SET(h->peak, KSTAT_GET(h->live));
 		return p;
 	}
 
@@ -618,9 +635,9 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 	 * of those steps is a malloc+memcpy+free today.
 	 */
 	if (oc == nc && oc < NCLASS) {
-		h->live += nsize - osize;
-		if (h->live > h->peak)
-			h->peak = h->live;
+		KSTAT_ADD(h->live, nsize - osize);
+		if (KSTAT_GET(h->live) > KSTAT_GET(h->peak))
+			KSTAT_SET(h->peak, KSTAT_GET(h->live));
 		return ptr;
 	}
 
@@ -635,10 +652,10 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 		    (struct large *)((char *)ptr - sizeof(struct large));
 
 		if (large_want(nsize + sizeof *l) == l->size) {
-			h->large_asked += nsize - osize;
-			h->live += nsize - osize;
-			if (h->live > h->peak)
-				h->peak = h->live;
+			KSTAT_ADD(h->large_asked, nsize - osize);
+			KSTAT_ADD(h->live, nsize - osize);
+			if (KSTAT_GET(h->live) > KSTAT_GET(h->peak))
+				KSTAT_SET(h->peak, KSTAT_GET(h->live));
 			return ptr;
 		}
 	}
@@ -654,9 +671,9 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 	else
 		large_free(h, ptr, osize);
 
-	h->live += nsize - osize;
-	if (h->live > h->peak)
-		h->peak = h->live;
+	KSTAT_ADD(h->live, nsize - osize);
+	if (KSTAT_GET(h->live) > KSTAT_GET(h->peak))
+		KSTAT_SET(h->peak, KSTAT_GET(h->live));
 	return q;
 }
 
@@ -673,37 +690,34 @@ luaheap_stats(const struct luaheap *h, struct luaheap_stats *out)
 	if (!h)
 		return;
 
-	out->live = h->live;
-	out->peak = h->peak;
-	out->mapped = h->mapped;
-	out->waste = h->mapped > h->live ? h->mapped - h->live : 0;
-	out->chunks = h->nchunks;
-	out->larges = h->nlarges;
+	size_t live = KSTAT_GET(h->live), mapped = KSTAT_GET(h->mapped);
+	unsigned long nchunks = KSTAT_GET(h->nchunks);
+	unsigned long nlarges = KSTAT_GET(h->nlarges);
+
+	out->live = live;
+	out->peak = KSTAT_GET(h->peak);
+	out->mapped = mapped;
+	out->waste = mapped > live ? mapped - live : 0;
+	out->chunks = nchunks;
+	out->larges = nlarges;
 
 	/* small blocks carry nothing, so the only headers are one per
 	 * chunk and one per outstanding large block.
 	 */
-	out->headers = h->nchunks * sizeof(struct chunk) +
-	    h->nlarges * sizeof(struct large);
+	out->headers = nchunks * sizeof(struct chunk) +
+	    nlarges * sizeof(struct large);
 
 	/* h->rounded counts live small blocks at their class size, so the
 	 * difference from what lua asked for in those same blocks is the
 	 * rounding cost. Large blocks are excluded from both sides: they
 	 * are not rounded to a class, and their header is counted above.
 	 */
-	size_t small_asked = h->live > h->large_asked ?
-	    h->live - h->large_asked : 0;
+	size_t asked = KSTAT_GET(h->large_asked), rounded = KSTAT_GET(h->rounded);
+	size_t small_asked = live > asked ? live - asked : 0;
 
-	out->rounding = h->rounded > small_asked ? h->rounded - small_asked : 0;
+	out->rounding = rounded > small_asked ? rounded - small_asked : 0;
 	out->unused = out->waste > out->rounding + out->headers ?
 	    out->waste - out->rounding - out->headers : 0;
 
-	/* walked rather than counted as it goes: the lists are bounded by
-	 * LARGE_CACHED per class, and the size is on each block's own
-	 * header, so this is exact and costs nothing worth avoiding.
-	 */
-	for (size_t ci = 0; ci < NLARGECLASS; ci++)
-		for (void *p = h->largefree[ci]; p; p = *(void **)p)
-			out->cached += ((const struct large *)((const char *)p -
-			    sizeof(struct large)))->size;
+	out->cached = KSTAT_GET(h->largecached);
 }

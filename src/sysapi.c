@@ -62,6 +62,7 @@ static int api_stack_k(lua_State *L, int status, lua_KContext ctx);
 static int stack_walk(lua_State *L);
 static const luaL_Reg kapi[];
 static int trace_read_k(lua_State *L, int status, lua_KContext ctx);
+static int set_torture_k(lua_State *L, int status, lua_KContext ctx);
 static int tracehist_read_k(lua_State *L, int status, lua_KContext ctx);
 
 struct dumpbuf {
@@ -80,6 +81,12 @@ static int port_owner(const struct kport *port);
  * shared state and belongs inside the region guarding wait_add, while
  * the raise must sit outside it, because luaL_error jumps.
  */
+
+/* how many ports of a blocked proc's alt set sys.wchan names. Copied
+ * out of the waiter list, so it bounds a frame rather than the set.
+ */
+#define MAXWCHAN 16
+
 #define BLOCKED_TWICE_MSG "already blocked (sys.block from a coroutine? " \
 	"use los.thread's park)"
 
@@ -764,7 +771,7 @@ api_kill(lua_State *L)
 		return luaL_error(L, "cannot kill self");
 	if (target && !may_control(p, target))
 		return luaL_error(L, "no right to proc %d", pid);
-	if (!target || target->status == BROKE || target->status == DEAD) {
+	if (!target || KSTAT_GET(target->status) == BROKE || KSTAT_GET(target->status) == DEAD) {
 		lua_pushboolean(L, 0);	/* nothing to kill: already gone */
 		return 1;
 	}
@@ -913,7 +920,7 @@ api_monitor(lua_State *L)
 	 * absent here is what keeps "monitor something already gone" an
 	 * immediate noproc rather than a wait for an event in the past.
 	 */
-	if (target && target->status == BROKE)
+	if (target && KSTAT_GET(target->status) == BROKE)
 		target = 0;
 	if (!target) {
 		ipclock_enter();
@@ -1035,7 +1042,7 @@ api_pidstat(lua_State *L)
 	lua_setfield(L, -2, "peak");
 	lua_pushinteger(L, (lua_Integer)p->mem_limit);
 	lua_setfield(L, -2, "limit");
-	lua_pushinteger(L, p->weight);
+	lua_pushinteger(L, KSTAT_GET(p->weight));
 	lua_setfield(L, -2, "weight");
 	/* instructions between preempt hooks. Reported because it is a
 	 * containment bound like mem below it, inherited from the parent
@@ -1097,7 +1104,8 @@ static int
 api_ports(lua_State *L)
 {
 	lua_newtable(L);
-	for (int i = 0, n = 1; i < porthigh; i++) {
+	for (int i = 0, n = 1, n_ = atomic_load_explicit(&porthigh,
+	    memory_order_acquire); i < n_; i++) {
 		struct kport *port = portv[i];
 
 		if (!port)
@@ -1153,9 +1161,22 @@ api_priority(lua_State *L)
 
 	if (!p)
 		return luaL_error(L, "no such proc");
-	lua_pushinteger(L, p->weight);
-	lua_pushinteger(L, reprioritize(p, count_runnable()));
-	lua_pushinteger(L, (lua_Integer)p->cpu);
+
+	/* under schedlock for the reason api_pidstat takes it: reprioritize
+	 * writes the decay state and count_runnable reads every cpu's
+	 * current. Pushed after the release, since a push can raise.
+	 */
+	int weight, pri, cpu;
+
+	lock(&schedlock);
+	weight = KSTAT_GET(p->weight);
+	pri = reprioritize(p, count_runnable());
+	cpu = (int)p->cpu;
+	unlock(&schedlock);
+
+	lua_pushinteger(L, weight);
+	lua_pushinteger(L, pri);
+	lua_pushinteger(L, cpu);
 	return 3;
 }
 
@@ -1199,7 +1220,7 @@ api_procs(lua_State *L)
 	 */
 	ipclock_enter();
 	for (int i = 0; i < high && n < room; i++)
-		if (procv[i] && procv[i]->status != DEAD)
+		if (procv[i] && KSTAT_GET(procv[i]->status) != DEAD)
 			ids[n++] = procv[i]->id;
 	ipclock_leave();
 
@@ -1227,7 +1248,7 @@ api_reap(lua_State *L)
 		return luaL_error(L, "no such proc");
 	if (!may_control(self(L), p))
 		return luaL_error(L, "no right to proc %d", p->id);
-	if (p->status != BROKE)
+	if (KSTAT_GET(p->status) != BROKE)
 		return luaL_error(L, "proc %d is not broke", p->id);
 	proc_reap(p);
 	lua_pushboolean(L, 1);
@@ -1476,7 +1497,12 @@ api_set_priority(lua_State *L)
 		weight = 1;
 	if (weight > MAXWEIGHT)
 		weight = MAXWEIGHT;
-	p->weight = weight;
+	/* under schedlock: run_proc reads it as the bound of its resume
+	 * loop, and does so on whichever cpu has the proc.
+	 */
+	lock(&schedlock);
+	KSTAT_SET(p->weight, weight);
+	unlock(&schedlock);
 	return 0;
 }
 
@@ -1509,8 +1535,16 @@ api_settime(lua_State *L)
 static int
 api_set_torture(lua_State *L)
 {
+	return set_torture_k(L, LUA_OK, 0);
+}
+
+static int
+set_torture_k(lua_State *L, int status, lua_KContext ctx)
+{
 	struct kproc *p = self(L);
 	int arg = 1;
+
+	(void)status;
 
 	if (lua_gettop(L) > 1) {
 		arg = 2;
@@ -1523,9 +1557,25 @@ api_set_torture(lua_State *L)
 	if (!p->L)
 		return luaL_error(L, "proc %d has no state", p->id);
 
+	/* held for the arm, as set_trace is: lua_sethook writes the hook
+	 * fields of every one of the target's states, and the cpu running
+	 * it reads them between instructions. Everything above that can
+	 * raise has already run, so the freeze spans nothing that jumps.
+	 */
+	if (p != self(L)) {
+		if (ctx == 0) {
+			if (proc_freeze(p))
+				return lua_yieldk(L, 0, 1, set_torture_k);
+		} else if (proc_still_running(p)) {
+			return lua_yieldk(L, 0, 1, set_torture_k);
+		}
+	}
+
 	p->torture = lua_toboolean(L, arg);
 	/* every instruction, or back to the calibrated budget */
 	proc_armall(p, p->torture ? 1 : p->reductions);
+	if (p != self(L))
+		proc_thaw(p);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -1727,7 +1777,7 @@ api_spawn(lua_State *L)
 		 * stack, and a raise in here would longjmp down that cpu's
 		 * resume frame -- leaving this one's ipc bucket held.
 		 */
-		if (child->status != HATCHING)
+		if (KSTAT_GET(child->status) != HATCHING)
 			platform_abort("spawn: child ran before its arg");
 
 		/* the parent loses any buffer in the arg here, before the
@@ -1930,13 +1980,14 @@ api_stats(lua_State *L)
 	 * nlive and read as a leak after every crash.
 	 */
 	ipclock_enter();
-	for (int i = 0; i < porthigh; i++)
+	for (int i = 0, n_ = atomic_load_explicit(&porthigh,
+	    memory_order_acquire); i < n_; i++)
 		if (portv[i])
 			nports++;
 	for (int i = 0; i < prochigh; i++)
-		if (procv[i] && procv[i]->status == BROKE)
+		if (procv[i] && KSTAT_GET(procv[i]->status) == BROKE)
 			nbroke++;
-		else if (procv[i] && procv[i]->status != DEAD)
+		else if (procv[i] && KSTAT_GET(procv[i]->status) != DEAD)
 			nprocs++;
 	ipclock_leave();
 
@@ -2738,7 +2789,7 @@ port_owner(const struct kport *port)
 	for (int i = 0; i < prochigh && id < 0; i++) {
 		struct kproc *p = procv[i];
 
-		if (!p || p->status == DEAD)
+		if (!p || KSTAT_GET(p->status) == DEAD)
 			continue;
 		for (int h = 0; h < MAXRIGHTS; h++) {
 			struct right *r = right_get(p, h);
@@ -2848,7 +2899,7 @@ proc_hold(lua_State *L, int argn, struct kproc **out, lua_KContext ctx)
 int
 push_wchan(lua_State *L, struct kproc *p)
 {
-	switch (p->status) {
+	switch (KSTAT_GET(p->status)) {
 	case DEAD:
 		lua_pushliteral(L, "dead");
 		return 1;
@@ -2865,47 +2916,57 @@ push_wchan(lua_State *L, struct kproc *p)
 		lua_pushliteral(L, "ready");
 		return 1;
 	case BLOCKED: {
-		struct waiter *only = SLIST_FIRST(&p->waiters);
-
-		if (only && !only->send && !SLIST_NEXT(only, pw)) {
-			lua_pushfstring(L, "port#%d",
-			    (int)only->port->idx);
-			return 1;
-		}
-	}
-		/* distinguished from a receive wait on purpose: "why is
-		 * this proc stuck" has a different answer for a reader
-		 * with no data and a writer with no room, and ps is where
-		 * you go to find out.
+		/* copied out under the lock and rendered after it. The list
+		 * is threaded under the bucket of each port on it, which a
+		 * report cannot name in advance, so only the wide form
+		 * covers the walk -- and building a lua string in there
+		 * could raise past the release.
 		 */
-		struct waiter *w = SLIST_FIRST(&p->waiters);
+		unsigned short idx[MAXWCHAN];
+		int n = 0, send;
+		struct waiter *w;
 
-		if (w && w->send) {
-			lua_pushfstring(L, "sendq#%d",
-			    (int)w->port->idx);
+		ipclock_enter();
+		w = SLIST_FIRST(&p->waiters);
+		send = w && w->send;
+		SLIST_FOREACH(w, &p->waiters, pw)
+			if (n < MAXWCHAN)
+				idx[n++] = w->port->idx;
+		ipclock_leave();
+
+		if (n == 0) {
+			lua_pushliteral(L, "blocked");
 			return 1;
 		}
-		if (w) {
-			luaL_Buffer b;
-			int first = 1;
-
-			luaL_buffinit(L, &b);
-			luaL_addstring(&b, "alt[");
-			SLIST_FOREACH(w, &p->waiters, pw) {
-				char tmp[16];
-
-				snprintf(tmp, sizeof tmp, "%s%d",
-				    first ? "" : ",",
-				    (int)w->port->idx);
-				first = 0;
-				luaL_addstring(&b, tmp);
-			}
-			luaL_addstring(&b, "]");
-			luaL_pushresult(&b);
+		/* a send wait is distinguished on purpose: "why is this
+		 * proc stuck" has a different answer for a reader with no
+		 * data and a writer with no room, and ps is where you go
+		 * to find out.
+		 */
+		if (send) {
+			lua_pushfstring(L, "sendq#%d", (int)idx[0]);
 			return 1;
 		}
-		lua_pushliteral(L, "blocked");
+		if (n == 1) {
+			lua_pushfstring(L, "port#%d", (int)idx[0]);
+			return 1;
+		}
+
+		luaL_Buffer b;
+
+		luaL_buffinit(L, &b);
+		luaL_addstring(&b, "alt[");
+		for (int i = 0; i < n; i++) {
+			char tmp[16];
+
+			snprintf(tmp, sizeof tmp, "%s%d", i ? "," : "",
+			    (int)idx[i]);
+			luaL_addstring(&b, tmp);
+		}
+		luaL_addstring(&b, "]");
+		luaL_pushresult(&b);
 		return 1;
+	}
 	}
 	lua_pushliteral(L, "?");
 	return 1;
@@ -2953,7 +3014,7 @@ set_trace_k(lua_State *L, int status, lua_KContext ctx)
 	 * too late", so it is refused. for a proc too short-lived to
 	 * catch, spawn's opts.trace is the way in.
 	 */
-	if (p->status == BROKE && n > 0)
+	if (KSTAT_GET(p->status) == BROKE && n > 0)
 		return luaL_error(L,
 		    "proc %d is broke; trace before it dies, or spawn "
 		    "with opts.trace", p->id);

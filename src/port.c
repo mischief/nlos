@@ -61,7 +61,12 @@ static struct ipcbucket ipcbuckets[NIPCLOCK];
  */
 
 struct kport *portv[MAXPORTS];
-int porthigh;		/* one past the highest slot ever used */
+/* one past the highest slot ever used. Atomic because sys.ports and
+ * sys.stats bound their walks with it holding no bucket, where port_new
+ * raises it under bucket zero. Release/acquire, so a slot published
+ * under it is visible to a reader that sees the higher bound.
+ */
+atomic_int porthigh;
 /* stamped into every port so a slot can be told from the port in it;
  * see kport.gen. 64-bit and incremented once per port, so it does not
  * wrap in any run this machine could have.
@@ -73,7 +78,11 @@ static unsigned long long portgen;
  */
 static unsigned long long hangup_gen;
 
-static int rights_high;
+/* the high water over every proc's handle table, for sys.stats. Not
+ * covered by any one bucket: right_new holds only the bucket of the
+ * port it mints, and two cpus minting on different ports both raise it.
+ */
+static atomic_int rights_high;
 
 /* how the claim goes, reported through sys.stats().lock.ipc. Losing
  * counts the times two ports reached one alt-blocked proc at once, so
@@ -260,8 +269,10 @@ port_new(void)
 			port->used = 1;
 			TAILQ_INIT(&port->waiters);
 			portv[i] = port;
-			if (i >= porthigh)
-				porthigh = i + 1;
+			if (i >= atomic_load_explicit(&porthigh,
+			    memory_order_relaxed))
+				atomic_store_explicit(&porthigh, i + 1,
+				    memory_order_release);
 			return port;
 		}
 	return 0;
@@ -420,8 +431,8 @@ right_new(struct kproc *p, struct kport *port, int recv)
 		if (!r)
 			return -1;
 		if (!r->used) {
-			if (i + 1 > rights_high)
-				rights_high = i + 1;
+			if (i + 1 > KSTAT_GET(rights_high))
+				KSTAT_SET(rights_high, i + 1);
 			r->used = 1;
 			r->port = port;
 			r->recv = recv;
@@ -633,7 +644,7 @@ wake_receivers(struct kport *port)
 	TAILQ_FOREACH_SAFE(w, &port->waiters, pq, n) {
 		struct kproc *p = w->p;
 
-		if (w->send || p->status != BLOCKED)
+		if (w->send || KSTAT_GET(p->status) != BLOCKED)
 			continue;
 		if (!wake_claim(p))
 			continue;	/* another port got there first */
@@ -659,7 +670,7 @@ wake_senders(struct kport *port)
 	TAILQ_FOREACH_SAFE(w, &port->waiters, pq, n) {
 		struct kproc *p = w->p;
 
-		if (!w->send || p->status != BLOCKED)
+		if (!w->send || KSTAT_GET(p->status) != BLOCKED)
 			continue;
 		if (!wake_claim(p))
 			continue;
@@ -876,7 +887,7 @@ ipclock_stats(unsigned long long *nlock, unsigned long long *ncontend,
 int
 port_rights_high(void)
 {
-	return rights_high;
+	return KSTAT_GET(rights_high);
 }
 
 unsigned long long

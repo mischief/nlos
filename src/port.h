@@ -14,7 +14,7 @@
  * the port in it are told apart by kport.gen.
  */
 extern struct kport *portv[MAXPORTS];
-extern int porthigh;		/* one past the highest slot ever used */
+extern atomic_int porthigh;	/* one past the highest slot ever used */
 
 /* the buffers travelling on one message: free what nobody received,
  * and what they cost the queue they sit on.

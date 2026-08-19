@@ -133,18 +133,21 @@ dbg_commit(struct kproc *p)
 		return 0;
 
 	int reason = atomic_exchange_explicit(&d->pending, DBG_RUN,
-	    memory_order_relaxed);
+	    memory_order_acquire);
 
 	if (reason == DBG_RUN)
 		return 0;
 
 	lock(&schedlock);
-	p->status = STOPPED;
+	KSTAT_SET(p->status, STOPPED);
 	unlock(&schedlock);
 	/* dbg_sweep sends it: a notice needs the ipc lock and this is not
 	 * the place to take it.
 	 */
-	atomic_store_explicit(&d->notify, reason, memory_order_relaxed);
+	/* release: the sweep that takes this reads the stop fields
+	 * dbg_arm_stop wrote, from another cpu.
+	 */
+	atomic_store_explicit(&d->notify, reason, memory_order_release);
 	return 1;
 }
 
@@ -235,9 +238,9 @@ dbg_mark_orphan(struct kproc *p)
 	int wake;
 
 	lock(&schedlock);
-	wake = p->status == STOPPED;
+	wake = KSTAT_GET(p->status) == STOPPED;
 	if (wake)
-		p->status = READY;
+		KSTAT_SET(p->status, READY);
 	unlock(&schedlock);
 	if (wake)
 		make_ready(p);	/* the caller holds the bucket it wants */
@@ -354,9 +357,9 @@ dbg_push_status(lua_State *L, struct kproc *p)
 	lua_createtable(L, 0, 9);
 	lua_pushboolean(L, d != 0);
 	lua_setfield(L, -2, "attached");
-	lua_pushboolean(L, p->status == STOPPED);
+	lua_pushboolean(L, KSTAT_GET(p->status) == STOPPED);
 	lua_setfield(L, -2, "stopped");
-	lua_pushboolean(L, p->status == BROKE);
+	lua_pushboolean(L, KSTAT_GET(p->status) == BROKE);
 	lua_setfield(L, -2, "broke");
 	if (!d)
 		return;
@@ -366,7 +369,7 @@ dbg_push_status(lua_State *L, struct kproc *p)
 	lua_setfield(L, -2, "reason");
 	lua_pushinteger(L, d->nbp);
 	lua_setfield(L, -2, "nbreak");
-	if (p->status != STOPPED)
+	if (KSTAT_GET(p->status) != STOPPED)
 		return;
 	lua_pushinteger(L, d->stopline);
 	lua_setfield(L, -2, "line");
@@ -438,7 +441,7 @@ dbg_resume(struct kproc *p)
 {
 	ipclock_enter();
 	lock(&schedlock);
-	p->status = READY;
+	KSTAT_SET(p->status, READY);
 	unlock(&schedlock);
 	make_ready(p);
 	ipclock_leave();
@@ -489,7 +492,7 @@ dbg_sweep(void)
 
 		if (p && p->dbg) {
 			int reason = atomic_exchange_explicit(
-			    &p->dbg->notify, DBG_RUN, memory_order_relaxed);
+			    &p->dbg->notify, DBG_RUN, memory_order_acquire);
 
 			if (reason != DBG_RUN)
 				dbg_notify(p, reason, 0);
@@ -540,7 +543,7 @@ api_dbg_attach_k(lua_State *L, int status, lua_KContext ctx)
 		 * requested there can never be committed. See preempt_hook.
 		 */
 		err = "proc is under sys.set_torture";
-	else if (p->status == DEAD)
+	else if (KSTAT_GET(p->status) == DEAD)
 		err = "proc is dead";
 	if (err) {
 		proc_thaw(p);
@@ -685,9 +688,9 @@ api_dbg_cont_k(lua_State *L, int status, lua_KContext ctx)
 
 	const char *err = dbg_acting(L, p);
 
-	if (!err && p->status == BROKE)
+	if (!err && KSTAT_GET(p->status) == BROKE)
 		err = "proc is broke: a corpse can be read, not resumed";
-	if (!err && p->status != STOPPED)
+	if (!err && KSTAT_GET(p->status) != STOPPED)
 		err = "proc is not stopped";
 	if (err) {
 		proc_thaw(p);
@@ -766,7 +769,7 @@ api_dbg_detach_k(lua_State *L, int status, lua_KContext ctx)
 		return luaL_error(L, "no right to debug proc %d", p->id);
 	}
 
-	int wake = p->dbg && p->status == STOPPED;
+	int wake = p->dbg && KSTAT_GET(p->status) == STOPPED;
 
 	dbg_free(p);
 	proc_rearm(p);
@@ -1025,9 +1028,9 @@ api_dbg_step_k(lua_State *L, int status, lua_KContext ctx)
 
 	const char *err = dbg_acting(L, p);
 
-	if (!err && p->status == BROKE)
+	if (!err && KSTAT_GET(p->status) == BROKE)
 		err = "proc is broke: a corpse can be read, not resumed";
-	if (!err && p->status != STOPPED)
+	if (!err && KSTAT_GET(p->status) != STOPPED)
 		err = "proc is not stopped";
 	if (err) {
 		proc_thaw(p);
@@ -1082,9 +1085,9 @@ api_dbg_stop_k(lua_State *L, int status, lua_KContext ctx)
 
 	const char *err = dbg_acting(L, p);
 
-	if (!err && p->status == BROKE)
+	if (!err && KSTAT_GET(p->status) == BROKE)
 		err = "proc is broke";
-	if (!err && p->status == DEAD)
+	if (!err && KSTAT_GET(p->status) == DEAD)
 		err = "proc is dead";
 	if (err) {
 		proc_thaw(p);
@@ -1093,13 +1096,13 @@ api_dbg_stop_k(lua_State *L, int status, lua_KContext ctx)
 
 	struct kdbg *d = p->dbg;
 
-	if (p->status == STOPPED) {
+	if (KSTAT_GET(p->status) == STOPPED) {
 		proc_thaw(p);
 		lua_pushboolean(L, 1);
 		return 1;
 	}
 
-	if (p->status == BLOCKED) {
+	if (KSTAT_GET(p->status) == BLOCKED) {
 		/* nothing to interrupt: park it here. Waiters stay linked
 		 * and messages stay queued; the block continuation
 		 * re-polls on continue.
@@ -1111,10 +1114,12 @@ api_dbg_stop_k(lua_State *L, int status, lua_KContext ctx)
 		d->stopbp = 0;
 		atomic_store_explicit(&d->stopreq, 0, memory_order_relaxed);
 		lock(&schedlock);
-		p->status = STOPPED;
+		KSTAT_SET(p->status, STOPPED);
 		unlock(&schedlock);
+		/* release: the stop fields above are read by whichever cpu's
+		 * sweep takes this. */
 		atomic_store_explicit(&d->notify, DBG_REQ,
-		    memory_order_relaxed);
+		    memory_order_release);
 		proc_thaw(p);
 		lua_pushboolean(L, 1);
 		return 1;

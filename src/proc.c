@@ -111,7 +111,7 @@ find_proc(int pid)
 	IPC_ASSERT_LOCKED();
 	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
 	    memory_order_acquire); i < n_; i++)
-		if (procv[i] && procv[i]->status != DEAD &&
+		if (procv[i] && KSTAT_GET(procv[i]->status) != DEAD &&
 		    procv[i]->id == pid)
 			return procv[i];
 	return 0;
@@ -1170,7 +1170,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lock(&schedlock);
 	for (int i = 0; i < MAXPROCS; i++) {
-		if (procv[i] && (procv[i]->status != DEAD || procv[i]->oncpu))
+		if (procv[i] && (KSTAT_GET(procv[i]->status) != DEAD || procv[i]->oncpu))
 			continue;
 		if (!procv[i]) {
 			struct kproc *np = malloc(sizeof *np);
@@ -1549,7 +1549,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	p->priv = priv;
 	p->mem_limit = mem_limit;
 	p->port_limit = port_limit;
-	p->weight = 1;
+	KSTAT_SET(p->weight, 1);
 	atomic_store_explicit(&p->cputime, 0, memory_order_relaxed);
 	p->cpu = 0;
 	p->pri = 0;
@@ -1569,7 +1569,7 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * second cpu that dispatches it inside that window resumes a
 	 * half-built proc and races the creator for its stack.
 	 */
-	p->status = HATCHING;
+	KSTAT_SET(p->status, HATCHING);
 	atomic_fetch_add_explicit(&nlive, 1, memory_order_relaxed);
 	return p->id;
 }
@@ -1776,7 +1776,7 @@ proc_kill(struct kproc *p, const char *why)
 
 	ipclock_enter();
 	proc_detach(p, why, reason, 0);
-	p->status = DEAD;
+	KSTAT_SET(p->status, DEAD);
 	ipclock_leave();
 }
 
@@ -1791,7 +1791,7 @@ proc_reap(struct kproc *p)
 	 */
 	ipclock_enter();
 	lock(&schedlock);
-	if (p->status != BROKE || p->reaping) {
+	if (KSTAT_GET(p->status) != BROKE || p->reaping) {
 		unlock(&schedlock);
 		ipclock_leave();
 		return;
@@ -1812,7 +1812,7 @@ proc_reap(struct kproc *p)
 	 */
 	proc_freestate(p);
 	ipclock_enter();
-	p->status = DEAD;
+	KSTAT_SET(p->status, DEAD);
 	p->reaping = 0;
 	ipclock_leave();
 }
@@ -1835,7 +1835,7 @@ proc_break(struct kproc *p, const char *why)
 	    memory_order_acquire); i < n_; i++) {
 		struct kproc *q = procv[i];
 
-		if (!q || q->status != BROKE)
+		if (!q || KSTAT_GET(q->status) != BROKE)
 			continue;
 		n++;
 		if (!oldest || q->brokeseq < oldest->brokeseq)
@@ -1850,7 +1850,7 @@ proc_break(struct kproc *p, const char *why)
 
 	ipclock_enter();
 	proc_detach(p, why, reason, 1);
-	p->status = BROKE;
+	KSTAT_SET(p->status, BROKE);
 	p->brokeseq = ++brokeseq;
 	ipclock_leave();
 }
@@ -1877,7 +1877,7 @@ kmem_victim(void)
 
 		if (!p || !p->expendable)
 			continue;
-		if (p->status == DEAD || p->status == BROKE)
+		if (KSTAT_GET(p->status) == DEAD || KSTAT_GET(p->status) == BROKE)
 			continue;
 		if (!worst || KSTAT_GET(p->mem_used) > KSTAT_GET(worst->mem_used))
 			worst = p;
@@ -1919,7 +1919,7 @@ proc_heaps_release(void)
 		 * on finding it already in hand.
 		 */
 		if (!p || !p->heap || p->frozen ||
-		    (!mine && (p->oncpu || p->status != BLOCKED || p->onq))) {
+		    (!mine && (p->oncpu || KSTAT_GET(p->status) != BLOCKED || p->onq))) {
 			unlock(&schedlock);
 			ipclock_leave();
 			continue;
@@ -1937,7 +1937,7 @@ proc_heaps_release(void)
 		if (!mine) {
 			lock(&schedlock);
 			p->oncpu = 0;
-			if (p->status == READY && !p->onq)
+			if (KSTAT_GET(p->status) == READY && !p->onq)
 				rq_add(donq, p);
 			unlock(&schedlock);
 		}

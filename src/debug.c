@@ -353,7 +353,11 @@ dbg_arm_stop(struct kdbg *d, lua_State *L, lua_Debug *ar, int reason, int bp)
 	d->step = STEP_NONE;
 	d->stepco = 0;
 	atomic_store_explicit(&d->stopreq, 0, memory_order_relaxed);
-	atomic_store_explicit(&d->pending, reason, memory_order_relaxed);
+	/* release, and the fields above are why: dbg_commit picks this up
+	 * and republishes it as notify, which is what another cpu's sweep
+	 * reads the stop fields behind.
+	 */
+	atomic_store_explicit(&d->pending, reason, memory_order_release);
 }
 
 int

@@ -165,7 +165,12 @@ struct waiter {
 };
 
 struct kproc {
-	int status;
+	/* READY, BLOCKED, HATCHING, STOPPED, BROKE, DEAD. Written under
+	 * schedlock or ipclock, whichever covers the decision it is part
+	 * of; atomic because sys.procs, sys.wchan, sys.kill and the
+	 * sweeps read it holding neither. See kstat.h.
+	 */
+	atomic_int status;
 	int id;			/* unique forever; slots are reused, ids not */
 	lua_State *L;		/* owning state */
 	lua_State *co;		/* thread the chunk runs on */
@@ -311,7 +316,11 @@ struct kproc {
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
 	int exiting;		/* sys.exit(); the dispatch loop ends it */
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */
-	int weight;		/* WRR share, 1..MAXWEIGHT, see sys.set_priority */
+	/* WRR share, 1..MAXWEIGHT, see sys.set_priority. Atomic because
+	 * run_proc reads it as the bound of its resume loop, holding
+	 * nothing, on whichever cpu has the proc.
+	 */
+	atomic_int weight;
 	int priv;		/* PRIV_*; only PRIV_BOOT keeps raw file access */
 	/* may be killed to reclaim memory. A property of the proc, given
 	 * at spawn by whoever knows it is expendable -- dio does, for the
