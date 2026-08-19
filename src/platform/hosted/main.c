@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "blk.h"
@@ -36,6 +37,7 @@ usage(const char *argv0)
 	    "  -d image     a file to serve as this machine's disk\n"
 	    "  -n addr      the nameserver to ask (default: the host's)\n"
 	    "  -s path      the services list, in the root\n"
+	    "  -c dir       the writable volume served at /config\n"
 	    "  --no-host-fs boot the tree built into this binary, not a\n"
 	    "               directory: the machine carries its own root\n"
 	    "  --gui        open a framebuffer window (1024x768)\n"
@@ -50,7 +52,7 @@ usage(const char *argv0)
 static const char *
 parse_args(int argc, char **argv, const char **root, int *writable,
     unsigned long *mb, const char **disk, const char **dns,
-    const char **services)
+    const char **services, const char **config)
 {
 	const char *payload = "/init.lua";
 
@@ -73,6 +75,8 @@ parse_args(int argc, char **argv, const char **root, int *writable,
 			*dns = argv[++i];
 		else if (strcmp(a, "-s") == 0 && i + 1 < argc)
 			*services = argv[++i];
+		else if (strcmp(a, "-c") == 0 && i + 1 < argc)
+			*config = argv[++i];
 		else if (strcmp(a, "--gui") == 0)
 			hosted_display = HOSTED_GUI;
 		else if (strcmp(a, "-g") == 0 && i + 1 < argc) {
@@ -197,9 +201,29 @@ main(int argc, char **argv)
 	const char *disk = NULL;
 	const char *dns = NULL;
 	const char *services = "/machine/hosted/services.lua";
+	const char *config = NULL;
 	const char *payload = parse_args(argc, argv, &root, &writable, &mb,
-	    &disk, &dns, &services);
-	char line[256];
+	    &disk, &dns, &services, &config);
+	char confbuf[512];
+	char line[640];
+
+	/* the machine's own state, which belongs with the host's other
+	 * per-user state rather than in the tree being served. Read before
+	 * clearenv, like the resolver.
+	 */
+	if (!config) {
+		const char *state = getenv("XDG_STATE_HOME");
+		const char *home = getenv("HOME");
+
+		if (state && *state)
+			snprintf(confbuf, sizeof confbuf, "%s/lua-os", state);
+		else if (home && *home)
+			snprintf(confbuf, sizeof confbuf,
+			    "%s/.local/state/lua-os", home);
+		else
+			snprintf(confbuf, sizeof confbuf, "./luaos-config");
+		config = confbuf;
+	}
 
 	if (mb == 0)
 		usage(argv[0]);
@@ -239,6 +263,13 @@ main(int argc, char **argv)
 		snprintf(line, sizeof line, "root: the built-in tree");
 	kernel_log(line);
 	snprintf(line, sizeof line, "mem: %luM", mb);
+	kernel_log(line);
+
+	if (fs_config(config) != 0)
+		snprintf(line, sizeof line,
+		    "config: %s cannot be made; no writable volume", config);
+	else
+		snprintf(line, sizeof line, "config: %s", config);
 	kernel_log(line);
 
 	/* before kernel_init: platform_have_blk decides whether blksrv is

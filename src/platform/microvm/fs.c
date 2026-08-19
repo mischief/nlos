@@ -185,3 +185,12 @@ fs_stat(void *f, struct fs_dirent *ent)
 	ent->isdir = 0;
 	return 0;
 }
+
+/* no directories here: this file source hands out what it was given at
+ * build time, or what the firmware already holds. */
+int
+fs_mkdir(const char *path)
+{
+	(void)path;
+	return -1;
+}

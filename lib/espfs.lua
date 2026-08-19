@@ -153,12 +153,27 @@ function M.new(root)
 	-- mode does both, so this is also where the disk capability is
 	-- checked -- a proc without it gets nil plus a message here rather
 	-- than a half-made file.
-	function B.create(h, name, mode)
+	function B.create(h, name, mode, isdir)
 		if not h.dir then
 			err(dev.Enotdir)
 		end
 
 		local path = join(h.path, name)
+
+		-- a directory is a different call, and a source that has
+		-- none says so: without this the name became an empty file
+		-- and the next walk into it failed as "not a directory",
+		-- which reads as a broken path rather than a refusal.
+		if isdir then
+			if not fs.mkdir then
+				err(dev.Eperm)
+			end
+			if not fs.mkdir(path) then
+				err(dev.Eperm)
+			end
+			return dev.closable(B, h_of(path, true))
+		end
+
 		local f = fs.open(path, "w")
 
 		if not f then

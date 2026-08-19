@@ -11,6 +11,7 @@ struct fs_dirent {
 };
 
 int	fs_init(void);
+int	fs_mkdir(const char *path);	/* -1 where the source is read-only */
 void	*fs_open(const char *path, int write);
 long	fs_read(void *f, void *buf, long n);
 long	fs_write(void *f, const void *buf, long n);

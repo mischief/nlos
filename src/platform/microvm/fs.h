@@ -19,6 +19,7 @@ int	fs_init(void);
 
 /* the embedded set as bytes rather than as a handle; see fs.c. */
 int	embed_load(const char *path, char **buf, size_t *len);
+int	fs_mkdir(const char *path);	/* -1 where the source is read-only */
 void	*fs_open(const char *path, int write);
 long	fs_read(void *f, void *buf, long n);
 long	fs_write(void *f, const void *buf, long n);

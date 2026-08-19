@@ -215,3 +215,12 @@ fs_stat(void *vf, struct fs_dirent *ent)
 	ent->isdir = (fi->Attribute & EFI_FILE_DIRECTORY) != 0;
 	return 0;
 }
+
+/* no directories here: this file source hands out what it was given at
+ * build time, or what the firmware already holds. */
+int
+fs_mkdir(const char *path)
+{
+	(void)path;
+	return -1;
+}

@@ -26,6 +26,18 @@ int	fs_init(const char *root, int writable);
  */
 int	fs_embedded(void);
 
+/* the writable volume served at /config, made if it is not there. It is
+ * writable whatever the root is: keys and known hosts are the machine's
+ * own state, not part of the tree it runs.
+ */
+int	fs_config(const char *dir);
+int	fs_writable(const char *path);
+
+/* make a directory. fs_open cannot: it opens one thing, and a caller
+ * asking for a directory wants the other. 0 on success, and on a
+ * directory that is already there. */
+int	fs_mkdir(const char *path);
+
 /* the guest path resolved against the root, into `buf`. Public so the
  * fopen wrapper can route luaL_loadfile the same way.
  */

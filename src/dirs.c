@@ -156,6 +156,29 @@ openfile(lua_State *L)
  * fopen's is and for the same reason (see libc/stdio.c): a stray read
  * cannot corrupt a future boot, a runaway write can.
  */
+/* los.fs.mkdir(path) -> true | nil, err. Gated on the disk capability
+ * exactly as write is. A platform whose fs_mkdir refuses everything
+ * says so here, rather than leaving a caller to find an empty file
+ * where it asked for a directory. */
+static int
+l_fs_mkdir(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+
+	if (!kernel_current_has_disk()) {
+		lua_pushnil(L);
+		lua_pushstring(L, "permission denied");
+		return 2;
+	}
+	if (fs_mkdir(path) != 0) {
+		lua_pushnil(L);
+		lua_pushfstring(L, "cannot make %s", path);
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static int
 l_fs_open(lua_State *L)
 {
@@ -273,6 +296,7 @@ static const luaL_Reg fslib[] = {
 	{ "readdir", l_fs_readdir },
 	{ "stat", l_fs_stat },
 	{ "open", l_fs_open },
+	{ "mkdir", l_fs_mkdir },
 	{ NULL, NULL }
 };
 
