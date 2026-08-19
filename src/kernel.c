@@ -1202,6 +1202,20 @@ run_proc(struct kproc *p)
  */
 #define QUIET_SWEEP_LAPS 100
 
+/* dispatches by every cpu, which is what "quiet" has to mean: only the
+ * boot cpu sweeps, and on its own it cannot tell a still machine from
+ * one whose work is all happening on the others.
+ */
+static unsigned long long
+total_dispatch(void)
+{
+	unsigned long long n = 0;
+
+	for (unsigned i = 0; cpu_at(i); i++)
+		n += KSTAT_GET(cpu_at(i)->ndispatch);
+	return n;
+}
+
 /* how long a proc must sit parked before its collector is run where it
  * lies, and the floor under that in quanta. An rpc takes more than one
  * lap and sometimes more than one round trip, so the wait has to clear
@@ -1542,6 +1556,7 @@ kernel_run(void)
 	int idle_polls = 0;
 	int tick_slow = 0;
 	int quiet_laps = 0, swept = 0;
+	unsigned long long last_dispatch = 0;
 	unsigned long long last_watchdog_ms = 0;
 
 	/* periodic timer: idle becomes a real firmware sleep (hlt)
@@ -1665,13 +1680,16 @@ kernel_run(void)
 		 * Once per spell, since the sweep walks the free lists and
 		 * would find nothing twice.
 		 */
-		if (ran) {
+		unsigned long long disp = total_dispatch();
+
+		if (ran || disp != last_dispatch) {
 			quiet_laps = 0;
 			swept = 0;
 		} else if (!swept && ++quiet_laps >= QUIET_SWEEP_LAPS) {
 			swept = 1;
 			proc_heaps_release();
 		}
+		last_dispatch = disp;
 
 		if (!ran) {
 			/* everyone blocked: sleep until a key, a frame, or
