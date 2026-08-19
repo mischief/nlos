@@ -94,6 +94,22 @@ static int altready(lua_State *L, struct kproc *p);
 static int alt_take(lua_State *L, struct kproc *p, int wake);
 static int alt_hup(lua_State *L, struct kproc *p, int n);
 
+/* sys.alt's case fields, kept on the stack so the region can read them
+ * without allocating. The cases are at 1 and wake at 2.
+ */
+#define ALT_KPORT	3
+#define ALT_KSEND	4
+#define ALT_KHUP	5
+
+static void
+altkeys(lua_State *L)
+{
+	lua_settop(L, 2);
+	lua_pushliteral(L, "port");
+	lua_pushliteral(L, "send");
+	lua_pushliteral(L, "hup");
+}
+
 /* the tail of api_alt, after the proc has been woken. Nothing is a
  * legal answer and means "go round again": another proc may have taken
  * what woke this one, and a hangup wakes every waiter.
@@ -102,21 +118,20 @@ static int
 alt_k(lua_State *L, int status, lua_KContext ctx)
 {
 	struct kproc *p = self(L);
-	int got, n = 0;
-	int wanthup = lua_toboolean(L, 3);
-	int wake = lua_toboolean(L, 4);
+	int got, n;
+	int wake = lua_toboolean(L, 2);
 
 	(void)status;
 	(void)ctx;
+	altkeys(L);			/* allocates; before the region */
 	luaL_checkstack(L, 4, "alt");
 
 	/* outside the region, since luaL_len can raise */
-	if (wanthup)
-		n = (int)luaL_len(L, 1);
+	n = (int)luaL_len(L, 1);
 
 	ipclock_enter();
 	got = alt_take(L, p, wake);
-	if (!got && wanthup)
+	if (!got)
 		got = alt_hup(L, p, n);
 	ipclock_leave();
 
@@ -125,25 +140,71 @@ alt_k(lua_State *L, int status, lua_KContext ctx)
 	return got;
 }
 
-/* an alt set may carry send waits as well as receive waits: sends[i] is
- * the size entry i wants room for, and anything else makes entry i an
- * ordinary receive. A parallel table rather than a box per entry, so
- * the common all-receive call passes nothing extra and builds no
- * garbage. -1 means "not a send wait", since a send of zero bytes is a
- * real question.
+/* one field of one case, pushed. Raw and by a key already on the stack,
+ * because this runs inside the ipc region: lua_getfield can call a
+ * metamethod and lua_pushstring can allocate, and neither may happen
+ * with a bucket held. altkeys puts the three keys at ALT_K* before the
+ * region opens.
+ */
+static void
+altfield(lua_State *L, int i, int key)
+{
+	lua_rawgeti(L, 1, i);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 1);
+		lua_pushnil(L);
+		return;
+	}
+	lua_pushvalue(L, key);
+	lua_rawget(L, -2);
+	lua_remove(L, -2);
+}
+
+/* the handle case i waits on, or -1 for a case that is not a table or
+ * names no port. Reported as an outcome rather than raised, since the
+ * callers are inside the region.
+ */
+static lua_Integer
+althandle(lua_State *L, int i)
+{
+	lua_Integer h = -1;
+	int isnum = 0;
+
+	altfield(L, i, ALT_KPORT);
+	h = lua_tointegerx(L, -1, &isnum);
+	lua_pop(L, 1);
+	return isnum ? h : -1;
+}
+
+/* how much room case i wants, or -1 where it is an ordinary receive. A
+ * send of zero bytes is a real question, so absence cannot be zero.
  */
 static lua_Integer
 altneed(lua_State *L, int i)
 {
 	lua_Integer need = -1;
 
-	if (!lua_istable(L, 2))
-		return -1;
-	lua_rawgeti(L, 2, i);
+	altfield(L, i, ALT_KSEND);
 	if (lua_isinteger(L, -1))
 		need = lua_tointeger(L, -1);
 	lua_pop(L, 1);
 	return need < 0 ? -1 : need;
+}
+
+/* does case i want a hangup reported? Per case, because one thread
+ * awaiting an end must not make a hangup of the port another is merely
+ * waiting on -- thread.recvtimeout waits on a port nobody else holds
+ * every time it waits on a silent one.
+ */
+static int
+althup(lua_State *L, int i)
+{
+	int want;
+
+	altfield(L, i, ALT_KHUP);
+	want = lua_toboolean(L, -1);
+	lua_pop(L, 1);
+	return want;
 }
 
 /* which entry of the handle table at stack index 1 is ready, or 0 for
@@ -164,11 +225,8 @@ altready(lua_State *L, struct kproc *p)
 	int n = (int)luaL_len(L, 1);
 
 	for (int i = 1; i <= n; i++) {
-		lua_rawgeti(L, 1, i);
+		struct right *r = right_get(p, (int)althandle(L, i));
 
-		struct right *r = right_get(p, (int)lua_tointeger(L, -1));
-
-		lua_pop(L, 1);
 		if (!r)
 			continue;
 
@@ -180,7 +238,7 @@ altready(lua_State *L, struct kproc *p)
 			 * itself is what should report it.
 			 */
 			if (r->port->dead ||
-			    r->port->qbytes + (size_t)need <= MAXQUEUE)
+			    KSTAT_GET(r->port->qbytes) + (size_t)need <= MAXQUEUE)
 				return i;
 		} else if (r->recv && atomic_load_explicit(&r->port->head, memory_order_relaxed)) {
 			return i;
@@ -202,11 +260,8 @@ altready(lua_State *L, struct kproc *p)
 static int
 alt_take_at(lua_State *L, struct kproc *p, int i)
 {
-	lua_rawgeti(L, 1, i);
+	struct right *r = right_get(p, (int)althandle(L, i));
 
-	struct right *r = right_get(p, (int)lua_tointeger(L, -1));
-
-	lua_pop(L, 1);
 	if (!r || !r->recv || !atomic_load_explicit(&r->port->head, memory_order_relaxed))
 		return 0;	/* cannot happen today; see the note above */
 	lua_pushinteger(L, i);
@@ -270,9 +325,9 @@ alt_hup(lua_State *L, struct kproc *p, int n)
 	for (int i = 1; i <= n; i++) {
 		struct right *r;
 
-		lua_rawgeti(L, 1, i);
-		r = right_get(p, (int)lua_tointeger(L, -1));
-		lua_pop(L, 1);
+		if (!althup(L, i))
+			continue;
+		r = right_get(p, (int)althandle(L, i));
 		/* a port with something queued is not finished, however
 		 * few rights are left: the take above just found nothing
 		 * on it, so this is only about who can still send. A send
@@ -292,27 +347,27 @@ alt_hup(lua_State *L, struct kproc *p, int n)
 	return 0;
 }
 
-/* sys.alt(set [, sends [, wanthup [, wake]]]) -> i, msg, why | nothing.
- *
- * An entry is a receive wait unless sends[i] gives a size, in which
- * case it waits for room. wake names the ready entry and takes
- * nothing, for a caller that hands the port to somebody else to read.
+/* sys.alt(cases [, wake]) -> i, msg, why | nothing. One array of cases,
+ * as plan 9's Alt and Go's select take. Case i is { port = h }, plus
+ * send = n to wait for room, plus hup = true to be told when the port's
+ * last other holder goes. wake names the ready case and takes nothing,
+ * for a caller handing the port to a reader.
  */
 static int
 api_alt(lua_State *L)
 {
 	struct kproc *p = self(L);
 
-	int n, got, wanthup, wake;
+	int n, got, wake;
 
 	nopark(L, p);
 
 	luaL_checktype(L, 1, LUA_TTABLE);
 	n = (int)luaL_len(L, 1);
 	if (n < 1)
-		return luaL_error(L, "alt: need at least one port");
-	wanthup = lua_toboolean(L, 3);
-	wake = lua_toboolean(L, 4);
+		return luaL_error(L, "alt: need at least one case");
+	wake = lua_toboolean(L, 2);
+	altkeys(L);				/* allocates; before the region */
 	luaL_checkstack(L, 4, "alt");		/* raises; before the region */
 
 	/* one region: a message arriving after the take failed but during
@@ -331,7 +386,7 @@ api_alt(lua_State *L)
 	 * once the last sender has gone would otherwise wait for a wake
 	 * that has already happened.
 	 */
-	if (!got && wanthup)
+	if (!got)
 		got = alt_hup(L, p, n);
 
 	if (got) {
@@ -341,31 +396,20 @@ api_alt(lua_State *L)
 		return got;
 	}
 
-	/* the whole scan is one region. The loop adds a waiter to each
-	 * port as it goes, so a sender to the first could wake this proc
-	 * and clear its waiters while the loop is still adding more --
-	 * leaving it asleep, already woken, with its message on a port it
-	 * no longer waits on. A hang, not a wrong answer.
-	 *
-	 * Nothing that raises may run in here, so a handle is read with
-	 * lua_tointegerx and a bad one is reported below as an outcome.
+	/* the whole scan is one region: the loop adds a waiter to each
+	 * port as it goes, and a sender to the first could otherwise wake
+	 * this proc and clear its waiters mid-loop, leaving it asleep,
+	 * already woken, with its message on a port it no longer waits on.
+	 * Nothing raises in here, so a bad case is an outcome below.
 	 */
 	wait_clear(p);
 	for (int i = 1; i <= n; i++) {
-		int isnum = 0;
-		lua_Integer h;
-		struct right *r;
-
-		lua_rawgeti(L, 1, i);
-		h = lua_tointegerx(L, -1, &isnum);
-		lua_pop(L, 1);
-		/* raise-free, so it may run in here: rawgeti and a type
-		 * test, nothing that allocates or calls a metamethod.
-		 */
+		lua_Integer h = althandle(L, i);
 		lua_Integer need = altneed(L, i);
 		int send = need >= 0;
+		struct right *r;
 
-		if (!isnum) {
+		if (h < 0) {
 			wait_clear(p);
 			ipclock_leave();
 			return luaL_error(L, "alt: bad receive right");
@@ -386,7 +430,7 @@ api_alt(lua_State *L)
 		 * reason alt_take does not report one: it goes stale.
 		 */
 		if (send && (r->port->dead ||
-		    r->port->qbytes + (size_t)need <= MAXQUEUE)) {
+		    KSTAT_GET(r->port->qbytes) + (size_t)need <= MAXQUEUE)) {
 			wait_clear(p);
 			ipclock_leave();
 			lua_pushinteger(L, i);
@@ -1166,11 +1210,11 @@ api_ports(lua_State *L)
 		lua_setfield(L, -2, "recv");
 		lua_pushboolean(L, port->dead);
 		lua_setfield(L, -2, "dead");
-		lua_pushinteger(L, (lua_Integer)port->qbytes);
+		lua_pushinteger(L, (lua_Integer)KSTAT_GET(port->qbytes));
 		lua_setfield(L, -2, "qbytes");
-		lua_pushinteger(L, (lua_Integer)port->qpeak);
+		lua_pushinteger(L, (lua_Integer)KSTAT_GET(port->qpeak));
 		lua_setfield(L, -2, "qpeak");
-		lua_pushinteger(L, (lua_Integer)port->nsent);
+		lua_pushinteger(L, (lua_Integer)KSTAT_GET(port->nsent));
 		lua_setfield(L, -2, "sent");
 		lua_pushinteger(L, (lua_Integer)port->ndrop_full);
 		lua_setfield(L, -2, "dropfull");
@@ -1405,7 +1449,7 @@ api_sendblock(lua_State *L)
 		rc = DONTSLEEP;		/* never drains; let the send say so */
 	else if ((size_t)need > MAXQUEUE)
 		rc = DONTSLEEP;		/* can never fit; same */
-	else if (r->port->qbytes + (size_t)need <= MAXQUEUE)
+	else if (KSTAT_GET(r->port->qbytes) + (size_t)need <= MAXQUEUE)
 		rc = DONTSLEEP;		/* room already */
 	else if (!wait_add(p, r->port, 1))
 		rc = NOWAIT;

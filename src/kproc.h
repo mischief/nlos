@@ -104,7 +104,7 @@ struct kport {
 	atomic_int nrights;
 	atomic_int nrecv;
 	int dead;	/* no receive right left; sends are dropped */
-	size_t qbytes;	/* queued payload, against MAXQUEUE */
+	atomic_size_t qbytes;	/* queued payload, against MAXQUEUE */
 	/* head is atomic and tail is not: sys.anyready probes it with no
 	 * lock, being the cheap "is a sweep worth doing" question a
 	 * running proc asks every round. Writers hold the port's bucket,
@@ -118,10 +118,10 @@ struct kport {
 	 * slow reader, against a receive right closed mid-send. qpeak
 	 * because a queue is rarely sampled at its worst moment.
 	 */
-	unsigned long long nsent;
+	atomic_ullong nsent;
 	unsigned long long ndrop_full;
 	unsigned long long ndrop_dead;
-	size_t qpeak;
+	atomic_size_t qpeak;
 
 	/* who made it and where, so sys.ports() can name the call site
 	 * behind a leak. inline and short because a lua string would have

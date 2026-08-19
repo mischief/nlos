@@ -890,7 +890,7 @@ end
 function M.main()
 	-- sys.alt, not thread.recv: every program does this one receive,
 	-- and it must not be what loads the thread module.
-	local _, ctx = sys.alt({ sys.SELF })
+	local _, ctx = sys.alt({ { port = sys.SELF } })
 
 	-- stdinpull is a TOP-LEVEL field, not one inside stdin: a table
 	-- carrying __right serializes to the right alone and drops its
