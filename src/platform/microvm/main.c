@@ -156,21 +156,21 @@ microvm_main(unsigned long start_info)
 	kernel_clock_init();
 
 	if (fs_init() != 0)
-		kernel_log("boot: fs_init FAILED (unexpected: embed has no failure mode)");
+		kernel_say("boot: fs_init FAILED (unexpected: embed has no failure mode)");
 
 	char cbuf[96];
 
-	kernel_log("boot: lua-os starting (microvm)");
+	kernel_say("boot: lua-os starting (microvm)");
 	snprintf(cbuf, sizeof cbuf, "clock: %llu cycles/ms (%s)",
 	    kernel_cyc_per_ms(), tsc_source());
-	kernel_log(cbuf);
+	kernel_say(cbuf);
 
 	/* an uncalibrated clock is wrong by a constant factor, which
 	 * nothing inside the guest can measure, so say so here or it goes
 	 * unnoticed until a timeout somewhere fires at the wrong length.
 	 */
 	if (tsc_hz() == 1000000000ULL)
-		kernel_log("clock: WARNING no frequency source answered; "
+		kernel_say("clock: WARNING no frequency source answered; "
 		    "every timeout in the system is suspect");
 
 	{
@@ -180,11 +180,11 @@ microvm_main(unsigned long start_info)
 		snprintf(cbuf, sizeof cbuf,
 		    "mem: %lluK total, %lluK available",
 		    total / 1024, avail / 1024);
-		kernel_log(cbuf);
+		kernel_say(cbuf);
 	}
 
 	if (kernel_init() != 0) {
-		kernel_log("boot: kernel_init FAILED");
+		kernel_say("boot: kernel_init FAILED");
 		machine_reset();
 	}
 
@@ -192,21 +192,21 @@ microvm_main(unsigned long start_info)
 	size_t testlen;
 
 	if (fwcfg_load("opt/org.luaos.test", &testbuf, &testlen) == 0) {
-		kernel_log("boot: running fw_cfg boot payload");
+		kernel_say("boot: running fw_cfg boot payload");
 		if (kernel_spawn_buffer(testbuf, testlen) < 0) {
-			kernel_log("boot: FAILED to spawn boot payload");
+			kernel_say("boot: FAILED to spawn boot payload");
 			machine_reset();
 		}
 		free(testbuf);
 	} else if (embed_load(BOOT_PAYLOAD, &testbuf, &testlen) == 0) {
-		kernel_log("boot: no fw_cfg payload; running " BOOT_PAYLOAD);
+		kernel_say("boot: no fw_cfg payload; running " BOOT_PAYLOAD);
 		if (kernel_spawn_buffer(testbuf, testlen) < 0) {
-			kernel_log("boot: FAILED to spawn boot payload");
+			kernel_say("boot: FAILED to spawn boot payload");
 			machine_reset();
 		}
 		free(testbuf);
 	} else {
-		kernel_log("boot: no fw_cfg payload and no embedded one -- nothing to run");
+		kernel_say("boot: no fw_cfg payload and no embedded one -- nothing to run");
 		machine_reset();
 	}
 
@@ -225,6 +225,6 @@ microvm_main(unsigned long start_info)
 
 	kernel_run();
 
-	kernel_log("boot: halted (every proc exited)");
+	kernel_say("boot: halted (every proc exited)");
 	machine_reset();
 }

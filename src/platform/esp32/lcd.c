@@ -189,7 +189,7 @@ waitone(const char *who)
 	    "lcd: %s: no completion in %dms, inflight=%d count=%d "
 	    "refused=%d peak=%d", who, WAITMS, inflight,
 	    (int)uxSemaphoreGetCount(sent), refused, peakinflight);
-	kernel_log(msg);
+	kernel_say(msg);
 	inflight = 0;
 	return -1;
 }
@@ -261,7 +261,7 @@ sendband(int x, int y, int w, int h, const uint16_t *px)
 		snprintf(msg, sizeof msg,
 		    "lcd: a completion was refused: refused=%d peak=%d",
 		    refused, peakinflight);
-		kernel_log(msg);
+		kernel_say(msg);
 	}
 	return 0;
 }

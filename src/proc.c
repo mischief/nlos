@@ -609,7 +609,7 @@ kernel_warn(void *ud, const char *msg, int tocont)
 	(void)tocont;
 	snprintf(b, sizeof b, "lua: %s: %s",
 	    p && p->name[0] ? p->name : "?", msg);
-	kernel_log(b);
+	kernel_say(b);
 }
 
 /* one collector step, called through lua_pcall. The protection is not
@@ -653,7 +653,7 @@ gc_protected(struct kproc *p, lua_State *L, size_t kb)
 
 		snprintf(b, sizeof b, "lua: %s: gc: %s", p->name,
 		    e ? e : "?");
-		kernel_log(b);
+		kernel_say(b);
 		lua_pop(L, 1);
 	}
 }
@@ -1707,6 +1707,11 @@ proc_logdeath(struct kproc *p, const char *why, char *reason, size_t n)
 {
 	char buf[256];
 
+	/* an ordinary exit is kept and not shown. This write is
+	 * synchronous where a proc's own output goes through a port, so
+	 * showing it puts it ahead of what the program already wrote and
+	 * that output reads as lost. A death still says: it is news.
+	 */
 	if (!why) {
 		reason[0] = '\0';
 		snprintf(buf, sizeof buf, "proc %d (%s) exited", p->id,
@@ -1717,7 +1722,7 @@ proc_logdeath(struct kproc *p, const char *why, char *reason, size_t n)
 	snprintf(reason, n, "%s", why);
 	snprintf(buf, sizeof buf, "proc %d (%s) died: %s", p->id, p->name,
 	    reason);
-	kernel_log(buf);
+	kernel_say(buf);
 }
 
 void

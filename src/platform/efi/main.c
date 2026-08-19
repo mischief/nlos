@@ -35,10 +35,10 @@ efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 
 	char cbuf[96];
 
-	kernel_log("boot: lua-os starting");
+	kernel_say("boot: lua-os starting");
 	snprintf(cbuf, sizeof cbuf, "clock: %llu cycles/ms (100ms calibration)",
 	    kernel_cyc_per_ms());
-	kernel_log(cbuf);
+	kernel_say(cbuf);
 
 	{
 		unsigned long long total = 0, avail = 0;
@@ -47,16 +47,16 @@ efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 		snprintf(cbuf, sizeof cbuf,
 		    "mem: %lluK total, %lluK available",
 		    total / 1024, avail / 1024);
-		kernel_log(cbuf);
+		kernel_say(cbuf);
 	}
 
 	if (fs_init() != 0)
-		kernel_log("boot: no filesystem on boot volume");
+		kernel_say("boot: no filesystem on boot volume");
 
 	uart_takeover();	/* wrest the wire port from the firmware before we poll it */
 
 	if (kernel_init() != 0) {
-		kernel_log("boot: kernel_init FAILED");
+		kernel_say("boot: kernel_init FAILED");
 		goto out;
 	}
 	/* test harness: a payload injected via qemu fw_cfg replaces
@@ -66,20 +66,20 @@ efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	size_t testlen;
 
 	if (fwcfg_load("opt/org.luaos.test", &testbuf, &testlen) == 0) {
-		kernel_log("boot: running fw_cfg test payload");
+		kernel_say("boot: running fw_cfg test payload");
 		if (kernel_spawn_buffer(testbuf, testlen) < 0) {
-			kernel_log("boot: FAILED to spawn test payload");
+			kernel_say("boot: FAILED to spawn test payload");
 			goto out;
 		}
 		free(testbuf);
 	} else if (kernel_spawn_file("/init.lua") < 0) {
-		kernel_log("boot: FAILED to spawn /init.lua");
+		kernel_say("boot: FAILED to spawn /init.lua");
 		goto out;
 	}
 	kernel_run();
 
 out:
-	kernel_log("boot: halted; press any key to exit");
+	kernel_say("boot: halted; press any key to exit");
 	while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_NOT_READY)
 		BS->WaitForEvent(1, &ST->ConIn->WaitForKey, &index);
 	return EFI_SUCCESS;

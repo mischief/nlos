@@ -255,34 +255,34 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	kernel_log("boot: lua-os starting (hosted)");
+	kernel_say("boot: lua-os starting (hosted)");
 	if (root)
 		snprintf(line, sizeof line, "root: %s (%s)", root,
 		    writable ? "writable" : "read-only");
 	else
 		snprintf(line, sizeof line, "root: the built-in tree");
-	kernel_log(line);
+	kernel_say(line);
 	snprintf(line, sizeof line, "mem: %luM", mb);
-	kernel_log(line);
+	kernel_say(line);
 
 	if (fs_config(config) != 0)
 		snprintf(line, sizeof line,
 		    "config: %s cannot be made; no writable volume", config);
 	else
 		snprintf(line, sizeof line, "config: %s", config);
-	kernel_log(line);
+	kernel_say(line);
 
 	/* before kernel_init: platform_have_blk decides whether blksrv is
 	 * spawned, and it is asked once, there.
 	 */
 	if (disk) {
 		if (blk_open(disk) != 0)
-			kernel_log("disk: cannot open the image; no device");
+			kernel_say("disk: cannot open the image; no device");
 		else {
 			snprintf(line, sizeof line,
 			    "disk: %s, %llu sectors%s", disk,
 			    blk_capacity(), blk_readonly() ? " (read-only)" : "");
-			kernel_log(line);
+			kernel_say(line);
 		}
 	}
 	/* which services this machine runs. The embedded tree installs the
@@ -299,7 +299,7 @@ main(int argc, char **argv)
 			snprintf(line, sizeof line,
 			    "services: %s is not there; none will start",
 			    services);
-			kernel_log(line);
+			kernel_say(line);
 		}
 	}
 
@@ -308,26 +308,26 @@ main(int argc, char **argv)
 	 * whether a task is spawned at all. */
 	if (hosted_display == HOSTED_GUI) {
 		if (fb_open(guiw, guih) != 0)
-			kernel_log("display: no window; running headless");
+			kernel_say("display: no window; running headless");
 		else {
 			snprintf(line, sizeof line, "display: %dx%d window",
 			    guiw, guih);
-			kernel_log(line);
+			kernel_say(line);
 		}
 	}
 
 	if (kernel_init() != 0) {
-		kernel_log("boot: kernel_init FAILED");
+		kernel_say("boot: kernel_init FAILED");
 		return 1;
 	}
 	if (spawn_payload(payload) < 0) {
 		snprintf(line, sizeof line, "boot: FAILED to spawn %s", payload);
-		kernel_log(line);
+		kernel_say(line);
 		return 1;
 	}
 
 	kernel_run();
-	kernel_log("boot: halted (every proc exited)");
+	kernel_say("boot: halted (every proc exited)");
 	return 0;
 }
 

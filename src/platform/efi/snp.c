@@ -247,7 +247,7 @@ snp_recv(void *buf, size_t cap)
 	 */
 	if (st == EFI_BUFFER_TOO_SMALL) {
 		if (!rx_toosmall++)
-			kernel_log("snp: receive buffer too small; "
+			kernel_say("snp: receive buffer too small; "
 			    "frames are being dropped");
 		return 0;
 	}

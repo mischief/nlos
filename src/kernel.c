@@ -247,18 +247,33 @@ logput(const char *s, size_t n)
  */
 int logmirror = 1;
 
-void
-kernel_log(const char *s)
+static void
+klogfmt(const char *s, int loud)
 {
 	unsigned long long ms = uptime_ms();
 	char buf[320];
 	int n = snprintf(buf, sizeof buf, "[%5llu.%03llu] %s\n", ms / 1000,
 	    ms % 1000, s);
 
-	if (logmirror)
+	if (loud && logmirror)
 		kputs(buf);
 	logput(buf, n < 0 ? 0 : (size_t)n >= sizeof buf ? sizeof buf - 1 :
 	    (size_t)n);
+}
+
+/* the kernel's own halves of sys.log and sys.say, and the same bargain:
+ * log keeps, say keeps and shows.
+ */
+void
+kernel_log(const char *s)
+{
+	klogfmt(s, 0);
+}
+
+void
+kernel_say(const char *s)
+{
+	klogfmt(s, 1);
 }
 
 /* ---- ports and rights ---- */
@@ -740,7 +755,7 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 		snprintf(buf, sizeof buf,
 		    "%s: FAILED to start; %s unavailable this boot",
 		    chunkname + 1, what);
-		kernel_log(buf);
+		kernel_say(buf);
 		return -1;
 	}
 	/* the device right first, then run it: the task cannot do its job
@@ -760,7 +775,7 @@ spawn_driver(const char *path, const char *chunkname, int priv,
 	 * which is exactly when you have not got one.
 	 */
 	snprintf(buf, sizeof buf, "%s: pid %d, %s", chunkname + 1, pid, what);
-	kernel_log(buf);
+	kernel_say(buf);
 	return pid;
 }
 
@@ -917,7 +932,7 @@ spawn_init(const char *code, size_t len, int is_file)
 			snprintf(skip, sizeof skip, "%s: not present, %s "
 			    "unavailable this boot",
 			    drivers[i].chunkname + 1, drivers[i].what);
-			kernel_log(skip);
+			kernel_say(skip);
 			pids[i] = -1;
 			continue;
 		}

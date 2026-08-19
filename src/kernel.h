@@ -21,10 +21,13 @@
 void	kernel_clock_init(void);
 unsigned long long kernel_cyc_per_ms(void);
 
-/* one stamped, newline-terminated diagnostic line. shares its format
- * with lib/log.lua -- change one and change the other.
+/* one stamped, newline-terminated diagnostic line, sharing its format
+ * with lib/log.lua -- change one and change the other. The split is
+ * sys.log and sys.say's: log keeps it in the ring, say keeps it and
+ * writes the console. Boot and driver lines say.
  */
 void	kernel_log(const char *s);
+void	kernel_say(const char *s);
 
 /* 1 while a diagnostic is echoed to the console as well as kept. The
  * console task clears it while the line carries a transfer.

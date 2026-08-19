@@ -225,12 +225,12 @@ int
 fb_open(int w, int h)
 {
 	if (!SDL_Init(SDL_INIT_VIDEO)) {
-		kernel_log("fb: SDL_Init failed");
+		kernel_say("fb: SDL_Init failed");
 		return -1;
 	}
 	window = SDL_CreateWindow("lua-os", w, h, SDL_WINDOW_RESIZABLE);
 	if (!window) {
-		kernel_log("fb: no window");
+		kernel_say("fb: no window");
 		return -1;
 	}
 	/* software, not whatever SDL would pick. The pixels are already in
@@ -241,18 +241,18 @@ fb_open(int w, int h)
 	 */
 	renderer = SDL_CreateRenderer(window, "software");
 	if (!renderer) {
-		kernel_log("fb: no renderer");
+		kernel_say("fb: no renderer");
 		return -1;
 	}
 	texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_XRGB8888,
 	    SDL_TEXTUREACCESS_STREAMING, w, h);
 	if (!texture) {
-		kernel_log("fb: no texture");
+		kernel_say("fb: no texture");
 		return -1;
 	}
 	shadow = calloc((size_t)w * h, 4);
 	if (!shadow) {
-		kernel_log("fb: no room for the screen");
+		kernel_say("fb: no room for the screen");
 		return -1;
 	}
 	fbw = w;
@@ -532,7 +532,7 @@ fb_open(int w, int h)
 {
 	(void)w;
 	(void)h;
-	kernel_log("fb: this binary was built without SDL");
+	kernel_say("fb: this binary was built without SDL");
 	return -1;
 }
 

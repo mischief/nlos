@@ -41,7 +41,7 @@ app_main(void)
 	 */
 	kernel_clock_init();
 
-	kernel_log("lua-os on esp32");
+	kernel_say("lua-os on esp32");
 
 	if (fs_init() != 0)
 		platform_abort("fs_init failed");
@@ -63,7 +63,7 @@ app_main(void)
 	 * board with no other way in means there is nothing left to do.
 	 * Say so rather than dropping off the end of the task.
 	 */
-	kernel_log("all procs exited");
+	kernel_say("all procs exited");
 	machine_halt();
 }
 
