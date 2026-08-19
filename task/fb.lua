@@ -79,26 +79,6 @@ local ports = { sys.SELF }
 local spaces = { anon }
 local nsession = 0
 
--- sys.alt takes cases, and these are all plain receives. Rewritten in
--- place rather than rebuilt: this is the server's every-message loop.
-local cases = {}
-
-local function altcases(hs)
-	for i = 1, #hs do
-		local c = cases[i]
-
-		if not c then
-			c = {}
-			cases[i] = c
-		end
-		c.port = hs[i]
-	end
-	for i = #hs + 1, #cases do
-		cases[i] = nil
-	end
-	return cases
-end
-
 -- the image an op names. Absent is the screen, or in a windowed session
 -- that session's window, which is what keeps an app inside it: the
 -- glass has no name there at all. Raises on an id that was never given
@@ -475,7 +455,7 @@ local function respond(h, msg)
 end
 
 while true do
-	local i, m = sys.alt(altcases(ports))
+	local i, m = sys.alt(ports)
 
 	if i and type(m) == "table" then
 		local space = spaces[i]

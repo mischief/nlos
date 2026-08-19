@@ -59,6 +59,7 @@ struct sched {
 	int	pending;	/* port -> messages taken with no taker */
 	int	parkrec;	/* co -> record, weak keys */
 	int	altset;		/* port set for alt */
+	int	altsends;	/* parallel size array */
 	int	altseen;	/* port -> generation, for dedup */
 	int	altscratch;	/* co -> alt scratch, weak keys */
 	int	current;	/* the running coroutine, or nil */
@@ -322,38 +323,10 @@ deliver(lua_State *L, struct sched *s, lua_Integer h, int mi)
  * receive landing where a send wait was would otherwise leave a stale
  * size and the kernel would wait for room nobody wants.
  */
-/* fill case n of the set. The case tables are reused across parks, so a
- * park that waits on the same ports twice allocates nothing.
- */
-static void
-altcase(lua_State *L, int set, int n, lua_Integer h, lua_Integer need, int hup)
-{
-	int c;
-
-	lua_rawgeti(L, set, n);
-	if (!lua_istable(L, -1)) {
-		lua_pop(L, 1);
-		lua_createtable(L, 0, 3);
-		lua_pushvalue(L, -1);
-		lua_rawseti(L, set, n);
-	}
-	c = lua_gettop(L);
-	lua_pushinteger(L, h);
-	lua_setfield(L, c, "port");
-	if (need >= 0)
-		lua_pushinteger(L, need);
-	else
-		lua_pushnil(L);
-	lua_setfield(L, c, "send");
-	lua_pushboolean(L, hup);
-	lua_setfield(L, c, "hup");
-	lua_pop(L, 1);
-}
-
 static int
 gatherports(lua_State *L, struct sched *s)
 {
-	int set, seen, parked, rec;
+	int set, sends, seen, parked, rec;
 	int base = lua_gettop(L);
 	int n = 0, i;
 
@@ -361,6 +334,7 @@ gatherports(lua_State *L, struct sched *s)
 	s->altnsend = 0;
 
 	pushref(L, s->altset);		set = lua_gettop(L);
+	pushref(L, s->altsends);	sends = lua_gettop(L);
 	pushref(L, s->altseen);		seen = lua_gettop(L);
 	pushref(L, s->parked);		parked = lua_gettop(L);
 
@@ -370,11 +344,10 @@ gatherports(lua_State *L, struct sched *s)
 
 		lua_rawgeti(L, rec, PR_SEND);
 		if (lua_toboolean(L, -1)) {
-			lua_Integer need = lua_tointeger(L, -1);
-
-			lua_rawgeti(L, rec, PR_PORT);
 			n++;
-			altcase(L, set, n, lua_tointeger(L, -1), need, 0);
+			lua_rawgeti(L, rec, PR_PORT);
+			lua_rawseti(L, set, n);
+			lua_rawseti(L, sends, n);
 			s->altnsend++;
 			lua_settop(L, rec - 1);	/* the key, for lua_next */
 			continue;
@@ -397,8 +370,10 @@ gatherports(lua_State *L, struct sched *s)
 					lua_pushinteger(L, s->altgen);
 					lua_rawset(L, seen);
 					n++;
-					altcase(L, set, n,
-					    lua_tointeger(L, -1), -1, 0);
+					lua_pushvalue(L, -1);
+					lua_rawseti(L, set, n);
+					lua_pushnil(L);
+					lua_rawseti(L, sends, n);
 				} else {
 					lua_pop(L, 1);
 				}
@@ -412,17 +387,6 @@ gatherports(lua_State *L, struct sched *s)
 
 		lua_rawgeti(L, rec, PR_PORT);
 		if (lua_toboolean(L, -1)) {
-			int bare;
-
-			/* a bare park is thread.park, whose whole job is to
-			 * re-check something a wake does not carry -- a
-			 * hangup, say. So it is the one case that must not
-			 * sleep through the last right going away.
-			 */
-			lua_rawgeti(L, rec, PR_RECV);
-			bare = !lua_toboolean(L, -1);
-			lua_pop(L, 1);
-
 			lua_pushvalue(L, -1);
 			lua_rawget(L, seen);
 			if (lua_tointeger(L, -1) != (lua_Integer)s->altgen) {
@@ -431,8 +395,10 @@ gatherports(lua_State *L, struct sched *s)
 				lua_pushinteger(L, s->altgen);
 				lua_rawset(L, seen);
 				n++;
-				altcase(L, set, n, lua_tointeger(L, -1), -1,
-				    bare);
+				lua_pushvalue(L, -1);
+				lua_rawseti(L, set, n);
+				lua_pushnil(L);
+				lua_rawseti(L, sends, n);
 			} else {
 				lua_pop(L, 1);
 			}
@@ -444,6 +410,8 @@ gatherports(lua_State *L, struct sched *s)
 	for (i = n + 1; i <= s->altn; i++) {
 		lua_pushnil(L);
 		lua_rawseti(L, set, i);
+		lua_pushnil(L);
+		lua_rawseti(L, sends, i);
 	}
 	lua_settop(L, base);
 	s->altn = n;
@@ -834,10 +802,9 @@ altset_at(lua_State *L, struct sched *s, int i)
 	lua_Integer h;
 
 	pushref(L, s->altset);
-	lua_rawgeti(L, -1, i);		/* the case */
-	lua_getfield(L, -1, "port");
+	lua_rawgeti(L, -1, i);
 	h = lua_tointeger(L, -1);
-	lua_pop(L, 3);
+	lua_pop(L, 2);
 	return h;
 }
 
@@ -1059,8 +1026,10 @@ blocked:
 		 */
 		pushref(L, s->alt);
 		pushref(L, s->altset);
+		pushref(L, s->altsends);
+		lua_pushboolean(L, 0);		/* wanthup */
 		lua_pushboolean(L, 1);		/* wake */
-		lua_callk(L, 2, 3, K_ALTANY, run_k);
+		lua_callk(L, 4, 3, K_ALTANY, run_k);
 		return run_k(L, LUA_OK, K_ALTANY);
 	}
 	return 0;
@@ -1792,21 +1761,24 @@ alt_body(lua_State *L)
 			int i;
 
 			lua_settop(L, 1);
+			pushref(L, s->alt);
+			lua_newtable(L);
 			for (i = 1; i <= n; i++) {
 				lua_rawgeti(L, 1, i);
 				lua_getfield(L, -1, "port");
 				if (lua_isnil(L, -1))
 					return luaL_error(L, "alt: channel "
 					    "case used outside thread.run()");
-				lua_pop(L, 2);
+				lua_rawseti(L, -3, i);
+				lua_pop(L, 1);
 			}
-			/* the caller's own cases, so the index that comes
-			 * back is an index into them. A hangup is reported
-			 * only where a case asked for one.
+			/* no hangup: a caller may well be waiting on a port
+			 * nobody else holds yet, which thread.recvtimeout
+			 * does every time it waits on a silent one.
 			 */
-			pushref(L, s->alt);
-			lua_pushvalue(L, 1);
-			lua_callk(L, 1, 3, K_ALTBARE, alt_k);
+			lua_pushnil(L);		/* no send waits here */
+			lua_pushboolean(L, 0);
+			lua_callk(L, 3, 3, K_ALTBARE, alt_k);
 			return alt_k(L, LUA_OK, K_ALTBARE);
 		}
 
@@ -2736,6 +2708,7 @@ luaopen_los_thread(lua_State *L)
 	s->portq = newreftable(L);
 	s->pending = newreftable(L);
 	s->altset = newreftable(L);
+	s->altsends = newreftable(L);
 	s->altseen = newreftable(L);
 
 	/* weak keys: a collected coroutine takes its record with it */

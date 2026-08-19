@@ -328,7 +328,7 @@ port_flush(struct kport *port)
 
 	atomic_store_explicit(&port->head, 0, memory_order_relaxed);
 	port->tail = 0;
-	KSTAT_SET(port->qbytes, 0);
+	port->qbytes = 0;
 	while (m) {
 		struct kmsg *next = m->next;
 
@@ -709,7 +709,7 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 	 */
 	size_t cost = len + (bufs ? msgbufs_bytes(bufs) : 0);
 
-	if (KSTAT_GET(port->qbytes) + cost > MAXQUEUE) {
+	if (port->qbytes + cost > MAXQUEUE) {
 		port->ndrop_full++;
 		KSTAT_ADD(cpu_self()->ndrop_full, 1);
 		return -2;		/* full, distinct from out of memory */
@@ -737,10 +737,10 @@ port_push_owned(struct kport *port, unsigned char *data, size_t len,
 	else
 		atomic_store_explicit(&port->head, m, memory_order_relaxed);
 	port->tail = m;
-	KSTAT_ADD(port->qbytes, cost);
-	if (KSTAT_GET(port->qbytes) > KSTAT_GET(port->qpeak))
-		KSTAT_SET(port->qpeak, KSTAT_GET(port->qbytes));
-	KSTAT_ADD(port->nsent, 1);
+	port->qbytes += cost;
+	if (port->qbytes > port->qpeak)
+		port->qpeak = port->qbytes;
+	port->nsent++;
 	wake_receivers(port);
 	return 0;
 }
@@ -799,7 +799,7 @@ port_pop(struct kport *port)
 		    memory_order_relaxed);
 		if (!m->next)
 			port->tail = 0;
-		KSTAT_SET(port->qbytes, KSTAT_GET(port->qbytes) - m->qcost);
+		port->qbytes -= m->qcost;
 		/* room freed: this is the ordinary backpressure wakeup */
 		wake_senders(port);
 	}

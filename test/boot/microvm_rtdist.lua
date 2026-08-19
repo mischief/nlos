@@ -36,7 +36,7 @@ local server = [[
 
 	sys.send(back, { port = { __right = sys.sendright(p) } })
 	while true do
-		local _, m = sys.alt({ { port = p } })
+		local _, m = sys.alt({ p })
 
 		if type(m) ~= "table" then break end
 		local x = 0
@@ -104,7 +104,7 @@ for _, spin in ipairs({ 0, 100, 1000, 10000, 100000 }) do
 		local t0 = sys.ticks()
 
 		sys.send(sright, { spin = spin })
-		sys.alt({ { port = rp } })
+		sys.alt({ rp })
 		samples[#samples + 1] = sys.ticks() - t0
 	end
 

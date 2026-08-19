@@ -74,11 +74,7 @@ local RECV = [==[
 	local n = 0
 
 	while n < want do
-		local cases = {}
-
-		for k = 1, nport do cases[k] = { port = set[k] } end
-
-		local i, m = sys.alt(cases)
+		local i, m = sys.alt(set)
 
 		-- nothing for us: a hangup wake, or a message another proc
 		-- took first. alt_k documents this and the caller loops.

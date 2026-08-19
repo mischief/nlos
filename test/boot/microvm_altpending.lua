@@ -67,11 +67,7 @@ local CHILD = [==[
 	local got = {}
 
 	while #got < nport do
-		local cases = {}
-
-		for k = 1, nport do cases[k] = { port = set[k] } end
-
-		local i, m = sys.alt(cases)
+		local i, m = sys.alt(set)
 
 		if i then
 			got[#got + 1] = { i = i, m = m }
