@@ -1,15 +1,15 @@
 # advice for agents working on lua-os
 
 Read this before changing anything. It is advice and constraint, not
-neutral documentation — its audience is whoever (or whatever) is about
+neutral documentation -- its audience is whoever (or whatever) is about
 to edit this repo next.
 
 Lua 5.4 on the bare machine: Lua, Mach and Plan 9 fused. Isolated Lua
 states as processes, Mach-style ports and rights for all IPC, and a
-namespace per proc that bounds what it can reach. Four machines — UEFI,
+namespace per proc that bounds what it can reach. Four machines -- UEFI,
 qemu's firmware-less `microvm`, an ESP32-S3 handheld, and a linux
-process — differing in `src/platform/` and in which services they
-start, above which the system is one tree. A playground with discipline — toy
+process -- differing in `src/platform/` and in which services they
+start, above which the system is one tree. A playground with discipline -- toy
 scope, real protocols, real isolation, real tests. The point is to find
 out how much OS fits in Lua, not to ship a product.
 
@@ -28,16 +28,16 @@ So:
 - **Never restate code in prose.** Module lists, function inventories
   and handle tables belong in the source, which cannot go stale. Cite a
   file, do not summarize it.
-- If you catch a claim in here contradicting the code, the code wins —
+- If you catch a claim in here contradicting the code, the code wins --
   fix this file in the same change.
 
 ## The hard rules
 
 **C is mechanism, Lua is policy.** The C kernel provides exactly proc
 lifecycle, ports/rights, the serializer, the scheduler loop, device
-pumps, and the libc floor. Everything with an opinion — repl, line
+pumps, and the libc floor. Everything with an opinion -- repl, line
 editing, 9P, supervision, every network protocol above the raw EFI
-primitives — is Lua on the ESP, editable with a text editor and a
+primitives -- is Lua on the ESP, editable with a text editor and a
 reboot. A feature goes in Lua unless C can argue its way in. Adding
 TCP, UDP, DNS, HTTP and JSON-RPC grew C by one file of raw primitives
 and nothing else; keep it that way.
@@ -76,7 +76,7 @@ grows when nothing else changed.
 No shared heap between procs, ever. Communication is message copy or
 right transfer, nothing else. Instruction budgets and memory caps make
 a proc a real containment unit, Erlang-style: it can crash, leak or
-spin without taking the machine. No native userspace — no ring 3, no
+spin without taking the machine. No native userspace -- no ring 3, no
 ELF loader, no syscall ABI, and the MMU stays optional. If that
 changes, it is a different project.
 
@@ -84,18 +84,18 @@ The budgets are **inherited, and may only be asked downward**:
 `sys.spawn`'s `opts.mem`, `opts.reductions` and `opts.ports` are clamped
 to the parent's, and absent means the parent's rather than the machine
 default. Otherwise containment is only as good as each proc's
-willingness to apply it — a capped proc could spawn an uncapped child
+willingness to apply it -- a capped proc could spawn an uncapped child
 and a tightly-preempted one could spawn a child that holds a cpu.
 
 `opts.ports` caps what `sys.newport` and `sys.timer` will hand out. It
 exists because ports are one machine-wide table and a proc need not spin
 on `newport` to drain it: `lib/srv.lua` mints a port per session on
 demand, so a client looping on `session` spends the *server's* budget. A
-per-server quota cannot answer that — a port carries no sender identity,
-so a server cannot tell whose request it is holding — but a per-proc cap
+per-server quota cannot answer that -- a port carries no sender identity,
+so a server cannot tell whose request it is holding -- but a per-proc cap
 can. Unlimited by default.
 
-**What is counted is what a proc holds** — its receive rights — not what
+**What is counted is what a proc holds** -- its receive rights -- not what
 it made, which is Unix's rule for `RLIMIT_NOFILE`. It needs no record of
 who created which port, and it is the honest measure: a port nobody
 holds a right to is freed, so holding is what keeps the table full, and
@@ -109,7 +109,7 @@ directions this needed are already solved: the count is kept where a
 right is gained and lost (`right_new`/`right_drop`, which hold the proc
 anyway), and `kproc.selfidx` names a port by slot *and generation*
 (`kport.gen`), read through `proc_selfport`, so a reused slot answers no
-rather than yes about a stranger. Unix has no such back pointer either —
+rather than yes about a stranger. Unix has no such back pointer either --
 processes hold files, files never hold processes.
 
 Inherited rather than divided, as `opts.mem` is: a parent capped at 8
@@ -121,12 +121,12 @@ keeps.
 **No ambient authority.** A proc touches exactly what its rights table
 says: handle 0 (its own receive port) plus whatever was explicitly
 granted. New authority arrives as `{__right=h}`, either inside a message
-or in `sys.spawn`'s `arg`. Device access — keyboard, serial, network —
+or in `sys.spawn`'s `arg`. Device access -- keyboard, serial, network --
 is a right like any other.
 
 Control over a proc is a right too. `sys.kill`, `sys.reap` and
 `sys.set_trace` take a right to the target's self port, which is what
-`sys.spawn` returns to the parent — so a supervisor stops what it
+`sys.spawn` returns to the parent -- so a supervisor stops what it
 started, and a pid learned from `sys.procs` names a proc without
 reaching it. A pid is an identifier, not a capability, and nothing that
 acts on one should read as though it were.
@@ -148,15 +148,15 @@ hook is filling. Ask which side a new call is on before adding it.
 
 `sys.battery` is on the reading side for the same reason: a voltage is
 an observation of the machine and reaches nothing, so it needs no
-right. It answers millivolts and nothing else — what counts as empty is
+right. It answers millivolts and nothing else -- what counts as empty is
 a curve over a chemistry, and that lives in `lib/battery.lua` where a
 pushed file can correct it. The ADC reads low by a per-board amount, so
 that file also carries the one measured correction; see its comment
 before trusting a reading to better than about 100mV.
 
-A death notice splits the same way. That a proc exited is ambient — a
+A death notice splits the same way. That a proc exited is ambient -- a
 child watching the parent it must not outlive (`lib/webterm.lua`) holds no
-right to it — but `reason` and `exitmsg` are the dying proc's own text,
+right to it -- but `reason` and `exitmsg` are the dying proc's own text,
 so they go only to a watcher that held a right **when it called
 `sys.monitor`**. Decided then rather than at death, because the ordinary
 supervisor spawns, monitors, sends the child its work and closes the
@@ -164,7 +164,7 @@ spawn right, and must still hear how the child ended.
 
 `arg` exists because a message is always too late for some things. It is
 delivered before the child's chunk runs and arrives as the chunk's
-`...`, so a proc can hold a capability on its first line — which is
+`...`, so a proc can hold a capability on its first line -- which is
 where `require` happens, and therefore where a namespace has to already
 be. That is what `fork` gives Plan 9 for free. The kernel does not
 interpret it: it is the ordinary serializer, so rights travel exactly as
@@ -178,7 +178,7 @@ port carries no sender identity, so a shared fid table cannot tell whose
 fid it is being handed and a client could name another's by guessing a
 small integer. `mnt` opens a session on first use, not at mount time,
 because `ns:mount` runs `dev.check` before any traffic. A mount releases
-its session in `close`, which `ns:unmount` calls — hold it and the far
+its session in `close`, which `ns:unmount` calls -- hold it and the far
 side never sees a hangup, so its serve thread outlives the client.
 
 **Attenuate rather than check.** `sys.sendright(h)` derives a send-only
@@ -186,7 +186,7 @@ right; `dev.readonly(B)` derives a read-only backend; `srv`'s `readonly`
 op combines them to serve one filesystem at two authority levels. Asking
 for a weaker right needs no capability of its own because it cannot
 escalate. So "may this client write the ESP" is answered by *which right
-it holds*, with no permission bit and no per-call check — which is why
+it holds*, with no permission bit and no per-call check -- which is why
 Unix users and mode bits are a non-goal here rather than a missing
 feature.
 
@@ -198,7 +198,7 @@ requests. Use `sys.sendright` for anything you publish.
 **A reply port is the case that matters**, because every request/reply
 in the tree carries one and it is the same port for every server a
 thread talks to. `thread.replyport()` returns two handles for that
-reason — the port to wait on, and a send right to put in the message —
+reason -- the port to wait on, and a send right to put in the message --
 and `thread.selfright()` is the same thing for `sys.SELF`, which must
 never be published raw: it is where a proc's monitor notices arrive.
 `test/boot/test_replyright.lua` proves a server cannot take back the
@@ -207,7 +207,7 @@ reply it just sent.
 Both are minted once and cached, so the leak-free property of naming the
 port directly survives: there is still nothing for a caller to close.
 When a call site must make its own, close the send right on every path
-that closes the port — a right held past its use keeps `sys.hungup` from
+that closes the port -- a right held past its use keeps `sys.hungup` from
 ever firing.
 
 **Handle numbers are not an ABI.** Handle 0 is the only well-known
@@ -219,16 +219,16 @@ them. Never hardcode a number.
 
 **Test a capability by looking it up, never by trying to use it.**
 `pcall`ing a send with a right attached is not a check, it is a
-transfer — a "probe" that succeeds has permanently handed the
+transfer -- a "probe" that succeeds has permanently handed the
 capability to whatever it was aimed at. Use `sys.granted().tcp ~= nil`.
 
 **A privileged raw primitive must not be registered anywhere except the
 task that owns it.** The distinction that matters: if authority is an
 *argument* (`sys.send(h, msg)` does nothing without a valid `h`),
-anyone may call it — the handle is what is checked. If authority *is*
+anyone may call it -- the handle is what is checked. If authority *is*
 the function (`console_write`, `ResetSystem`, raw TCP4), there is no
 handle to check and calling it does the privileged thing. Gating such a
-function behind a check is not enough — the check exists in every
+function behind a check is not enough -- the check exists in every
 proc's C surface, one bug away from everything. Instead its
 `los.platform.*` module goes into `package.preload` for its one owning
 task only. There is nothing to get wrong elsewhere because the
@@ -243,26 +243,26 @@ independently.
 `sys.set_priority` is a plain C function present in every proc with no
 `lua_State` to check against, so it tests whether `current_proc` holds a
 right to a reserved port. **Know which form a new resource needs before
-building it** — prefer removing the reference to checking inside it.
+building it** -- prefer removing the reference to checking inside it.
 
 Disk access used to be the other one, gated inside `fopen`. It is not
 any more: the ESP is a server task and ordinary procs have no file-
 opening C function at all, so the *write* gate in `los.fs.open` now
 only ever applies to the one proc that holds the disk right. Read is
-still ungated there for the original reason — the threat model is buggy
+still ungated there for the original reason -- the threat model is buggy
 Lua rather than hostile users, nothing on the ESP is confidential, and a
 stray read cannot corrupt a future boot the way a runaway write can.
 
 **9P is the boundary vocabulary.** Real 9P2000 wire format, not a
 dialect, so stock clients mount with zero shim. The same namespace is
-served over com2 and TCP with the server unchanged — transport is a
+served over com2 and TCP with the server unchanged -- transport is a
 pair of read/write closures.
 
 **The namespace is the boundary, not a preference.** Every proc except
 proc 0 loses `io.open`, `io.lines`, `io.input`, `io.output`, `loadfile`
 and `dofile` in `proc_new`, and `ns.setcurrent` replaces `require`. So a
 proc reaches exactly what was mounted for
-it — files *and* module code — and a proc given no namespace reaches
+it -- files *and* module code -- and a proc given no namespace reaches
 nothing. `lib/nsio.lua` puts `io.open` back over `chan`. This is removal,
 not a check: the same rule as `los.platform.*`, and for the same reason.
 Proc 0 keeps the raw entry points because it is where the ESP reaches and
@@ -270,7 +270,7 @@ where the root namespace is built; `PRIV_BOOT` marks it and nothing else.
 
 The ESP itself is a server (`lib/espsrv.lua`, `PRIV_ESP`), so `los.fs` is
 registered for exactly two procs and everyone else gets the disk as a
-mount — `sys.granted().esp` *is* that mount. **`ns.setcurrent` replaces
+mount -- `sys.granted().esp` *is* that mount. **`ns.setcurrent` replaces
 `require` with a Lua implementation** rather than adding a
 `package.searchers` entry, because a mounted lookup *blocks* and
 `require` cannot be yielded through.
@@ -279,8 +279,8 @@ Be precise about why, because the sloppy version ("C functions can't
 yield") is wrong and will mislead: C functions yield fine via
 `lua_yieldk`, and `sys.block` does exactly that. What fails is yielding
 past a C frame entered with `lua_call`/`lua_pcall`, which has no
-continuation to resume into. `pcall` is safe — `lbaselib.c` uses
-`lua_pcallk`, so `Chan:read`'s pcall was never the issue — and so is
+continuation to resume into. `pcall` is safe -- `lbaselib.c` uses
+`lua_pcallk`, so `Chan:read`'s pcall was never the issue -- and so is
 `dofile`. But `loadlib.c` uses plain `lua_call` both to invoke a searcher
 (:633) **and to run the loaded chunk** (:662). So neither a searcher nor
 a module's own top-level body may block. Check for `lua_callk` before
@@ -289,14 +289,14 @@ putting anything blocking behind a stdlib hook.
 `{op="write", data=}` to a port the proc was granted, so redirecting a
 proc means handing it a different right. `proc.spawn` inherits the
 parent's by default; `out = false` means nowhere. There is deliberately
-no fallback to `console_write` — a fallback is indistinguishable from a
+no fallback to `console_write` -- a fallback is indistinguishable from a
 grant until you are debugging where output went. Kernel-spawned tasks and
 `platform_abort` keep the raw C path by construction, because a driver
 that cannot report its own failure is worse than an ambient write.
 
 **`proc.spawn`'s bootstrap must `require` everything it needs BEFORE
 `adopt()`.** Adopting routes `require` through the new namespace, and a
-confined namespace need not contain `/lib` at all — so a module pulled in
+confined namespace need not contain `/lib` at all -- so a module pulled in
 afterwards is unfindable and the child dies before its first line. Same
 trap as loading `nsio` before installing the searcher in
 `ns.setcurrent`; it has now bitten twice.
@@ -305,40 +305,40 @@ trap as loading `nsio` before installing the searcher in
 loads io/debug/table/math/utf8/coroutine lazily via a metatable on `_G`,
 and `luaL_requiref` re-runs the opener whenever `package.loaded[name]` is
 falsy. An unprivileged proc can clear both and be handed a fresh, whole
-`io` — which read a real ESP file out of a proc whose namespace held one
+`io` -- which read a real ESP file out of a proc whose namespace held one
 in-memory tree. The lazy loader therefore re-strips
 (`kernel_strip_io`). **Any future removal from a lazily-loaded library
 must do the same**, and `test/boot/test_escape.lua` is where to prove it.
 
 **Reading an unbound global raises.** The same `_G` metatable runs only
 on a miss, so it is also the one place that knows a name was never bound
-— and it errors rather than answering nil. `prit("x")` names `prit` at
+-- and it errors rather than answering nil. `prit("x")` names `prit` at
 the line that read it, instead of "attempt to call a nil value" a frame
 later. Costs nothing on the hit path: a bound global never reaches a
-metamethod. Assignment is *not* guarded — there is no `__newindex`, so
-`x = 1` still binds — because read checking already catches the mistake
+metamethod. Assignment is *not* guarded -- there is no `__newindex`, so
+`x = 1` still binds -- because read checking already catches the mistake
 that matters (`total = total + 1` on an undeclared `total` reads first).
 **To ask whether a name is present, use `rawget(_G, "name")`**, which
 runs no metamethod and still answers nil; the absence checks in
 `test_drivers.lua`, `test_nsio.lua` and `srvweb.lua` all do.
 
 **Diagnostics are a different stream from output.** `print`/`io.write`
-are a proc's output and stay verbatim — `seq 5` emits `1\n2\n…` and
+are a proc's output and stay verbatim -- `seq 5` emits `1\n2\n...` and
 nothing else. `lib/log.lua` is the machine's transcript: stamped, tagged,
 `{op="log"}` to the same cons task. `kernel.c`'s `klog()` produces the
-same `[%5llu.%03llu] ` prefix, so **two producers share one format** —
+same `[%5llu.%03llu] ` prefix, so **two producers share one format** --
 change one and change the other. The stamp is taken at *emit*, which is
-load-bearing rather than decorative: the kernel writes the console
+deliberate rather than decorative: the kernel writes the console
 synchronously while Lua goes through a port, so display order and real
 order differ and only the stamps recover it.
 
 `uptime_ms()` is milliseconds since `calibrate_clock()`, and returns 0
-before it runs. The TSC is 64-bit — ~195 years at 3GHz — so there is
+before it runs. The TSC is 64-bit -- ~195 years at 3GHz -- so there is
 nothing to guard against; the 4.7s wrap belongs to the 24-bit ACPI PM
 timer, a different counter.
 
 **A Chan carries its name.** `lib/chan.lua` is (backend, handle, Cname)
-— Plan 9's Chan, spelled the same on purpose. The name is the *caller's*
+-- Plan 9's Chan, spelled the same on purpose. The name is the *caller's*
 cleaned path and never anything a backend reports, because a backend has
 no idea what prefix it was mounted at. Read
 `plan9front/sys/doc/lexnames.ms` before touching path resolution: `..` is
@@ -354,7 +354,7 @@ every caller joins `cwd` first.
 **Ports carry the dev interface, not 9P bytes.** These are three layers
 and not a choice: a port is the transport, `lib/dev.lua` is the
 interface, and 9P is the encoding *only where the port has to become
-bytes* — off this machine. Between two procs the dev call travels as a
+bytes* -- off this machine. Between two procs the dev call travels as a
 table (`lib/srv.lua`, `lib/mnt.lua`), because 9P's framing exists to
 recover message boundaries from a byte stream and a port has not lost
 them. The semantics still survive whole; what the port replaces is
@@ -371,27 +371,27 @@ channel, and one port per caller leaves nothing to demultiplex. A
 thread blocks for its answer, so one port covers every service it ever
 uses. Measured against a lock held across each rpc: 1.6x at 2 threads,
 2.2x at 4, 3.0x at 8. The budget is `MAXPORTS` = 128 system-wide, so
-the cache is weak-keyed and finalized — a thread that exits returns its
+the cache is weak-keyed and finalized -- a thread that exits returns its
 port. **Do not invent a fourth
-vocabulary** — a new service is a dev backend if its state is ambient
+vocabulary** -- a new service is a dev backend if its state is ambient
 (procfs, espfs) and an `srv` proc otherwise.
 
 **One vendored header, and the reasoning for it.**
 `include/sys/queue.h` is OpenBSD's rev 1.47, verbatim but for three
 lines: `<sys/_null.h>` becomes `<stddef.h>` (all `-nostdinc` allows) and
-`QUEUE_MACRO_DEBUG` is on. It is macros — no runtime, no symbols, no
-ABI — which is why it sits closer to a compiler builtin than to a
+`QUEUE_MACRO_DEBUG` is on. It is macros -- no runtime, no symbols, no
+ABI -- which is why it sits closer to a compiler builtin than to a
 library, and hand-rolling four intrusive list types with correct removal
 from several lists at once is more risk than a header everyone has read.
 The system copy will not do: `-nostdinc` excludes it, glibc's is the old
-BSD one missing `*_FOREACH_SAFE` and `_Q_INVALIDATE` — the two things
-this is for — and depending on the host's copy means three toolchains
+BSD one missing `*_FOREACH_SAFE` and `_Q_INVALIDATE` -- the two things
+this is for -- and depending on the host's copy means three toolchains
 can disagree about the scheduler's data structures. **This is the
 exception, argued; it is not licence to vendor the next thing.**
 
 `fonts/spleen-6x12.bdf` is the second exception, and a narrower one:
 bitmaps, not code. `tools/bdf2font.lua` compiles them into
-`src/font_spleen.h`, so nothing of anyone else's is built or run — and
+`src/font_spleen.h`, so nothing of anyone else's is built or run -- and
 the generator is ours, which the python one in another repo was not.
 Keep the copyright notice on both.
 
@@ -399,7 +399,7 @@ Keep the copyright notice on both.
 freestanding libc, `-nostdinc`, only compiler-provided headers. Hand
 PE header, self-relocation, plain binutils. Compiler builtins are
 preferred over hand-rolled code; vendored libraries are not. This
-extends to protocols — DNS, HTTP and JSON are hand-rolled in Lua for
+extends to protocols -- DNS, HTTP and JSON are hand-rolled in Lua for
 the same reason 9P is.
 
 **Arch code lives in `src/<arch>/`, and so does its build.** The
@@ -417,14 +417,14 @@ directory plus the PE machine field". It cost that plus four things,
 which is the honest list of what is genuinely per-arch and cannot be
 quarantined:
 
-- the **calling convention** (`EFIAPI` in `src/efi.h`) — ms_abi on
+- the **calling convention** (`EFIAPI` in `src/efi.h`) -- ms_abi on
   x86_64, and the plain C convention on both aarch64 and riscv64, so
   their entry stubs have no register shuffle to do at all;
 - the **`jmp_buf` size** (`include/setjmp.h`), which is just the
   callee-saved set;
 - the **PE section table**: `src/pe.ld` splits at `__data_start` so the
   headers can declare RX text and NX data separately, which is what
-  firmware with image protection enabled requires — it maps a writable
+  firmware with image protection enabled requires -- it maps a writable
   section non-executable, and a section claiming both then cannot run.
   RiscVVirtQemu does apply it (watch `SetUefiImageMemoryAttributes` in
   its boot log); OVMF and AAVMF as shipped do not, so on those two it
@@ -440,12 +440,12 @@ the address coming from `meson.build`. Its `math.c` was portable C
 throughout and became `src/libc/softmath.c`. What is left in
 `src/riscv64/` is only what is genuinely riscv: the header, the entry
 stub, `rdtime`, `R_RISCV_RELATIVE`, the lp64d `jmp_buf`, and floor/
-ceil/round — which the D extension, alone among our three, has no
+ceil/round -- which the D extension, alone among our three, has no
 instruction for.
 
 **A builtin that lowers to a call is fine; a builtin that lowers to a
 call *into libgcc* is not.** We link `-nostdlib` with no `-lgcc`, and
-all three images have zero undefined symbols — check with `nm -u` if
+all three images have zero undefined symbols -- check with `nm -u` if
 you doubt it. `__builtin_floor` and `__builtin_fmod` become calls to
 `floor()` and `fmod()` on riscv64, and that is harmless because those
 are ours. `__builtin_bswap32` becomes a call to `__bswapsi2`, which is
@@ -462,23 +462,23 @@ at constant cost.
 
 `kernel_run` is an event loop: gather what is ready, run it, and when
 nothing is ready block in one "wait for the next thing" call rather
-than polling hot. Two of these are nested — the outer C loop schedules
+than polling hot. Two of these are nested -- the outer C loop schedules
 whole procs, the inner Lua one (`los.thread`) schedules coroutines
-inside a proc. The nesting is load-bearing and the join is implicit: a
+inside a proc. The nesting matters and the join is implicit: a
 proc with every thread parked simply stops being READY, so the inner
 reactor's exhaustion *is* the signal the outer one waits on. No handoff
 protocol. That is why `thread.recv(h)` can look like a blocking call
 with no kernel support for blocking calls, and why one proc can hold
 many connections open without touching the TCP task's poll machinery.
 
-The scheduled unit is a real stackful coroutine, not a callback — same
+The scheduled unit is a real stackful coroutine, not a callback -- same
 trick as libtask or goroutines, which is where `los.thread`'s shape
 comes from.
 
 **Request/reply goes through `thread.call(h, msg, replyh)`, not
 `sys.call` directly.** `sys.call` fuses the send and the wait into one
 kernel entry, but the wait it does marks the whole *proc* blocked and
-takes it off the run queue — so a coroutine yielding out of one would
+takes it off the run queue -- so a coroutine yielding out of one would
 strand every sibling thread. The kernel refuses it outright
 (`blocking_twice`) rather than letting that happen quietly, so a thread
 that calls it gets an error, not a corrupted waiter list.
@@ -490,8 +490,8 @@ and takes a message in one entry on behalf of all of them at once. What
 is left over is a plain send, which never blocks.
 
 **Build an `alt` case table once, outside the loop.** `alt` neither
-keeps nor mutates `cases`, so writing the literal at the call site —
-`thread.alt({{port=a},{port=b}})` inside a `while true` — builds three
+keeps nor mutates `cases`, so writing the literal at the call site --
+`thread.alt({{port=a},{port=b}})` inside a `while true` -- builds three
 tables every trip for nothing. That measured as 34% of an `alt` that
 finds a message already waiting, which is more than everything inside
 `alt` costs put together. The exclusive device tasks sit in exactly this
@@ -503,8 +503,8 @@ assign the field; one store still beats three allocations.
 that can report an ending: a *reply* port holds two rights while a
 request is in flight, so a drop back to one with nothing queued means
 the holder died without answering. `thread.recv` cannot say that about
-an ordinary service port — a right that *can* send is indistinguishable
-from one that will — which is why the two exist separately. `sys.call`
+an ordinary service port -- a right that *can* send is indistinguishable
+from one that will -- which is why the two exist separately. `sys.call`
 reports the same condition as `nil, "hungup"`. Without it a dead server
 parks its clients forever, and since the ESP is a server proc, that is
 every proc's filesystem.
@@ -513,15 +513,15 @@ every proc's filesystem.
 levels at once.** `sys.yield()` keeps a proc READY, so the outer loop's
 "is anything runnable" test is always yes and it never reaches its idle
 sleep. Use `sys.timer(ms)` and the `thread.sleep`/`thread.recvtimeout`
-sugar over it — never a `sys.ticks()` deadline loop. Booting with a NIC
+sugar over it -- never a `sys.ticks()` deadline loop. Booting with a NIC
 once cost 5.2s of CPU per 15s purely because the DHCP retry spun;
 parking on a timer took it to 1.6s.
 
 ## Time
 
-`platform_ticks()`/`sys.ticks()` is the machine's free-running counter —
+`platform_ticks()`/`sys.ticks()` is the machine's free-running counter --
 `rdtsc` on x86_64, `cntvct_el0` on aarch64, the `time` CSR via `rdtime`
-on riscv64 — a tick count, not a duration, and not even the same order
+on riscv64 -- a tick count, not a duration, and not even the same order
 of magnitude between them: a TSC runs at GHz, the arm virtual counter at
 62.5MHz under qemu, and riscv's at 10MHz. Boot calibrates it against
 `BS->Stall` and everything time-shaped is
@@ -540,26 +540,26 @@ recv-with-timeout falls out of `alt` composition with no new API:
 
 Resolution is the scheduler tick, so a timer fires up to one tick late
 and never early. `SetTimer` cannot beat ~10ms on this platform anyway
-(measured — see `docs/uefi-notes.md`), and every deadline here is
+(measured -- see `docs/uefi-notes.md`), and every deadline here is
 hundreds of milliseconds, so no per-deadline EFI event is armed.
 
 The timer table is a flat unsorted array scanned once per lap,
 deliberately not a timing wheel: a wheel buys O(1) insert and earns that
 at thousands of timers, and `MAXPROCS` is 32.
 
-## Traps already walked — do not re-derive these
+## Traps already walked -- do not re-derive these
 
 - **A green suite says nothing about a full-size frame.** `snp_recv` was
   given a 1514-byte buffer, OVMF wanted room for the fcs, and every
   maximum-length frame was refused and silently dropped while every
   smaller one arrived. Arp, dhcp and a 9P request all fit, so the whole
-  suite passed while an ssh handshake took 139 seconds — the peer retransmits
+  suite passed while an ssh handshake took 139 seconds -- the peer retransmits
   what was never taken, so loss presents as a stall. `test/test_http.lua`
   posts 64KB for this; a 1000-byte body passes either way.
 - **A program under a shell is a plain script, not a table with a main.**
   `bin/` programs read `arg`, write with `unistd.write` and end with
   `os.exit`. `prog.main` is the entry for a proc spawned directly, and
-  its first act is to receive the ctx message its spawner sends — which
+  its first act is to receive the ctx message its spawner sends -- which
   `bin/dbg.lua` relies on to hold a target before its first line. A
   program dos launched has already been given that ctx by `prog.run`, so
   calling `prog.main` there parks it on its own port forever, before its
@@ -575,7 +575,7 @@ at thousands of timers, and `MAXPROCS` is 32.
   and searched first, so a file present in both is the partition's copy
   however old it is. `esp32/main/CMakeLists.txt` names the firmware set
   and `tools/mkfatimg.lua` leaves exactly those out of the image, so the
-  two stay disjoint by the build — but editing a module in the firmware
+  two stay disjoint by the build -- but editing a module in the firmware
   set still means flashing the firmware, and flashing only the partition
   leaves the old code running with nothing to say so.
 - **EFI events are completion tokens, not readiness**, and the signaled
@@ -601,7 +601,7 @@ at thousands of timers, and `MAXPROCS` is 32.
   sender spins instead of parking. `port_push_owned` admits a message
   only if `qbytes + len <= MAXQUEUE`, so a message that is a large
   fraction of the queue can be refused while `qbytes < MAXQUEUE` is
-  still true — the old size-blind `sendblock` then returned "there is
+  still true -- the old size-blind `sendblock` then returned "there is
   room" at once, the send failed again, and the retry loop burned the
   whole slice. Measured as 33ms per 63KiB band, 146x, and it presented
   as "the framebuffer is slow". Small messages never trigger it, which
@@ -610,7 +610,7 @@ at thousands of timers, and `MAXPROCS` is 32.
   drops the message.** The kernel reports rather than blocking on
   purpose (it cannot tell a pipe writer from a server reply), so
   applying backpressure is the caller's job. `lib/caps.lua`'s
-  `requester()` does *not* do this — fine for the small messages every
+  `requester()` does *not* do this -- fine for the small messages every
   other user sends, fatal for pixels, and on the reply path it loses the
   request and then blocks forever on an answer that will never come.
   A third return value carries the refused size, which is what
@@ -624,7 +624,7 @@ at thousands of timers, and `MAXPROCS` is 32.
   idea, with `CHANSND` and `CHANRCV`. That alt performs the send itself;
   this one reports the case ready and lets the caller send, because a
   message here is serialized on its way into a port and the serializer
-  mints a reference to every port the message names — serializing on the
+  mints a reference to every port the message names -- serializing on the
   way into a park would hold those references for as long as the park
   lasted, and `lib/mnt.lua` reads exactly those counts to find a dead
   server. Inside a thread, `thread.parksend` waits on one coroutine and
@@ -632,13 +632,13 @@ at thousands of timers, and `MAXPROCS` is 32.
 - **`alt` takes the message, unless told to wake.** It answers `i, msg,
   why`, and `why` is what a caller tests, since a message may itself be
   nil: absent for a receive that took one, `"send"` for room, `"ready"`
-  in wake mode, `"hungup"` where the caller asked. Taking is the point —
+  in wake mode, `"hungup"` where the caller asked. Taking is the point --
   a ready answer goes stale as soon as a second cpu exists. Pass `wake`
   only where somebody else does the reading: one port may be waited on
   to send and to receive at once, and handing the message to the wrong
   waiter of the two wedges both.
 - **Pixels do not fit in a message.** `sys.MAXMSG` is 64KiB, which is
-  16384 BGRx pixels — a 128x128 tile — so "load the whole screen in one
+  16384 BGRx pixels -- a 128x128 tile -- so "load the whole screen in one
   call" cannot exist, in either direction (a reply is a message too).
   `lib/caps.lua`'s `fb.load`/`fb.unload` split into bands of whole rows
   on that bound. Do not raise MAXMSG to dodge this: it is a global limit
@@ -647,7 +647,7 @@ at thousands of timers, and `MAXPROCS` is 32.
   bounds the whole message, not just the payload string, so a caller
   splitting to exactly MAXMSG still fails on the table around it.
 - **Coalescing the wakeup ping is not enough** to stop it monopolising
-  the scheduler — the task drains it the same lap it arrives, so the
+  the scheduler -- the task drains it the same lap it arrives, so the
   next lap pushes another. Pace it to the tick. Unpaced cost 9.8s CPU
   per 10s wall with everything parked; paced, 2.1s.
 - **The com2 hang was never the scheduler.** It was firmware console
@@ -659,7 +659,7 @@ at thousands of timers, and `MAXPROCS` is 32.
   addresses: it then walked firmware memory as if it were a relocation
   table and wrote the results over its own GOT. The image ran far
   enough to fault later, in `console_write`, on an `ST` that was
-  garbage — the symptom is nowhere near the cause. x86_64 never showed
+  garbage -- the symptom is nowhere near the cause. x86_64 never showed
   it because it addresses those symbols rip-relative. The declarations
   are now explicitly `visibility("hidden")`; anything new that runs
   before or inside relocation needs the same care.
@@ -667,8 +667,8 @@ at thousands of timers, and `MAXPROCS` is 32.
   turned on.** The aarch64 9p wire is a `pci-serial` card, and PCI
   enumeration placed its io bar but left decoding disabled, so every
   register read came back `0xff`. `PciIo->Attributes(Enable,
-  ATTRIBUTE_IO)` cannot fix it there — ArmVirtQemu's root bridge does
-  not advertise io in its supported mask — so `src/aarch64/uart.c`
+  ATTRIBUTE_IO)` cannot fix it there -- ArmVirtQemu's root bridge does
+  not advertise io in its supported mask -- so `src/aarch64/uart.c`
   sets the command register itself. Note the second-order damage: a
   stuck-high `LSR` reads as "data ready" forever, so the serial pump
   manufactured endless bytes, no proc was ever idle, the kernel never
@@ -677,13 +677,13 @@ at thousands of timers, and `MAXPROCS` is 32.
   dead io port.
 - **The firmware having a NIC driver does not mean it has a network
   stack.** qemu's `edk2-riscv-code.fd` publishes the virtio-net
-  `SimpleNetworkProtocol` — one handle, the card is right there — and
+  `SimpleNetworkProtocol` -- one handle, the card is right there -- and
   nothing above it: no MNP, ARP, IP4, DHCP4, TCP4 or UDP4. When our net
   stack was a binding over `EFI_TCP4`/`EFI_UDP4` that made networking
   simply absent on that firmware, and every net test failed for a
   reason that was not in this tree. `-Dfw_network=` is the switch, and
   `test_efiprobe` is what told us. Probe the layer you need, not the
-  device under it — and note that the layer we need has since moved
+  device under it -- and note that the layer we need has since moved
   down to SNP itself, so the riscv64 default is now untested rather
   than known.
 - **Bundling unrelated resources into one privileged task** ("conio" =
@@ -730,36 +730,36 @@ machines differ, not by accident.
 
 **Both test lists live in `test/meson.build`, side by side on purpose.**
 A name in one and not the other says a machine has not got the
-hardware — no firmware, no NIC, no framebuffer. Kept apart, the two
+hardware -- no firmware, no NIC, no framebuffer. Kept apart, the two
 lists drift and nobody sees it.
 
 ## Where the build says what
 
 One rule: **each concern's build lives beside what it builds.** The
 root `meson.build` holds `project()`, the options, the toolchain and
-arch choice, the shared source lists, and then descends once —
+arch choice, the shared source lists, and then descends once --
 `subdir('src/platform' / platform)`. It is 400 lines and should stay
 that way.
 
-- `src/platform/<machine>/meson.build` — that machine's sources, its
+- `src/platform/<machine>/meson.build` -- that machine's sources, its
   compile and link, the image and the targets that run it.
-- `src/<arch>/meson.build` — the flags and sources only that arch has.
-- `test/meson.build` — every `test()` and `benchmark()`.
+- `src/<arch>/meson.build` -- the flags and sources only that arch has.
+- `test/meson.build` -- every `test()` and `benchmark()`.
 - `esp32/` stays a project of its own: IDF's cmake owns that build, and
   its `meson.build` calls `project()`, which a subdir may not. Only the
   run targets that *drive* it live in `src/platform/esp32/`.
 
 **Flags belong to targets, not to the project.** There is no
 `add_project_arguments`: `plat_args` is named by the four targets built
-for the guest, and everything else — hostutil, the native modules,
-every test binary — is `native: true` and was never getting them.
+for the guest, and everything else -- hostutil, the native modules,
+every test binary -- is `native: true` and was never getting them.
 
 **A path in a subdir means something different.** `meson.current_source_dir()`
 is that subdir, not the root; use `meson.project_source_root()` where
-the root is meant. This cost 112 hosted failures once, silently, while
-efi stayed green.
+the root is meant. Either configures, so the wrong one fails at run
+time and only on the machine that reads that path.
 
-**A TCP server cannot test itself** — qemu's usermode network does not
+**A TCP server cannot test itself** -- qemu's usermode network does not
 hairpin, so a guest dialing its own address times out. Network servers
 need a host-driven test.
 
@@ -770,7 +770,7 @@ never even spawned. That is the failure this rule exists to prevent and
 it happened anyway.
 
 Not everything is observable from inside a proc. Whether the kernel
-reaches its idle sleep is not — there is no blocking sleep to measure
+reaches its idle sleep is not -- there is no blocking sleep to measure
 across, and any spin loop doing the measuring is what keeps the machine
 busy. That one was verified from outside by qemu CPU time. Prefer an
 honest external measurement over an assertion that cannot fail.
@@ -778,7 +778,7 @@ honest external measurement over an assertion that cannot fail.
 ## Scheduling feedback
 
 Every proc carries `cputime` (TSC cycles actually spent inside
-`lua_resume`) and `cpu` — a decaying average of the fraction of wall time
+`lua_resume`) and `cpu` -- a decaying average of the fraction of wall time
 it spent running, in per-mille. `sys.priority(pid)` returns weight, the
 computed priority and cpu; `ps` shows all three.
 
@@ -786,7 +786,7 @@ Priority is Plan 9's `reprioritize`: inversely proportional to recent cpu
 against an equal share, clamped to the proc's weight. So
 `sys.set_priority` stays the static, capability-gated policy knob and the
 kernel computes the dynamic part. A proc **under** its fair share clamps
-to the top however hard it spins — differentiation only happens under
+to the top however hard it spins -- differentiation only happens under
 contention, and that is the formula working, not a missing case.
 
 Dispatch is two phases per lap, and the split is the design:
@@ -803,7 +803,7 @@ of the priority function. Every runnable proc runs at least once and at
 most once per lap, whatever `reprioritize` computes, so a policy that is
 buggy, hostile or merely untuned costs latency and cannot wedge the
 machine. **Never make the progress guarantee depend on the policy being
-correct** — policy is the part we expect to get wrong.
+correct** -- policy is the part we expect to get wrong.
 
 "Already had its turn" is membership in a second set that the two phases
 drain, swapped at the end of a lap, so nothing is sized against
@@ -811,7 +811,7 @@ drain, swapped at the end of a lap, so nothing is sized against
 `wake_receivers`), so delivering a message touches only the procs
 actually blocked on that port. Both together took an empty cross-proc
 round trip from 47k cycles to 26k, and `MAXPROCS` no longer affects it at
-all — flat from 64 to 512, where each doubling used to cost about 4%.
+all -- flat from 64 to 512, where each doubling used to cost about 4%.
 
 Plan 9 cannot make this guarantee: `runproc()` takes the first proc off
 the highest non-empty `runq` with no aging, so a high-`basepri` proc
@@ -831,7 +831,7 @@ period.
 That is why `default_reductions` is **calibrated at boot** rather than
 fixed: the right count depends entirely on how fast the machine executes
 bytecode. Measured here at ~24-32 cycles per instruction, 25000 is 176us
-and 100000 is 705us against a 2ms quantum — both fine. On a machine four
+and 100000 is 705us against a 2ms quantum -- both fine. On a machine four
 times slower, 100000 would be 2.8ms, longer than the quantum itself, and
 time-slicing would quietly degrade back into instruction-slicing.
 Calibration targets a fixed fraction of the quantum instead, so the
@@ -839,7 +839,7 @@ overshoot bound holds anywhere. `sys.stats().reductions` reports what it
 picked.
 
 It is approximate under frequency scaling, and that is fine. The TSC is
-invariant by design — constant rate whatever the P-state — which is what
+invariant by design -- constant rate whatever the P-state -- which is what
 makes it a usable clock and also why it does not track how fast
 instructions retire. The *quantum* check stays exact regardless (both
 sides are TSC units); only the sampling granularity drifts, bounded by
@@ -858,15 +858,15 @@ boot services: the hook cannot fire inside a single C call, so
 `string.rep("x", 1e8)` holds the machine for as long as it takes. Plan
 9's clock interrupt would preempt it.
 
-**Instruction counting as a *scheduling metric* was tried and dropped —
+**Instruction counting as a *scheduling metric* was tried and dropped --
 do not re-derive it.**
 The preempt hook fires every `lua_gethookcount()` instructions, so
 counting fires is an exact reduction count in the BEAM sense, and it is
 tempting because it is deterministic and machine-independent. It has a
 floor that kills it: a proc yielding *before* it reaches its period
 registers zero, which is most IPC-bound work including cons, wire and
-tcp. Lua exposes no way to read the partial countdown — `L->hookcount` is
-internal and `lua_gethookcount` returns the configured period — so exact
+tcp. Lua exposes no way to read the partial countdown -- `L->hookcount` is
+internal and `lua_gethookcount` returns the configured period -- so exact
 reductions would mean patching the VM, and vanilla Lua is a pillar.
 
 The TSC has no floor, catches time spent in C as well as in the VM, is
@@ -879,14 +879,14 @@ accepted cost here.
 Real on `-Dplatform=microvm`, and only there. `qemu -smp N` gives N
 vcpus, procs run on all of them at once, and the parallelism is
 measured from outside rather than asserted from within: four spinning
-procs take 1.70s at `-smp 1`, 0.99s at 2 and 0.65s at 4 — 1.85x and
+procs take 1.70s at `-smp 1`, 0.99s at 2 and 0.65s at 4 -- 1.85x and
 3.2x net of ~0.15s boot. Idle is still a real sleep, not a spin.
 
 Every other platform is a uniprocessor and stays one. efi is where
 firmware lives, and firmware under TPL is one big cooperative lock; on
 aarch64 and riscv64 nothing has been written. `NCPU` is 8 on microvm
 and 1 everywhere else, and at 1 `src/lock.h` compiles to compiler
-barriers — which is what lets `kernel.c` stay one arch-blind file with
+barriers -- which is what lets `kernel.c` stay one arch-blind file with
 no `#ifdef` in it. The barrier is not nothing: it still stops the
 compiler hoisting a load out of a critical section, which is a bug on
 one cpu too.
@@ -898,7 +898,7 @@ only one" on efi.
 
 The run queues are not there. There is one pair for the machine under
 one lock, so whichever cpu looks next takes the next runnable proc and
-there is no placement to decide at spawn — the decision that cannot be
+there is no placement to decide at spawn -- the decision that cannot be
 made well, since it is made before the proc has done anything. This is
 plan 9's arrangement (`runq[Nrq]` in `port/proc.c` is global there too)
 rather than the per-cpu queues and work stealing of OpenBSD's
@@ -907,7 +907,7 @@ off one lock on the hottest path, and it is weak here: every send and
 every wakeup already passes through the single IPC lock, held longer
 than the scheduler lock ever is. The scheduler lock cannot become the
 bottleneck without the IPC lock being one first. If it ever does, plan 9
-has the next step as well — a lock per priority queue rather than one
+has the next step as well -- a lock per priority queue rather than one
 over the set.
 
 Both phases of the dispatch lap run over that one pair, so the progress
@@ -927,10 +927,10 @@ it says nothing about the kernel: the spinners share nothing.
 
 `test/boot/microvm_pairs.lua` asks the other half. Four independent
 pairs of procs pass a message back and forth over ports no other pair
-touches — no shared server, no shared queue. 800000 round trips, wall
+touches -- no shared server, no shared queue. 800000 round trips, wall
 clock including boot: **1.00s at `-smp 1`, 1.01s at 2, 0.98s at 4,
 1.53s at 8.** Flat to four cpus. Under one ipc lock the same run was
-0.95 / 1.14 / 1.38 / 1.87 — more cpus made message passing slower.
+0.95 / 1.14 / 1.38 / 1.87 -- more cpus made message passing slower.
 
 `schedlock` is the ceiling now, and at `-smp 8` it is 89.1% contended.
 That is the one global run queue, and it is the next piece of work.
@@ -941,21 +941,21 @@ that can reach a port it cannot name takes all eight. An allocation
 under one used to be able to reach another, through the collector
 running a `__gc` handler that clunks a handle; the collector is stopped
 now and runs only at two points that hold nothing, so it cannot.
-`docs/locking.md` is the discipline in full — the wide/narrow split,
+`docs/locking.md` is the discipline in full -- the wide/narrow split,
 the wake protocol, the three assertion tiers, and where the collector
-is allowed to run — and it is worth reading before touching
+is allowed to run -- and it is worth reading before touching
 `kernel.c`'s ipc paths. The physical allocator has one lock; the malloc
 counters are relaxed atomics. The lock order is in `src/lock.h`.
 
 The `luaheap` arrangement follows `NCPU`, and neither setting takes a
-lock — the only combination that would need one is shared-and-parallel,
+lock -- the only combination that would need one is shared-and-parallel,
 which is the one never picked. At `NCPU > 1` each proc has its own,
 because a shared heap would need a lock on every Lua allocation, the
 most frequent thing here; a per-proc heap needs none, since a proc runs
 on one cpu at a time. At `NCPU == 1` there is a single machine-wide
 heap, because per-proc heaps cost real memory for nothing: measured on
 efi with 26 procs, 50021 bytes mapped per proc against 40879, waste
-30.3% against 14.7%, 232KB in total, with `lua_live` identical — the
+30.3% against 14.7%, 232KB in total, with `lua_live` identical -- the
 whole difference is chunk tails. That is what makes it matter on esp32,
 which is compile-time uniprocessor and where memory binds.
 
@@ -971,13 +971,13 @@ touches firmware. APs run the scheduler and nothing else.
 Driver procs do not. Nothing pins them, and nothing can: there is one
 run queue, so a driver runs wherever a cpu picks it up. Their
 interrupts still land on the boot cpu, which makes running them there a
-preference and not a requirement — the device-path invariants that were
+preference and not a requirement -- the device-path invariants that were
 once credited to pinning hold on any cpu.
 
 **What is per driver rather than per cpu**, and the distinction has
 bitten once: a virtio queue is safe with no lock because exactly one
-proc owns the device — the platform modules are opened into that one
-driver proc's `lua_State` — and a proc is one thread of control on one
+proc owns the device -- the platform modules are opened into that one
+driver proc's `lua_State` -- and a proc is one thread of control on one
 cpu at a time. It is *not* safe because it is on the boot cpu; it
 isn't. Granting one of those modules to a second proc would corrupt the
 rings and nothing would report it.
@@ -994,7 +994,7 @@ that looks safe:
 - `srv.serve`'s "one worker" meant one loop, not one thread of control.
   `ops.session` spawns a second serve on the same backend, so a gefs
   server syncing on a tick had two coroutines inside an unlocked
-  filesystem. That one is cooperative-only and needed no second cpu —
+  filesystem. That one is cooperative-only and needed no second cpu --
   see `lib/sync/lock.lua`'s header on invariants that span a park.
 
 Tests run at `-smp 2` and `-smp 4` as `smp2-*` / `smp4-*` in
@@ -1002,7 +1002,7 @@ Tests run at `-smp 2` and `-smp 4` as `smp2-*` / `smp4-*` in
 1, because the target never has enough cpus to contend and the host
 always does.
 
-## Known debts — do not report these as discoveries
+## Known debts -- do not report these as discoveries
 
 Structural, worth fixing:
 
@@ -1015,7 +1015,7 @@ Structural, worth fixing:
   the one place the capability rule is not followed through. The fix is
   a port per connection, so holding it *is* the authorization. Urgent
   the moment TCP is granted to anything less trusted than the repl.
-- **Resource ceilings are ad-hoc** — reductions per slice, memory per
+- **Resource ceilings are ad-hoc** -- reductions per slice, memory per
   proc, message size, rights per proc, grants per proc, HTTP body size,
   scheduler weight. Each sensible alone, collectively unrelated. The
   grant table has one spare slot; two more boot capabilities truncate
@@ -1032,19 +1032,19 @@ Structural, worth fixing:
   procs allocates a dozen; what scales with the limits is one pointer
   each. 1024 procs and 4096 ports is 40KB of `.bss`. Going much further
   wants a two-level table, which would add an indirection to every
-  serialize. `MAXPORTS` cannot exceed 65536 — the serializer carries a
+  serialize. `MAXPORTS` cannot exceed 65536 -- the serializer carries a
   port index in a 16-bit field and a static assert enforces it. Figures
   across the range are in `kernel.c` beside the defines.
 - **A dead `srv` proc parks its clients forever.** `mnt`'s rpc has no
   deadline and nothing else wakes it. The fix is hangup detection on
-  the reply port, not a timeout — a slow backend is not a broken one.
+  the reply port, not a timeout -- a slow backend is not a broken one.
 - **Pending-token scans are O(n) per tick.** The exclusive tasks walk
   every outstanding token on every wakeup because EFI never says which
   one completed. Fine at a handful of connections, a ceiling at fifty.
-  Possibly forced by the platform — confirm before designing around it.
+  Possibly forced by the platform -- confirm before designing around it.
 
 Bounded and understood: HTTP has no timeout on its reads, so a peer that
-connects and never sends parks a coroutine forever — `thread.recvtimeout`
+connects and never sends parks a coroutine forever -- `thread.recvtimeout`
 now exists to fix this and it simply hasn't been applied; no chunked transfer-encoding
 either direction; the serializer refuses cycles and functions and
 `time()` is rdtsc; strtod is exact for round decimals but not last-ulp
@@ -1053,7 +1053,7 @@ create/remove/wstat, one connection per server, 9P2000 only;
 alt-send on unbuffered channels only pairs with an already-parked
 receiver; `src/los.c` hosts `los.efi` and the filename lags the rename.
 
-## Non-goals — do not helpfully add these
+## Non-goals -- do not helpfully add these
 
 POSIX compatibility or any compatibility layer. Running existing native
 binaries. Multi-user security (the threat model is buggy Lua, not
@@ -1066,14 +1066,14 @@ gets tested, and importing lwip for microvm is not on the table.
 
 A window system inside the framebuffer. It is two layers on purpose and
 the seam is plan 9's: `src/platform/efi/gop.c` plus `task/fb.lua` are
-libmemdraw — a rectangle of pixels, and `load`/`unload`/`fill`/`scroll`
-to move them — and anything that stacks, clips, routes input or knows
+libmemdraw -- a rectangle of pixels, and `load`/`unload`/`fill`/`scroll`
+to move them -- and anything that stacks, clips, routes input or knows
 what a window is goes above, in another proc holding a right to that
 one. That is what libmemlayer is, and it works precisely because the
 layer under it never heard of a window. Do not teach `fb` about
 z-order, focus or fonts; add a proc.
 
-## Open questions — recorded arguments, not commitments
+## Open questions -- recorded arguments, not commitments
 
 **Do we ever ExitBootServices?** Answered, and the answer was "neither
 pill exclusively". `-Dplatform=microvm` builds for qemu's firmware-less
@@ -1085,7 +1085,7 @@ and riscv64.
 So the question is no longer whether to leave boot services but what
 each platform is for. EFI keeps the firmware's allocator, console and
 network stack, and pays for them in TPL-as-one-big-lock, no true
-preemption and a vendor-quirk minefield — `docs/uefi-notes.md` is that
+preemption and a vendor-quirk minefield -- `docs/uefi-notes.md` is that
 bill. microvm has interrupts, preemption and a boot measured in
 milliseconds, and owes everything the firmware was providing: it has no
 network stack at all, and its filesystem is a host directory over
@@ -1102,7 +1102,7 @@ end, and an OS that is an LLM tool server is a good ending. But it is
 the first code here that is not kernel, runtime or boundary protocol,
 and the boundary vocabulary is supposed to be 9P. Either they are
 permanent infrastructure and stay in `lib/` held to the testing rules,
-or they are a demo and belong under `test/`. Unresolved — decide
+or they are a demo and belong under `test/`. Unresolved -- decide
 deliberately rather than by accretion.
 
 ## Before proposing a change, ask
@@ -1116,7 +1116,7 @@ deliberately rather than by accretion.
 5. Does it invent a protocol where 9P would do?
 6. Does it add a dependency?
 7. Does it leak arch or EFI knowledge past its quarantine?
-8. Where is its TAP test — and if the harness cannot test it as it
+8. Where is its TAP test -- and if the harness cannot test it as it
    stands, is the harness change part of this change?
 9. Does it add a new "wait for the next thing" primitive, or reuse the
    reactor-of-reactors shape?

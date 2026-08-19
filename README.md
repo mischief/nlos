@@ -1,6 +1,6 @@
 # lua-os
 
-Lua 5.4 running on the bare machine — a cursed fusion of Lua, Mach, and
+Lua 5.4 running on the bare machine -- a cursed fusion of Lua, Mach, and
 Plan 9. Most logic in Lua, small C glue. Isolated Lua states as
 processes, capabilities for all IPC, and a namespace per proc that is
 the only thing it can reach.
@@ -16,7 +16,7 @@ aarch64, riscv64), qemu's firmware-less `microvm`, an ESP32-S3 handheld
 `src/platform/` and in which services they start; `init.lua` is the
 same file on all of them.
 
-Built from scratch — no gnu-efi, no mingw, no EDK II, no glibc. Vanilla
+Built from scratch -- no gnu-efi, no mingw, no EDK II, no glibc. Vanilla
 Lua 5.4 as an unpatched submodule; everything else is ours.
 
 It is a playground with discipline: toy scope, but real protocols, real
@@ -56,7 +56,7 @@ The net tests are gated on `-Dfw_network`, which defaults off for
 riscv64: the firmware qemu ships for it is built without edk2's
 NetworkPkg. It does publish the virtio-net `SimpleNetworkProtocol`,
 which is all our stack needs now that it drives the card directly, so
-that default may be more conservative than it has to be — nobody has
+that default may be more conservative than it has to be -- nobody has
 tried it. Configure `-Dfw_network=enabled` to find out.
 
 Talk 9P to it from the host, with plan9port:
@@ -97,7 +97,7 @@ The machine is a process: the terminal is the console, a host directory
 (or the tree built into the binary) is the root, and a file named with
 `-d` is the disk. It links the host libc rather than `src/libc`, so the
 three ways a guest could have reached the host through it are closed
-deliberately — stdio replaced with streams over the console, `fopen`
+deliberately -- stdio replaced with streams over the console, `fopen`
 wrapped and rooted, and the environment cleared before any state
 exists. It has no frames, so tcp and udp come from the host's sockets
 rather than from `lib/ip4.lua`.
@@ -116,7 +116,7 @@ the smp and scheduling tests live there. Its root is a host directory
 over virtio-9p, and it has no network stack.
 
 The ESP32-S3 build is CMake rather than meson, because it is an ESP-IDF
-project — see [esp32/README.md](esp32/README.md) for the boards, the
+project -- see [esp32/README.md](esp32/README.md) for the boards, the
 partitions and the flashing. The one thing worth saying here: the
 firmware carries a set of Lua modules and the `luafs` partition carries
 the rest, the two are disjoint by the build, and changing a module in
@@ -215,7 +215,7 @@ meson test -C build --print-errorlogs
 ```
 
 The same payloads run on the hosted machine, where a test costs
-milliseconds rather than a boot — 143 of them in about five seconds,
+milliseconds rather than a boot -- 143 of them in about five seconds,
 against 154 in about a minute on efi:
 
 ```sh
@@ -228,18 +228,18 @@ in `test/meson.build` so the difference is readable.
 
 Four kinds of test, three of them real boots:
 
-- **boot tests** (`test/boot/test_*.lua`) — injected via qemu fw_cfg as
+- **boot tests** (`test/boot/test_*.lua`) -- injected via qemu fw_cfg as
   `opt/org.luaos.test`, replacing `/init.lua` as the boot payload. The
   guest emits TAP over com1 and powers itself off. `-snapshot` keeps the
   shared image read-only so they run in parallel.
-- **net boot tests** — same, but `NET=1` gives the guest a real NIC on
+- **net boot tests** -- same, but `NET=1` gives the guest a real NIC on
   qemu's usermode network. Separate because DHCP costs boot seconds the
   other tests have no reason to pay.
-- **host-driven tests** (`test/test_*.lua`) — a real external client
+- **host-driven tests** (`test/test_*.lua`) -- a real external client
   drives the guest: plan9port-compatible 9P over the com2 socket, and
   HTTP/JSON-RPC over a forwarded port. A guest cannot test its own TCP
   server, because qemu's usermode network does not hairpin.
-- **host-native tests** (`test/host_*.lua`) — the Lua in `lib/` against
+- **host-native tests** (`test/host_*.lua`) -- the Lua in `lib/` against
   the host's own interpreter, and the C with no kernel in it. No
   machine is involved, so they register whatever `-Dplatform` says.
 
@@ -261,8 +261,8 @@ Benchmarks are separate from tests and are not run by `meson test`:
 ninja -C build benchmark            # or: meson test -C build --benchmark
 ```
 
-They assert nothing beyond "it ran" — a throughput floor would be flaky
-on a loaded host — so read the numbers from
+They assert nothing beyond "it ran" -- a throughput floor would be flaky
+on a loaded host -- so read the numbers from
 `build/meson-logs/benchmarklog.txt`. Meson runs benchmarks serially,
 which is what makes them comparable between runs.
 
@@ -307,25 +307,25 @@ along, and blocks forever the moment anything requires it.
 ## What is not ours
 
 `fonts/spleen-6x12.bdf` is Spleen, copyright (c) 2018-2024 Frederic
-Cambus, BSD 2-Clause — terms in [fonts/LICENSE](fonts/LICENSE). Its
+Cambus, BSD 2-Clause -- terms in [fonts/LICENSE](fonts/LICENSE). Its
 glyphs are compiled into every image, so that notice travels with a
 binary too. `include/sys/queue.h` is OpenBSD's, near-verbatim. Both are
 argued in AGENTS.md.
 
 ## Reading further
 
-- [AGENTS.md](AGENTS.md) — the rules a change has to pass, traps already
+- [AGENTS.md](AGENTS.md) -- the rules a change has to pass, traps already
   walked, known debts, non-goals. Written for agents, useful to humans.
-- [docs/uefi-notes.md](docs/uefi-notes.md) — boot path, toolchain facts
+- [docs/uefi-notes.md](docs/uefi-notes.md) -- boot path, toolchain facts
   that cost blood, firmware quirks, EFI event semantics.
-- [docs/scheduling.md](docs/scheduling.md) — the two schedulers and how
+- [docs/scheduling.md](docs/scheduling.md) -- the two schedulers and how
   they meet: where a yield lands, where a preempted proc resumes, how a
   message reaches a parked thread.
-- [docs/locking.md](docs/locking.md) — the ipc locks: what a narrow
+- [docs/locking.md](docs/locking.md) -- the ipc locks: what a narrow
   region may do, why nothing allocates Lua memory under one, and how a
   waker and its target divide the work between them.
-- [docs/debugging.md](docs/debugging.md) — asking a proc what it is
+- [docs/debugging.md](docs/debugging.md) -- asking a proc what it is
   doing: stacks, the Broke state a faulted proc is held in, and the
   line-trace ring.
-- [docs/namespace-design.md](docs/namespace-design.md) — a parked design;
+- [docs/namespace-design.md](docs/namespace-design.md) -- a parked design;
   a recorded argument rather than a commitment.
