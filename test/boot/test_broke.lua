@@ -112,9 +112,18 @@ tap.ok(not pcall(sys.wchan, pid), "the pid no longer resolves")
 -- anywhere else: the traceback it replaced could only ever describe
 -- the scheduler, while the threads that are actually stuck are
 -- coroutines src/debug.c has to go and find.
+-- it waits for a go: on another cpu it would otherwise deadlock and die
+-- before the monitor below is armed, and monitoring a corpse is answered
+-- with noproc rather than with the death.
 local _, h2 = sys.spawn([[
 	local sys = require("los.sys")
 	local thread = require("los.thread")
+	local go
+
+	repeat
+		sys.block(0)
+		go = sys.tryrecv(0)
+	until go
 
 	-- parked on nothing pollable: gatherports() finds no ports and
 	-- thread.run raises, which is a real proc death
@@ -129,6 +138,7 @@ for _, p in ipairs(sys.procs()) do
 end
 tap.ok(spid ~= nil, "the threaded proc started")
 sys.monitor(spid)
+sys.send(h2, { go = true })
 
 local n2
 repeat

@@ -87,6 +87,14 @@ struct luaheap *shared_heap;
 
 static unsigned int brokeseq;
 
+/* corpses held right now. The cap is enforced at each death, but a reap
+ * there can be declined -- the corpse may be in another cpu's hands --
+ * and nothing else would come along to try again. proc_reap_excess is
+ * that second chance, and this is the counter that makes asking for it
+ * free on every lap of every cpu.
+ */
+static atomic_int nbroke;
+
 /* how often the preempt hook samples the clock, in lua VM instructions.
  * The hook yields on elapsed time, so this is a sampling rate rather
  * than a slice length, and a proc overshoots its quantum by at most one
@@ -1822,7 +1830,48 @@ proc_reap(struct kproc *p)
 	ipclock_enter();
 	KSTAT_SET(p->status, DEAD);
 	p->reaping = 0;
+	atomic_fetch_sub_explicit(&nbroke, 1, memory_order_relaxed);
 	ipclock_leave();
+}
+
+/* the corpse cap's second chance, from the top of a lap.
+ *
+ * Enforcing it only at each death is enough on one cpu. On more, the
+ * reap it asks for can be declined -- the corpse it picked is in
+ * another cpu's hands -- and if nothing dies again the excess stays.
+ */
+void
+proc_reap_excess(void)
+{
+	if (atomic_load_explicit(&nbroke, memory_order_relaxed) <= MAXBROKE)
+		return;
+
+	struct kproc *oldest = 0;
+	int n = 0;
+
+	/* the walk is the count, and the counter above only says whether
+	 * the walk is worth doing: one that drifted high would otherwise
+	 * reap corpses that are inside the cap.
+	 */
+	ipclock_enter();
+	for (int i = 0, n_ = atomic_load_explicit(&prochigh,
+	    memory_order_acquire); i < n_; i++) {
+		struct kproc *q = procv[i];
+
+		/* one already claimed is one already going: counting it
+		 * would let four cpus sweeping at once each pick the next
+		 * corpse down and take the lot.
+		 */
+		if (!q || KSTAT_GET(q->status) != BROKE || q->reaping)
+			continue;
+		n++;
+		if (!oldest || q->brokeseq < oldest->brokeseq)
+			oldest = q;
+	}
+	ipclock_leave();
+
+	if (n > MAXBROKE && oldest)
+		proc_reap(oldest);
 }
 
 void
@@ -1856,6 +1905,7 @@ proc_break(struct kproc *p, const char *why)
 	}
 	rq_del(p);
 	KSTAT_SET(p->status, BROKE);
+	atomic_fetch_add_explicit(&nbroke, 1, memory_order_relaxed);
 	/* stamped with the status: a corpse whose order is still zero
 	 * reads to another cpu's cap scan as the oldest, and it would
 	 * reap this one out from under us.

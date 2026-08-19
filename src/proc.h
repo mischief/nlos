@@ -59,6 +59,7 @@ void	proc_launch(struct kproc *p);
 void	proc_kill(struct kproc *p, const char *why);
 void	proc_break(struct kproc *p, const char *why);
 void	proc_reap(struct kproc *p);
+void	proc_reap_excess(void);
 
 /* deliver an exit notice to a watcher's self port. priv marks a
  * synthetic one, where the reason is the kernel's answer about the

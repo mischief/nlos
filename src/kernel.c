@@ -1443,6 +1443,12 @@ dispatch_lap(struct cpu *me)
 	/* where this cpu holds nothing; a null test per proc otherwise */
 	dbg_sweep();
 
+	/* the same place and for the same reason: a corpse the cap could
+	 * not reap at the death that made it is reaped here instead. One
+	 * atomic load when there is nothing to do.
+	 */
+	proc_reap_excess();
+
 	/* the lap ends when runq is empty, and whichever cpu empties it
 	 * says so. With one queue that is the only workable boundary: a
 	 * cpu cannot swap on its own schedule without handing the others
