@@ -1763,6 +1763,14 @@ void
 proc_kill(struct kproc *p, const char *why)
 {
 	char reason[224];
+	int st = KSTAT_GET(p->status);
+
+	/* already gone, for the reason proc_break gives: a proc killed
+	 * from another cpu runs on to the end of the resume it was in,
+	 * and reaching here again would free a state twice.
+	 */
+	if (st == BROKE || st == DEAD)
+		return;
 
 	proc_logdeath(p, why, reason, sizeof reason);
 
@@ -1823,6 +1831,37 @@ proc_break(struct kproc *p, const char *why)
 	char reason[224];
 	struct kproc *oldest = 0;
 	int n = 0;
+	int st = KSTAT_GET(p->status);
+
+	/* it can already be dead. sys.kill on another cpu breaks a proc
+	 * mid-resume there, and the syscall that resume was in then fails
+	 * -- its rights are gone -- so its own error path arrives here a
+	 * second time, detaching an already detached proc.
+	 */
+	if (st == BROKE || st == DEAD)
+		return;
+
+	/* the claim, the queue and the status in one region, because that
+	 * is the region dispatch takes a proc in: proc_detach below drops
+	 * every right, and a cpu that took this proc off the queue in
+	 * between would resume it holding freed ports. Running on another
+	 * cpu, the same thing, so that cpu breaks it as it lets it go.
+	 */
+	lock(&schedlock);
+	if (p->oncpu && p->oncpu != cpu_self()->idx + 1) {
+		snprintf(p->killwhy, sizeof p->killwhy, "%s", why ? why : "");
+		p->killreq = 1;
+		unlock(&schedlock);
+		return;
+	}
+	rq_del(p);
+	KSTAT_SET(p->status, BROKE);
+	/* stamped with the status: a corpse whose order is still zero
+	 * reads to another cpu's cap scan as the oldest, and it would
+	 * reap this one out from under us.
+	 */
+	p->brokeseq = ++brokeseq;
+	unlock(&schedlock);
 
 	proc_logdeath(p, why, reason, sizeof reason);
 
@@ -1835,7 +1874,10 @@ proc_break(struct kproc *p, const char *why)
 	    memory_order_acquire); i < n_; i++) {
 		struct kproc *q = procv[i];
 
-		if (!q || KSTAT_GET(q->status) != BROKE)
+		/* p counts as a corpse already, and is not a candidate to
+		 * reap: it is the one being made.
+		 */
+		if (!q || q == p || KSTAT_GET(q->status) != BROKE)
 			continue;
 		n++;
 		if (!oldest || q->brokeseq < oldest->brokeseq)
@@ -1850,8 +1892,6 @@ proc_break(struct kproc *p, const char *why)
 
 	ipclock_enter();
 	proc_detach(p, why, reason, 1);
-	KSTAT_SET(p->status, BROKE);
-	p->brokeseq = ++brokeseq;
 	ipclock_leave();
 }
 

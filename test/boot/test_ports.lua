@@ -28,13 +28,18 @@ local function indices()
 	return seen
 end
 
+-- ours, not merely new: another proc on another cpu can make a port
+-- between the two listings, and then "the one that was not there a
+-- moment ago" names somebody else's.
+local me = sys.pidstat().pid
+
 local function newport_watched()
 	local before = indices()
 	local h = sys.newport("test_ports")
 	local idx
 
 	for _, r in ipairs(sys.ports()) do
-		if not before[r.port] then
+		if not before[r.port] and r.owner == me then
 			idx = r.port
 			break
 		end

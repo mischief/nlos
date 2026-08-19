@@ -78,6 +78,10 @@ local tpid, th = sys.spawn(table.concat({
 thread.sleep(20)
 sys.set_trace(tpid, 64)
 dbg.attach(tpid, notice)
+-- the half above left notices here -- a stop, then a death -- and on
+-- another cpu they can still be queued. Drained before arming, so what
+-- the wait below answers is the breakpoint.
+while sys.tryrecv(notice) do end
 dbg.setbreak(tpid, "dbgboth", 3)
 
 local m = thread.recvtimeout(notice, 3000)

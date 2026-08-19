@@ -6,6 +6,7 @@ local tap = require("tap")
 
 tap.plan(10)
 
+local baseports = tap.settled()
 local base = sys.stats()
 
 -- crash: abnormal exit with reason
@@ -49,7 +50,7 @@ sys.close(w1)
 sys.close(w2)
 sys.close(w3)
 local after = sys.stats()
-tap.is(after.ports, base.ports, "ports back to baseline (no leaks)")
+tap.is(after.ports, baseports, "ports back to baseline (no leaks)")
 tap.is(after.procs, base.procs, "procs back to baseline")
 
 tap.done()

@@ -6,6 +6,7 @@ local tap = require("tap")
 
 tap.plan(10)
 
+local baseports = tap.settled()
 local base = sys.stats()
 
 -- meminfo sane for self (unlimited init proc)
@@ -105,6 +106,6 @@ sys.close(wh)
 sys.close(wo)
 sys.close(wc)
 local after = sys.stats()
-tap.is(after.ports, base.ports, "ports back to baseline")
+tap.is(after.ports, baseports, "ports back to baseline")
 
 tap.done()

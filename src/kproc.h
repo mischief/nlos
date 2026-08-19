@@ -313,6 +313,13 @@ struct kproc {
 	 * dispatch_phase.
 	 */
 	int reapreq;
+	/* a kill that arrived while the proc was running on another cpu.
+	 * Tearing its rights out from under a resume in flight leaves that
+	 * resume holding a freed port, so the cpu that has it does the
+	 * break as it lets the proc go. See dispatch_phase.
+	 */
+	int killreq;
+	char killwhy[64];
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
 	int exiting;		/* sys.exit(); the dispatch loop ends it */
 	char exitmsg[64];	/* plan 9 style exits("why"); "" if unused */

@@ -44,6 +44,46 @@ function M.plan(n)
 	sys.atexit(M.done)
 end
 
+-- wait for boot to stop moving, and return the machine's port count.
+-- On more than one cpu the services are still starting when a payload
+-- takes its baseline, and the console makes its input port lazily.
+-- Several stable rounds rather than one: a service spawned but not yet
+-- resumed adds nothing this round and a port the next.
+function M.settled()
+	local me = sys.pidstat().pid
+	local last, same = sys.stats().ports, 0
+
+	for _ = 1, 400 do
+		for _ = 1, 16 do
+			sys.yield()
+		end
+
+		-- a service still to run is a port still to be made, so the
+		-- count alone is only a lull. Parked is what "started" means.
+		local busy = false
+
+		for _, pid in ipairs(sys.procs()) do
+			local w = sys.wchan(pid)
+
+			if pid ~= me and (w == "ready" or w == "hatching") then
+				busy = true
+			end
+		end
+
+		local now = sys.stats().ports
+
+		if now ~= last or busy then
+			last, same = now, 0
+		else
+			same = same + 1
+			if same >= 2 then
+				return now
+			end
+		end
+	end
+	return last
+end
+
 -- assert this proc gave back every port it took. For a test whose
 -- whole point is that something is released -- open a session, close
 -- it, and say so -- rather than for one that leaves a server up.

@@ -53,9 +53,13 @@ local _, w3 = sys.spawn([[
 	local thread = require("los.thread")
 	local m = thread.recv(sys.SELF)
 	local mine = sys.pidstat().reductions
-	-- ask for far more than we hold, and for nothing at all
-	local greedy = sys.spawn("", { reductions = 1000000 })
-	local silent = sys.spawn("")
+	-- ask for far more than we hold, and for nothing at all. Both park
+	-- rather than run out: another cpu finishes an empty chunk before
+	-- pidstat below can ask about it, and a proc that is gone has no
+	-- stats.
+	local PARK = "require('los.sys').block(0)"
+	local greedy = sys.spawn(PARK, { reductions = 1000000 })
+	local silent = sys.spawn(PARK)
 
 	sys.send(m.reply.__right, {
 		mine = mine,

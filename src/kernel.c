@@ -1227,6 +1227,39 @@ run_proc(struct kproc *p)
  * per proc rather than two. It is the acquisitions, not the work under
  * them, that cost; see the note over schedlock.
  */
+/* let go of the proc in hand, and do what arrived for it while it was
+ * held. The claim and the requeue are one step, or a wakeup between
+ * them is lost or enqueued twice. A kill or reap left on the proc runs
+ * after, claim dropped and nothing held, so neither reaches into a
+ * resume still running.
+ */
+static void
+release_claim(struct cpu *me, struct kproc **held)
+{
+	struct kproc *p = *held;
+	char why[sizeof p->killwhy];
+	int kill, reap;
+
+	*held = 0;
+	lock(&schedlock);
+	me->current = 0;
+	p->oncpu = 0;
+	kill = p->killreq;
+	reap = p->reapreq;
+	p->killreq = 0;
+	p->reapreq = 0;
+	if (kill)
+		memcpy(why, p->killwhy, sizeof why);
+	if (!kill && KSTAT_GET(p->status) == READY && !p->onq)
+		rq_add(donq, p);
+	unlock(&schedlock);
+
+	if (kill)
+		proc_break(p, why[0] ? why : 0);
+	if (reap)
+		proc_reap(p);
+}
+
 static int
 dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 {
@@ -1236,22 +1269,18 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 	for (;;) {
 		struct kproc *p = 0;
 
+		/* a proc this cpu held can have died while it was `prev`,
+		 * and the kill or the reap was left here. Taken before the
+		 * lock below, since both of those want it themselves.
+		 */
+		if (prev)
+			release_claim(me, &prev);
+
 		lock(&schedlock);
 		if (budget < 0) {
 			budget = runq->n;
 			if (budget < floor)
 				budget = floor;
-		}
-		/* clearing current and deciding to requeue are one step:
-		 * split them and a wakeup landing in between is either
-		 * lost or enqueued twice.
-		 */
-		if (prev) {
-			me->current = 0;
-			prev->oncpu = 0;
-			if (KSTAT_GET(prev->status) == READY && !prev->onq)
-				rq_add(donq, prev);
-			prev = 0;
 		}
 		/* a proc somebody is reading is put aside rather than run:
 		 * see proc_freeze. Taken and set aside under the one lock,
@@ -1293,23 +1322,16 @@ dispatch_phase(struct cpu *me, struct kproc *(*take)(struct rqset *), int floor)
 		/* a corpse is nobody's, and is let go here rather than at
 		 * the top of the next turn: a reap on another cpu frees
 		 * the state of anything it can see is BROKE, and the step
-		 * below would follow that pointer. A reap that arrived
-		 * while this cpu held it left the teardown here.
+		 * below would follow that pointer.
 		 */
 		lock(&schedlock);
-		int gone = KSTAT_GET(p->status) == DEAD || KSTAT_GET(p->status) == BROKE;
-		int reap = 0;
+		int gone = KSTAT_GET(p->status) == DEAD ||
+		    KSTAT_GET(p->status) == BROKE || p->killreq;
+		unlock(&schedlock);
 
 		if (gone) {
-			me->current = 0;
-			p->oncpu = 0;
-			reap = p->reapreq;
-			p->reapreq = 0;
-		}
-		unlock(&schedlock);
-		if (gone) {
-			if (reap)
-				proc_reap(p);
+			prev = p;
+			release_claim(me, &prev);
 			continue;
 		}
 		/* the collector's safe point, and the only one. Here

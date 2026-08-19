@@ -197,12 +197,21 @@ for i = 1, 3 do
 	sys.close(hh)
 end
 
+-- the cap is a steady state, not an instant: the break that makes room
+-- reaps the oldest corpse, and that teardown runs a lua_close. On
+-- another cpu the exit notice can arrive while it is still going.
 local held = 0
+local deadline = sys.uptime_ms() + 4000
 
-for _, p in ipairs(pids) do
-	local ok, w = pcall(sys.wchan, p)
-	if ok and w == "broke" then held = held + 1 end
-end
+repeat
+	held = 0
+	for _, p in ipairs(pids) do
+		local ok, w = pcall(sys.wchan, p)
+		if ok and w == "broke" then held = held + 1 end
+	end
+	if held <= 2 then break end
+	sys.yield()
+until sys.uptime_ms() >= deadline
 tap.ok(held <= 2, "no more than MAXBROKE corpses are held (" .. held .. ")")
 tap.ok(select(2, pcall(sys.wchan, pids[3])) == "broke",
     "and the one kept is the most recent")

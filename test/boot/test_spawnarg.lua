@@ -157,10 +157,10 @@ local function batch(n, tag)
 		end
 		sys.close(p)
 	end
-	for _ = 1, 5 do
-		sys.yield()
-	end
-	return sys.stats().ports
+	-- settled rather than a fixed number of yields: the exit notice
+	-- that ends a round is sent before the dying proc's ports are
+	-- given back, and on another cpu that release is still to come.
+	return tap.settled()
 end
 
 local first = batch(15, "acctA")
