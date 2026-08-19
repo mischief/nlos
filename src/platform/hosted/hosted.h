@@ -41,10 +41,16 @@ int	hosted_random(void *buf, size_t n);
 /* the machine's memory, set once before anything allocates. */
 void	hosted_setmem(unsigned long long bytes);
 
-/* the display mode -r/--gui/--headless selected. HOSTED_GUI is only a
- * request: platform_have_fb answers no until an SDL backend exists.
- */
 enum { HOSTED_HEADLESS, HOSTED_GUI };
+
 extern int hosted_display;
+
+/* --gui opens a window; without one platform_have_fb says no. pump
+ * drains the host's events and flush repaints, both called from the
+ * device reads and from the idle wait, so a window answers whether the
+ * machine is busy or asleep. */
+int	fb_open(int w, int h);
+void	fb_pump(void);
+void	fb_flush(void);
 
 #endif

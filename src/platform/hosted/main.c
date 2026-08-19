@@ -20,6 +20,10 @@
 
 int hosted_display = HOSTED_HEADLESS;
 
+/* the window, where there is one. A host window can be any size, so
+ * this is a choice rather than a mode the hardware offers. */
+static int guiw = 1024, guih = 768;
+
 static void
 usage(const char *argv0)
 {
@@ -34,7 +38,8 @@ usage(const char *argv0)
 	    "  -s path      the services list, in the root\n"
 	    "  --no-host-fs boot the tree built into this binary, not a\n"
 	    "               directory: the machine carries its own root\n"
-	    "  --gui        ask for a framebuffer window\n"
+	    "  --gui        open a framebuffer window (1024x768)\n"
+	    "  -g WxH       the window size, and --gui with it\n"
 	    "  --headless   console only (default)\n", argv0);
 	exit(2);
 }
@@ -70,6 +75,12 @@ parse_args(int argc, char **argv, const char **root, int *writable,
 			*services = argv[++i];
 		else if (strcmp(a, "--gui") == 0)
 			hosted_display = HOSTED_GUI;
+		else if (strcmp(a, "-g") == 0 && i + 1 < argc) {
+			if (sscanf(argv[++i], "%dx%d", &guiw, &guih) != 2 ||
+			    guiw <= 0 || guih <= 0)
+				usage(argv[0]);
+			hosted_display = HOSTED_GUI;
+		}
 		else if (strcmp(a, "--headless") == 0)
 			hosted_display = HOSTED_HEADLESS;
 		else
@@ -98,6 +109,34 @@ host_resolver(void)
 	}
 	fclose(f);
 	return NULL;
+}
+
+/* what SDL needs to find a display, saved across clearenv and put back
+ * only when a window was asked for. The guest still inherits nothing:
+ * LUA_PATH and friends are not on this list, and a headless run clears
+ * the environment outright. */
+static const char *const displayenv[] = {
+	"DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE",
+	"XAUTHORITY", "HOME", "SDL_VIDEO_DRIVER", "SDL_VIDEODRIVER", NULL
+};
+
+static void
+keep_display_env(void)
+{
+	char *saved[16];
+	int n = 0;
+
+	for (int i = 0; displayenv[i] && n < 16; i++) {
+		const char *v = getenv(displayenv[i]);
+
+		saved[n++] = v ? strdup(v) : NULL;
+	}
+	clearenv();
+	for (int i = 0; displayenv[i] && i < n; i++)
+		if (saved[i]) {
+			setenv(displayenv[i], saved[i], 1);
+			free(saved[i]);
+		}
 }
 
 /* the whole of a file in the served root, or null. The caller frees. */
@@ -179,7 +218,10 @@ main(int argc, char **argv)
 	 * would put its own module tree ahead of /lib -- authority arriving
 	 * by environment, which no other platform has.
 	 */
-	clearenv();
+	if (hosted_display == HOSTED_GUI)
+		keep_display_env();
+	else
+		clearenv();
 
 	console_init();
 	kernel_clock_init();
@@ -230,8 +272,18 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (hosted_display == HOSTED_GUI)
-		kernel_log("display: --gui asked for, no backend built; headless");
+	/* before kernel_init for the same reason the disk is: have_fb,
+	 * have_kbd and have_ptr are asked once, there, and each decides
+	 * whether a task is spawned at all. */
+	if (hosted_display == HOSTED_GUI) {
+		if (fb_open(guiw, guih) != 0)
+			kernel_log("display: no window; running headless");
+		else {
+			snprintf(line, sizeof line, "display: %dx%d window",
+			    guiw, guih);
+			kernel_log(line);
+		}
+	}
 
 	if (kernel_init() != 0) {
 		kernel_log("boot: kernel_init FAILED");

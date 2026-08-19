@@ -98,6 +98,13 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 	pfd[0].events = POLLIN;
 	pfd[0].revents = 0;
 
+	/* a window sleeps with the machine, so its events and its repaint
+	 * happen here as well as in the device reads: an idle guest whose
+	 * screen was left dirty must still show it.
+	 */
+	fb_pump();
+	fb_flush();
+
 	if (ms < 1)
 		ms = 1;
 	while (poll(pfd, (nfds_t)nfd, ms) < 0 && errno == EINTR)

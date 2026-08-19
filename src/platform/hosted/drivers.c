@@ -300,46 +300,6 @@ platform_have_flash(void)
 	return 0;
 }
 
-/* no display yet. --gui asks for one and this is what will answer once
- * an SDL backend exists; until then the switch is recorded and the
- * machine boots headless either way.
- */
-int
-platform_have_fb(void)
-{
-	return 0;
-}
-
-/* the keys arrive through the console, which is a different thing --
- * see platform.h. Same for the pointer, which arrives nowhere.
- */
-int
-platform_have_kbd(void)
-{
-	return 0;
-}
-
-int
-platform_kbd_read(void)
-{
-	return -1;
-}
-
-int
-platform_have_ptr(void)
-{
-	return 0;
-}
-
-int
-platform_ptr_read(int *x, int *y, int *buttons)
-{
-	(void)x;
-	(void)y;
-	(void)buttons;
-	return 0;
-}
-
 int
 platform_have_hci(void)
 {
@@ -380,7 +340,6 @@ static const luaL_Reg emptylib[] = { { NULL, NULL } };
 int luaopen_los_platform_wire(lua_State *L);
 int luaopen_los_platform_eth(lua_State *L);
 int luaopen_los_platform_flash(lua_State *L);
-int luaopen_los_platform_fb(lua_State *L);
 int luaopen_los_platform_hci(lua_State *L);
 int luaopen_los_platform_wifi(lua_State *L);
 int luaopen_los_platform_p9(lua_State *L);
@@ -402,13 +361,6 @@ luaopen_los_platform_eth(lua_State *L)
 
 int
 luaopen_los_platform_flash(lua_State *L)
-{
-	luaL_newlib(L, emptylib);
-	return 1;
-}
-
-int
-luaopen_los_platform_fb(lua_State *L)
 {
 	luaL_newlib(L, emptylib);
 	return 1;

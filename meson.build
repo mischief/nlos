@@ -158,6 +158,10 @@ endif
 # dlopen, which every other platform lacks, so the guest would have
 # authority here that it has nowhere else.
 if platform == 'hosted'
+  # the window, if this host has SDL. Optional and auto: a host without
+  # it builds a machine with no screen, which is what --headless asks
+  # for anyway, and the fb tests then skip rather than fail.
+  sdl_dep = dependency('sdl3', required: get_option('sdl'))
   hosted_args = [
     '-D_GNU_SOURCE',
     '-fno-strict-aliasing',
@@ -165,6 +169,9 @@ if platform == 'hosted'
     '-DLUA_PATH_DEFAULT="/?.lua;/lib/?.lua"',
     '-DLUA_CPATH_DEFAULT=""',
   ]
+  if sdl_dep.found()
+    hosted_args += '-DHAVE_SDL'
+  endif
   add_project_arguments(hosted_args, language: 'c')
   inc = include_directories('src', 'lua', 'src/platform/hosted')
 endif
@@ -233,6 +240,7 @@ if platform == 'hosted'
   kernel_src += files(
     'src/platform/hosted/blk.c',
     'src/platform/hosted/clock.c',
+    'src/platform/hosted/fb.c',
     'src/platform/hosted/console.c',
     'src/platform/hosted/drivers.c',
     'src/platform/hosted/fs.c',
@@ -557,7 +565,7 @@ if platform == 'hosted'
     include_directories: inc,
     c_args: hardening_args,
     link_with: lua_lib,
-    dependencies: cc.find_library('m', required: false),
+    dependencies: [cc.find_library('m', required: false), sdl_dep],
     link_args: ['-Wl,--wrap=fopen', '-Wl,--wrap=fopen64'],
     build_by_default: true,
   )
@@ -865,7 +873,7 @@ hosted_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc',
   'rightsundo', 'procpriv', 'portlimit', 'trace', 'wakeup', 'nesting',
   'rng', 'sshcrypto', 'mlkem', 'sshmem', 'tls', 'layout', 'strictglobals',
   'bufout', 'bufmove', 'serialize', 'mntshare', 'althup', 'ninepc',
-  'oom', 'selfpipe', 'reboot', 'nsfs', 'zmodem', 'atexit', 'history',
+  'selfpipe', 'reboot', 'nsfs', 'zmodem', 'atexit', 'history',
   'top', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim',
   'lazy', 'strseed', 'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak',
   'dbgstep', 'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1',
@@ -879,6 +887,15 @@ foreach t : hosted_tests
   )
 endforeach
 
+# a small machine, because the point is to reach the ceiling: filling
+# the default 512M with lua objects takes far longer than the test is
+# worth, and what it proves does not depend on the figure.
+test('hosted-oom', lua_interp,
+  args: [hosted_boottest, luaos_hosted, files('test/boot/test_oom.lua'),
+    '--mem=64'],
+  protocol: 'tap', timeout: 60, env: hosted_env,
+)
+
 # what needs to write into the root: the harness copies the tree for
 # these rather than letting a test edit the working copy.
 foreach t : ['dev', 'prog', 'vi', 'xd']
@@ -888,6 +905,19 @@ foreach t : ['dev', 'prog', 'vi', 'xd']
     protocol: 'tap', timeout: 60, env: hosted_env,
   )
 endforeach
+
+# the screen, where this host has SDL to put one on. The window is
+# SDL's dummy driver: the payloads read pixels back rather than look at
+# them, so a test needs a framebuffer and not a display.
+if sdl_dep.found()
+  foreach t : ['fb', 'fbcons', 'fbprog', 'fbproxy', 'fbwin', 'dio']
+    test('hosted-' + t, lua_interp,
+      args: [hosted_boottest, luaos_hosted,
+        files('test/boot/test_' + t + '.lua'), '--gui'],
+      protocol: 'tap', timeout: 60, env: hosted_env,
+    )
+  endforeach
+endif
 
 # this machine's own, because no other takes tcp and udp from the
 # platform rather than building them on frames.

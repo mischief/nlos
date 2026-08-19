@@ -61,20 +61,17 @@ platform_arch(void)
 #endif
 }
 
-static unsigned long long memcap;
+static unsigned long long memcap, memused;
 
-/* how much memory this machine has, which a process otherwise has no
- * answer for. The limit is real: past it malloc returns null, so the
- * shortage the kernel is written to survive is one it can actually
- * meet, and an unbounded guest cannot take the host down with it.
- */
+/* how much memory this machine has, counted at the chunk allocator
+ * rather than set as an rlimit. A limit on the process bounds every
+ * mapping the host's libraries make -- SDL's GL stack reserves hundreds
+ * of megabytes before the guest allocates anything -- where this bounds
+ * the guest's heap, which is what the figure means. */
 void
 hosted_setmem(unsigned long long bytes)
 {
-	struct rlimit rl = { bytes, bytes };
-
 	memcap = bytes;
-	setrlimit(RLIMIT_AS, &rl);
 }
 
 /* the cap, less what the allocator holds. `largest` follows `avail`:
@@ -85,9 +82,7 @@ void
 platform_meminfo(unsigned long long *total, unsigned long long *avail,
     unsigned long long *largest)
 {
-	struct mallinfo2 mi = mallinfo2();
-	unsigned long long live = mi.uordblks;
-	unsigned long long free_bytes = memcap > live ? memcap - live : 0;
+	unsigned long long free_bytes = memcap > memused ? memcap - memused : 0;
 
 	if (total)
 		*total = memcap;
@@ -180,15 +175,28 @@ hosted_random(void *buf, size_t n)
 	return 0;
 }
 
+/* the ceiling is enforced here, which is where the lua heaps come from
+ * and so where a runaway guest asks for memory. Refusing is what the
+ * kernel is written to survive: it frees its caches and, if that is not
+ * enough, gives up the largest expendable proc.
+ */
 void *
 platform_chunk_alloc(size_t n)
 {
-	return malloc(n);
+	void *p;
+
+	if (memcap && memused + n > memcap)
+		return NULL;
+	p = malloc(n);
+	if (p)
+		memused += n;
+	return p;
 }
 
 void
 platform_chunk_free(void *p, size_t n)
 {
-	(void)n;
+	if (p)
+		memused -= n;
 	free(p);
 }

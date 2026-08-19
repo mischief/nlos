@@ -96,3 +96,10 @@ option('esp32_idf', type: 'string', value: '',
 
 option('esp32_port', type: 'string', value: '',
   description: 'default port for esp32-<board>-flash; ESPPORT overrides it')
+
+# The hosted platform's display: an SDL window carrying the framebuffer,
+# the keyboard and the pointer. Optional, and auto by default -- a host
+# without SDL builds a machine with no screen, which is what --headless
+# asks for anyway.
+option('sdl', type: 'feature', value: 'auto',
+  description: 'hosted: a framebuffer window through SDL3')

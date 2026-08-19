@@ -14,12 +14,19 @@ if not binary or not payload then
 	os.exit(1)
 end
 
-local writable, wantblk, wantgefs = false, false, false
+local writable, wantblk, wantgefs, wantgui = false, false, false, false
+
+-- the machine size a payload wants, where the default is more than it
+-- should have to fill: the oom test has to reach the ceiling.
+local mem = nil
 
 for i = 3, #arg do
 	if arg[i] == "--writable" then writable = true
 	elseif arg[i] == "--blk" then wantblk = true
 	elseif arg[i] == "--gefs" then wantgefs = true
+	elseif arg[i] == "--gui" then wantgui = true
+	elseif arg[i]:match("^%-%-mem=%d+$") then
+		mem = arg[i]:match("%d+")
 	else
 		io.stderr:write("unknown flag: " .. arg[i] .. "\n")
 		os.exit(1)
@@ -128,8 +135,15 @@ if abs:sub(1, #base) ~= base or guestpath == "" then
 	os.exit(1)
 end
 
-local cmd = ("%s -r %s -p %s%s%s < /dev/null 2>&1"):format(q(binary),
-    q(root), q(guestpath), writable and " -w" or "", diskargs)
+-- a window the test never shows: SDL's dummy driver gives a real
+-- framebuffer with no display attached, which is what these payloads
+-- read back from. Showing one would need a display to show it on.
+local extra = (wantgui and " --gui" or "") ..
+    (mem and (" -m " .. mem) or "")
+
+local cmd = ("%s%s -r %s -p %s%s%s < /dev/null 2>&1"):format(
+    wantgui and "SDL_VIDEO_DRIVER=dummy " or "", q(binary),
+    q(root), q(guestpath), writable and " -w" or "", diskargs .. extra)
 
 local p = assert(io.popen(cmd))
 local out = p:read("a")
