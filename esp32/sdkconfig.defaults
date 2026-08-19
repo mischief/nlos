@@ -118,3 +118,8 @@ CONFIG_BT_CONTROLLER_ONLY=y
 # a mesh node wants several at once. 10 is the controller's ceiling and
 # each costs 828 bytes of internal SRAM, which is the scarce kind here.
 CONFIG_BT_CTRL_BLE_MAX_ACT=10
+
+# The chip's own USB port, which on this board is also the console.
+# Nothing starts the controller: sys.usbhost() does, and the console
+# goes with it until the next boot.
+CONFIG_LUAOS_USB_HOST=y

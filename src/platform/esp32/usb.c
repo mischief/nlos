@@ -11,8 +11,10 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/stream_buffer.h>
 
 #include "esp32.h"
+#include "platform.h"
 #include "kernel.h"
 
 /* the header comes with the managed component, which is fetched only
@@ -25,6 +27,16 @@
 #define USB_TASK_STACK 4096
 
 static usb_host_client_handle_t client;
+static usb_device_handle_t device;
+
+/* the active configuration as bytes, which is what lib/usb.lua parses.
+ * Kept rather than pointed at: the descriptor belongs to the stack, and
+ * a device that leaves takes it with it.
+ */
+static uint8_t desc[512];
+static int desclen;
+
+static void playstop(void);
 
 /* kernel_say takes a finished line */
 static void
@@ -69,6 +81,7 @@ opened(uint8_t addr)
 		sayf("usb: cannot open device %u", addr);
 		return;
 	}
+	device = dev;
 
 	if (usb_host_get_device_descriptor(dev, &dd) == ESP_OK)
 		sayf("usb: %u vid %04x pid %04x class %02x/%02x usb %04x",
@@ -79,6 +92,11 @@ opened(uint8_t addr)
 		sayf("usb: %u config %u interfaces, %u bytes",
 		    addr, cfg->bNumInterfaces, cfg->wTotalLength);
 		dumpcfg(cfg);
+
+		desclen = cfg->wTotalLength;
+		if (desclen > (int)sizeof(desc))
+			desclen = sizeof(desc);
+		memcpy(desc, cfg, desclen);
 	}
 }
 
@@ -93,10 +111,194 @@ evcb(const usb_host_client_event_msg_t *msg, void *arg)
 		break;
 	case USB_HOST_CLIENT_EVENT_DEV_GONE:
 		kernel_say("usb: device gone");
+		playstop();
+		device = NULL;
+		desclen = 0;
 		break;
 	default:
 		break;
 	}
+}
+
+/* ---- playback ----
+ *
+ * The bus asks every millisecond whether anybody has anything, and
+ * nothing may be late. A packet with no audio behind it carries
+ * silence rather than nothing, which is a click and not a stall.
+ */
+
+#define NXFER 4			/* transfers in flight */
+#define NPKT 4			/* milliseconds a transfer */
+#define RINGMS 200		/* what the ring holds, in milliseconds */
+
+static usb_transfer_t *xfer[NXFER];
+static StreamBufferHandle_t pcm;
+static int playing;
+static int playpkt;		/* bytes a millisecond */
+static unsigned long underruns;
+
+/* refill and resubmit. Runs on the client task, so the stream buffer is
+ * read here and written by whatever proc is playing.
+ */
+static void
+refill(usb_transfer_t *t)
+{
+	int i, off = 0;
+
+	for (i = 0; i < NPKT; i++) {
+		size_t got = 0;
+
+		if (pcm)
+			got = xStreamBufferReceive(pcm, t->data_buffer + off,
+			    playpkt, 0);
+
+		if ((int)got < playpkt) {
+			memset(t->data_buffer + off + got, 0, playpkt - got);
+			underruns++;
+		}
+		t->isoc_packet_desc[i].num_bytes = playpkt;
+		off += playpkt;
+	}
+	t->num_bytes = off;
+
+	if (usb_host_transfer_submit(t) != ESP_OK)
+		playing = 0;
+}
+
+static void
+played(usb_transfer_t *t)
+{
+	if (playing)
+		refill(t);
+}
+
+static void
+playstop(void)
+{
+	int i;
+
+	playing = 0;
+
+	for (i = 0; i < NXFER; i++) {
+		if (xfer[i]) {
+			usb_host_transfer_free(xfer[i]);
+			xfer[i] = NULL;
+		}
+	}
+
+	if (pcm) {
+		vStreamBufferDelete(pcm);
+		pcm = NULL;
+	}
+}
+
+/* UAC1 asks for its rate on the endpoint, not the interface: SET_CUR of
+ * the sampling frequency control, three bytes little endian.
+ */
+static int
+setrate(int ep, int rate)
+{
+	usb_transfer_t *t;
+	int rc = -1;
+
+	if (usb_host_transfer_alloc(sizeof(usb_setup_packet_t) + 3, 0, &t) != ESP_OK)
+		return -1;
+
+	usb_setup_packet_t *s = (usb_setup_packet_t *)t->data_buffer;
+
+	s->bmRequestType = 0x22;	/* class, to an endpoint */
+	s->bRequest = 0x01;		/* SET_CUR */
+	s->wValue = 0x0100;		/* sampling frequency */
+	s->wIndex = ep;
+	s->wLength = 3;
+	t->data_buffer[8] = rate & 0xff;
+	t->data_buffer[9] = (rate >> 8) & 0xff;
+	t->data_buffer[10] = (rate >> 16) & 0xff;
+	t->num_bytes = sizeof(usb_setup_packet_t) + 3;
+	t->device_handle = device;
+	t->bEndpointAddress = 0;
+	t->callback = NULL;
+	t->timeout_ms = 1000;
+
+	if (usb_host_transfer_submit_control(client, t) == ESP_OK)
+		rc = 0;
+	usb_host_transfer_free(t);
+	return rc;
+}
+
+int
+platform_usb_play(int itf, int alt, int ep, int packet, int rate)
+{
+	int i;
+
+	if (!device || packet <= 0)
+		return -1;
+
+	playstop();
+
+	if (usb_host_interface_claim(client, device, itf, alt) != ESP_OK) {
+		kernel_say("usb: cannot claim the audio interface");
+		return -1;
+	}
+
+	if (setrate(ep, rate) != 0)
+		kernel_say("usb: the device refused the rate; playing anyway");
+
+	pcm = xStreamBufferCreate(packet * RINGMS, 1);
+	if (!pcm)
+		return -1;
+
+	playpkt = packet;
+	underruns = 0;
+	playing = 1;
+
+	for (i = 0; i < NXFER; i++) {
+		if (usb_host_transfer_alloc(packet * NPKT, NPKT, &xfer[i]) != ESP_OK) {
+			playstop();
+			return -1;
+		}
+		xfer[i]->device_handle = device;
+		xfer[i]->bEndpointAddress = ep;
+		xfer[i]->callback = played;
+		xfer[i]->timeout_ms = 0;
+		refill(xfer[i]);
+	}
+	sayf("usb: playing on endpoint %02x, %d bytes a ms", ep, packet);
+	return 0;
+}
+
+/* what was taken. A short answer means the ring is full, which is the
+ * one thing a caller has to react to: it is the pace, and outrunning it
+ * is how the audio arrives late.
+ */
+int
+platform_usb_write(const void *p, int n)
+{
+	if (!playing || !pcm)
+		return -1;
+	return (int)xStreamBufferSend(pcm, p, n, 0);
+}
+
+void
+platform_usb_stop(void)
+{
+	playstop();
+}
+
+int
+platform_usb_desc(void *p, int max)
+{
+	int n = desclen < max ? desclen : max;
+
+	if (n > 0)
+		memcpy(p, desc, n);
+	return n;
+}
+
+unsigned long
+platform_usb_underruns(void)
+{
+	return underruns;
 }
 
 /* One task drives both halves. The library wants its own event pump and
@@ -136,17 +338,27 @@ usbtask(void *arg)
 	}
 }
 
-void
-esp_usb_start(void)
+/* once: the controller has no second instance, and a second caller is
+ * asking for what is already running.
+ */
+int
+platform_usbhost(void)
 {
+	static int started;
+
+	if (started)
+		return 1;
+	started = 1;
 	xTaskCreate(usbtask, "usb", USB_TASK_STACK, NULL, 5, NULL);
+	return 1;
 }
 
 #else
 
-void
-esp_usb_start(void)
+int
+platform_usbhost(void)
 {
+	return 0;
 }
 
 #endif

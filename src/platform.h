@@ -149,6 +149,24 @@ int	platform_ptr_read(int *x, int *y, int *buttons);
  */
 int	platform_battery(int *mv);
 
+/* the USB port as a host, where the machine has one to spare. Answers
+ * 1 once the controller is up, 0 where this machine cannot. It is not
+ * undone: on a board whose console shares those pins, the console is
+ * gone until the next boot.
+ */
+int	platform_usbhost(void);
+
+/* the audio device on that port, as the descriptors describe it. The
+ * choice of interface, setting, endpoint and rate is made above, in
+ * lib/uac.lua: this only carries it out. Bytes are signed 16-bit
+ * frames, and platform_usb_write answers how many it took.
+ */
+int	platform_usb_desc(void *p, int max);
+int	platform_usb_play(int itf, int alt, int ep, int packet, int rate);
+int	platform_usb_write(const void *p, int n);
+void	platform_usb_stop(void);
+unsigned long	platform_usb_underruns(void);
+
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);

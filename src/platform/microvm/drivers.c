@@ -911,3 +911,48 @@ luaopen_los_platform_udp(lua_State *L)
 	lua_newtable(L);
 	return 1;
 }
+
+/* no OTG controller here */
+int
+platform_usbhost(void)
+{
+	return 0;
+}
+
+int
+platform_usb_desc(void *p, int max)
+{
+	(void)p;
+	(void)max;
+	return 0;
+}
+
+int
+platform_usb_play(int itf, int alt, int ep, int packet, int rate)
+{
+	(void)itf;
+	(void)alt;
+	(void)ep;
+	(void)packet;
+	(void)rate;
+	return -1;
+}
+
+int
+platform_usb_write(const void *p, int n)
+{
+	(void)p;
+	(void)n;
+	return -1;
+}
+
+void
+platform_usb_stop(void)
+{
+}
+
+unsigned long
+platform_usb_underruns(void)
+{
+	return 0;
+}

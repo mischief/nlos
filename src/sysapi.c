@@ -1821,6 +1821,88 @@ api_battery(lua_State *L)
 	return 1;
 }
 
+/* sys.usbhost() -> true once the OTG port is a host, nil where the
+ * machine has no controller. One way: the console may share those pins,
+ * and where it does it is gone until the next boot.
+ */
+static int
+api_usbhost(lua_State *L)
+{
+	if (!platform_usbhost())
+		return 0;
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* sys.usbdesc() -> the active configuration descriptor as a string, or
+ * nil where nothing is plugged in. lib/usb.lua reads it.
+ */
+static int
+api_usbdesc(lua_State *L)
+{
+	char buf[512];
+	int n = platform_usb_desc(buf, sizeof(buf));
+
+	if (n <= 0)
+		return 0;
+	lua_pushlstring(L, buf, n);
+	return 1;
+}
+
+/* sys.usbplay(itf, alt, ep, bytes_per_ms, rate) -> true, or nil and why.
+ * Which of those to pass is lib/uac.lua's answer, not this one's.
+ */
+static int
+api_usbplay(lua_State *L)
+{
+	int itf = (int)luaL_checkinteger(L, 1);
+	int alt = (int)luaL_checkinteger(L, 2);
+	int ep = (int)luaL_checkinteger(L, 3);
+	int packet = (int)luaL_checkinteger(L, 4);
+	int rate = (int)luaL_checkinteger(L, 5);
+
+	if (platform_usb_play(itf, alt, ep, packet, rate) != 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, "cannot play on that device");
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* sys.usbwrite(s) -> bytes taken. Short means the ring is full, which
+ * is the pace: a caller writes the rest after waiting, and one that
+ * ignores it arrives late rather than loud.
+ */
+static int
+api_usbwrite(lua_State *L)
+{
+	size_t n;
+	const char *p = luaL_checklstring(L, 1, &n);
+	int took = platform_usb_write(p, (int)n);
+
+	if (took < 0)
+		return 0;
+	lua_pushinteger(L, took);
+	return 1;
+}
+
+static int
+api_usbstop(lua_State *L)
+{
+	(void)L;
+	platform_usb_stop();
+	return 0;
+}
+
+/* how many milliseconds went out as silence for want of audio */
+static int
+api_usbunderruns(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)platform_usb_underruns());
+	return 1;
+}
+
 static int
 api_stats(lua_State *L)
 {
@@ -2409,6 +2491,12 @@ static const luaL_Reg kapi[] = {
 	{ "reclaim", api_reclaim },
 	{ "meminfo", api_meminfo },
 	{ "battery", api_battery },
+	{ "usbhost", api_usbhost },
+	{ "usbdesc", api_usbdesc },
+	{ "usbplay", api_usbplay },
+	{ "usbwrite", api_usbwrite },
+	{ "usbstop", api_usbstop },
+	{ "usbunderruns", api_usbunderruns },
 	{ "self", api_self },
 	{ "procs", api_procs },
 	{ "ports", api_ports },

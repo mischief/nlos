@@ -526,6 +526,14 @@ test('wifi-config', lua_interp,
   timeout: 20,
 )
 
+# A USB configuration descriptor, and the audio class over it. The
+# fixture is a real adapter's, read off the board.
+test('usb', lua_interp,
+  args: [files('host_usb.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # /net/wifi, parsed once for both faces of the app.
 test('wifi', lua_interp,
   args: [files('host_wifi.lua')],
