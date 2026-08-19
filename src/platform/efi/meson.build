@@ -1,3 +1,48 @@
+# efi: the sources this machine adds, its link, and the image built
+# from it.
+
+kernel_src += files(
+  '../../../src/platform/efi/blk.c',
+  '../../../src/platform/efi/console.c',
+  '../../../src/platform/efi/drivers.c',
+  '../../../src/platform/efi/fs.c',
+  '../../../src/platform/efi/gop.c',
+  '../../../src/platform/efi/los.c',
+  '../../../src/platform/efi/main.c',
+  '../../../src/platform/efi/malloc.c',
+  '../../../src/platform/efi/rng.c',
+  '../../../src/platform/efi/snp.c',
+)
+
+# the elf intermediate: base 0, RELATIVE relocs only, self-relocated
+# at entry. gcc drives ld; -nostdlib keeps crt/libc out.
+luaos_elf = shared_library('luaos',
+  kernel_src + libc_src + arch_src,
+  name_prefix: '',
+  include_directories: inc,
+  c_args: hardening_args,
+  link_with: lua_lib,
+  link_args: [
+    '-nostdlib',
+    '-Wl,-Bsymbolic',
+    '-Wl,-znocombreloc',
+    # do not emit a build-id: pe.ld discards .note.* (a flat binary has
+    # nowhere to keep it), and generating one only to drop it warns.
+    '-Wl,--build-id=none',
+    '-Wl,-T,' + pe_ld,
+  ],
+  link_depends: files('../../../src/platform/efi/pe.ld'),
+)
+
+# flat binary; the hand PE32+ header in src/<arch>/header.S makes this
+# a valid uefi application.
+luaos_efi = custom_target('luaos.efi',
+  input: luaos_elf,
+  output: 'luaos.efi',
+  command: [objcopy, '-O', 'binary', '@INPUT@', '@OUTPUT@'],
+  build_by_default: true,
+)
+
 
 lua_payload = files(
   '../../../init.lua',
