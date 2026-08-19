@@ -5,6 +5,11 @@ Plan 9. Most logic in Lua, small C glue. Isolated Lua states as
 processes, capabilities for all IPC, and a namespace per proc that is
 the only thing it can reach.
 
+That namespace is a 9P idea, and 9P is where the design started: real
+9P2000 at the boundaries, so stock clients mount it with no shim. It
+has stayed the vocabulary for crossing one — what grew around it is
+ports, rights and the namespace itself.
+
 Four machines, one system above the platform layer: UEFI (x86_64,
 aarch64, riscv64), qemu's firmware-less `microvm`, an ESP32-S3 handheld
 (the LilyGO T-Deck), and a linux process. They differ in
