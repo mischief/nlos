@@ -20,7 +20,7 @@ luaos_elf = shared_library('luaos',
   kernel_src + libc_src + arch_src,
   name_prefix: '',
   include_directories: inc,
-  c_args: hardening_args,
+  c_args: plat_args + hardening_args,
   link_with: lua_lib,
   link_args: [
     '-nostdlib',

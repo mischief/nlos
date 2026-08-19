@@ -92,7 +92,9 @@ if platform == 'hosted'
   if sdl_dep.found()
     hosted_args += '-DHAVE_SDL'
   endif
-  add_project_arguments(hosted_args, language: 'c')
+  # named by the targets that want them rather than added to the
+  # project: a machine's flags belong to that machine's targets.
+  plat_args = hosted_args
   inc = include_directories('src', 'lua', 'src/platform/hosted')
 endif
 
@@ -120,7 +122,7 @@ freestanding_args = [
 ] + arch_args
 
 if platform != 'hosted'
-  add_project_arguments(freestanding_args, language: 'c')
+  plat_args = freestanding_args
   inc = include_directories('include', 'src', 'lua', 'src' / arch,
     'src/platform' / platform)
 endif
@@ -211,6 +213,7 @@ endif
 # vanilla lua, warnings left to upstream
 lua_lib = static_library('lua54', lua_src,
   include_directories: inc,
+  c_args: plat_args,
 )
 
 

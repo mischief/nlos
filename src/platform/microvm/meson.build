@@ -225,7 +225,7 @@ kernel_src += embedfs_src
 luaos_microvm_elf = executable('luaos-microvm.elf',
   kernel_src + libc_src + arch_src,
   include_directories: inc,
-  c_args: hardening_args,
+  c_args: plat_args + hardening_args,
   link_with: lua_lib,
   link_args: [
     '-nostdlib',
