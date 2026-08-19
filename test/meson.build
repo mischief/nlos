@@ -404,7 +404,9 @@ if host_arch in ['x86_64', 'aarch64', 'riscv64']
   # toolchain component, not a source dependency.
   tsan_args = ['-DNCPU=8', '-DNTHREAD=4', '-DNITER=2000',
     '-fsanitize=thread', '-g']
-  if cc.has_link_argument('-fsanitize=thread')
+  # not in an address-sanitized build: the two instrumentations are
+  # mutually exclusive, and this target asks for one of them by hand.
+  if cc.has_link_argument('-fsanitize=thread') and not asan_build
     lock_test_tsan = executable('lock_test_tsan',
       ['lock_test.c'],
       include_directories: include_directories('../src', '../src' / host_arch),

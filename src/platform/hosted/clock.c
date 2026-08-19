@@ -91,12 +91,20 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 	 * tick late every time, which is a wait of milliseconds on every
 	 * packet.
 	 */
-	struct pollfd pfd[NET_POLLMAX + 1];
-	int nfd = net_pollfds(pfd + 1, NET_POLLMAX) + 1;
+	struct pollfd pfd[NET_POLLMAX + 2];
+	int nfd = net_pollfds(pfd + 2, NET_POLLMAX) + 2;
 
 	pfd[0].fd = console_infd();
 	pfd[0].events = POLLIN;
 	pfd[0].revents = 0;
+
+	/* the boot cpu sleeps here rather than in platform_cpu_idle, so
+	 * this is where another cpu's wake has to land: without it, work
+	 * made ready for cpu 0 waits for the next tick.
+	 */
+	pfd[1].fd = hosted_wakefd(0);
+	pfd[1].events = POLLIN;
+	pfd[1].revents = 0;
 
 	/* a window sleeps with the machine, so its events and its repaint
 	 * happen here as well as in the device reads: an idle guest whose
@@ -109,6 +117,8 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 		ms = 1;
 	while (poll(pfd, (nfds_t)nfd, ms) < 0 && errno == EINTR)
 		;
+	if (pfd[1].revents)
+		hosted_wakedrain(0);
 	if (index)
 		*index = 0;
 	return EFI_SUCCESS;

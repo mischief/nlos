@@ -32,6 +32,20 @@ int	net_pollfds(struct pollfd *out, int max);
 const char *hosted_fwcfg(const char *name);
 void	hosted_setfwcfg(const char *name, const char *value);
 
+/* the cpus, where a cpu is a host thread. init before anything calls
+ * cpu_self, start after the first proc exists -- an ap whose dispatch
+ * loop begins on a machine with no live procs parks for good.
+ */
+int	hosted_smp_init(int want);
+void	hosted_smp_start(void);
+
+/* a cpu's wake pipe, and how to empty it. The boot cpu sleeps in the
+ * idle poll rather than in platform_cpu_idle, so that poll has to watch
+ * this too or work made ready for it waits for the next tick.
+ */
+int	hosted_wakefd(unsigned cpu);
+void	hosted_wakedrain(unsigned cpu);
+
 /* sleep this long, giving the cpu back for the whole of it. */
 void	hosted_stall_us(unsigned long us);
 

@@ -11,6 +11,7 @@ kernel_src += files(
   '../../../src/platform/hosted/machine.c',
   '../../../src/platform/hosted/main.c',
   '../../../src/platform/hosted/net.c',
+  '../../../src/platform/hosted/smp.c',
 )
 
 # the tree, carried in the binary, so --no-host-fs has a root. The
@@ -47,8 +48,11 @@ luaos_hosted = executable('luaos-hosted',
   include_directories: inc,
   c_args: plat_args + hardening_args,
   link_with: lua_lib,
-  dependencies: [cc.find_library('m', required: false), sdl_dep],
-  link_args: ['-Wl,--wrap=fopen', '-Wl,--wrap=fopen64'],
+  dependencies: [cc.find_library('m', required: false), sdl_dep,
+    dependency('threads')],
+  link_args: ['-Wl,--wrap=fopen', '-Wl,--wrap=fopen64'] +
+    (asan_build ? ['-static-libasan'] : []) +
+    (tsan_build ? ['-static-libtsan'] : []),
   build_by_default: true,
 )
 

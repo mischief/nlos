@@ -38,6 +38,7 @@ usage(const char *argv0)
 	    "  -n addr      the nameserver to ask (default: the host's)\n"
 	    "  -s path      the services list, in the root\n"
 	    "  -c dir       the writable volume served at /config\n"
+	    "  -j n         cpus, each a host thread (default: 1)\n"
 	    "  --no-host-fs boot the tree built into this binary, not a\n"
 	    "               directory: the machine carries its own root\n"
 	    "  --gui        open a framebuffer window (1024x768)\n"
@@ -52,7 +53,7 @@ usage(const char *argv0)
 static const char *
 parse_args(int argc, char **argv, const char **root, int *writable,
     unsigned long *mb, const char **disk, const char **dns,
-    const char **services, const char **config)
+    const char **services, const char **config, int *cpus)
 {
 	const char *payload = "/init.lua";
 
@@ -77,6 +78,8 @@ parse_args(int argc, char **argv, const char **root, int *writable,
 			*services = argv[++i];
 		else if (strcmp(a, "-c") == 0 && i + 1 < argc)
 			*config = argv[++i];
+		else if (strcmp(a, "-j") == 0 && i + 1 < argc)
+			*cpus = atoi(argv[++i]);
 		else if (strcmp(a, "--gui") == 0)
 			hosted_display = HOSTED_GUI;
 		else if (strcmp(a, "-g") == 0 && i + 1 < argc) {
@@ -230,8 +233,9 @@ main(int argc, char **argv)
 	const char *dns = NULL;
 	const char *services = "/machine/hosted/services.lua";
 	const char *config = NULL;
+	int cpus = 1;
 	const char *payload = parse_args(argc, argv, &root, &writable, &mb,
-	    &disk, &dns, &services, &config);
+	    &disk, &dns, &services, &config, &cpus);
 	char confbuf[512];
 	char line[640];
 
@@ -256,6 +260,12 @@ main(int argc, char **argv)
 	if (mb == 0)
 		usage(argv[0]);
 	hosted_setmem((unsigned long long)mb * 1024 * 1024);
+
+	/* before anything asks which cpu it is, which kernel_init does. */
+	if (hosted_smp_init(cpus) != 0) {
+		fprintf(stderr, "luaos: cannot make the cpus\n");
+		return 1;
+	}
 
 	/* before clearenv, and before the guest has any filesystem: this
 	 * is the host's own resolver, which is the one a guest borrowing
@@ -361,55 +371,19 @@ main(int argc, char **argv)
 		return 1;
 	}
 
+	/* the other cpus last, and after the first proc exists: an ap goes
+	 * straight into a dispatch loop whose condition is that the
+	 * machine has live procs, and one started earlier finds none and
+	 * parks for good.
+	 */
+	hosted_smp_start();
+	if (platform_ncpu() > 1) {
+		snprintf(line, sizeof line, "smp: %u cpus", platform_ncpu());
+		kernel_log(line);
+	}
+
 	kernel_run();
 	kernel_say("boot: halted (every proc exited)");
 	return 0;
 }
 
-/* one cpu, so a plain static. cpu_self() is still the only way kernel.c
- * reaches it, which is what keeps that file free of the distinction.
- */
-static struct cpu thecpu = { .self = &thecpu, .idx = 0, .apicid = 0 };
-
-struct cpu *
-cpu_self(void)
-{
-	return &thecpu;
-}
-
-struct cpu *
-cpu_at(unsigned i)
-{
-	return i == 0 ? &thecpu : 0;
-}
-
-unsigned
-platform_ncpu(void)
-{
-	return 1;
-}
-
-/* one cpu, so there is never another to wake, no window to close, and
- * no idle loop but the boot processor's -- which sleeps in the shim's
- * WaitForEvent instead.
- */
-void
-platform_wake_cpu(unsigned i)
-{
-	(void)i;
-}
-
-void
-platform_cpu_idle(void)
-{
-}
-
-void
-platform_intr_off(void)
-{
-}
-
-void
-platform_intr_on(void)
-{
-}

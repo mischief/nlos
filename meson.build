@@ -9,6 +9,15 @@ project('lua-os', 'c',
   ])
 
 cc = meson.get_compiler('c')
+
+# -Db_sanitize=address, which two things elsewhere have to know about:
+# the tsan lock test cannot be built beside it, and the hosted binary
+# links the runtime statically. A host with an LD_PRELOAD of its own
+# loads it before libasan and asan refuses to start, which a static
+# runtime cannot run into.
+asan_build = get_option('b_sanitize').contains('address')
+tsan_build = get_option('b_sanitize').contains('thread')
+
 objcopy = find_program('objcopy')
 
 # every tools/*.lua and test/*.lua tool is run through this rather
@@ -84,6 +93,7 @@ if platform == 'hosted'
   sdl_dep = dependency('sdl2', required: get_option('sdl'))
   hosted_args = [
     '-D_GNU_SOURCE',
+    '-DNCPU=8',
     '-fno-strict-aliasing',
     '-DLUA_USER_H="coreg.h"',
     '-DLUA_PATH_DEFAULT="/?.lua;/lib/?.lua"',

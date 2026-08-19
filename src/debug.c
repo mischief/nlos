@@ -237,7 +237,11 @@ debug_push_stacks(lua_State *to, lua_State *target_main, lua_State *target_co)
 	lua_rawseti(to, -2, ++n);
 
 	for (int i = 0; i < w.nfound; i++) {
-		char label[16];
+		/* "thread " plus an int that cannot exceed nfound, which a
+		 * proc's coroutine count bounds. Sized for the widest int
+		 * anyway, so the compiler need not take the author's word.
+		 */
+		char label[24];
 
 		if (w.found[i] == target_co || w.found[i] == target_main)
 			continue;

@@ -3,6 +3,7 @@
  */
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,7 +61,13 @@ platform_arch(void)
 #endif
 }
 
-static unsigned long long memcap, memused;
+static unsigned long long memcap;
+
+/* atomic because every cpu allocates: the check and the add have to be
+ * one step, or two cpus both find room for the last chunk and the cap
+ * is a suggestion. memcap is written once before any cpu starts.
+ */
+static atomic_ullong memused;
 
 /* how much memory this machine has. Not an rlimit: that bounds the
  * process, so every mapping the host's own libraries make would count
@@ -81,7 +88,9 @@ void
 platform_meminfo(unsigned long long *total, unsigned long long *avail,
     unsigned long long *largest)
 {
-	unsigned long long free_bytes = memcap > memused ? memcap - memused : 0;
+	unsigned long long used = atomic_load_explicit(&memused,
+	    memory_order_relaxed);
+	unsigned long long free_bytes = memcap > used ? memcap - used : 0;
 
 	if (total)
 		*total = memcap;
@@ -183,13 +192,22 @@ hosted_random(void *buf, size_t n)
 void *
 platform_chunk_alloc(size_t n)
 {
+	unsigned long long used = atomic_load_explicit(&memused,
+	    memory_order_relaxed);
 	void *p;
 
-	if (memcap && memused + n > memcap)
-		return NULL;
+	/* take the room first, then the memory: claiming it after the
+	 * malloc would let two cpus past the same last chunk.
+	 */
+	do {
+		if (memcap && used + n > memcap)
+			return NULL;
+	} while (!atomic_compare_exchange_weak_explicit(&memused, &used,
+	    used + n, memory_order_relaxed, memory_order_relaxed));
+
 	p = malloc(n);
-	if (p)
-		memused += n;
+	if (!p)
+		atomic_fetch_sub_explicit(&memused, n, memory_order_relaxed);
 	return p;
 }
 
@@ -197,6 +215,6 @@ void
 platform_chunk_free(void *p, size_t n)
 {
 	if (p)
-		memused -= n;
+		atomic_fetch_sub_explicit(&memused, n, memory_order_relaxed);
 	free(p);
 }

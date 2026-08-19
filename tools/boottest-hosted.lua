@@ -142,8 +142,16 @@ end
 -- The name matters more than it looks: get it wrong and SDL falls
 -- through to the host's real driver, so the tests pass on a desktop
 -- and fail on anything headless.
+
+-- how many cpus to give the machine, from the environment rather than
+-- the test list: the same payloads are what a uniprocessor and an smp
+-- run compare, so LUAOS_CPUS=2 re-runs the suite rather than doubling
+-- it.
+local cpus = tonumber(os.getenv("LUAOS_CPUS") or "")
+
 local extra = (wantgui and " --gui" or "") ..
-    (mem and (" -m " .. mem) or "")
+    (mem and (" -m " .. mem) or "") ..
+    (cpus and (" -j " .. math.floor(cpus)) or "")
 
 local cmd = ("%s%s -r %s -p %s%s%s < /dev/null 2>&1"):format(
     wantgui and "SDL_VIDEODRIVER=dummy " or "", q(binary),
