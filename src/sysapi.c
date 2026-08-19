@@ -760,22 +760,49 @@ api_hungup(lua_State *L)
  * returns to the parent: a supervisor may stop what it started, and a
  * proc that learned a pid from sys.procs may not stop a stranger.
  */
+static int api_kill_k(lua_State *L, int status, lua_KContext ctx);
+
 static int
 api_kill(lua_State *L)
 {
-	struct kproc *p = self(L);
+	return api_kill_k(L, LUA_OK, 0);
+}
+
+static int
+api_kill_k(lua_State *L, int status, lua_KContext ctx)
+{
+	struct kproc *me = self(L);
 	int pid = (int)luaL_checkinteger(L, 1);
 	struct kproc *target = find_proc_locked(pid);
 
-	if (target == p)
-		return luaL_error(L, "cannot kill self");
-	if (target && !may_control(p, target))
+	(void)status;
+
+	/* the right first, so a caller that has none freezes nothing. */
+	if (target && target != me && !may_control(me, target))
 		return luaL_error(L, "no right to proc %d", pid);
-	if (!target || KSTAT_GET(target->status) == BROKE || KSTAT_GET(target->status) == DEAD) {
+
+	/* held, because proc_break drops the target's rights and frees
+	 * its ports: doing that under a resume on another cpu pulls a
+	 * port out from under the C frame using it.
+	 */
+	switch (proc_hold(L, 1, &target, ctx)) {
+	case HOLD_GONE:
 		lua_pushboolean(L, 0);	/* nothing to kill: already gone */
+		return 1;
+	case HOLD_WAIT:
+		return lua_yieldk(L, 0, 1, api_kill_k);
+	case HOLD_SELF:
+		return luaL_error(L, "cannot kill self");
+	}
+
+	if (KSTAT_GET(target->status) == BROKE ||
+	    KSTAT_GET(target->status) == DEAD) {
+		proc_thaw(target);
+		lua_pushboolean(L, 0);
 		return 1;
 	}
 	proc_break(target, "killed");
+	proc_thaw(target);
 	lua_pushboolean(L, 1);
 	return 1;
 }

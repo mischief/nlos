@@ -350,6 +350,7 @@ microvm_smp_tests = [
   ['bigmsg', []],
   ['sample', []],
   ['spawnrace', []],
+  ['killrace', []],
   ['dbg', []],
 ]
 
