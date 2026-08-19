@@ -61,10 +61,19 @@ tap.ok(died.reason and died.reason:find("memory") ~= nil,
 
 -- the machine is still there afterwards, which is the point: a
 -- shortage costs an app rather than the kernel.
-local after, wa = sys.spawn([[ local x = 1 + 1 ]])
+-- it answers rather than being watched: a proc this small can finish
+-- before a monitor lands, and a monitor that arrives after the proc has
+-- gone is answered with noproc, which reads as an abnormal death.
+local after, wa = sys.spawn([[
+	local sys = require("los.sys")
+	local thread = require("los.thread")
+	local m = thread.recv(sys.SELF)
 
-sys.monitor(after)
-tap.is(thread.recv(sys.SELF).normal, true, "and the machine still spawns")
+	sys.send(m.reply.__right, { alive = true })
+]])
+
+sys.send(wa, { reply = { __right = rp } })
+tap.ok(thread.recv(rp) ~= nil, "and the machine still spawns")
 
 sys.close(ch)
 sys.close(hh)

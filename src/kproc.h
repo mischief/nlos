@@ -325,6 +325,10 @@ struct kproc {
 	 * break as it lets the proc go. See dispatch_phase.
 	 */
 	int killreq;
+	/* the request is a kill and not a break: the memory lap wants the
+	 * state freed, since a corpse holds what it was killed for.
+	 */
+	int killfree;
 	char killwhy[64];
 	int exitcode;		/* sys.setexit(); reported by notify_exit */
 	int exiting;		/* sys.exit(); the dispatch loop ends it */

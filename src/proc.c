@@ -1780,6 +1780,29 @@ proc_kill(struct kproc *p, const char *why)
 	if (st == BROKE || st == DEAD)
 		return;
 
+	/* the claim, the queue and the status in one region, as proc_break
+	 * takes them: proc_freestate is lua_close, and a cpu that took
+	 * this proc off the queue after a bare check would run that state
+	 * as it went. On another cpu, the kill is left for it, and
+	 * killfree keeps it a kill: a corpse holds the memory.
+	 */
+	lock(&schedlock);
+	st = KSTAT_GET(p->status);
+	if (st == BROKE || st == DEAD) {
+		unlock(&schedlock);
+		return;
+	}
+	if (p->oncpu && p->oncpu != cpu_self()->idx + 1) {
+		snprintf(p->killwhy, sizeof p->killwhy, "%s", why ? why : "");
+		p->killreq = 1;
+		p->killfree = 1;
+		unlock(&schedlock);
+		return;
+	}
+	rq_del(p);
+	KSTAT_SET(p->status, DEAD);
+	unlock(&schedlock);
+
 	proc_logdeath(p, why, reason, sizeof reason);
 
 	/* the lock goes around proc_detach and not around

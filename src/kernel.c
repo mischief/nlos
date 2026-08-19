@@ -1252,7 +1252,7 @@ release_claim(struct cpu *me, struct kproc **held)
 {
 	struct kproc *p = *held;
 	char why[sizeof p->killwhy];
-	int kill, reap;
+	int kill, reap, freeit;
 
 	*held = 0;
 	lock(&schedlock);
@@ -1260,15 +1260,20 @@ release_claim(struct cpu *me, struct kproc **held)
 	p->oncpu = 0;
 	kill = p->killreq;
 	reap = p->reapreq;
+	freeit = p->killfree;
 	p->killreq = 0;
 	p->reapreq = 0;
+	p->killfree = 0;
 	if (kill)
 		memcpy(why, p->killwhy, sizeof why);
 	if (!kill && KSTAT_GET(p->status) == READY && !p->onq)
 		rq_add(donq, p);
 	unlock(&schedlock);
 
-	if (kill)
+	/* freeit is the memory lap's, which wants the state gone */
+	if (kill && freeit)
+		proc_kill(p, why[0] ? why : "killed");
+	else if (kill)
 		proc_break(p, why[0] ? why : 0);
 	if (reap)
 		proc_reap(p);
