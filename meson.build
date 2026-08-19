@@ -81,7 +81,7 @@ if platform == 'hosted'
   # the window, if this host has SDL. Optional and auto: a host without
   # it builds a machine with no screen, which is what --headless asks
   # for anyway, and the fb tests then skip rather than fail.
-  sdl_dep = dependency('sdl3', required: get_option('sdl'))
+  sdl_dep = dependency('sdl2', required: get_option('sdl'))
   hosted_args = [
     '-D_GNU_SOURCE',
     '-fno-strict-aliasing',

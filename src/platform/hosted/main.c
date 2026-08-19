@@ -121,7 +121,7 @@ host_resolver(void)
  * the environment outright. */
 static const char *const displayenv[] = {
 	"DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE",
-	"XAUTHORITY", "HOME", "SDL_VIDEO_DRIVER", "SDL_VIDEODRIVER", NULL
+	"XAUTHORITY", "HOME", "SDL_VIDEODRIVER", NULL
 };
 
 static void

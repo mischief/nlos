@@ -17,7 +17,7 @@
 
 #ifdef HAVE_SDL
 
-#include <SDL3/SDL.h>
+#include <SDL2/SDL.h>
 
 /* how often the window is repainted, at most. Every fill and load marks
  * damage and returns; presenting on each one would put a frame's wait
@@ -29,9 +29,10 @@ static SDL_Window *window;
 static SDL_Renderer *renderer;
 static SDL_Texture *texture;
 
-/* the screen, as bytes: BGRx, which is SDL_PIXELFORMAT_XRGB8888 on a
- * little-endian machine and the same layout gop.c hands up. One name
- * for it either way, so lib/draw and the tests need no branch.
+/* the screen, as bytes: BGRx, which is SDL_PIXELFORMAT_RGB888 on a
+ * little-endian machine -- the pad is what that name leaves out -- and
+ * the same layout gop.c hands up. One name for it either way, so
+ * lib/draw and the tests need no branch.
  */
 static unsigned char *shadow;
 static int fbw, fbh;
@@ -66,7 +67,7 @@ keypush(int c)
 static void
 keydown(SDL_Keycode key, SDL_Keymod mod)
 {
-	if (mod & SDL_KMOD_CTRL) {
+	if (mod & KMOD_CTRL) {
 		if (key >= 'a' && key <= 'z')
 			keypush(key - 'a' + 1);
 		return;
@@ -108,11 +109,11 @@ keydown(SDL_Keycode key, SDL_Keymod mod)
  * drifts further from the cursor the larger the window gets.
  */
 static void
-ptrpos(float wx, float wy)
+ptrpos(int wx, int wy)
 {
-	float lx = wx, ly = wy;
+	float lx = (float)wx, ly = (float)wy;
 
-	SDL_RenderCoordinatesFromWindow(renderer, wx, wy, &lx, &ly);
+	SDL_RenderWindowToLogical(renderer, wx, wy, &lx, &ly);
 	ptrx = (int)lx;
 	ptry = (int)ly;
 	if (ptrx < 0)
@@ -152,43 +153,56 @@ fb_pump(void)
 		return;
 	while (SDL_PollEvent(&e)) {
 		switch (e.type) {
-		case SDL_EVENT_QUIT:
-		case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+		case SDL_QUIT:
 			/* closing the window is this machine's power switch:
 			 * there is no other way to ask a guest with no
 			 * console of its own to stop.
 			 */
 			machine_halt();
 			break;
-		case SDL_EVENT_KEY_DOWN:
-			keydown(e.key.key, e.key.mod);
+		case SDL_KEYDOWN:
+			keydown(e.key.keysym.sym, e.key.keysym.mod);
 			break;
-		case SDL_EVENT_TEXT_INPUT:
+		case SDL_TEXTINPUT:
 			for (const char *p = e.text.text; *p; p++)
 				keypush((unsigned char)*p);
 			break;
-		/* the host asking for the screen back: uncovered, resized,
-		 * unminimised. Nothing in the guest has changed, so only a
-		 * repaint is owed -- and without this the window keeps
-		 * whatever the compositor last had, which is usually black.
+		/* every window event arrives under this one type, with
+		 * the reason in a field rather than in the type, so
+		 * the reasons need a switch of their own.
 		 */
-		case SDL_EVENT_WINDOW_EXPOSED:
-		case SDL_EVENT_WINDOW_RESIZED:
-		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-		case SDL_EVENT_WINDOW_SHOWN:
-		case SDL_EVENT_WINDOW_RESTORED:
-			dirty = 1;
-			lastframe = 0;		/* repaint now, not next frame */
+		case SDL_WINDOWEVENT:
+			switch (e.window.event) {
+			case SDL_WINDOWEVENT_CLOSE:
+				machine_halt();
+				break;
+			/* the host asking for the screen back: uncovered,
+			 * resized, unminimised. Nothing in the guest has
+			 * changed, so only a repaint is owed -- and without
+			 * this the window keeps whatever the compositor last
+			 * had, which is usually black.
+			 */
+			case SDL_WINDOWEVENT_EXPOSED:
+			case SDL_WINDOWEVENT_RESIZED:
+			case SDL_WINDOWEVENT_SIZE_CHANGED:
+			case SDL_WINDOWEVENT_SHOWN:
+			case SDL_WINDOWEVENT_RESTORED:
+				dirty = 1;
+				lastframe = 0;	/* now, not next frame */
+				break;
+			default:
+				break;
+			}
 			break;
-		case SDL_EVENT_MOUSE_MOTION:
+		case SDL_MOUSEMOTION:
 			ptrpos(e.motion.x, e.motion.y);
 			ptrmoved = 1;
 			break;
-		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+		case SDL_MOUSEBUTTONDOWN:
 			ptrbuttons |= buttonbit(e.button.button);
 			ptrmoved = 1;
 			break;
-		case SDL_EVENT_MOUSE_BUTTON_UP:
+		case SDL_MOUSEBUTTONUP:
 			ptrbuttons &= ~buttonbit(e.button.button);
 			ptrmoved = 1;
 			break;
@@ -217,18 +231,22 @@ fb_flush(void)
 	dirty = 0;
 	SDL_UpdateTexture(texture, NULL, shadow, fbw * 4);
 	SDL_RenderClear(renderer);
-	SDL_RenderTexture(renderer, texture, NULL, NULL);
+	SDL_RenderCopy(renderer, texture, NULL, NULL);
 	SDL_RenderPresent(renderer);
 }
 
 int
 fb_open(int w, int h)
 {
-	if (!SDL_Init(SDL_INIT_VIDEO)) {
+	/* zero is success here, and a negative is the failure: the
+	 * truthiness of this call is the opposite of what it reads as.
+	 */
+	if (SDL_Init(SDL_INIT_VIDEO) != 0) {
 		kernel_say("fb: SDL_Init failed");
 		return -1;
 	}
-	window = SDL_CreateWindow("lua-os", w, h, SDL_WINDOW_RESIZABLE);
+	window = SDL_CreateWindow("lua-os", SDL_WINDOWPOS_UNDEFINED,
+	    SDL_WINDOWPOS_UNDEFINED, w, h, SDL_WINDOW_RESIZABLE);
 	if (!window) {
 		kernel_say("fb: no window");
 		return -1;
@@ -239,12 +257,12 @@ fb_open(int w, int h)
 	 * machine's -m ceiling allows, which fails as a GLX error from a
 	 * driver rather than as anything about memory.
 	 */
-	renderer = SDL_CreateRenderer(window, "software");
+	renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
 	if (!renderer) {
 		kernel_say("fb: no renderer");
 		return -1;
 	}
-	texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_XRGB8888,
+	texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888,
 	    SDL_TEXTUREACCESS_STREAMING, w, h);
 	if (!texture) {
 		kernel_say("fb: no texture");
@@ -263,9 +281,8 @@ fb_open(int w, int h)
 	 * manager's. Letterboxed rather than stretched, so a resize
 	 * cannot quietly change the aspect the guest is drawing for.
 	 */
-	SDL_SetRenderLogicalPresentation(renderer, w, h,
-	    SDL_LOGICAL_PRESENTATION_LETTERBOX);
-	SDL_StartTextInput(window);
+	SDL_RenderSetLogicalSize(renderer, w, h);
+	SDL_StartTextInput();
 	dirty = 1;
 	fb_flush();
 	return 0;

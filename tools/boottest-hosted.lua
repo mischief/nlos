@@ -138,11 +138,15 @@ end
 -- a window the test never shows: SDL's dummy driver gives a real
 -- framebuffer with no display attached, which is what these payloads
 -- read back from. Showing one would need a display to show it on.
+--
+-- The name matters more than it looks: get it wrong and SDL falls
+-- through to the host's real driver, so the tests pass on a desktop
+-- and fail on anything headless.
 local extra = (wantgui and " --gui" or "") ..
     (mem and (" -m " .. mem) or "")
 
 local cmd = ("%s%s -r %s -p %s%s%s < /dev/null 2>&1"):format(
-    wantgui and "SDL_VIDEO_DRIVER=dummy " or "", q(binary),
+    wantgui and "SDL_VIDEODRIVER=dummy " or "", q(binary),
     q(root), q(guestpath), writable and " -w" or "", diskargs .. extra)
 
 local p = assert(io.popen(cmd))

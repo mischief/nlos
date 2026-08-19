@@ -102,4 +102,4 @@ option('esp32_port', type: 'string', value: '',
 # without SDL builds a machine with no screen, which is what --headless
 # asks for anyway.
 option('sdl', type: 'feature', value: 'auto',
-  description: 'hosted: a framebuffer window through SDL3')
+  description: 'hosted: a framebuffer window through SDL2')
