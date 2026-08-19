@@ -152,6 +152,43 @@ function M.rateofbytes(s, rate)
 	return M.rateof(s, rate) * s.format.channels * s.format.frame
 end
 
+local function rateslist(fmt)
+	if fmt.low then
+		return ("%d-%d Hz"):format(fmt.low, fmt.high)
+	end
+
+	local out = {}
+
+	for i, r in ipairs(fmt.rates) do
+		out[i] = tostring(r)
+	end
+	return table.concat(out, "/") .. " Hz"
+end
+
+-- describe(cfg) -> lines, the way lsusb would put it
+function M.describe(cfg)
+	local out = {
+		("configuration: %d interfaces, %s, %dmA"):format(
+		    cfg.ninterfaces,
+		    cfg.selfpowered and "self powered" or "bus powered",
+		    cfg.maxpower),
+	}
+
+	for _, s in ipairs(M.streams(cfg)) do
+		out[#out + 1] = ("%s: interface %d alt %d, endpoint %02x, " ..
+		    "%d ch %d bit, %s, %d bytes a packet"):format(
+		    s.output and "playback" or "capture",
+		    s.interface, s.alt, s.endpoint.address,
+		    s.format.channels, s.format.width, rateslist(s.format),
+		    s.endpoint.maxpacket)
+	end
+
+	if #out == 1 then
+		out[2] = "no audio streams: this is not an audio device"
+	end
+	return out
+end
+
 -- what one 1ms packet holds at this rate. The endpoint has to be able
 -- to carry it, and a device that cannot is one we would overrun.
 function M.packet(s, rate)

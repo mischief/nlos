@@ -5,29 +5,47 @@
 
 local sys = require("los.sys")
 local thread = require("los.thread")
+local usb = require("usb")
+local uac = require("uac")
 local unistd = require("posix.unistd")
+
+local function say(s)
+	unistd.write(1, s .. "\n")
+end
+
+-- what enumerated, once it has. The raw descriptor is in the log either
+-- way, which is what to read when this cannot make sense of it.
+local function report(desc)
+	local cfg, why = usb.parse(desc)
+
+	if not cfg then
+		say("usb: " .. why)
+		return
+	end
+	for _, line in ipairs(uac.describe(cfg)) do
+		say("usb: " .. line)
+	end
+end
 
 if not sys.usbhost() then
 	unistd.write(2, "usb: this machine has no host controller\n")
 	os.exit(1)
 end
 
-unistd.write(1, "usb: host up. plug something in; watch the log\n")
+say("usb: host up. plug something in")
 
 local tick = sys.newport("usb.tick")
-local from = select(2, sys.dmesg(-1, 1))
+local seen
 
 while true do
-	local text, next = sys.dmesg(from)
+	local desc = sys.usbdesc()
 
-	if text ~= "" then
-		for line in text:gmatch("[^\n]+") do
-			if line:find("usb:", 1, true) then
-				unistd.write(1, line .. "\n")
-			end
-		end
-		from = next
-	else
-		thread.recvtimeout(tick, 200)
+	if desc and desc ~= seen then
+		seen = desc
+		report(desc)
+	elseif not desc and seen then
+		seen = nil
+		say("usb: gone")
 	end
+	thread.recvtimeout(tick, 300)
 end
