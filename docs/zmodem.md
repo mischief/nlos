@@ -50,3 +50,17 @@ wrong, which on a serial line means bytes were lost and the line is
 outrunning the receiver. "timeout" means nothing arrived at all, which
 is a sender that stopped. They call for opposite fixes, which is why
 they are counted apart.
+
+## reproducing it without a board
+
+The hosted machine's console is stdin and stdout, so a real `sz` talks
+to a real `rz` with no hardware in the way. `sz` writes "rz\r" before
+its first header, so nothing has to be typed:
+
+	socat EXEC:"sz -b FILE" \
+	    EXEC:"build-hosted/src/platform/hosted/luaos-hosted -r DIR -w"
+
+A 64KB file arrives byte-identical. A 3.8MB one rewinds every 62KB and
+does not finish, which is the failure from a board reproduced where
+perf and gdb can see it. Note that the machine exits when `sz` does, so
+anything `rz` reports at the end is lost with it.

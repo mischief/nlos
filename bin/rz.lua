@@ -164,6 +164,20 @@ for _, f in ipairs(got) do
 	io.write(("rz: %s %d bytes\n"):format(f.name, f.size))
 end
 
+-- why anything was asked for twice, counted apart because the two
+-- reasons call for opposite fixes: "crc" is bytes that arrived wrong,
+-- which on a line means bytes lost, and "timeout" is bytes that did
+-- not arrive at all.
+if m.rejects then
+	local out = {}
+
+	for why, n in pairs(m.rejects) do
+		out[#out + 1] = ("%s %d"):format(tostring(why), n)
+	end
+	table.sort(out)
+	io.stderr:write("rz: retried: " .. table.concat(out, ", ") .. "\n")
+end
+
 if not res then
 	io.stderr:write("rz: " .. tostring(err) .. "\n")
 	os.exit(1)
