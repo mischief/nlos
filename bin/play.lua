@@ -128,12 +128,14 @@ while left > 0 or #pending > 0 do
 	end
 end
 
+-- before the drain: once the file is done the device keeps asking, and
+-- what it is answered with is silence by design, not a gap in the audio
+local lost = sys.usbunderruns()
+
 -- what is queued is not yet played: the ring holds a fifth of a second
 thread.sleep(300)
 sys.usbstop()
 f:close()
-
-local lost = sys.usbunderruns()
 
 if lost > 0 then
 	unistd.write(2, ("play: %d ms of silence for want of audio\n"):format(lost))

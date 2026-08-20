@@ -123,3 +123,16 @@ CONFIG_BT_CTRL_BLE_MAX_ACT=10
 # Nothing starts the controller: sys.usbhost() does, and the console
 # goes with it until the next boot.
 CONFIG_LUAOS_USB_HOST=y
+
+# The controller splits one hardware FIFO between transfer kinds, and
+# the balanced split leaves an isochronous endpoint 128 bytes. A USB
+# sound card asks for more than that -- 48kHz stereo is 192 -- so the
+# claim fails with ESP_ERR_NOT_SUPPORTED. Audio is what we plug in.
+CONFIG_USB_HOST_HW_BUFFER_BIAS_PERIODIC_OUT=y
+
+# A stack that runs past its end corrupts whatever is next to it, and
+# the report is then a heap assert somewhere unrelated. The watchpoint
+# stops on the write itself and names the task; the canary catches what
+# a watchpoint cannot see, and both are cheap.
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+CONFIG_COMPILER_STACK_CHECK_MODE_STRONG=y

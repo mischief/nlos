@@ -11,7 +11,9 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/stream_buffer.h>
+#include <freertos/semphr.h>
+
+#include <esp_heap_caps.h>
 
 #include "esp32.h"
 #include "platform.h"
@@ -24,7 +26,7 @@
 
 #include <usb/usb_host.h>
 
-#define USB_TASK_STACK 4096
+#define USB_TASK_STACK 8192
 
 static usb_host_client_handle_t client;
 static usb_device_handle_t device;
@@ -36,7 +38,7 @@ static usb_device_handle_t device;
 static uint8_t desc[512];
 static int desclen;
 
-static void playstop(void);
+static void playstop(int wait);
 
 /* kernel_say takes a finished line */
 static void
@@ -111,7 +113,7 @@ evcb(const usb_host_client_event_msg_t *msg, void *arg)
 		break;
 	case USB_HOST_CLIENT_EVENT_DEV_GONE:
 		kernel_say("usb: device gone");
-		playstop();
+		playstop(0);
 		device = NULL;
 		desclen = 0;
 		break;
@@ -131,53 +133,149 @@ evcb(const usb_host_client_event_msg_t *msg, void *arg)
 #define NPKT 4			/* milliseconds a transfer */
 #define RINGMS 200		/* what the ring holds, in milliseconds */
 
+/* One writer, one reader, and free-running counters: the playing proc
+ * moves `head` and the pump moves `tail`, so neither needs a lock.
+ */
 static usb_transfer_t *xfer[NXFER];
-static StreamBufferHandle_t pcm;
+static uint8_t *pcm;
+static int pcmsize;
+static volatile unsigned head, tail;
+
+static int
+ringput(const uint8_t *p, int n)
+{
+	unsigned h = head;
+	int room = pcmsize - (int)(h - tail);
+	int at = h % pcmsize, first;
+
+	if (n > room)
+		n = room;
+	first = n < pcmsize - at ? n : pcmsize - at;
+	memcpy(pcm + at, p, first);
+	memcpy(pcm, p + first, n - first);
+	head = h + n;
+	return n;
+}
+
+static int
+ringget(uint8_t *p, int n)
+{
+	unsigned t = tail;
+	int have = (int)(head - t);
+	int at = t % pcmsize, first;
+
+	if (n > have)
+		n = have;
+	first = n < pcmsize - at ? n : pcmsize - at;
+	memcpy(p, pcm + at, first);
+	memcpy(p + first, pcm, n - first);
+	tail = t + n;
+	return n;
+}
+
 static int playing;
+static int playitf = -1;	/* claimed, and to be given back */
+static volatile int inflight;	/* submitted, and not yet answered for */
+static volatile uint8_t idle[NXFER];	/* answered for, and waiting to go out */
+static volatile unsigned beat;	/* pump turns, so a stop can see one */
+static int playep;		/* the endpoint the transfers are on */
 static int playpkt;		/* bytes a millisecond */
 static unsigned long underruns;
 
-/* refill and resubmit. Runs on the client task, so the stream buffer is
- * read here and written by whatever proc is playing.
- */
-static void
+/* refill and resubmit, answering whether it went back out */
+static int
 refill(usb_transfer_t *t)
 {
 	int i, off = 0;
 
 	for (i = 0; i < NPKT; i++) {
-		size_t got = 0;
+		int got = 0;
 
 		if (pcm)
-			got = xStreamBufferReceive(pcm, t->data_buffer + off,
-			    playpkt, 0);
+			got = ringget(t->data_buffer + off, playpkt);
 
-		if ((int)got < playpkt) {
+		/* silence before the first byte is the prefill, not a gap */
+		if (got < playpkt) {
 			memset(t->data_buffer + off + got, 0, playpkt - got);
-			underruns++;
+			if (head)
+				underruns++;
 		}
 		t->isoc_packet_desc[i].num_bytes = playpkt;
 		off += playpkt;
 	}
 	t->num_bytes = off;
 
-	if (usb_host_transfer_submit(t) != ESP_OK)
-		playing = 0;
+	if (usb_host_transfer_submit(t) == ESP_OK)
+		return 1;
+
+	playing = 0;
+	return 0;
 }
 
+/* A transfer may not go back out from inside the event handler: the
+ * same loop would dequeue what was just enqueued. The pump submits it.
+ */
 static void
 played(usb_transfer_t *t)
 {
-	if (playing)
-		refill(t);
+	inflight--;
+	idle[(int)(intptr_t)t->context] = 1;
 }
 
+/* what the callbacks left, submitted from the task the handler is not
+ * running on. Answers how many went out.
+ */
 static void
-playstop(void)
+pump(void)
 {
 	int i;
 
+	for (i = 0; i < NXFER; i++) {
+		if (!idle[i])
+			continue;
+		idle[i] = 0;
+		if (playing && refill(xfer[i]))
+			inflight++;
+	}
+	beat++;
+}
+
+/* `wait` is false only where the device has already left. Two beats,
+ * because one may have read `playing` before it was cleared.
+ */
+static void
+playstop(int wait)
+{
+	unsigned b = beat;
+	int i;
+
 	playing = 0;
+
+	for (i = 0; wait && i < 400; i++) {
+		if (inflight == 0 && beat > b + 1)
+			break;
+		vTaskDelay(pdMS_TO_TICKS(5));
+	}
+	inflight = 0;
+
+	/* a streaming pipe is busy until it is halted, and an interface
+	 * whose pipes are busy will not go back
+	 */
+	if (wait && device && playep) {
+		usb_host_endpoint_halt(device, playep);
+		usb_host_endpoint_flush(device, playep);
+	}
+	playep = 0;
+
+	if (playitf >= 0) {
+		esp_err_t e = device ? usb_host_interface_release(client,
+		    device, playitf) : ESP_OK;
+
+		if (e != ESP_OK)
+			sayf("usb: release itf %d: %s", playitf,
+			    esp_err_to_name(e));
+		playitf = -1;
+	}
 
 	for (i = 0; i < NXFER; i++) {
 		if (xfer[i]) {
@@ -187,9 +285,19 @@ playstop(void)
 	}
 
 	if (pcm) {
-		vStreamBufferDelete(pcm);
+		heap_caps_free(pcm);
 		pcm = NULL;
 	}
+	head = tail = 0;
+}
+
+/* a control transfer answers on the client task, so it is waited for */
+static SemaphoreHandle_t ctldone;
+
+static void
+ctlcb(usb_transfer_t *t)
+{
+	xSemaphoreGive((SemaphoreHandle_t)t->context);
 }
 
 /* UAC1 asks for its rate on the endpoint, not the interface: SET_CUR of
@@ -200,6 +308,9 @@ setrate(int ep, int rate)
 {
 	usb_transfer_t *t;
 	int rc = -1;
+
+	if (!ctldone && !(ctldone = xSemaphoreCreateBinary()))
+		return -1;
 
 	if (usb_host_transfer_alloc(sizeof(usb_setup_packet_t) + 3, 0, &t) != ESP_OK)
 		return -1;
@@ -217,10 +328,20 @@ setrate(int ep, int rate)
 	t->num_bytes = sizeof(usb_setup_packet_t) + 3;
 	t->device_handle = device;
 	t->bEndpointAddress = 0;
-	t->callback = NULL;
+	t->callback = ctlcb;
+	t->context = ctldone;
 	t->timeout_ms = 1000;
 
-	if (usb_host_transfer_submit_control(client, t) == ESP_OK)
+	if (usb_host_transfer_submit_control(client, t) != ESP_OK) {
+		usb_host_transfer_free(t);
+		return -1;
+	}
+
+	/* the stack owns it until the callback runs, so a timeout frees nothing */
+	if (xSemaphoreTake(ctldone, pdMS_TO_TICKS(2000)) != pdTRUE)
+		return -1;
+
+	if (t->status == USB_TRANSFER_STATUS_COMPLETED)
 		rc = 0;
 	usb_host_transfer_free(t);
 	return rc;
@@ -234,34 +355,54 @@ platform_usb_play(int itf, int alt, int ep, int packet, int rate)
 	if (!device || packet <= 0)
 		return -1;
 
-	playstop();
+	playstop(1);
 
-	if (usb_host_interface_claim(client, device, itf, alt) != ESP_OK) {
-		kernel_say("usb: cannot claim the audio interface");
+	esp_err_t e = usb_host_interface_claim(client, device, itf, alt);
+
+	if (e != ESP_OK) {
+		sayf("usb: claim itf %d alt %d: %s", itf, alt,
+		    esp_err_to_name(e));
 		return -1;
 	}
+	playitf = itf;
 
 	if (setrate(ep, rate) != 0)
 		kernel_say("usb: the device refused the rate; playing anyway");
 
-	pcm = xStreamBufferCreate(packet * RINGMS, 1);
+	/* PSRAM: nothing here runs in an interrupt, and 48kHz stereo
+	 * wants more of the internal kind than the machine can spare
+	 */
+	pcmsize = packet * RINGMS;
+	pcm = heap_caps_malloc(pcmsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	if (!pcm)
+		pcm = heap_caps_malloc(pcmsize, MALLOC_CAP_8BIT);
+
+	if (!pcm) {
+		sayf("usb: no room for a %d byte ring", packet * RINGMS);
+		playstop(0);
 		return -1;
+	}
 
 	playpkt = packet;
+	playep = ep;
 	underruns = 0;
 	playing = 1;
 
 	for (i = 0; i < NXFER; i++) {
 		if (usb_host_transfer_alloc(packet * NPKT, NPKT, &xfer[i]) != ESP_OK) {
-			playstop();
+			sayf("usb: no room for transfer %d of %d bytes", i,
+			    packet * NPKT);
+			playstop(1);
 			return -1;
 		}
 		xfer[i]->device_handle = device;
 		xfer[i]->bEndpointAddress = ep;
 		xfer[i]->callback = played;
 		xfer[i]->timeout_ms = 0;
-		refill(xfer[i]);
+		xfer[i]->context = (void *)(intptr_t)i;
+		idle[i] = 0;
+		if (refill(xfer[i]))
+			inflight++;
 	}
 	sayf("usb: playing on endpoint %02x, %d bytes a ms", ep, packet);
 	return 0;
@@ -276,13 +417,13 @@ platform_usb_write(const void *p, int n)
 {
 	if (!playing || !pcm)
 		return -1;
-	return (int)xStreamBufferSend(pcm, p, n, 0);
+	return ringput(p, n);
 }
 
 void
 platform_usb_stop(void)
 {
-	playstop();
+	playstop(1);
 }
 
 int
@@ -333,8 +474,9 @@ usbtask(void *arg)
 	for (;;) {
 		uint32_t flags;
 
-		usb_host_lib_handle_events(10 / portTICK_PERIOD_MS, &flags);
-		usb_host_client_handle_events(client, 10 / portTICK_PERIOD_MS);
+		usb_host_lib_handle_events(0, &flags);
+		usb_host_client_handle_events(client, pdMS_TO_TICKS(2));
+		pump();
 	}
 }
 
