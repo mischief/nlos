@@ -411,16 +411,18 @@ replay_open(int baud)
 	return gpsfile ? 0 : -1;
 }
 
+/* Serves what is held and never fetches more. A uart runs dry between
+ * characters and a reader stops on that; a replay that fetched its own
+ * next line would never return nothing, and the task draining it would
+ * spin through the recording without yielding.
+ */
 static int
 replay_read(char *out, int n)
 {
 	int got = 0;
 
-	while (got < n && gpsfill()) {
+	while (got < n && gpsat < gpsheld)
 		out[got++] = gpsline[gpsat++];
-		if (gpsat >= gpsheld)
-			break;		/* a line at a time */
-	}
 	gpsbytes += (unsigned long)got;
 	return got;
 }

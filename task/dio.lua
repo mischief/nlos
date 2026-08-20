@@ -1246,8 +1246,6 @@ thread.spawn(function()
 					apps[front].mouse.post(x - APPX,
 					    y - APPY, b)
 				end
-				goto continue
-			end
 
 			-- A wheel record carries where the pointer is, and on
 			-- a panel that is where a finger last was: nothing
@@ -1256,7 +1254,7 @@ thread.spawn(function()
 			-- front app instead, as the keyboard does. The tray
 			-- keeps it while its list is open, or while a finger
 			-- is on the tray.
-			if iswheel then
+			elseif iswheel then
 				if selecting then
 					local most = selmost()
 					local to = seloff + by
