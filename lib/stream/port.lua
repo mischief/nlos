@@ -35,20 +35,34 @@ end
 --
 -- A dead port is not an error: the reader hung up, which is EPIPE. 0
 -- written matches read()'s "" for eof.
+-- A write larger than a message is split rather than refused: the
+-- serializer rejects anything over sys.MAXMSG, and a caller handing us
+-- a whole file should not have to know that.
+local CHUNK = sys.MAXMSG - 512
+
 function Port:write(data)
-	local msg = { op = "write", data = data }
+	local sent = 0
 
-	while true do
-		local ok, why = sys.send(self.h, msg)
+	while sent < #data do
+		local part = #data - sent > CHUNK and
+		    data:sub(sent + 1, sent + CHUNK) or
+		    (sent == 0 and data or data:sub(sent + 1))
+		local msg = { op = "write", data = part }
 
-		if ok then
-			return #data
+		while true do
+			local ok, why = sys.send(self.h, msg)
+
+			if ok then
+				sent = sent + #part
+				break
+			end
+			if why ~= "full" then
+				return sent
+			end
+			require("los.thread").parksend(self.h)
 		end
-		if why ~= "full" then
-			return 0
-		end
-		require("los.thread").parksend(self.h)
 	end
+	return sent
 end
 
 -- thread.await is exactly this: drain first, and only then treat empty
