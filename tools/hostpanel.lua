@@ -109,13 +109,15 @@ end
 -- a newline, and other procs print to the same console at any moment,
 -- so what arrives is not a transcript with a shape to parse. This
 -- gathers for `quiet` seconds of silence and hands back everything,
--- caller's problem to read.
-function Panel:ask(line, quiet)
+-- caller's problem to read. A program that thinks before it prints
+-- needs both raised: `quiet` is how long a gap ends the answer, and
+-- `limit` is the whole wait.
+function Panel:ask(line, quiet, limit)
 	self.f:write(line, "\r\n")
 	self.f:flush()
 
 	local out = {}
-	local deadline = os.time() + 10
+	local deadline = os.time() + (limit or 10)
 
 	-- A byte at a time, and only when poll says one is there. Reading
 	-- a line instead blocks until a newline that may never arrive: the

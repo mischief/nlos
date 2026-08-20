@@ -24,8 +24,9 @@
 --	type TEXT           keystrokes at the panel's keyboard
 --	key NAME            enter, esc, tab, backspace, space, intr
 --	run LUA             one line at the serial repl
---	ask LUA             the same, and print what comes back
---	sh CMD              a command line at the shell, and its output
+--	ask LUA [SECS]      the same, and print what comes back
+--	sh CMD [SECS]       a command line, and its output. SECS is how
+--	                    long a gap may be before the answer is done
 --	shot FILE [ROWS]    read the screen back as a netpbm
 --	push FILE [DIR]     send a file to the flash volume, /bin by
 --	                    default -- an edit without a reflash
@@ -130,12 +131,20 @@ while i <= #arg do
 	elseif a == "run" then
 		p:tolua()
 		p:say(next_arg("a lua line"), 0.5)
-	elseif a == "ask" then
-		p:tolua()
-		print(p:ask(next_arg("a lua line")))
-	elseif a == "sh" then
-		p:todos()
-		print(p:ask(next_arg("a command line")))
+	elseif a == "ask" or a == "sh" then
+		local line = next_arg(a == "sh" and "a command line" or
+		    "a lua line")
+		local wait = tonumber(arg[i + 1])
+
+		if wait then
+			i = i + 1
+		end
+		if a == "sh" then
+			p:todos()
+		else
+			p:tolua()
+		end
+		print(p:ask(line, wait, wait and wait * 4))
 	elseif a == "shot" then
 		local out = next_arg("a filename")
 		local rows = tonumber(arg[i + 1])
