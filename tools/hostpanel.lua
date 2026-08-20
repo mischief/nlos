@@ -472,6 +472,11 @@ function Panel:push(file, dir)
 	if not fh then
 		return nil, "cannot read " .. tostring(file)
 	end
+
+	-- the line carries about 10KB a second, so a megabyte is two
+	-- minutes: a fixed wait would give up on anything but a program
+	local bytes = fh:seek("end")
+
 	fh:close()
 
 	self:drain(3, 0.3)
@@ -491,7 +496,7 @@ function Panel:push(file, dir)
 		return nil, "cannot run sz (install lrzsz)"
 	end
 
-	local deadline = os.time() + 60
+	local deadline = os.time() + 60 + bytes // 8000
 	local code = nil
 
 	while os.time() < deadline do
