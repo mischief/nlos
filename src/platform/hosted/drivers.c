@@ -6,6 +6,7 @@
  */
 
 #include <stdlib.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -357,17 +358,23 @@ gpsfill(void)
 	return gpsheld > 0;
 }
 
+/* Opened where main still can. The guest inherits no environment, and
+ * by the time the kernel probes its devices the process no longer
+ * reaches a path outside the root it serves.
+ */
+void
+hosted_setgps(const char *path)
+{
+	if (!path || !*path)
+		return;
+	gpsfile = fopen(path, "r");
+	if (!gpsfile)
+		fprintf(stderr, "gps: cannot open %s: %s\n", path, strerror(errno));
+}
+
 int
 platform_have_gps(void)
 {
-	if (gpsfile)
-		return 1;
-
-	const char *path = getenv("LUAOS_GPS");
-
-	if (!path || !*path)
-		return 0;
-	gpsfile = fopen(path, "r");
 	return gpsfile != NULL;
 }
 

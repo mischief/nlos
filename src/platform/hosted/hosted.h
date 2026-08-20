@@ -32,6 +32,11 @@ int	net_pollfds(struct pollfd *out, int max);
 const char *hosted_fwcfg(const char *name);
 void	hosted_setfwcfg(const char *name, const char *value);
 
+/* the recording a gnss receiver is replayed from, read from the
+ * environment before it is cleared. Null means this machine has none.
+ */
+void	hosted_setgps(const char *path);
+
 /* the cpus, where a cpu is a host thread. init before anything calls
  * cpu_self, start after the first proc exists -- an ap whose dispatch
  * loop begins on a machine with no live procs parks for good.

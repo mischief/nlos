@@ -273,6 +273,12 @@ main(int argc, char **argv)
 	 */
 	if (!dns)
 		dns = host_resolver();
+
+	/* likewise the recording a gnss receiver is replayed from. Read
+	 * here because the guest inherits no environment, and handed over
+	 * rather than read again for the same reason.
+	 */
+	hosted_setgps(getenv("LUAOS_GPS"));
 	hosted_setfwcfg("opt/org.luaos.resolver", dns);
 	hosted_setfwcfg("opt/org.luaos.domain", host_domain());
 
