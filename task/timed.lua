@@ -43,9 +43,18 @@ end
 -- the lease's server, then the pool. The pool needs a resolver, so it
 -- is only reachable once dns is up -- which is why the lease is tried
 -- first even when both would work.
+-- nil plus which of the four ways it can fail: the lease is served by
+-- another proc into a namespace this one is handed, so "no server" and
+-- "no namespace to read one from" are different faults with the same
+-- symptom.
 local function server()
 	local N = ns.current()
-	local txt = N and N:readfile("/net/ntp")
+
+	if not N then
+		return nil, "this proc has no namespace"
+	end
+
+	local txt = N:readfile("/net/ntp")
 	local first = txt and txt:match("^%s*([%d%.]+)")
 	local q = first and quad(first)
 
@@ -53,19 +62,24 @@ local function server()
 		return q
 	end
 
+	local lease = txt and "/net/ntp names none" or "no /net/ntp"
 	local dnsh = a.dns and a.dns.__right
 
-	if dnsh then
-		local rp, send = thread.replyport()
-
-		sys.send(dnsh, { op = "resolve", name = "pool.ntp.org",
-		    reply = { __right = send } })
-
-		local ip = thread.recvtimeout(rp, 4000)
-
-		return type(ip) == "string" and quad(ip) or nil
+	if not dnsh then
+		return nil, lease .. " and no resolver"
 	end
-	return nil
+
+	local rp, send = thread.replyport()
+
+	sys.send(dnsh, { op = "resolve", name = "pool.ntp.org",
+	    reply = { __right = send } })
+
+	local ip = thread.recvtimeout(rp, 4000)
+
+	if type(ip) == "string" and quad(ip) then
+		return quad(ip)
+	end
+	return nil, lease .. " and pool.ntp.org did not resolve"
 end
 
 -- one exchange, on a port of its own. A recv that timed out is
@@ -106,17 +120,19 @@ local function ask(conn, s)
 	return nil
 end
 
+-- nil plus which step gave up, because "no time" has three causes and
+-- a lease that has not arrived is not a server that will not answer.
 local function sync()
-	local s = server()
+	local s, why = server()
 
 	if not s then
-		return nil
+		return nil, why
 	end
 
 	local conn = udp.open(0)
 
 	if not conn then
-		return nil
+		return nil, "no udp socket"
 	end
 
 	local unix
@@ -128,18 +144,66 @@ local function sync()
 		end
 	end
 	udp.close(conn)
+	if not unix then
+		return nil, ("%d.%d.%d.%d did not answer"):format(s[1], s[2],
+		    s[3], s[4])
+	end
 	return unix
 end
 
-while true do
-	local unix = sync()
+-- the sky, asked before a server: it needs no network and no lease,
+-- and a sentence carries the time it was taken where a round trip
+-- carries the time plus half of itself. This proc asks and this proc
+-- sets -- gpsd holds no clock capability, so a receiver moves nothing
+-- unless something that already may lets it.
+local gpsh = a.gps and a.gps.__right
+local said
 
+local function fromsky()
+	if not gpsh then
+		return nil
+	end
+
+	local reply = sys.newport("timed.gps")
+	local guard <close> = sys.owned(reply)
+
+	sys.send(gpsh, { op = "fix", reply = { __right = reply } })
+
+	local f = thread.recvtimeout(reply, 2000)
+
+	if type(f) == "table" and f.has and f.epoch then
+		return f.epoch
+	end
+	return nil
+end
+
+while true do
+	local unix = fromsky()
+	local how = unix and "the sky" or nil
+
+	local why
+
+	if not unix then
+		unix, why = sync()
+		how = unix and "a server" or nil
+	end
+
+	-- Said when it changes rather than every hour: a clock that has
+	-- stopped being set says so by the last line staying where it is,
+	-- and one that never was says so by there being no line at all.
+	if not unix then
+		how = "nothing yet: no fix, and " .. tostring(why)
+	end
 	if unix then
 		local ok, err = pcall(sys.settime, unix)
 
 		if not ok then
-			print("timed: " .. tostring(err))
+			how = "nowhere: " .. tostring(err)
 		end
+	end
+	if how ~= said then
+		sys.log("timed: the clock comes from %s", how)
+		said = how
 	end
 	-- a failure is usually a lease that has not arrived yet, so try
 	-- again soon rather than in an hour

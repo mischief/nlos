@@ -82,8 +82,11 @@ return {
 	-- the wall clock. "time" is the right to sys.settime, and this is
 	-- the only entry naming it: everything else reads the clock and
 	-- cannot move it.
+	-- gps is optional and asked first: a receiver needs no lease and
+	-- no server, and this is the one proc that may move the clock, so
+	-- the choice of source belongs here rather than in gpsd.
 	{ path = "/task/timed.lua", caps = { "ip", "time" },
-	  optcaps = { "dns" } },
+	  optcaps = { "dns", "gps" } },
 
 	-- No 9P export here. task/9pexport.lua ships to this board like
 	-- everything else under task/, and a machine with a disk runs it

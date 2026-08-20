@@ -33,7 +33,7 @@ local dec = nmea.new()
 local fix = nmea.newfix()
 local listeners = {}
 local baud, good, sentences = nil, 0, 0
-local clockset = false
+local said = false
 
 local function reply(m, msg)
 	local h = type(m.reply) == "table" and m.reply.__right or nil
@@ -55,25 +55,16 @@ local function position()
 	}
 end
 
--- the clock, once, from the first sentence carrying a whole date. The
--- capability is held or it is not; a machine without it keeps its own
--- time and says nothing.
-local function setclock()
-	if clockset then
+-- Said once, so a log shows when the sky became usable. The clock is
+-- not set here: this task holds no capability to move it, and
+-- task/timed.lua asks for a fix and decides.
+local function announce()
+	if said or not fix:has() then
 		return
 	end
-
-	local unix = fix:epoch()
-
-	if not unix or not fix:has() then
-		return
-	end
-	if pcall(sys.settime, unix) then
-		clockset = true
-		sys.log("gpsd: clock set from the sky, %d", unix)
-	else
-		clockset = true	-- no capability: do not ask again
-	end
+	said = true
+	sys.log("gpsd: a fix, %d in view, %d tracked", #fix.sats,
+	    fix:tracked())
 end
 
 -- Every sentence goes to every listener, as hci.lua does with packets:
@@ -117,7 +108,7 @@ local function drain()
 				good = good + 1
 				fix:update(s)
 				push(s)
-				setclock()
+				announce()
 			end
 		end
 	end
