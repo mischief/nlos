@@ -532,6 +532,15 @@ test('nmea-parser', lua_interp,
   timeout: 20,
 )
 
+# lib/geometry.lua: the identities are the test. A rotation keeps a
+# length, a frame round-trips, and a satellite placed from a bearing is
+# seen again at that bearing -- which is what a sky plot rests on.
+test('geometry', lua_interp,
+  args: [files('host_geometry.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # lua's io read formats, ours against the host's own io. The reference
 # is what lua answers, not a table of expectations written here.
 test('io-formats', lua_interp,

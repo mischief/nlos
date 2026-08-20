@@ -279,6 +279,7 @@ lua_payload = files(
   '../../../task/srvd.lua',
   '../../../lib/srvfs.lua',
   '../../../bin/dmesg.lua',
+  '../../../lib/geometry.lua',
   '../../../lib/nmea.lua',
   '../../../lib/tap.lua',
   '../../../lib/webterm.lua',

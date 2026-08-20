@@ -180,6 +180,7 @@ embed_files = [
   'lib/sync/once.lua',
   'lib/sync/sema.lua',
   'lib/sync/lock.lua',
+  'lib/geometry.lua',
   'lib/nmea.lua',
   'lib/tap.lua',
   'lib/ps.lua',
