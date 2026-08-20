@@ -60,10 +60,8 @@ static int keyhead, keytail;
 static int ptrx, ptry, ptrbuttons, ptrmoved;
 
 /* A press and a release inside one poll window are the whole of a
- * click, and reporting only the state they left behind reports that
- * nothing happened. Positions may still be dropped -- a reader that
- * has fallen behind wants where the pointer is, not where it has
- * been -- but every button edge is kept and handed over in turn.
+ * click, and the state they leave behind says nothing happened. Every
+ * button edge is kept; positions stay state, and may be dropped.
  */
 #define BUTRING 32
 
@@ -141,19 +139,16 @@ keydown(SDL_Keycode key, SDL_Keymod mod)
 	}
 }
 
-/* window coordinates are not the guest's once the window has been
- * resized: the screen is a fixed size and SDL scales it to fit, so a
- * click has to come back through the same transform or the pointer
- * drifts further from the cursor the larger the window gets.
+/* SDL scales a mouse event through the renderer's logical size before
+ * it hands it over, so what arrives is already in the guest's
+ * coordinates. Only the bars a letterbox leaves need dealing with:
+ * a point in one is outside the screen, and belongs at its edge.
  */
 static void
 ptrpos(int wx, int wy)
 {
-	float lx = (float)wx, ly = (float)wy;
-
-	SDL_RenderWindowToLogical(renderer, wx, wy, &lx, &ly);
-	ptrx = (int)lx;
-	ptry = (int)ly;
+	ptrx = wx;
+	ptry = wy;
 	if (ptrx < 0)
 		ptrx = 0;
 	if (ptry < 0)
