@@ -77,7 +77,7 @@ return {
 	  args = { preset = "MEDIUM_FAST", region = "US", hop = 3 } },
 
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "tcp", "ip", "dns", "power", "ble", "mesh" } },
+	  optcaps = { "tcp", "ip", "dns", "power", "ble", "mesh", "gps" } },
 
 	-- the wall clock. "time" is the right to sys.settime, and this is
 	-- the only entry naming it: everything else reads the clock and

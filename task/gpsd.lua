@@ -44,8 +44,22 @@ local function reply(m, msg)
 	end
 end
 
+-- the sky itself, not just its size: a caller waiting for a fix wants
+-- to see which are being heard and how loudly, since that is the part
+-- that changes when the receiver is moved.
+local function sky()
+	local out = {}
+
+	for _, s in ipairs(fix.sats) do
+		out[#out + 1] = { prn = s.prn, snr = s.snr, elev = s.elev,
+		    talker = s.talker }
+	end
+	return out
+end
+
 local function position()
 	return {
+		sky = sky(),
 		has = fix:has(), lat = fix.lat, lon = fix.lon,
 		alt = fix.alt, speed_knots = fix.speed_knots,
 		track = fix.track, nsats = fix.nsats, hdop = fix.hdop,

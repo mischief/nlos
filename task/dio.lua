@@ -121,6 +121,7 @@ local bleh = job.ble and job.ble.__right
 -- the mesh, on the same terms as the radio above it: one chip, one
 -- node, and an app holds a right to the service rather than to either.
 local meshh = job.mesh and job.mesh.__right
+local gpsh = job.gps and job.gps.__right
 
 local function say(s)
 	if cons then
@@ -993,6 +994,11 @@ local function start(i, openarg)
 				    { __right = bleh } or nil,
 				mesh = entry.mesh and meshh and
 				    { __right = meshh } or nil,
+				-- and the receiver, named per entry for the
+				-- same reason: where the machine is is not
+				-- something every app on the tray is told.
+				gps = entry.gps and gpsh and
+				    { __right = gpsh } or nil,
 				-- the stack and the resolver, on the same
 				-- terms: an app that talks to a server says
 				-- so, and one that does not cannot.

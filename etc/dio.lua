@@ -27,6 +27,8 @@
 --		radio is a singleton, and a program that never asked for
 --		it cannot advertise as somebody else.
 --	mesh	lend this one the lora mesh, on the same terms as ble.
+--	gps	lend this one the gnss receiver, on the same terms. Where
+--		the machine is is not something every entry is told.
 --	category
 --		which heading the launcher files it under. Groups appear
 --		in the order first named below, one open at a time, and
@@ -149,6 +151,12 @@ return {
 		{ name = "settings", cmd = "/bin/settings.lua",
 		  category = "system", label = "=", color = 0xaaaaaa,
 		  keys = true, desc = "memory, network and uptime" },
+		-- where the machine is, on a board that can tell. gps
+		-- rather than net: the receiver answers without one.
+		{ name = "gps", cmd = "/bin/gpsui.lua",
+		  category = "system", label = "*", color = 0x2ca02c,
+		  keys = true, gps = true,
+		  desc = "position and time, off the sky" },
 		{ name = "procs", cmd = "/bin/procsui.lua",
 		  category = "system", label = "P", color = 0x9467bd,
 		  keys = true, desc = "what is running, and what it holds" },
