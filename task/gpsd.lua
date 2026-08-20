@@ -52,7 +52,7 @@ local function sky()
 
 	for _, s in ipairs(fix.sats) do
 		out[#out + 1] = { prn = s.prn, snr = s.snr, elev = s.elev,
-		    talker = s.talker }
+		    azim = s.azim, talker = s.talker }
 	end
 	return out
 end
