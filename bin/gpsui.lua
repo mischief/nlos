@@ -244,95 +244,105 @@ local function project(p)
 	    p.x * view.bz.x + p.y * view.bz.y + p.z * view.bz.z
 end
 
--- The disc never changes; only the basis it is viewed in. So each
--- sample's place on the sphere, its light and its limb are found once,
--- and a frame is nine multiplies and a lookup over what is left. STEP
--- takes one pixel in four and fills the square: this chip has no
--- double precision in hardware, so a quarter of the arithmetic is the
--- difference between a redraw and a wait.
+-- The disc never changes, only the basis it is viewed in. What a
+-- sample costs to find again is one square root, which this chip has
+-- no double precision for, so that alone is kept and the rest is a
+-- multiply. STEP takes one pixel in four and fills the square.
 local STEP = 2
-local DPX, DPY, DVX, DVY, DVZ, DLIT, DLIMB = {}, {}, {}, {}, {}, {}, {}
-local DROW = {}
+local INVR = 1 / RPX
+local DVZ = {}		-- height above the disc, per sample
+local DHALF = {}	-- how wide the row is, per row
 
 do
-	local n = 0
+	local n, r = 0, 0
 
 	for py = -RPX, RPX, STEP do
 		local half = math.floor(math.sqrt(RPX * RPX - py * py))
-		local vy = -py / RPX
+		local vy = -py * INVR
 
+		r = r + 1
+		DHALF[r] = half
 		for px = -half, half, STEP do
-			local vx = px / RPX
+			local vx = px * INVR
 			-- clamped: the rounding that puts a pixel one inside
 			-- the disc can still leave this below zero, and a
 			-- nan here would index the map with a nan.
 			local d = 1 - vx * vx - vy * vy
-			local vz = d > 0 and math.sqrt(d) or 0
 
 			n = n + 1
-			DPX[n], DPY[n] = CX + px, CY + py
-			DVX[n], DVY[n], DVZ[n] = vx, vy, vz
-			DLIT[n] = -vx * 0.5 + vy * 0.5 + vz * 0.72
-			DLIMB[n] = half - math.abs(px) < STEP + 1
+			DVZ[n] = d > 0 and math.sqrt(d) or 0
 		end
-		DROW[n] = true		-- the last sample of this row
 	end
-	DPX.n = n
+	DVZ.n = n
 end
 
+-- A rectangle a sample is what the picture asks for and not what it
 -- A rectangle a sample is what the picture asks for and not what it
 -- costs: an ocean is a long run of one colour, and the measurement says
 -- the frame is the calls rather than the arithmetic -- 7.6% of it was
 -- floating point. So a run of one colour along a row goes out as one
--- rectangle, and DROW says where a row ends.
+-- rectangle, and a row ends where the loop does.
 local function drawglobe(img, yield)
 	local bx, by, bz = view.bx, view.by, view.bz
 	local bxx, bxy, bxz = bx.x, bx.y, bx.z
 	local byx, byy, byz = by.x, by.y, by.z
 	local bzx, bzy, bzz = bz.x, bz.y, bz.z
 	local fill, rect = img.fill, memdraw.rect
-	local runc, runx, runn = nil, 0, 0
+	local abs, atan = math.abs, math.atan
+	local i, r = 0, 0
 
-	for i = 1, DPX.n do
-		local vx, vy, vz = DVX[i], DVY[i], DVZ[i]
-		local wy = vx * bxy + vy * byy + vz * bzy
-		local wz = vx * bxz + vy * byz + vz * bzz
-		local c
+	for py = -RPX, RPX, STEP do
+		local runc, runx, runn = nil, 0, 0
+		local vy = -py * INVR
+		local yy = CY + py
 
-		if DLIMB[i] then
-			c = LIMB
-		else
-			local wx = vx * bxx + vy * byx + vz * bzx
-			local sea = not landat(wz, math.atan(wy, wx))
-			local lit = DLIT[i]
+		r = r + 1
 
-			if lit < 0.25 then
-				c = sea and SEADK or LANDDK
-			elseif lit > 0.82 then
-				c = (sea and SEA or LAND) + 0x102010
+		local half = DHALF[r]
+		local edge = half - STEP - 1
+
+		for px = -half, half, STEP do
+			local vx = px * INVR
+
+			i = i + 1
+
+			local vz = DVZ[i]
+			local wy = vx * bxy + vy * byy + vz * bzy
+			local wz = vx * bxz + vy * byz + vz * bzz
+			local c
+
+			if abs(px) > edge then
+				c = LIMB
 			else
-				c = sea and SEA or LAND
-			end
-		end
+				local wx = vx * bxx + vy * byx + vz * bzx
+				local sea = not landat(wz, atan(wy, wx))
+				local lit = -vx * 0.5 + vy * 0.5 + vz * 0.72
 
-		if c == runc then
-			runn = runn + STEP
-		else
-			if runc then
-				fill(img, rect(runx, DPY[i - 1], runn, STEP),
-				    runc)
+				if lit < 0.25 then
+					c = sea and SEADK or LANDDK
+				elseif lit > 0.82 then
+					c = (sea and SEA or LAND) + 0x102010
+				else
+					c = sea and SEA or LAND
+				end
 			end
-			runc, runx, runn = c, DPX[i], STEP
+
+			if c == runc then
+				runn = runn + STEP
+			else
+				if runc then
+					fill(img, rect(runx, yy, runn, STEP),
+					    runc)
+				end
+				runc, runx, runn = c, CX + px, STEP
+			end
 		end
-		if DROW[i] then
-			fill(img, rect(runx, DPY[i], runn, STEP), runc)
-			runc = nil
-			-- a row at a time, so a render begun for a turn
-			-- nobody asked for yet still lets the panel answer
-			-- one that was
-			if yield then
-				thread.yield()
-			end
+		fill(img, rect(runx, yy, runn, STEP), runc)
+
+		-- a row at a time, so a render begun for a turn nobody
+		-- asked for yet still lets the panel answer one that was
+		if yield then
+			thread.yield()
 		end
 	end
 end
