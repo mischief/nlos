@@ -1,11 +1,11 @@
-// the browser embedder, which must run in a worker: boot() never
-// returns, so whichever thread calls it stops answering events forever.
+// the browser embedder, in a worker: boot() never returns, so whichever
+// thread calls it answers no events again.
 //
-// Input therefore cannot arrive as a DOM event here. The page writes it
-// into a SharedArrayBuffer and this reads that buffer synchronously;
-// the same buffer is what the idle sleep waits on.
+// The screen is not painted here for the same reason. An OffscreenCanvas
+// reaches the page only when the worker's task ends; these pixels go
+// into a shared buffer, and the page puts them on the glass.
 
-// the shared layout, in Int32 slots. Must match index.html.
+// the input layout, in Int32 slots. Must match index.html.
 const WAKE = 0;		// futex word: always 0, notified to wake us
 const KHEAD = 1;	// key ring read index, ours
 const KTAIL = 2;	// key ring write index, the page's
@@ -16,9 +16,8 @@ const PTRMOVED = 6;
 const KEYS = 8;
 const KEYRING = 256;
 
-let sab = null;		// Int32Array over the shared buffer
-let ctx = null;		// the OffscreenCanvas context
-let img = null;		// one full-screen ImageData, reused
+let sab = null;		// Int32Array over the input buffer
+let rgba = null;	// Uint8Array over the shared screen, as the page reads it
 let mem = null;		// the module's linear memory
 let fbptr = 0, fbw = 0, fbh = 0;
 
@@ -56,13 +55,13 @@ function ptr(xp, yp, bp) {
 	return 1;
 }
 
-// BGRx in our memory, RGBA in an ImageData: the two differ by swapping
-// red and blue and by an alpha the screen does not carry.
+// BGRx in our memory, RGBA in the shared screen: the two differ by
+// swapping red and blue and by an alpha the guest does not carry.
 function flush(x, y, w, h) {
-	if (!ctx || w <= 0 || h <= 0)
+	if (!rgba || w <= 0 || h <= 0)
 		return;
 	const src = new Uint32Array(mem.buffer, fbptr, fbw * fbh);
-	const dst = new Uint32Array(img.data.buffer);
+	const dst = new Uint32Array(rgba.buffer);
 
 	for (let row = y; row < y + h; row++) {
 		let i = row * fbw + x;
@@ -74,7 +73,7 @@ function flush(x, y, w, h) {
 				(s & 0xff00) | ((s >> 16) & 0xff);
 		}
 	}
-	ctx.putImageData(img, 0, 0, x, y, w, h);
+	postMessage({ paint: { x, y, w, h } });
 }
 
 function imports() {
@@ -105,8 +104,7 @@ function imports() {
 				fbw = w;
 				fbh = h;
 				fbptr = pixels;
-				img = new ImageData(w, h);
-				return ctx ? 1 : 0;
+				return rgba ? 1 : 0;
 			},
 			fb_flush: flush,
 			kbd,
@@ -116,16 +114,23 @@ function imports() {
 }
 
 onmessage = async (e) => {
-	const { canvas, shared, url, membytes } = e.data;
+	const { shared, screen, url, membytes, w, h } = e.data;
 
-	sab = new Int32Array(shared);
-	if (canvas)
-		ctx = canvas.getContext('2d', { alpha: false });
+	try {
+		sab = new Int32Array(shared);
+		if (screen)
+			rgba = new Uint8Array(screen);
 
-	const src = await WebAssembly.instantiateStreaming(fetch(url), imports());
+		const src = await WebAssembly.instantiateStreaming(
+			fetch(url), imports());
 
-	mem = src.instance.exports.memory;
-	postMessage({ ready: true });
-	src.instance.exports.boot(BigInt(membytes),
-		canvas ? canvas.width : 0, canvas ? canvas.height : 0);
+		mem = src.instance.exports.memory;
+		postMessage({ ready: true });
+		src.instance.exports.boot(BigInt(membytes), w, h);
+	} catch (err) {
+		// boot() never returns, so anything caught here happened
+		// before the machine started -- and nothing else would ever
+		// say so.
+		postMessage({ error: String(err && err.stack || err) });
+	}
 };

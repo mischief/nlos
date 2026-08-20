@@ -33,9 +33,10 @@ html, body {
 <div id="note">starting…</div>
 
 <script>
-// the page half: it owns the events and owns nothing else. The machine
-// runs in a worker, because boot() never returns and would leave this
-// thread unable to answer anything -- including the events below.
+// the page half: it owns the events and the glass, and nothing else.
+// The machine runs in a worker, because boot() never returns and would
+// leave this thread unable to answer anything -- including the events
+// below, and including the paint.
 
 const WAKE = 0, KHEAD = 1, KTAIL = 2;
 const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6;
@@ -43,17 +44,43 @@ const KEYS = 8, KEYRING = 256;
 
 const note = document.getElementById('note');
 const canvas = document.getElementById('screen');
+const W = canvas.width, H = canvas.height;
+
+function fail(text) {
+	note.textContent = text;
+	note.style.display = '';
+}
 
 if (!crossOriginIsolated) {
-	note.textContent =
-		'this page needs cross-origin isolation for SharedArrayBuffer.\n' +
+	fail('this page needs cross-origin isolation for SharedArrayBuffer.\n' +
 		'serve it with COOP: same-origin and COEP: require-corp --\n' +
-		'machine/wasm/serve.js does exactly that.';
+		'machine/wasm/serve.js does exactly that.');
 	throw new Error('not cross-origin isolated');
 }
 
 const shared = new SharedArrayBuffer((KEYS + KEYRING) * 4);
 const sab = new Int32Array(shared);
+
+// the screen the worker writes and this thread reads. Shared rather
+// than sent: a frame is 3MB and copying one per paint would cost more
+// than drawing it.
+const screen = new SharedArrayBuffer(W * H * 4);
+const pixels = new Uint8Array(screen);
+
+const ctx = canvas.getContext('2d', { alpha: false });
+const img = new ImageData(W, H);
+
+// ImageData cannot be backed by shared memory, so the damaged rows are
+// copied into it -- the damaged rows only, which is why fb_flush sends
+// a rectangle rather than a flag.
+function paint({ x, y, w, h }) {
+	for (let row = y; row < y + h; row++) {
+		const off = (row * W + x) * 4;
+
+		img.data.set(pixels.subarray(off, off + w * 4), off);
+	}
+	ctx.putImageData(img, 0, 0, x, y, w, h);
+}
 
 // a key the machine has not read yet. Dropped when the ring is full
 // rather than wrapped onto unread keys.
@@ -113,11 +140,11 @@ addEventListener('keydown', (e) => {
 // cursor the larger the window gets.
 function ptrpos(e) {
 	const r = canvas.getBoundingClientRect();
-	let x = Math.floor((e.clientX - r.left) / r.width * canvas.width);
-	let y = Math.floor((e.clientY - r.top) / r.height * canvas.height);
+	let x = Math.floor((e.clientX - r.left) / r.width * W);
+	let y = Math.floor((e.clientY - r.top) / r.height * H);
 
-	x = Math.max(0, Math.min(canvas.width - 1, x));
-	y = Math.max(0, Math.min(canvas.height - 1, y));
+	x = Math.max(0, Math.min(W - 1, x));
+	y = Math.max(0, Math.min(H - 1, y));
 	Atomics.store(sab, PTRX, x);
 	Atomics.store(sab, PTRY, y);
 	// the DOM says 1 left, 2 right, 4 middle; the guest says
@@ -136,22 +163,32 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 const worker = new Worker('worker.js');
 
 worker.onmessage = (e) => {
-	if (e.data.ready)
+	const m = e.data;
+
+	if (m.paint)
+		paint(m.paint);
+	else if (m.ready)
 		note.style.display = 'none';
-	if (e.data.halted !== undefined) {
-		note.textContent = 'machine halted';
-		note.style.display = '';
-	}
+	else if (m.error)
+		fail('the machine did not start:\n\n' + m.error);
+	else if (m.halted !== undefined)
+		fail('machine halted');
 };
 
-const offscreen = canvas.transferControlToOffscreen();
+// a worker that dies says nothing on its own, and the page would sit
+// at "starting…" forever.
+worker.onerror = (e) =>
+	fail('worker error:\n\n' + (e.message || e) + '\n' +
+		(e.filename || '') + ':' + (e.lineno || ''));
 
 worker.postMessage({
-	canvas: offscreen,
 	shared,
+	screen,
 	url: 'luaos.wasm',
 	membytes: 96 * 1024 * 1024,
-}, [offscreen]);
+	w: W,
+	h: H,
+});
 
 canvas.focus();
 </script>
