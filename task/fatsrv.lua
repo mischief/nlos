@@ -116,12 +116,17 @@ thread.spawn(function()
 		local fs = fat.open(dev, opts)
 
 		if not fs and ream then
-			assert(fat.ream(dev, { secsz = 4096, label = "CONFIG",
-			    cache = cache }))
+			assert(fat.ream(dev, { secsz = v.secsz or 4096,
+			    label = v.label or "CONFIG", cache = cache }))
 			fs = fat.open(dev, opts)
 		end
 		return assert(fs, at .. ": no FAT volume here")
 	end
+
+	-- touch this and reboot to make a filesystem on the card. Read
+	-- through the volumes below, so it lives on the writable flash and
+	-- survives exactly one boot.
+	local REAMFLAG = "/config/ream-sd"
 
 	-- names are ours to choose now; partitions.csv fixes what is there.
 	local WHERE = { [2] = "/config" }
@@ -151,13 +156,22 @@ thread.spawn(function()
 			dev = nil
 		end
 	end
+	-- a card with nothing readable on it is still a card: kept as a
+	-- candidate so an asked-for ream has a device to write, where
+	-- before it was dropped here and there was nothing to ream.
+	if not dev and ok and sd then
+		dev, where = device(sd), "no volume"
+	end
+
 	if dev then
 		print("fatsrv: /sd: " .. where)
 		-- the default cache, not /config s handful: the FAT and the
 		-- directories of a 30GB volume are revisited constantly, and
 		-- eight sectors of it thrash.
+		-- 512 on a card, which is what its sectors are; the flash
+		-- volumes use the erase block.
 		more[#more + 1] = { at = "/sd", dev = dev, ream = false,
-		    nofree = true }
+		    card = true, secsz = 512, label = "LUAOS", nofree = true }
 	end
 
 	if #more > 0 then
@@ -169,7 +183,21 @@ thread.spawn(function()
 			local at = v.at
 			-- a missing volume is an older layout, not a
 			-- failure. Small cache: a few files, read once.
-			local ok, fs = pcall(volume, v, at, v.ream, v.cache)
+			local ream = v.ream
+
+			-- the card is reamed only where somebody asked for
+			-- it by name. The flag is a file rather than a
+			-- setting because it is spent: making a filesystem
+			-- over somebody's photographs must not be something
+			-- a machine does twice.
+			if v.card and V:stat(REAMFLAG) then
+				ream = true
+				V:remove(REAMFLAG)
+				print("fatsrv: /sd: reaming, as " ..
+				    REAMFLAG .. " asked")
+			end
+
+			local ok, fs = pcall(volume, v, at, ream, v.cache)
 
 			if ok then
 				local sub = fatfs.new(fs)
