@@ -83,7 +83,7 @@ local RPX = S // 2 - 8
 
 local SEA, LAND = 0x14498a, 0x2f7a44
 local SEADK, LANDDK = 0x081f3c, 0x123018
-local LIMB, GRID = 0x6fa8ff, 0x1a2a44
+local LIMB = 0x6fa8ff
 local HERE = 0xffd020
 local SAT, SATW, SATOK, BEHIND = 0xd03030, 0xd0a020, 0x40d060, 0x304050
 
@@ -337,34 +337,6 @@ local function drawglobe(img, yield)
 	end
 end
 
--- the meridians and parallels, drawn over the ball so a rotation reads
--- as a rotation rather than as the map sliding about
-local function drawgrid(img)
-	for lat = -60, 60, 30 do
-		for lon = -180, 175, 5 do
-			local p = geom.geodetic(lat, lon)
-			local x, y, z = project(p)
-
-			if z > 0 then
-				img:set(math.floor(x + 0.5),
-				    math.floor(y + 0.5), GRID)
-			end
-		end
-	end
-	for lon = -180, 150, 30 do
-		for lat = -85, 85, 5 do
-			local p = geom.geodetic(lat, lon)
-			local x, y, z = project(p)
-
-			if z > 0 then
-				img:set(math.floor(x + 0.5),
-				    math.floor(y + 0.5), GRID)
-			end
-		end
-	end
-end
-
-
 -- ---- the earth, kept by the draw server ----
 --
 -- Sixteen positions and no more, which is as much of a turn as this
@@ -409,7 +381,6 @@ local function render(which, lat, lon, bg)
 	setview(lat, lon, which)
 	EARTHIMG:fill(EARTHIMG:rect(), BG)
 	drawglobe(EARTHIMG, bg)
-	drawgrid(EARTHIMG)
 
 	local id = fb.alloc(S, S, FMT, BG)
 
