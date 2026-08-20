@@ -69,7 +69,13 @@ end
 if mode == "-r" then
 	local port = sys.newport("gps.raw")
 	local guard <close> = sys.owned(port)
-	local r = ask({ op = "raw", port = { __right = port } })
+	-- a send right, not the port: handing over the receive right
+	-- gives the sentences away rather than asking for them, and the
+	-- task cannot send on it at all.
+	local send = sys.sendright(port)
+	local r = ask({ op = "raw", port = { __right = send } })
+
+	sys.close(send)
 
 	if not (r and r.ok) then
 		die("the gps task refused a listener")
@@ -77,13 +83,11 @@ if mode == "-r" then
 	while true do
 		local m = thread.recv(port)
 
-		if type(m) == "table" and m.line then
-			local s = m.line
-
-			out(("%s%s %s\n"):format(s.talker or "??",
-			    s.type or "???",
-			    s.lat and ("%.5f %.5f"):format(s.lat, s.lon) or
-			    ""))
+		-- the sentence as it arrived. What comes out of here is a
+		-- capture: redirect it and it replays through the same
+		-- parser on another machine.
+		if type(m) == "table" and m.line and m.line.raw then
+			out(m.line.raw .. "\n")
 		end
 	end
 end

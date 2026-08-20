@@ -143,7 +143,7 @@ local function probe()
 				local before = good
 
 				while deadline do
-					local which = sys.alt({ RAWGPS, deadline })
+					local which = sys.alt({ { port = RAWGPS }, { port = deadline } })
 
 					if which == 1 then
 						drain()
@@ -173,7 +173,7 @@ else
 end
 
 while true do
-	local which, m = sys.alt({ RAWGPS, sys.SELF })
+	local which, m = sys.alt({ { port = RAWGPS }, { port = sys.SELF } })
 
 	if which == 1 then
 		drain()

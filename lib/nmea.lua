@@ -227,7 +227,10 @@ function M.parse(line)
 	end
 
 	local want = line:match("%*(%x%x)%s*$")
+	-- the line as it arrived, so a reader can log what it was given
+	-- rather than something rebuilt out of the fields
 	local t = {
+		raw = line,
 		talker = body:sub(1, 2),
 		type = body:sub(3, 5),
 		valid = want == nil or tonumber(want, 16) == xorsum(body),

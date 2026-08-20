@@ -6,6 +6,7 @@
  */
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "blk.h"
@@ -16,6 +17,7 @@
 #include "lauxlib.h"
 #include "lua.h"
 #include "platform.h"
+#include "timer.h"
 
 /* the terminal is the console and nothing else wants it: there is no
  * wire here to hold the bytes until a task claims them.
@@ -318,24 +320,157 @@ platform_hci_irqs(void)
 	return 0;
 }
 
-/* no gnss receiver: a process has no serial port of its own. */
+/* ---- a receiver, replayed ----
+ *
+ * A process has no serial port but can have a recording. LUAOS_GPS
+ * names a file of sentences captured off a real one; without it there
+ * is no receiver here, so an ordinary run is not a gps machine.
+ */
+static FILE *gpsfile;
+static unsigned long gpsbytes;
+static char gpsline[128];
+static size_t gpsheld, gpsat;
+
+/* Paced, because the point is to behave like the thing it stands in
+ * for: a receiver emits about once a second, and a replay that handed
+ * over a whole file at once would exercise nothing a board does.
+ */
+#define GPSRATE 20		/* sentences a second, near enough */
+
+static int
+gpsfill(void)
+{
+	if (gpsat < gpsheld)
+		return 1;
+	if (!gpsfile)
+		return 0;
+	if (!fgets(gpsline, sizeof gpsline, gpsfile)) {
+		/* round again: a fixture is a loop, so a long run does
+		 * not need a long recording.
+		 */
+		rewind(gpsfile);
+		if (!fgets(gpsline, sizeof gpsline, gpsfile))
+			return 0;
+	}
+	gpsheld = strlen(gpsline);
+	gpsat = 0;
+	return gpsheld > 0;
+}
+
 int
 platform_have_gps(void)
 {
-	return 0;
+	if (gpsfile)
+		return 1;
+
+	const char *path = getenv("LUAOS_GPS");
+
+	if (!path || !*path)
+		return 0;
+	gpsfile = fopen(path, "r");
+	return gpsfile != NULL;
 }
 
 unsigned long
 platform_gps_rx(void)
 {
-	return 0;
+	return gpsbytes;
 }
 
+/* one line at a time, so the pump wakes the task at a receiver's pace
+ * rather than as fast as a file can be read
+ */
 unsigned long
 platform_gps_pending(void)
 {
+	static unsigned long last;
+	unsigned long now = (unsigned long)uptime_ms();
+
+	if (!gpsfile)
+		return 0;
+	if (gpsat >= gpsheld && now - last < 1000 / GPSRATE)
+		return 0;
+	if (!gpsfill())
+		return 0;
+	last = now;
+	return (unsigned long)(gpsheld - gpsat);
+}
+
+static int
+replay_open(int baud)
+{
+	(void)baud;
+	return gpsfile ? 0 : -1;
+}
+
+static int
+replay_read(char *out, int n)
+{
+	int got = 0;
+
+	while (got < n && gpsfill()) {
+		out[got++] = gpsline[gpsat++];
+		if (gpsat >= gpsheld)
+			break;		/* a line at a time */
+	}
+	gpsbytes += (unsigned long)got;
+	return got;
+}
+
+static int
+replay_write(const char *s, int n)
+{
+	(void)s;			/* a recording takes no configuring */
+	(void)n;
 	return 0;
 }
+
+static int
+gps_open_l(lua_State *L)
+{
+	lua_pushboolean(L, replay_open((int)luaL_optinteger(L, 1, 9600)) == 0);
+	return 1;
+}
+
+static int
+gps_read_l(lua_State *L)
+{
+	char buf[256];
+	int n = replay_read(buf, (int)luaL_optinteger(L, 1, sizeof buf));
+
+	if (n <= 0)
+		return 0;
+	lua_pushlstring(L, buf, (size_t)n);
+	return 1;
+}
+
+static int
+gps_write_l(lua_State *L)
+{
+	size_t n;
+	const char *s = luaL_checklstring(L, 1, &n);
+
+	lua_pushinteger(L, replay_write(s, (int)n));
+	return 1;
+}
+
+static int
+gps_stats_l(lua_State *L)
+{
+	lua_createtable(L, 0, 1);
+	lua_pushinteger(L, (lua_Integer)gpsbytes);
+	lua_setfield(L, -2, "rx");
+	return 1;
+}
+
+static const luaL_Reg gpslib[] = {
+	{ "open", gps_open_l },
+	{ "read", gps_read_l },
+	{ "write", gps_write_l },
+	{ "stats", gps_stats_l },
+	{ NULL, NULL },
+};
+
 
 /* a process runs on the host's power, whatever that is. */
 int
@@ -402,7 +537,7 @@ luaopen_los_platform_hci(lua_State *L)
 int
 luaopen_los_platform_gps(lua_State *L)
 {
-	luaL_newlib(L, emptylib);
+	luaL_newlib(L, gpslib);
 	return 1;
 }
 
