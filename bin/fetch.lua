@@ -78,21 +78,30 @@ if url:match("^https://") and not opts.rand then
 	die("no entropy: this shell was lent no seed, and tls needs one")
 end
 
+-- the body goes out as it arrives rather than being held whole: a
+-- track is megabytes and this machine has no room to keep one. The
+-- headers cannot be printed from in here, so they are printed after --
+-- which is where they belong anyway, ahead of nothing.
+if showhead then
+	opts.onhead = function(status, headers)
+		unistd.write(1, ("HTTP %s\n"):format(tostring(status)))
+		for k, v in pairs(headers or {}) do
+			unistd.write(1, ("%s: %s\n"):format(k, v))
+		end
+		unistd.write(1, "\n")
+	end
+end
+
+opts.sink = function(part)
+	unistd.write(1, part)
+	return true
+end
+
 local res, err = http.get(net, prog.dns(), url, opts)
 
 if not res then
 	die(tostring(err))
 end
-
-if showhead then
-	unistd.write(1, ("HTTP %s\n"):format(tostring(res.status)))
-	for k, v in pairs(res.headers or {}) do
-		unistd.write(1, ("%s: %s\n"):format(k, v))
-	end
-	unistd.write(1, "\n")
-end
-
-unistd.write(1, res.body or "")
 
 -- a request that reached the server and was refused by it is not this
 -- program's failure, but it is not a success either: the status is the

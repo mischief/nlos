@@ -88,11 +88,43 @@ function Conn:fill(want)
 	end
 end
 
+-- deliver `len` bytes to `sink`, a piece at a time. Nothing larger
+-- than one socket read is ever held, so a body may be any size: the
+-- ceiling stops being memory and starts being the far end's patience.
+function Conn:drain(len, sink)
+	local left = len
+
+	while left > 0 do
+		if #self.buf == 0 then
+			local got = self:fill(function(buf, eof)
+				if #buf > 0 then
+					return #buf
+				end
+				return eof and 0 or nil
+			end)
+
+			if not got or got == 0 then
+				return nil, "body ended early"
+			end
+		end
+
+		local take = #self.buf < left and #self.buf or left
+		local piece = self.buf:sub(1, take)
+
+		self.buf = self.buf:sub(take + 1)
+		left = left - take
+		if not sink(piece) then
+			return nil, "sink refused the body"
+		end
+	end
+	return true
+end
+
 -- a chunked body, reassembled. Each chunk is a hex length, the bytes,
 -- and a CRLF; a zero length ends it, and whatever trailers follow run
 -- to a blank line. Reading them is what keeps the connection usable:
 -- the alternative is not knowing where the next response starts.
-function Conn:chunked()
+function Conn:chunked(sink)
 	local parts, total = {}, 0
 
 	local function line()
@@ -137,7 +169,9 @@ function Conn:chunked()
 		end
 
 		total = total + n
-		if total > M.MAXBODY then
+		-- a sink is the caller taking the bytes away, so the
+		-- ceiling that protects memory does not apply
+		if not sink and total > M.MAXBODY then
 			return nil, "response exceeds MAXBODY"
 		end
 
@@ -149,8 +183,17 @@ function Conn:chunked()
 		if not got then
 			return nil, "chunk body truncated"
 		end
-		parts[#parts + 1] = self.buf:sub(1, n)
+		if sink then
+			if not sink(self.buf:sub(1, n)) then
+				return nil, "sink refused the body"
+			end
+		else
+			parts[#parts + 1] = self.buf:sub(1, n)
+		end
 		self.buf = self.buf:sub(n + 3)
+	end
+	if sink then
+		return true
 	end
 	return table.concat(parts)
 end
@@ -220,14 +263,23 @@ function Conn:request(req)
 
 	local te = (headers["transfer-encoding"] or ""):lower()
 
+	local sink = req and req.sink
+
+	-- the status and headers, before a streamed body reaches the
+	-- sink: a caller printing both cannot wait for a return that
+	-- comes after the bytes it has to print first.
+	if req and req.onhead then
+		req.onhead(status, headers)
+	end
+
 	if te:find("chunked", 1, true) then
-		local body, cerr = self:chunked()
+		local body, cerr = self:chunked(sink)
 
 		if not body then
 			self.dead = true
 			return nil, cerr
 		end
-		rbody = body
+		rbody = sink and nil or body
 	elseif te ~= "" then
 		-- another coding leaves the body's end unknown, and a body
 		-- whose end is unknown cannot be told from the next
@@ -235,24 +287,54 @@ function Conn:request(req)
 		self.dead = true
 		return nil, "transfer-encoding is not supported: " .. te
 	elseif len then
-		local got = self:fill(function(buf, eof)
-			if #buf >= len then
-				return len
-			end
-			return eof and #buf or nil
-		end)
+		if sink then
+			local okd, derr = self:drain(len, sink)
 
-		if not got or got < len then
-			self.dead = true
-			return nil, "body ended early"
+			if not okd then
+				self.dead = true
+				return nil, derr
+			end
+		else
+			local got = self:fill(function(buf, eof)
+				if #buf >= len then
+					return len
+				end
+				return eof and #buf or nil
+			end)
+
+			if not got or got < len then
+				self.dead = true
+				return nil, "body ended early"
+			end
+			rbody = self.buf:sub(1, len)
+			self.buf = self.buf:sub(len + 1)
 		end
-		rbody = self.buf:sub(1, len)
-		self.buf = self.buf:sub(len + 1)
 	else
 		-- no length and no encoding: the close is the terminator,
 		-- so this is the last response on this connection.
-		self:fill(function(_, eof) return eof and 0 or nil end)
-		rbody, self.buf = self.buf, ""
+		if sink then
+			while true do
+				if #self.buf > 0 then
+					if not sink(self.buf) then
+						self.dead = true
+						return nil, "sink refused the body"
+					end
+					self.buf = ""
+				end
+				if self.dead then
+					break
+				end
+				self:fill(function(buf, eof)
+					if #buf > 0 then
+						return #buf
+					end
+					return eof and 0 or nil
+				end)
+			end
+		else
+			self:fill(function(_, eof) return eof and 0 or nil end)
+			rbody, self.buf = self.buf, ""
+		end
 		self.dead = true
 	end
 
@@ -262,7 +344,10 @@ function Conn:request(req)
 		self.dead = true
 	end
 
-	return { status = status, headers = headers, body = rbody }
+	-- a streamed body has already gone to the sink, so `length` is
+	-- what a caller checks instead of #body
+	return { status = status, headers = headers, body = rbody,
+	    length = len }
 end
 
 function Conn:alive()
@@ -345,7 +430,10 @@ function M.get(tcp, dns, url, opts)
 		return nil, cerr
 	end
 
-	local res, rerr = conn:request({ method = "GET", path = path })
+	-- opts.sink takes the body a piece at a time and res.body is then
+	-- nil: what does not fit in memory can still be written to a file.
+	local res, rerr = conn:request({ method = "GET", path = path,
+	    sink = opts and opts.sink, onhead = opts and opts.onhead })
 
 	conn:close()
 	return res, rerr
