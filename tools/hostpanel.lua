@@ -505,7 +505,7 @@ function Panel:push(file, dir)
 		return nil, "cannot run sz (install lrzsz)"
 	end
 
-	local deadline = os.time() + 60 + bytes // 8000
+	local deadline = os.time() + 60 + bytes // 2000
 	local code = nil
 
 	while os.time() < deadline do

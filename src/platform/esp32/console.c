@@ -24,6 +24,9 @@
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include <driver/usb_serial_jtag.h>
 #include <driver/usb_serial_jtag_vfs.h>
+#else
+#include <driver/uart.h>
+#include <driver/uart_vfs.h>
 #endif
 
 #include "esp32.h"
@@ -138,6 +141,16 @@ console_init(void)
 
 	if (usb_serial_jtag_driver_install(&cfg) == ESP_OK)
 		usb_serial_jtag_vfs_use_driver();
+#else
+	/* The same thing the USB branch above is for, on the other link.
+	 * Without a driver the VFS binding is the ROM one and receive is
+	 * the 128-byte hardware FIFO, which at 115200 overflows in 11ms
+	 * of not reading -- so a transfer loses bytes continuously and
+	 * crawls rather than failing outright.
+	 */
+	if (uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 65536, 0, 0,
+	    NULL, 0) == ESP_OK)
+		uart_vfs_dev_use_driver(CONFIG_ESP_CONSOLE_UART_NUM);
 #endif
 
 	/* Unbuffered both ways. Output because a line-buffered console

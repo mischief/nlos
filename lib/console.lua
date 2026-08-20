@@ -38,6 +38,10 @@ local thread = require("los.thread")
 -- is milliseconds. A transfer asks for 4096.
 local MAXRAW = 4096
 
+-- the longest edited line. Past this what arrives is not somebody
+-- typing, and taking it is how the console runs out of memory.
+local LINEMAX = 4096
+
 -- how long readraw waits for more once it has some. A reader moving a
 -- file asks for hundreds of bytes and a line delivers them in pieces,
 -- so returning on the first piece costs a round trip per piece:
@@ -435,8 +439,14 @@ function Console:readline(prompt)
 					    or h[hpos])
 				end
 			elseif #c == 1 and c >= " " then
-				buf[#buf + 1] = c
-				io.write(c)
+				-- bounded: a line is typed by a person, but
+				-- what arrives here may be a file transfer
+				-- that lost its receiver, and a line with no
+				-- end to it grows until the console dies.
+				if #buf < LINEMAX then
+					buf[#buf + 1] = c
+					io.write(c)
+				end
 			end
 		end
 	end
@@ -616,6 +626,12 @@ function Console:serve()
 			self.raw = m.op == "rawon"
 			if io.raw then
 				io.raw(m.op == "rawon")
+			end
+			-- what a transfer left behind is not input for the
+			-- shell, and holding it costs the console the whole
+			-- of whatever overran the last reader
+			if not self.raw then
+				self.pend = ""
 			end
 			-- and a diagnostic stops being echoed here, for the
 			-- same reason: every byte on this line is protocol
