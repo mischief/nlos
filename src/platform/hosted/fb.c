@@ -159,6 +159,15 @@ ptrpos(int wx, int wy)
 		ptry = fbh - 1;
 }
 
+/* the guest's button bits, which are plan 9's: three buttons low, the
+ * wheel above them. A notch is not a state -- it is one press and one
+ * release, and the ring is what makes it survive a slow poll.
+ */
+#define WHEELUP		8
+#define WHEELDOWN	16
+#define WHEELLEFT	32
+#define WHEELRIGHT	64
+
 static int
 buttonbit(int b)
 {
@@ -241,6 +250,29 @@ pump_locked(void)
 			ptrbuttons &= ~buttonbit(e.button.button);
 			butpush();
 			break;
+		case SDL_MOUSEWHEEL: {
+			int wx = e.wheel.x, wy = e.wheel.y, bit = 0;
+
+			if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+				wx = -wx;
+				wy = -wy;
+			}
+			if (wy > 0)
+				bit |= WHEELUP;
+			else if (wy < 0)
+				bit |= WHEELDOWN;
+			if (wx > 0)
+				bit |= WHEELRIGHT;
+			else if (wx < 0)
+				bit |= WHEELLEFT;
+			if (bit) {
+				ptrbuttons |= bit;
+				butpush();
+				ptrbuttons &= ~bit;
+				butpush();
+			}
+			break;
+		}
 		default:
 			break;
 		}
