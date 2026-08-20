@@ -125,8 +125,11 @@ node_prog = find_program('node', 'nodejs', required: false)
 if node_prog.found()
   test('wasm-boot', lua_interp,
     args: [files('../tools/boottest-wasm.lua'),
-      files('../machine/wasm/run.js'), luaos_wasm],
-    protocol: 'tap', timeout: 120,
+      files('../machine/wasm/run.js'), luaos_wasm,
+      files('../tools/browsertest-wasm.js'),
+      files('../machine/wasm/worker.js'),
+      files('wasm/panel.json')],
+    protocol: 'tap', timeout: 180,
     env: { 'NODE': node_prog.full_path() },
     depends: luaos_wasm,
   )

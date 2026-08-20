@@ -456,6 +456,11 @@ scancode_seq(unsigned scan)
 	}
 }
 
+/* how many keystrokes one message may carry. Bounded because the
+ * message is a stack buffer and a reader wants its keys promptly.
+ */
+#define KBDBATCH 256
+
 /* drain the second terminal's keyboard into its own port.
  *
  * The same shape as pump_keyboard below, and deliberately not the same
@@ -483,17 +488,21 @@ pump_devkbd(void)
 	 * IPC_ASSERT_PORT. Narrowing this means narrowing port_push
 	 * first. Held across the drain.
 	 */
+	/* serialized string, as pump_keyboard sends. One message per drain
+	 * rather than per key, because an arrow is the three bytes ESC [ A:
+	 * a reader given them one at a time sees a bare ESC, and every
+	 * program treating that as "leave" quits on an arrow.
+	 */
+	unsigned char msg[5 + KBDBATCH] = { 'S', 0, 0, 0, 0 };
+	size_t n = 0;
+
 	ipclock_enter();
 	do {
-		/* serialized one-char string, as pump_keyboard sends: a
-		 * port carries serialized values and the reader
-		 * deserializes whatever arrives.
-		 */
-		unsigned char msg[6] = { 'S', 1, 0, 0, 0, 0 };
-
-		msg[5] = (unsigned char)c;
-		port_push(devkbdport, msg, sizeof msg, 0, 0);
-	} while ((c = platform_kbd_read()) >= 0);
+		msg[5 + n++] = (unsigned char)c;
+	} while (n < KBDBATCH && (c = platform_kbd_read()) >= 0);
+	msg[1] = (unsigned char)(n & 0xff);
+	msg[2] = (unsigned char)((n >> 8) & 0xff);
+	port_push(devkbdport, msg, 5 + n, 0, 0);
 	ipclock_leave();
 }
 
@@ -549,12 +558,6 @@ pump_devptr(void)
 		ipclock_leave();
 	}
 }
-
-/* how many keystrokes one message may carry. Bounded because the
- * message is a stack buffer and a reader wants its keys promptly.
- */
-#define KBDBATCH 256
-
 /* What the console has not taken yet. A full queue means the reader is
  * behind, and dropping loses the middle of a file: hold the batch and
  * stop reading the device, so the sender waits instead. One buffer for

@@ -13,8 +13,11 @@ const PTRX = 3;
 const PTRY = 4;
 const PTRB = 5;
 const PTRMOVED = 6;
+const PTRWHEEL = 7;	// wheel clicks not yet reported; sign is direction
 const KEYS = 8;
 const KEYRING = 256;
+
+const WHEELUP = 8, WHEELDOWN = 16;
 
 let sab = null;		// Int32Array over the input buffer
 let rgba = null;	// Uint8Array over the shared screen, as the page reads it
@@ -44,14 +47,28 @@ function kbd() {
 	return c;
 }
 
+// one record per call. A wheel click is reported before any move, and
+// exactly once: it is an event, where the buttons and the position are
+// a state the reader may fall behind on without losing anything.
 function ptr(xp, yp, bp) {
-	if (!Atomics.exchange(sab, PTRMOVED, 0))
+	const wheel = Atomics.load(sab, PTRWHEEL);
+	let buttons;
+
+	if (wheel !== 0) {
+		Atomics.add(sab, PTRWHEEL, wheel > 0 ? -1 : 1);
+		buttons = Atomics.load(sab, PTRB) |
+			(wheel > 0 ? WHEELUP : WHEELDOWN);
+	} else if (Atomics.exchange(sab, PTRMOVED, 0)) {
+		buttons = Atomics.load(sab, PTRB);
+	} else {
 		return 0;
+	}
+
 	const out = new Int32Array(mem.buffer);
 
 	out[xp >> 2] = Atomics.load(sab, PTRX);
 	out[yp >> 2] = Atomics.load(sab, PTRY);
-	out[bp >> 2] = Atomics.load(sab, PTRB);
+	out[bp >> 2] = buttons;
 	return 1;
 }
 
@@ -87,6 +104,7 @@ function imports() {
 			// goes to the panel's keyboard instead.
 			read: () => -1,
 			now_ns: () => BigInt(Math.round(performance.now() * 1e6)),
+			now_unix: () => BigInt(Math.floor(Date.now() / 1000)),
 			wait(ms) {
 				Atomics.wait(sab, WAKE, 0, ms);
 			},

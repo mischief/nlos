@@ -13,6 +13,7 @@
 #include "host.h"
 #include "kernel.h"
 #include "platform.h"
+#include "timer.h"
 #include "wasm.h"
 
 #define BOOT_PAYLOAD "/init.lua"
@@ -46,6 +47,16 @@ wasm_boot(unsigned long long membytes, int w, int h)
 
 	mem_init(membytes ? membytes : DEFAULT_MEM);
 	kernel_clock_init();
+
+	/* the wall clock, which every other machine here learns from the
+	 * network. There is none, and the embedder knows what time it is.
+	 */
+	{
+		long long unix_s = host_now_unix();
+
+		if (unix_s > 0)
+			kernel_settime(unix_s);
+	}
 
 	/* before kernel_init, which asks what this machine has: a screen
 	 * opened after it would exist with no task driving it.

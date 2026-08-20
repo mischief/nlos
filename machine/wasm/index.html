@@ -39,7 +39,7 @@ html, body {
 // below, and including the paint.
 
 const WAKE = 0, KHEAD = 1, KTAIL = 2;
-const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6;
+const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6, PTRWHEEL = 7;
 const KEYS = 8, KEYRING = 256;
 
 const note = document.getElementById('note');
@@ -82,16 +82,24 @@ function paint({ x, y, w, h }) {
 	ctx.putImageData(img, 0, 0, x, y, w, h);
 }
 
-// a key the machine has not read yet. Dropped when the ring is full
-// rather than wrapped onto unread keys.
-function keypush(c) {
-	const tail = Atomics.load(sab, KTAIL);
-	const next = (tail + 1) % KEYRING;
+// one keystroke, which may be several bytes. The tail moves once, at
+// the end: an arrow is ESC [ A, and a machine that read part of it
+// would hand a program a bare ESC -- which most read as "leave".
+// Dropped whole when the ring is full, rather than wrapped onto unread
+// keys or delivered in half.
+function keypush(seq) {
+	const head = Atomics.load(sab, KHEAD);
+	let tail = Atomics.load(sab, KTAIL);
 
-	if (next === Atomics.load(sab, KHEAD))
-		return;
-	Atomics.store(sab, KEYS + tail, c);
-	Atomics.store(sab, KTAIL, next);
+	for (const c of seq) {
+		const next = (tail + 1) % KEYRING;
+
+		if (next === head)
+			return;
+		Atomics.store(sab, KEYS + tail, c);
+		tail = next;
+	}
+	Atomics.store(sab, KTAIL, tail);
 }
 
 function wake() {
@@ -114,23 +122,18 @@ addEventListener('keydown', (e) => {
 		const k = e.key.toLowerCase();
 
 		if (k >= 'a' && k <= 'z') {
-			keypush(k.charCodeAt(0) - 96);
+			keypush([k.charCodeAt(0) - 96]);
 			e.preventDefault();
 			wake();
 		}
 		return;
 	}
-	const seq = NAMED[e.key];
-
-	if (seq) {
-		for (const c of seq)
-			keypush(c);
-	} else if ([...e.key].length === 1) {
-		for (const c of new TextEncoder().encode(e.key))
-			keypush(c);
-	} else {
+	if (NAMED[e.key])
+		keypush(NAMED[e.key]);
+	else if ([...e.key].length === 1)
+		keypush(new TextEncoder().encode(e.key));
+	else
 		return;
-	}
 	e.preventDefault();
 	wake();
 });
@@ -159,6 +162,19 @@ function ptrpos(e) {
 for (const t of ['pointermove', 'pointerdown', 'pointerup'])
 	canvas.addEventListener(t, (e) => { ptrpos(e); e.preventDefault(); });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// the wheel, which the guest reads as plan 9 does: buttons 8 and 16,
+// one click at a time. Counted rather than stored, because a click is
+// an event and the pointer is otherwise a state -- a bit set and
+// cleared between two polls would never be seen.
+canvas.addEventListener('wheel', (e) => {
+	const clicks = e.deltaY < 0 ? 1 : -1;
+
+	ptrpos(e);
+	Atomics.add(sab, PTRWHEEL, clicks);
+	e.preventDefault();
+	wake();
+}, { passive: false });
 
 const worker = new Worker('worker.js');
 

@@ -1,9 +1,8 @@
-// browsertest-wasm.js MODULE WORKER OUT.PNG [MS] [TYPE]
+// browsertest-wasm.js MODULE WORKER OUT.PNG [MS] [SCRIPT.json]
 //
 // runs machine/wasm/worker.js under node with the browser bits shimmed
-// and paints its messages the way index.html does, so the page's whole
-// path can be checked without a browser. The png is what a browser
-// would be showing.
+// and paints its messages as index.html does, so the page can be driven
+// without a browser. The script is [{at: ms, click/key/type/wheel/shot}].
 const fs = require('fs');
 const zlib = require('zlib');
 
@@ -52,34 +51,98 @@ const realInstantiate = WebAssembly.instantiate.bind(WebAssembly);
 WebAssembly.instantiateStreaming = (_, imp) =>
 	realInstantiate(fs.readFileSync(WASM), imp);
 
-// what the page's keydown does, on a timer: the worker is blocked in
-// Atomics.wait, so this runs from inside the patched wait below.
-let typed = 0;
+// the page's own event handlers, driven from a script rather than from
+// a person. The worker is blocked in Atomics.wait, so they run from
+// inside the patched wait below.
+const KTAIL = 2, KHEAD = 1, KEYS = 8, KEYRING = 256;
+const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6, PTRWHEEL = 7;
 
-function typeit() {
-	if (typed >= TYPE.length)
-		return;
-	const tail = Atomics.load(sab, 2);
+const NAMED = {
+	up: [27, 91, 65], down: [27, 91, 66],
+	right: [27, 91, 67], left: [27, 91, 68],
+};
 
-	Atomics.store(sab, 8 + tail, TYPE.charCodeAt(typed++));
-	Atomics.store(sab, 2, (tail + 1) % 256);
+function keypush(seq) {
+	const head = Atomics.load(sab, KHEAD);
+	let tail = Atomics.load(sab, KTAIL);
+
+	for (const c of seq) {
+		const next = (tail + 1) % KEYRING;
+
+		if (next === head)
+			return;
+		Atomics.store(sab, KEYS + tail, c);
+		tail = next;
+	}
+	Atomics.store(sab, KTAIL, tail);
+}
+
+function ptrput(x, y, b) {
+	Atomics.store(sab, PTRX, x);
+	Atomics.store(sab, PTRY, y);
+	Atomics.store(sab, PTRB, b);
+	Atomics.store(sab, PTRMOVED, 1);
+}
+
+// [{at: ms, ...}] where ... is one of type/key/click/wheel/shot.
+const script = TYPE && fs.existsSync(TYPE) ?
+	JSON.parse(fs.readFileSync(TYPE, 'utf8')) : [];
+let next = 0;
+
+function step(elapsed) {
+	while (next < script.length && script[next].at <= elapsed) {
+		const a = script[next++];
+
+		if (a.type)
+			keypush(Buffer.from(a.type, 'utf8'));
+		if (a.key)
+			keypush(NAMED[a.key]);
+		if (a.move)
+			ptrput(a.move[0], a.move[1], 0);
+		if (a.click)
+			ptrput(a.click[0], a.click[1], 1);
+		if (a.release)
+			ptrput(a.release[0], a.release[1], 0);
+		if (a.wheel)
+			Atomics.add(sab, PTRWHEEL, a.wheel);
+		if (a.shot)
+			snap(a.shot);
+		// one pixel of the canvas, named, so a caller can assert on
+		// what is drawn rather than only on what was logged.
+		if (a.px) {
+			const i = (a.px[1] * W + a.px[0]) * 4;
+			const hex = [canvas[i], canvas[i + 1], canvas[i + 2]]
+				.map((v) => v.toString(16).padStart(2, '0'))
+				.join('');
+
+			console.log(`px ${a.say || a.px.join(',')} ${hex}`);
+			continue;
+		}
+		if (a.say)
+			console.log('--', a.say);
+	}
 }
 
 const started = Date.now();
 const realWait = Atomics.wait.bind(Atomics);
 
 Atomics.wait = (arr, i, v, ms) => {
-	if (Date.now() - started > MS) {
+	const elapsed = Date.now() - started;
+
+	if (elapsed > MS) {
 		finish();
 		process.exit(0);
 	}
-	if (Date.now() - started > MS / 2)
-		typeit();
+	step(elapsed);
 	return realWait(arr, i, v, Math.min(ms, 20));
 };
 
 function finish() {
 	console.log(`paints: ${paints}`);
+	snap(OUT);
+}
+
+function snap(file) {
 	const raw = Buffer.alloc(H * (1 + W * 3));
 
 	for (let y = 0, o = 0; y < H; y++) {
@@ -108,7 +171,7 @@ function finish() {
 	ihdr.writeUInt32BE(H, 4);
 	ihdr[8] = 8;
 	ihdr[9] = 2;
-	fs.writeFileSync(OUT, Buffer.concat([
+	fs.writeFileSync(file, Buffer.concat([
 		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
 		chunk('IHDR', ihdr),
 		chunk('IDAT', zlib.deflateSync(raw)),

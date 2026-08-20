@@ -21,6 +21,12 @@ HOSTFN(read) int host_read(void);
 /* a monotonic nanosecond count. Its epoch is the host's business. */
 HOSTFN(now_ns) unsigned long long host_now_ns(void);
 
+/* the wall clock, in seconds since the unix epoch, or 0 from a host
+ * that does not know. This machine has no battery-backed clock of its
+ * own, so its embedder is the only thing that can say.
+ */
+HOSTFN(now_unix) long long host_now_unix(void);
+
 /* sleep until a byte arrives or the milliseconds run out, whichever is
  * first. A host that cannot block may return at once: the caller is a
  * scheduler that will ask again.

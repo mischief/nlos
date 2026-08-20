@@ -113,6 +113,7 @@ const imports = {
 		now_ns() {
 			return process.hrtime.bigint();
 		},
+		now_unix: () => BigInt(Math.floor(Date.now() / 1000)),
 		// a key typed during the sleep is seen when it ends, so the
 		// tick length is also the worst-case echo delay.
 		wait(ms) {

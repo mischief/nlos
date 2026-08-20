@@ -1,0 +1,36 @@
+[
+	{"at": 2500, "say": "the launcher", "click": [13, 14]},
+	{"at": 2700, "release": [13, 14]},
+	{"at": 3400, "say": "games", "click": [200, 73]},
+	{"at": 3600, "release": [200, 73]},
+	{"at": 4300, "say": "2048", "click": [200, 66]},
+	{"at": 4500, "release": [200, 66]},
+
+	{"at": 6000, "px": [13, 70], "say": "2048-in-tray"},
+
+	{"at": 6400, "key": "up"},
+	{"at": 6900, "key": "left"},
+	{"at": 7400, "key": "down"},
+	{"at": 7900, "key": "right"},
+
+	{"at": 9000, "px": [13, 70], "say": "2048-after-arrows"},
+
+	{"at": 9400, "say": "back to the launcher", "click": [13, 14]},
+	{"at": 9600, "release": [13, 14]},
+	{"at": 10300, "say": "toys", "click": [200, 91]},
+	{"at": 10500, "release": [200, 91]},
+	{"at": 11200, "say": "scribble", "click": [200, 84]},
+	{"at": 11400, "release": [200, 84]},
+
+	{"at": 12600, "click": [200, 300]},
+	{"at": 12700, "click": [320, 300]},
+	{"at": 12800, "release": [320, 300]},
+	{"at": 13400, "px": [260, 300], "say": "pen-before-wheel"},
+
+	{"at": 13800, "wheel": -1},
+
+	{"at": 14400, "click": [200, 420]},
+	{"at": 14500, "click": [320, 420]},
+	{"at": 14600, "release": [320, 420]},
+	{"at": 15400, "px": [260, 420], "say": "pen-after-wheel"}
+]

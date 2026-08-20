@@ -924,12 +924,35 @@ why the page needs `Cross-Origin-Opener-Policy: same-origin` and
 those two headers cannot allocate the buffer and the machine cannot be
 typed at. Deploying this anywhere means carrying them.
 
+**The panel's keyboard sends whole keystrokes.** `pump_devkbd` batches a
+drain into one message, as `pump_keyboard` always did for the console.
+It did not, and an arrow key is the three bytes ESC [ A: a reader handed
+them one at a time sees a bare ESC first, which most programs read as
+"leave". Every panel app quit on an arrow, on every platform with a
+panel. A page or a board pushing a multi-byte key must publish it whole,
+or the batch can still be split -- `machine/wasm/index.html` moves the
+ring's tail once per keystroke for that reason.
+
 The screen is the same shadow buffer every other platform has: the
 pixels stay in linear memory and the host reads them from there, so
 `fb.unload` works and `lib/draw` reads back what it drew. `fb_flush`
 hands over the damaged rectangle and the worker converts BGRx to the
 RGBA an `ImageData` wants. There is no hardware cursor -- only the
 T-Deck's lcd has one -- so the browser's own must stay visible.
+
+An `OffscreenCanvas` is the wrong tool here, however natural it looks: a
+transferred canvas reaches its placeholder when the worker's task ends,
+and this task never ends, so nothing is ever composited. The machine
+runs perfectly behind a blank page.
+
+**Driving the page without a browser.** `tools/browsertest-wasm.js` runs
+the real `worker.js` under node with the browser bits shimmed and paints
+its messages as the page does, taking a script of clicks, keys, wheel
+turns and screenshots -- and it can report a named pixel, so a test can
+assert on what was drawn. `test/wasm/panel.json` is the one the boot
+test runs: it starts 2048 from the tray, presses all four arrows and
+checks the tray button is still there, then draws in scribble either
+side of a wheel click and checks the ink changed.
 
 ## More than one cpu
 
