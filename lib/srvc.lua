@@ -5,16 +5,38 @@
 -- cannot come out of a read().
 
 local sys = require("los.sys")
-local thread = require("los.thread")
 
 local M = {}
 
--- thread.rpc owns minting and closing the reply right. Hand-rolling it
--- here spent one of MAXRIGHTS per call and got away with it only
--- because a srv conversation is short -- lib/ethwire.lua wrote the same
--- four lines and ran out mid-DHCP.
+-- thread.rpc parks the calling thread and leaves its siblings running;
+-- sys.call parks the whole proc, so it is right only where there are
+-- none to stall. The port is per call rather than cached: a thread owns
+-- one and gives it up when it ends, a module would hold one for the
+-- life of a proc that posted once. Nothing here runs in a loop.
+local function ask(srv, msg)
+	local thread = package.loaded["los.thread"]
+
+	if thread then
+		return thread.rpc(srv, msg)
+	end
+
+	local reply = sys.newport("srvc.reply")
+	local send = sys.sendright(reply)
+
+	-- Copied into the message rather than moved out of this proc, so
+	-- both are still ours to close, and a caller that forgets spends
+	-- one of MAXRIGHTS a call.
+	msg.reply = { __right = send }
+
+	local ok, r = pcall(sys.call, srv, msg, reply)
+
+	pcall(sys.close, send)
+	pcall(sys.close, reply)
+	return ok and r or nil
+end
+
 local function rpc(srv, msg)
-	local r = thread.rpc(srv, msg)
+	local r = ask(srv, msg)
 
 	if not r then
 		return nil, "srv: no reply"
