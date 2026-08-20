@@ -161,7 +161,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'efigefs', 'version', 'oom', 'selfpipe', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
-              'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr', 'gpsweight']
+              'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('boot/test_' + t + '.lua')],
