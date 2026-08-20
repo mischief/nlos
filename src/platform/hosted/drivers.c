@@ -322,10 +322,9 @@ platform_hci_irqs(void)
 }
 
 /* ---- a receiver, replayed ----
- *
- * A process has no serial port but can have a recording. LUAOS_GPS
- * names a file of sentences captured off a real one; without it there
- * is no receiver here, so an ordinary run is not a gps machine.
+ * LUAOS_GPS names a file of sentences captured off a real one. Without
+ * it there is no receiver here, so an ordinary run is not a gps
+ * machine.
  */
 static FILE *gpsfile;
 static unsigned long gpsbytes;
@@ -358,16 +357,18 @@ gpsfill(void)
 	return gpsheld > 0;
 }
 
-/* Opened where main still can. The guest inherits no environment, and
- * by the time the kernel probes its devices the process no longer
- * reaches a path outside the root it serves.
+/* __real_fopen: fopen here is wrapped to join every path onto the
+ * served root, and this is a host path named on the command line
+ * before the guest has a filesystem at all -- as the resolver is.
  */
+FILE *__real_fopen(const char *path, const char *mode);
+
 void
 hosted_setgps(const char *path)
 {
 	if (!path || !*path)
 		return;
-	gpsfile = fopen(path, "r");
+	gpsfile = __real_fopen(path, "r");
 	if (!gpsfile)
 		fprintf(stderr, "gps: cannot open %s: %s\n", path, strerror(errno));
 }

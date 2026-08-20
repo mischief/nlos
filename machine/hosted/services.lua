@@ -53,8 +53,10 @@ return {
 	-- them a terminal. Naming fb, kbd and ptr is what decides it --
 	-- a machine started headless has none of the three and skips this,
 	-- and comes up on its console alone.
+	-- gps where a recording was named: LUAOS_GPS is what puts a
+	-- receiver on this machine, and bin/gpsui.lua is why it is here.
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "tcp", "dns", "power" } },
+	  optcaps = { "tcp", "dns", "power", "gps" } },
 
 	-- No ip or tcp4 task: raw ethernet is not something an
 	-- unprivileged process gets, so there are no frames to build them
