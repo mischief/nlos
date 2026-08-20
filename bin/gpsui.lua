@@ -114,21 +114,27 @@ local WORLD = (WORLDHEX:gsub("%x%x", function(h)
 	return string.char(tonumber(h, 16))
 end))
 
--- z is a sine of latitude and the rows are equal steps of it, so one
--- asin is the row. A scan of the 48 edges would be two dozen compares
--- in lua where this is one call into C.
-local ROWSCALE = NY / math.pi
+-- z is a sine of latitude, so the row is an asin away -- but this chip
+-- has no double precision in hardware and every one costs, so the
+-- answer is a table of 512 buckets built once.
+local NZ = 512
+local ROWOF = {}
+
+for i = 0, NZ do
+	local z = i * 2 / NZ - 1
+	local row = math.floor((math.pi / 2 -
+	    math.asin(z < -1 and -1 or (z > 1 and 1 or z))) * NY / math.pi)
+
+	ROWOF[i] = (row < 0 and 0) or (row >= NY and NY - 1) or row
+end
+
+local ZSCALE = NZ / 2
 local COLSCALE = NX / (2 * math.pi)
 
 local function landat(z, lon)
-	local row = math.floor((math.pi / 2 - math.asin(z)) * ROWSCALE)
+	local row = ROWOF[math.floor((z + 1) * ZSCALE)] or 0
 	local col = math.floor((lon + math.pi) * COLSCALE)
 
-	if row < 0 then
-		row = 0
-	elseif row >= NY then
-		row = NY - 1
-	end
 	if col < 0 then
 		col = 0
 	elseif col >= NX then
@@ -177,43 +183,69 @@ local function project(p)
 	    p.x * view.bz.x + p.y * view.bz.y + p.z * view.bz.z
 end
 
--- The globe, a pixel at a time. The surface point under a pixel is the
--- front of the sphere, so its normal is the pixel itself with the z
--- that closes the unit vector; the rest is which cell that is.
-local function drawglobe(img)
-	local bx, by, bz = view.bx, view.by, view.bz
+-- The disc never changes; only the basis it is viewed in. So each
+-- sample's place on the sphere, its light and its limb are found once,
+-- and a frame is nine multiplies and a lookup over what is left. STEP
+-- takes one pixel in four and fills the square: this chip has no
+-- double precision in hardware, so a quarter of the arithmetic is the
+-- difference between a redraw and a wait.
+local STEP = 2
+local DPX, DPY, DVX, DVY, DVZ, DLIT, DLIMB = {}, {}, {}, {}, {}, {}, {}
 
-	for py = -RPX, RPX do
+do
+	local n = 0
+
+	for py = -RPX, RPX, STEP do
 		local half = math.floor(math.sqrt(RPX * RPX - py * py))
 		local vy = -py / RPX
 
-		for px = -half, half do
+		for px = -half, half, STEP do
 			local vx = px / RPX
-			-- clamped: the rounding that puts a pixel one
-			-- inside the disc can still leave this below zero,
-			-- and a nan here indexes the map with a nan.
+			-- clamped: the rounding that puts a pixel one inside
+			-- the disc can still leave this below zero, and a
+			-- nan here would index the map with a nan.
 			local d = 1 - vx * vx - vy * vy
 			local vz = d > 0 and math.sqrt(d) or 0
-			-- view coordinates back into the world
-			local wx = vx * bx.x + vy * by.x + vz * bz.x
-			local wy = vx * bx.y + vy * by.y + vz * bz.y
-			local wz = vx * bx.z + vy * by.z + vz * bz.z
-			-- lit from the upper left and a little in front
-			local lit = -vx * 0.5 + vy * 0.5 + vz * 0.72
-			local sea = not landat(wz, math.atan(wy, wx))
-			local c
 
-			if half - math.abs(px) < 1 then
-				c = LIMB
-			elseif lit < 0.25 then
+			n = n + 1
+			DPX[n], DPY[n] = CX + px, CY + py
+			DVX[n], DVY[n], DVZ[n] = vx, vy, vz
+			DLIT[n] = -vx * 0.5 + vy * 0.5 + vz * 0.72
+			DLIMB[n] = half - math.abs(px) < STEP + 1
+		end
+	end
+	DPX.n = n
+end
+
+local function drawglobe(img)
+	local bx, by, bz = view.bx, view.by, view.bz
+	local bxx, bxy, bxz = bx.x, bx.y, bx.z
+	local byx, byy, byz = by.x, by.y, by.z
+	local bzx, bzy, bzz = bz.x, bz.y, bz.z
+	local rect = memdraw.rect
+
+	for i = 1, DPX.n do
+		local vx, vy, vz = DVX[i], DVY[i], DVZ[i]
+		local wy = vx * bxy + vy * byy + vz * bzy
+		local wz = vx * bxz + vy * byz + vz * bzz
+		local lit = DLIT[i]
+		local c
+
+		if DLIMB[i] then
+			c = LIMB
+		else
+			local wx = vx * bxx + vy * byx + vz * bzx
+			local sea = not landat(wz, math.atan(wy, wx))
+
+			if lit < 0.25 then
 				c = sea and SEADK or LANDDK
 			elseif lit > 0.82 then
 				c = (sea and SEA or LAND) + 0x102010
 			else
 				c = sea and SEA or LAND
 			end
-			img:set(CX + px, CY + py, c)
 		end
+		img:fill(rect(DPX[i], DPY[i], STEP, STEP), c)
 	end
 end
 
@@ -259,12 +291,32 @@ local function satcolor(snr)
 end
 
 local SKYIMG = memdraw.image(S, S, BG, FMT)
+local EARTHIMG = memdraw.image(S, S, BG, FMT)
+local earthkey
+
+-- The earth is the expensive half and changes only when the view does,
+-- so it is kept and copied. A satellite moves every second and costs a
+-- rectangle.
+-- Coarse on purpose: a fix jitters in its last digits, and rebuilding
+-- the globe for metres of wander is the whole cost of the app paid for
+-- a ten-thousandth of a degree nobody can see.
+local function earth(lat, lon)
+	local key = ("%.2f.%.2f.%.3f.%.3f"):format(lat or 0, lon or 0, yaw,
+	    pitch)
+
+	if key ~= earthkey then
+		EARTHIMG:fill(EARTHIMG:rect(), BG)
+		drawglobe(EARTHIMG)
+		drawgrid(EARTHIMG)
+		earthkey = key
+	end
+	SKYIMG:draw(memdraw.pt(0, 0), EARTHIMG)
+end
 
 -- Everything at once, because a satellite behind the earth has to be
 -- drawn before the earth and one in front after it.
 local function plot(sky, lat, lon)
 	setview(lat, lon)
-	SKYIMG:fill(SKYIMG:rect(), BG)
 
 	local pts = {}
 
@@ -277,15 +329,19 @@ local function plot(sky, lat, lon)
 		end
 	end
 
-	-- behind first
+	earth(lat, lon)
+
+	-- Behind the earth and outside its outline: those are the ones
+	-- still visible. A sphere hides exactly what its silhouette
+	-- covers, so that is a distance from the centre and not a depth
+	-- buffer.
 	for _, p in ipairs(pts) do
-		if p.z <= 0 then
+		local dx, dy = p.x - CX, p.y - CY
+
+		if p.z <= 0 and dx * dx + dy * dy > RPX * RPX then
 			dot(SKYIMG, p.x, p.y, BEHIND, 1)
 		end
 	end
-
-	drawglobe(SKYIMG)
-	drawgrid(SKYIMG)
 
 	-- where the receiver says it is, on the ball it is on
 	if lat and lon then
