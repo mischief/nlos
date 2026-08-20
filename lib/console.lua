@@ -461,7 +461,12 @@ function Console:queue(c)
 	while true do
 		local ok, why, need = sys.send(self.inq, c)
 
-		if ok ~= nil or why ~= "full" then
+		-- `ok` is a boolean, so it is tested and not compared to
+		-- nil: a refused send answers false, which is not nil, and
+		-- reading it that way returned here with the chunk still in
+		-- hand -- the waiting below never ran and the bytes went
+		-- nowhere. A transfer is where that shows.
+		if ok or why ~= "full" then
 			return
 		end
 		-- parksend, not sys.sendblock: this runs in the pump thread,
