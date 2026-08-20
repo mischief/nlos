@@ -75,9 +75,11 @@ end
 -- ---- the earth ----
 
 local PLOTY = ROW[5] + ROWH + 2
-local S = math.min(H - PLOTY - FH - 8, W - 4)
+local S = math.min(H - PLOTY - 4, W - 4)
 local CX, CY = S // 2, S // 2
-local RPX = S // 2 - 12		-- the earth, in pixels
+-- as much of the square as the satellites leave: a ring of them sits
+-- outside the limb, and a coastline needs the pixels
+local RPX = S // 2 - 8
 
 local SEA, LAND = 0x14498a, 0x2f7a44
 local SEADK, LANDDK = 0x081f3c, 0x123018
@@ -88,27 +90,85 @@ local SAT, SATW, SATOK, BEHIND = 0xd03030, 0xd0a020, 0x40d060, 0x304050
 -- 96 by 48 cells of land or sea, rasterised from continent outlines by
 -- tools/mkworld.lua. Sampling one bit is what the board can afford per
 -- pixel; testing a polygon is not.
-local NX, NY = 96, 48
+local NX, NY = 192, 96
 local WORLDHEX =
-	"000000000000000000000000000000000000000000000000000000007fe0" ..
-	"000000000000000000007fe00000007f8000000000007fe000001ffffff8" ..
-	"07ff0ff87fc00383ffffffff1ffffffc3f000ffffffffff81ffffffe1800" ..
-	"3fffffffffc00e3ffffe0001fffffffffc000007ffff0003fffffffffc00" ..
-	"0003ffff8003fffffffff0000001fffe0003ffffffffe0000001fffc0007" ..
-	"fff9ffffe2000001fff80003fbe03fff84000001fff00000e0001fff8800" ..
-	"0000ffe00003fc000fff800000003fe00007ff8007ff000000001fc0000f" ..
-	"ff8001fe000000000f00000fffc00078000000000200000fffe000380000" ..
-	"00000040000fffe000100000000000210007fff8000000000000003fc003" ..
-	"fff8000000000000003ff0003ff8003800000000003ff8003ff8003ff800" ..
-	"0000003ffe001ff00007fe000000001ffc001fe0000000000000000ffc00" ..
-	"1fe000003c000000000ff8001fc80000fe0000000007f0001fc80001fe00" ..
-	"00000007e0000f800003ff0000000007c0000f000003ff80000000078000" ..
-	"06000003ff00000000070000000000000700000000070000000000000002" ..
-	"0000000600000000000000040000000c0000000000000000000000000000" ..
 	"000000000000000000000000000000000000000000000000000000000000" ..
-	"00000000000000000000000000000000ffffffffffffffffffffffffffff" ..
+	"000000000000000000000000000000000000000000000000000000000000" ..
+	"0000000000000000000000000000000000000000003f0000000000000000" ..
+	"00000000000000000000000000007ffff800000000000000000000000000" ..
+	"00000000000000007ffff800000000000000000000000000000000000000" ..
+	"00003ffff80000000000000006000000000000000000000000003ffff800" ..
+	"000000000001ffffffe0000000000000000000003ffff80000000000007f" ..
+	"fffffffff80000000000000004003ffff800000000000ffffffffffffffc" ..
+	"003fc000003fdf001ffff800000600007ffffffffffffffe00fffffff3ff" ..
+	"ffc01fffe000001ff0fffffffffffffffffe01ffffffffffffe00fff8000" ..
+	"007ffffffffffffffffffff001fffffffffffff007fc00000180ffffffff" ..
+	"ffffffffff8001fffffffff803f803f000000701fffffffffffffffffc00" ..
+	"01fffffffff803e0018000001e01ffffffffffffffff800001fffffffff8" ..
+	"03e0000000000e03fffffffffffffff8000000f001fffff803e000000006" ..
+	"0c03fffffffffffffff800000080007ffff803e0000000060c03ffffffff" ..
+	"fffffff000000000003ffff803ff8000000e0fffffffffffffffffe00000" ..
+	"0000001ffff803ffc000000e0fffffffffffffffff8000000000000fffff" ..
+	"ffff8000000fffffffffffffffffff00000000000007fffffffe0000001f" ..
+	"fffffffffffffffffe00000000000007fffffffc0000001ffffe0387ffff" ..
+	"fffffc00000000000007fffffff00000001ff0fe0387fffffffffc000000" ..
+	"00000003ffffffe00000001f803e0380fffffffff018000000000003ffff" ..
+	"ffc00000001f0007ff003fffffffc038000000000003ffffff800000001e" ..
+	"0000f80007ffffff8070000000000003ffffff80000000000000000003ff" ..
+	"ffff80e0000000000003ffffff00000000018000000001ffffff81c00000" ..
+	"00000000fffffe0000000007fe00000000ffffff820000000000000023ff" ..
+	"fe000000001fffff8000007fffff800000000000000003fe04000000003f" ..
+	"ffffc000003fffff800000000000000003f800000000003fffffc000001f" ..
+	"ffff000000000000000003f000000000007fffffc0000007fffe00000000" ..
+	"0000000003f000000000007fffffc0000003fffe000000000000000001f0" ..
+	"0000000000ffffffc0000000fff0000000000000000000f00000000001ff" ..
+	"ffffc00000001fc00000000000000000003c0000000001ffffffc0000000" ..
+	"0f800000000000000000000f0000000001ffffffc00000000f8000000000" ..
+	"0000000000007800000001ffffffc0000000078000000000000000000000" ..
+	"3800000000fffffffe0000000100000000000000000000001c000000007f" ..
+	"ffffffe00000000000000000000000000000067f8000003fffffffe00000" ..
+	"00000000000000000000000007ffe000001fffffffc00000000000000000" ..
+	"00000000000007fff80000007fffffc00000000000000000000000000000" ..
+	"07fffc0000000fffffc000001f000000000000000000000007ffff000000" ..
+	"07ffffc000000ff80000000000000000000007ffffc0000007ffff800000" ..
+	"07fff800000000000000000007ffffe0000007ffff80000007ffffe00000" ..
+	"00000000000007fffff8000007ffff000000007ffff80000000000000000" ..
+	"07fffff8000007ffff0000000007fffc000000000000000003fffff80000" ..
+	"07fffe00000000000007000000000000000003fffff0000003fffe000000" ..
+	"00000000000000000000000001fffff0000003fffc000000000007f00000" ..
+	"00000000000000fffff0000003fffd80000000001ff80000000000000000" ..
+	"00ffffe0000003fff9e0000000007ff80000000000000000007fffc00000" ..
+	"03fff9c000000000fffc0000000000000000003fff80000001fff1c00000" ..
+	"0003fffc0000000000000000001fff00000001fff0c000000007fffe0000" ..
+	"000000000000001ffe00000001ffe0400000000fffff0000000000000000" ..
+	"003ffc00000000ffc0000000000fffff0000000000000000003ff8000000" ..
+	"00ff800000000007ffff8000000000000000003ff000000000ff00000000" ..
+	"0007ffff8000000000000000003fe0000000007e000000000007ffff8000" ..
+	"000000000000003fc0000000007c000000000007e3ff8000000000000000" ..
+	"003f800000000020000000000001007f0000000000000000003f00000000" ..
+	"0000000000000000000f0000000000000000003f00000000000000000000" ..
+	"000000000004000000000000003e0000000000000000000000000000000c" ..
+	"000000000000007c00000000000000000000000000000010000000000000" ..
+	"007c00000000000000000000000000000000000000000000007800000000" ..
+	"000000000000000000000000000000000000007800000000000000000000" ..
+	"00000000000000000000000000f000000000000000000000000000000000" ..
+	"00000000000000f000000000000000000000000000000000000000000000" ..
+	"000000000000000000000000000000000000000000000000000000000000" ..
+	"000000000000000000000000000000000000000000000000000000000000" ..
+	"000000000000000000000000000000000000000000000000000000000000" ..
+	"000000000000000000000000000000000000000000000000000000000000" ..
+	"000000000000000000000000000000000000000000000000000000000000" ..
+	"000000000000000000000000000000000000000000000000000000000000" ..
+	"000000000000ffffffffffffffffffffffffffffffffffffffffffffffff" ..
 	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
-	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffff"
 
 local WORLD = (WORLDHEX:gsub("%x%x", function(h)
 	return string.char(tonumber(h, 16))
@@ -224,7 +284,7 @@ end
 -- the frame is the calls rather than the arithmetic -- 7.6% of it was
 -- floating point. So a run of one colour along a row goes out as one
 -- rectangle, and DROW says where a row ends.
-local function drawglobe(img)
+local function drawglobe(img, yield)
 	local bx, by, bz = view.bx, view.by, view.bz
 	local bxx, bxy, bxz = bx.x, bx.y, bx.z
 	local byx, byy, byz = by.x, by.y, by.z
@@ -266,6 +326,12 @@ local function drawglobe(img)
 		if DROW[i] then
 			fill(img, rect(runx, DPY[i], runn, STEP), runc)
 			runc = nil
+			-- a row at a time, so a render begun for a turn
+			-- nobody asked for yet still lets the panel answer
+			-- one that was
+			if yield then
+				thread.yield()
+			end
 		end
 	end
 end
@@ -330,17 +396,28 @@ local function globe(lat, lon)
 		keptat = at
 	end
 
-	local id = kept[step]
+	return kept[step]
+end
 
-	if id then
-		return id
+-- Draw one position and give it to the server. `bg` yields a row at a
+-- time, which is what lets a turn nobody asked for yet be built while
+-- the panel still answers the one that was.
+local function render(which, lat, lon, bg)
+	if kept[which] then
+		return kept[which]
 	end
 
-	EARTHIMG:fill(EARTHIMG:rect(), BG)
-	drawglobe(EARTHIMG)
-	drawgrid(EARTHIMG)
+	local was = step
 
-	id = fb.alloc(S, S, FMT, BG)
+	step = which
+	setview(lat, lon)
+	EARTHIMG:fill(EARTHIMG:rect(), BG)
+	drawglobe(EARTHIMG, bg)
+	drawgrid(EARTHIMG)
+	step = was
+
+	local id = fb.alloc(S, S, FMT, BG)
+
 	if not id then
 		return nil
 	end
@@ -349,8 +426,26 @@ local function globe(lat, lon)
 		pcall(fb.free, id, false)
 		return nil
 	end
-	kept[step] = id
+	kept[which] = id
 	return id
+end
+
+-- The turns a roll can reach next. Built behind the panel so the first
+-- click in either direction is a message rather than a wait; two is as
+-- far ahead as is worth going, since a third arrives before a hand
+-- gets there.
+local AHEAD = 2
+
+local function prefetch(lat, lon)
+	for d = 1, AHEAD do
+		for _, w in ipairs({ (step + d) % STEPS, (step - d) % STEPS }) do
+			if not kept[w] then
+				render(w, lat, lon, true)
+				return true
+			end
+		end
+	end
+	return false
 end
 
 -- Everything drawn is heard, so the colour is how well: red is one the
@@ -375,7 +470,7 @@ local function plot(sky, lat, lon)
 	yaw = step * TURNSTEP
 	setview(lat, lon)
 
-	local id = globe(lat, lon)
+	local id = globe(lat, lon) or render(step, lat, lon, false)
 
 	if id then
 		fb.draw(nil, id, { x = 0, y = 0, w = S, h = S },
@@ -427,7 +522,7 @@ local function ymd(d)
 	return ("%04d-%02d-%02d"):format(d.year, d.month, d.day)
 end
 
-local function rows(f, st)
+local function rows(f)
 	local has = f and f.has
 
 	text(2, ROW[0], has and "fix" or "no fix", has and OK or WARM, BG, 8)
@@ -450,12 +545,6 @@ local function rows(f, st)
 
 	text(2, ROW[5], ("%d heard, %d used"):format(#sky, f and f.nsats or 0),
 	    DIM, BG, COLS)
-
-	if st then
-		text(2, H - FH - 2, ("%s baud  %d ok  %d bad"):format(
-		    tostring(st.baud), st.good or 0, st.bad or 0), DIM, BG,
-		    COLS)
-	end
 	return sky
 end
 
@@ -497,7 +586,7 @@ local atlat, atlon
 
 local function frame()
 	local f = ask("fix")
-	local sky = rows(f, ask("stats"))
+	local sky = rows(f)
 
 	if f and f.lat and f.lon then
 		atlat, atlon = f.lat, f.lon
@@ -516,6 +605,13 @@ thread.spawn(function()
 		if redraw or sig ~= last then
 			plot(sky, atlat, atlon)
 			last, redraw = sig, false
+		end
+
+		-- One turn ahead per pass, and only when nothing else is
+		-- waiting: a click that arrives mid-build is answered on
+		-- the next row rather than after the whole globe.
+		if not redraw then
+			prefetch(atlat, atlon)
 		end
 		thread.sleep(EVERY_MS)
 	end

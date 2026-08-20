@@ -3,7 +3,7 @@
 -- Run on the host; the string goes into bin/gpsui.lua. The board must
 -- not pay for point-in-polygon: it samples one bit per pixel instead.
 
-local NX, NY = 96, 48		-- 3.75 degrees a cell
+local NX, NY = 192, 96		-- 1.875 degrees a cell
 
 local POLY = {
 	-- north america
@@ -44,6 +44,34 @@ local POLY = {
 	{ 166, -46, 175, -41, 178, -37, 172, -40 },
 }
 
+-- Cut back out of the land above. A coastline is what makes a
+-- continent recognisable, and the bites out of one -- Hudson Bay, the
+-- Gulf, the Mediterranean -- do more of that at this size than the
+-- outer edge does.
+local SUB = {
+	-- hudson bay
+	{ -95, 51, -78, 51, -78, 63, -95, 64 },
+	-- the gulf of mexico
+	{ -97, 19, -81, 19, -81, 29, -89, 30, -97, 27 },
+	-- the mediterranean, and the black sea after it
+	{ -5, 36, 12, 33, 34, 31, 36, 36, 12, 45, 3, 43 },
+	{ 28, 41, 41, 41, 41, 47, 28, 47 },
+	-- the caspian
+	{ 47, 37, 54, 37, 54, 47, 47, 47 },
+	-- the baltic and the north sea
+	{ 10, 54, 25, 54, 30, 66, 17, 66 },
+	{ -2, 51, 8, 51, 8, 60, -2, 60 },
+	-- the red sea and the gulf
+	{ 33, 13, 43, 13, 43, 30, 33, 30 },
+	{ 48, 24, 57, 24, 57, 30, 48, 30 },
+	-- hudson strait through to the labrador sea
+	{ -70, 55, -55, 55, -55, 62, -70, 62 },
+	-- the bay of bengal
+	{ 80, 6, 95, 6, 95, 21, 80, 21 },
+	-- and the gulf of california
+	{ -115, 23, -108, 23, -108, 31, -115, 31 },
+}
+
 local function inside(poly, x, y)
 	local n = #poly // 2
 	local hit = false
@@ -76,6 +104,14 @@ for row = 0, NY - 1 do
 			for _, p in ipairs(POLY) do
 				if inside(p, lon, lat) then
 					land = true
+					break
+				end
+			end
+		end
+		if land and lat > -60 then
+			for _, p in ipairs(SUB) do
+				if inside(p, lon, lat) then
+					land = false
 					break
 				end
 			end
