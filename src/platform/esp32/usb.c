@@ -505,6 +505,19 @@ usbtask(void *arg)
 /* once: the controller has no second instance, and a second caller is
  * asking for what is already running.
  */
+/* the console is on the same port where sdkconfig says so, and
+ * starting the host takes it until the next boot
+ */
+int
+platform_usb_isconsole(void)
+{
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+	return 1;
+#else
+	return 0;
+#endif
+}
+
 int
 platform_usbhost(void)
 {
@@ -522,6 +535,11 @@ platform_usbhost(void)
 /* a chip without the controller, or a board that did not ask for it */
 int
 platform_usbhost(void)
+{
+	return 0;
+}
+int
+platform_usb_isconsole(void)
 {
 	return 0;
 }

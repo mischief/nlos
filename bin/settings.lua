@@ -22,6 +22,7 @@ local thread = require("los.thread")
 local mouse = require("mouse")
 local font = require("los.font")
 local battery = require("battery").meter()
+local audio = require("audio")
 
 local N = prog.ns()
 local fb = prog.screen()
@@ -43,6 +44,12 @@ local HEAD, WARN = 0x7fdbff, 0xc06060
 local FW, FH = 6, 12		-- los.font's cell
 local ROWH = FH + 2
 local MARGIN = 4
+
+-- two pages: what the machine is, and what it may be told. The bar is
+-- tall enough to hit with a finger rather than a cursor.
+local TABH = FH + 8
+local TOP = TABH + MARGIN
+local view = "status"
 
 -- room is in pixels from x, so a column can say where it ends. Without
 -- one the window's own edge is the limit.
@@ -249,7 +256,7 @@ local LABELW = 8 * FW
 
 -- how many rows land on the glass, which is what a section is flowed
 -- against and where a scroll stops.
-local PAGE = (H - MARGIN) // ROWH
+local PAGE = (H - TOP) // ROWH
 
 local function colx(c)
 	return MARGIN + (c - 1) * (COLW + COLGAP)
@@ -308,7 +315,7 @@ local visible = true
 local shown = {}
 
 local function rowat(r)
-	return MARGIN + (r.at - off - 1) * ROWH
+	return TOP + (r.at - off - 1) * ROWH
 end
 
 -- the gauge: a filled proportion of the column, since a bar answers
@@ -362,6 +369,72 @@ local function slot(r)
 	return r.col .. "\0" .. r.at
 end
 
+-- ---- what may be told ----
+--
+-- One row per option: a label, what it reads now, and what a tap makes
+-- it next. An option the machine cannot honour is listed and says so
+-- rather than being hidden, since absent is a fact worth seeing.
+local options = {}
+
+local function audiochoices()
+	local out = { "auto" }
+
+	for _, k in ipairs(audio.sinks()) do
+		out[#out + 1] = k
+	end
+	return out
+end
+
+options[1] = {
+	label = "audio",
+	read = function()
+		local now = audio.sink()
+		local where = sys.usbconsole and sys.usbconsole() and
+		    " (usb takes the console)" or ""
+
+		return now .. where
+	end,
+	next = function()
+		local c = audiochoices()
+		local now = audio.sink()
+
+		for i, k in ipairs(c) do
+			if k == now then
+				return c[i % #c + 1]
+			end
+		end
+		return c[1]
+	end,
+	set = audio.setsink,
+}
+
+local optnote = nil
+
+local function drawopts()
+	fb.fill({ x = 0, y = TOP, w = W, h = H - TOP }, BG, true)
+
+	for i, o in ipairs(options) do
+		local y = TOP + (i - 1) * (ROWH + 8)
+
+		if y + ROWH > H then
+			break
+		end
+		text(MARGIN, y, o.label, DIM, nil, LABELW)
+		text(MARGIN + LABELW, y, o.read(), FG, nil, W - LABELW - MARGIN)
+		fb.fill({ x = 0, y = y + ROWH + 3, w = W, h = 1 }, 0x1c1c24)
+	end
+
+	if optnote then
+		text(MARGIN, H - ROWH, optnote, WARN, nil, W - MARGIN)
+	end
+end
+
+local function optat(y)
+	local i = (y - TOP) // (ROWH + 8) + 1
+
+	return options[i]
+end
+
 local function draw(all)
 	if not visible then
 		return
@@ -369,6 +442,25 @@ local function draw(all)
 	if all then
 		fb.fill({ x = 0, y = 0, w = W, h = H }, BG, true)
 		shown = {}
+	end
+	if all then
+		local half = W // 2
+
+		for i, t in ipairs({ "STATUS", "OPTIONS" }) do
+			local x = (i - 1) * half
+			local on = view == t:lower()
+
+			fb.fill({ x = x, y = 0, w = half, h = TABH - 1 },
+			    on and 0x243044 or BG, true)
+			text(x + (half - #t * FW) // 2, (TABH - FH) // 2, t,
+			    on and HEAD or DIM, on and 0x243044 or BG, half)
+		end
+		fb.fill({ x = 0, y = TABH - 1, w = W, h = 1 }, DIM)
+	end
+
+	if view == "options" then
+		drawopts()
+		return
 	end
 
 	local seen = {}
@@ -391,7 +483,7 @@ local function draw(all)
 	for k in pairs(shown) do
 		if not seen[k] then
 			local c, at = k:match("^(%d+)\0(%d+)$")
-			local y = MARGIN + (tonumber(at) - off - 1) * ROWH
+			local y = TOP + (tonumber(at) - off - 1) * ROWH
 
 			if y >= 0 and y + ROWH <= H then
 				fb.fill({ x = colx(tonumber(c)), y = y,
@@ -405,9 +497,15 @@ end
 -- a wider label moves every value, so what is on the glass is no longer
 -- where the diff believes it is: that repaints the window rather than
 -- the rows that changed.
+-- the options page holds still: nothing on it changes unless a finger
+-- changes it, so the timer leaves it alone rather than repainting it
+-- once a second.
 local function refresh()
 	local was = LABELW
 
+	if view == "options" then
+		return
+	end
 	items = place(sections())
 	draw(LABELW ~= was)
 end
@@ -467,8 +565,10 @@ local point = prog.mouse()
 
 if point then
 	thread.spawn(function()
+		local down = false
+
 		while true do
-			local _, _, b = point.read()
+			local x, y, b = point.read()
 
 			if not b then
 				return
@@ -477,7 +577,25 @@ if point then
 				scroll(-1)
 			elseif (b & mouse.WHEELDOWN) ~= 0 then
 				scroll(1)
+			elseif (b & 1) ~= 0 and not down then
+				if y < TABH then
+					view = x < W // 2 and "status" or
+					    "options"
+					optnote = nil
+					draw(true)
+				elseif view == "options" then
+					local o = optat(y)
+
+					if o then
+						local ok, why = o.set(o.next())
+
+						optnote = ok and nil or
+						    tostring(why)
+						draw(true)
+					end
+				end
 			end
+			down = (b & 1) ~= 0
 		end
 	end)
 end

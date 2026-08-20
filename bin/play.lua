@@ -8,8 +8,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local prog = require("prog")
-local usb = require("usb")
-local uac = require("uac")
+local audio = require("audio")
 local wav = require("wav")
 local adpcm = require("adpcm")
 local unistd = require("posix.unistd")
@@ -43,31 +42,6 @@ end
 
 local N = prog.ns() or die("no namespace")
 
-if not sys.usbhost() then
-	die("this machine has no usb host controller")
-end
-
--- the port may have nothing on it yet, and enumeration is not instant
-local desc
-
-for _ = 1, 30 do
-	desc = sys.usbdesc()
-	if desc then
-		break
-	end
-	thread.sleep(100)
-end
-
-if not desc then
-	die("nothing on the usb port")
-end
-
-local cfg, why = usb.parse(desc)
-
-if not cfg then
-	die(why)
-end
-
 local f = N:open(path, "r") or die("cannot open " .. path)
 local head = f:read(4096) or die("cannot read " .. path)
 local w, err = wav.header(head)
@@ -78,28 +52,14 @@ end
 
 rate = rate or w.rate
 
-local stream, no = uac.playback(cfg, { rate = rate, channels = w.channels,
-    width = w.width })
+local dev, why = audio.open(rate, w.channels, w.width)
 
-if not stream then
-	die(("%s: %d Hz %d ch %d bit: %s"):format(no, rate, w.channels, w.width))
+if not dev then
+	die(tostring(why))
 end
 
-local packet = uac.packet(stream, rate)
-
-if not packet then
-	die("the device cannot carry that rate")
-end
-
-local okp, whyp = sys.usbplay(stream.interface, stream.alt,
-    stream.endpoint.address, packet, rate)
-
-if not okp then
-	die(whyp)
-end
-
-unistd.write(1, ("play: %s, %d Hz %d ch, %.1fs\n"):format(path, rate,
-    w.channels, wav.seconds(w)))
+unistd.write(1, ("play: %s, %d Hz %d ch, %.1fs, on %s\n"):format(path,
+    rate, w.channels, wav.seconds(w), dev.kind))
 
 -- the samples, from where the header said they start. A short write is
 -- the device's pace, so what it would not take is offered again.
@@ -156,7 +116,7 @@ while left > 0 or #pending > 0 do
 		end
 	end
 
-	local took = sys.usbwrite(pending)
+	local took = dev.write(pending)
 
 	if not took then
 		die("the device went away")
@@ -170,11 +130,11 @@ end
 
 -- before the drain: once the file is done the device keeps asking, and
 -- what it is answered with is silence by design, not a gap in the audio
-local lost = sys.usbunderruns()
+local lost = dev.underruns()
 
 -- what is queued is not yet played: the ring holds a fifth of a second
 thread.sleep(300)
-sys.usbstop()
+dev.stop()
 f:close()
 
 if lost > 0 then

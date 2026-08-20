@@ -90,3 +90,13 @@ config LUAOS_FB_SHADOW
 	  off for anything that has to fit.
 
 endmenu
+
+config LUAOS_I2S_AUDIO
+	bool "the board's own audio amplifier, over i2s"
+	depends on LUAOS_BOARD_TDECK
+	default n
+	help
+	  Play through the amplifier wired to the board rather than
+	  through a device on the USB port. The T-Deck's is on the
+	  peripheral power rail, so it needs nothing switched on of its
+	  own.

@@ -13,8 +13,7 @@ local font = require("los.font")
 local ns = require("ns")
 local wav = require("wav")
 local adpcm = require("adpcm")
-local usb = require("usb")
-local uac = require("uac")
+local audio = require("audio")
 
 local N = prog.ns()
 local fb = prog.screen()
@@ -174,42 +173,9 @@ end
 -- The ui thread only ever sets `want`, so a tap never waits on the
 -- disk and the two never touch the same handle.
 local want = nil	-- {index} to start, "stop", or nil
-local devready = nil
-
-local function device()
-	if devready ~= nil then
-		return devready
-	end
-	devready = false
-	if not sys.usbhost then
-		return false
-	end
-	if not sys.usbhost() then
-		return false
-	end
-
-	local desc
-
-	for _ = 1, 30 do
-		desc = sys.usbdesc()
-		if desc then
-			break
-		end
-		thread.sleep(100)
-	end
-	devready = desc ~= nil and usb.parse(desc) or false
-	return devready
-end
 
 -- feed one track until it ends or something else is wanted
 local function run(path)
-	local cfg = device()
-
-	if not cfg then
-		note = "no audio device"
-		return
-	end
-
 	local f = N:open(path, "r")
 
 	if not f then
@@ -226,19 +192,11 @@ local function run(path)
 		return
 	end
 
-	local stream = uac.playback(cfg, { rate = w.rate,
-	    channels = w.channels, width = w.width })
-	local packet = stream and uac.packet(stream, w.rate)
+	local dev, why = audio.open(w.rate, w.channels, w.width)
 
-	if not packet then
+	if not dev then
 		f:close()
-		note = "this device will not take that track"
-		return
-	end
-	if not sys.usbplay(stream.interface, stream.alt,
-	    stream.endpoint.address, packet, w.rate) then
-		f:close()
-		note = "the device refused to play"
+		note = tostring(why)
 		return
 	end
 
@@ -283,7 +241,7 @@ local function run(path)
 			end
 		end
 
-		local took = sys.usbwrite(pending)
+		local took = dev.write(pending)
 
 		if not took then
 			break
@@ -297,7 +255,7 @@ local function run(path)
 	end
 
 	thread.sleep(200)
-	sys.usbstop()
+	dev.stop()
 	f:close()
 end
 

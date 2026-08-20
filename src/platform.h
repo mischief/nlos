@@ -174,6 +174,20 @@ int	platform_usb_write(const void *p, int n);
 void	platform_usb_stop(void);
 unsigned long	platform_usb_underruns(void);
 
+/* the amplifier wired to the board: nothing to find and nothing to
+ * claim, and platform_i2s_write answers how many bytes it took.
+ */
+/* true where the chip's own port is both, so starting the host takes
+ * the console: a reason to ask before probing rather than after.
+ */
+int	platform_usb_isconsole(void);
+
+int	platform_i2s_have(void);
+int	platform_i2s_play(int rate, int channels);
+int	platform_i2s_write(const void *p, int n);
+void	platform_i2s_stop(void);
+unsigned long	platform_i2s_underruns(void);
+
 /* console.c */
 void	console_write(const char *s, size_t n);
 int	console_getchar(void);

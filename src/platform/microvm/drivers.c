@@ -956,6 +956,48 @@ platform_usb_underruns(void)
 {
 	return 0;
 }
+/* no amplifier wired to this machine: audio here is a device on a bus
+ * or nothing at all.
+ */
+int
+platform_usb_isconsole(void)
+{
+	return 0;
+}
+
+int
+platform_i2s_have(void)
+{
+	return 0;
+}
+
+int
+platform_i2s_play(int rate, int channels)
+{
+	(void)rate;
+	(void)channels;
+	return -1;
+}
+
+int
+platform_i2s_write(const void *p, int n)
+{
+	(void)p;
+	(void)n;
+	return -1;
+}
+
+void
+platform_i2s_stop(void)
+{
+}
+
+unsigned long
+platform_i2s_underruns(void)
+{
+	return 0;
+}
+
 
 /* no websocket here: this machine has sockets, and lib/websocket.lua
  * builds the framing over one. See PRIV_WS.

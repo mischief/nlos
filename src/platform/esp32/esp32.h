@@ -54,6 +54,12 @@ void	vfs_embed_register(void);
 #define TDECK_TOUCH_ADDR	0x5d	/* GT911, the second device on i2c */
 #define TDECK_TOUCH_INT		16
 #define TDECK_BAT_ADC		4	/* the pack, behind a 2:1 divider */
+/* the amplifier. No enable of its own: it comes up with the peripheral
+ * rail TDECK_POWERON_GPIO raises.
+ */
+#define TDECK_I2S_BCK		7
+#define TDECK_I2S_WS		5
+#define TDECK_I2S_DOUT		6
 
 /* the largest single SPI transfer any T-Deck driver asks for. A display
  * band dwarfs the card's 32-sector read, so this is the display's.

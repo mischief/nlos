@@ -2045,6 +2045,69 @@ api_usbunderruns(lua_State *L)
 	return 1;
 }
 
+/* sys.usbconsole() -> would starting the host take the console */
+static int
+api_usbconsole(lua_State *L)
+{
+	lua_pushboolean(L, platform_usb_isconsole());
+	return 1;
+}
+
+/* sys.i2shave() -> is there an amplifier on this board */
+static int
+api_i2shave(lua_State *L)
+{
+	lua_pushboolean(L, platform_i2s_have());
+	return 1;
+}
+
+/* sys.i2splay(rate, channels). No device to choose: the board has one
+ * amplifier or none, and 16 bit is the only width it is offered.
+ */
+static int
+api_i2splay(lua_State *L)
+{
+	int rate = (int)luaL_checkinteger(L, 1);
+	int ch = (int)luaL_optinteger(L, 2, 2);
+
+	if (platform_i2s_play(rate, ch) != 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, "cannot play at that rate");
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+static int
+api_i2swrite(lua_State *L)
+{
+	size_t n;
+	const char *p = luaL_checklstring(L, 1, &n);
+	int took = platform_i2s_write(p, (int)n);
+
+	if (took < 0)
+		return 0;
+	lua_pushinteger(L, took);
+	return 1;
+}
+
+static int
+api_i2sstop(lua_State *L)
+{
+	(void)L;
+	platform_i2s_stop();
+	return 0;
+}
+
+/* how often a write found the ring full and waited it out */
+static int
+api_i2sunderruns(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)platform_i2s_underruns());
+	return 1;
+}
+
 static int
 api_stats(lua_State *L)
 {
@@ -2643,6 +2706,12 @@ static const luaL_Reg kapi[] = {
 	{ "usbwrite", api_usbwrite },
 	{ "usbstop", api_usbstop },
 	{ "usbunderruns", api_usbunderruns },
+	{ "usbconsole", api_usbconsole },
+	{ "i2shave", api_i2shave },
+	{ "i2splay", api_i2splay },
+	{ "i2swrite", api_i2swrite },
+	{ "i2sstop", api_i2sstop },
+	{ "i2sunderruns", api_i2sunderruns },
 	{ "self", api_self },
 	{ "procs", api_procs },
 	{ "ports", api_ports },
