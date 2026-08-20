@@ -146,7 +146,7 @@ ringput(const uint8_t *p, int n)
 {
 	unsigned h = head;
 	int room = pcmsize - (int)(h - tail);
-	int at = h % pcmsize, first;
+	int at = h & (pcmsize - 1), first;
 
 	if (n > room)
 		n = room;
@@ -162,7 +162,7 @@ ringget(uint8_t *p, int n)
 {
 	unsigned t = tail;
 	int have = (int)(head - t);
-	int at = t % pcmsize, first;
+	int at = t & (pcmsize - 1), first;
 
 	if (n > have)
 		n = have;
@@ -179,6 +179,8 @@ static volatile int inflight;	/* submitted, and not yet answered for */
 static volatile uint8_t idle[NXFER];	/* answered for, and waiting to go out */
 static volatile unsigned beat;	/* pump turns, so a stop can see one */
 static int playep;		/* the endpoint the transfers are on */
+static volatile int priming;	/* filling the ring before the first packet */
+static int primed;		/* pump turns spent waiting for it */
 static int playpkt;		/* bytes a millisecond */
 static unsigned long underruns;
 
@@ -230,8 +232,14 @@ pump(void)
 {
 	int i;
 
+	/* a file shorter than the fill mark never reaches it, so the wait
+	 * is bounded and a short one simply starts with what it has
+	 */
+	if (priming && ++primed > 50)
+		priming = 0;
+
 	for (i = 0; i < NXFER; i++) {
-		if (!idle[i])
+		if (!idle[i] || priming)
 			continue;
 		idle[i] = 0;
 		if (playing && refill(xfer[i]))
@@ -257,6 +265,7 @@ playstop(int wait)
 		vTaskDelay(pdMS_TO_TICKS(5));
 	}
 	inflight = 0;
+	priming = 0;
 
 	/* a streaming pipe is busy until it is halted, and an interface
 	 * whose pipes are busy will not go back
@@ -372,7 +381,11 @@ platform_usb_play(int itf, int alt, int ep, int packet, int rate)
 	/* PSRAM: nothing here runs in an interrupt, and 48kHz stereo
 	 * wants more of the internal kind than the machine can spare
 	 */
-	pcmsize = packet * RINGMS;
+	/* a power of two, so the index stays continuous where the
+	 * counters wrap and a whole ring's worth is not lost there
+	 */
+	for (pcmsize = 1024; pcmsize < packet * RINGMS; pcmsize *= 2)
+		;
 	pcm = heap_caps_malloc(pcmsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	if (!pcm)
 		pcm = heap_caps_malloc(pcmsize, MALLOC_CAP_8BIT);
@@ -400,10 +413,10 @@ platform_usb_play(int itf, int alt, int ep, int packet, int rate)
 		xfer[i]->callback = played;
 		xfer[i]->timeout_ms = 0;
 		xfer[i]->context = (void *)(intptr_t)i;
-		idle[i] = 0;
-		if (refill(xfer[i]))
-			inflight++;
+		idle[i] = 1;
 	}
+	priming = 1;
+	primed = 0;
 	sayf("usb: playing on endpoint %02x, %d bytes a ms", ep, packet);
 	return 0;
 }
@@ -415,9 +428,18 @@ platform_usb_play(int itf, int alt, int ep, int packet, int rate)
 int
 platform_usb_write(const void *p, int n)
 {
+	int took;
+
 	if (!playing || !pcm)
 		return -1;
-	return ringput(p, n);
+	took = ringput(p, n);
+
+	/* the stream starts on a full ring, not an empty one: a reader
+	 * that has to stay ahead from the first packet has no slack
+	 */
+	if (priming && (int)(head - tail) >= pcmsize / 2)
+		priming = 0;
+	return took;
 }
 
 void

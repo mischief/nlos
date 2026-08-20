@@ -13,7 +13,9 @@ local uac = require("uac")
 local wav = require("wav")
 local unistd = require("posix.unistd")
 
-local CHUNK = 4096
+-- big enough that the per-read cost is not the pace: a read costs tens
+-- of milliseconds whatever its size, and 48kHz stereo is 192KB a second
+local CHUNK = 32768
 
 local function die(s)
 	unistd.write(2, "play: " .. s .. "\n")
