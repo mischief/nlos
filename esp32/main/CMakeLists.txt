@@ -89,7 +89,8 @@ idf_component_register(
             # this gives is the VHCI pair, whole HCI packets in and
             # out. Not NimBLE, for the reason lwip is absent above.
             bt
-            sdmmc esp_driver_sdspi esp_driver_spi esp_driver_gpio
+            sdmmc esp_driver_sdspi esp_driver_sdmmc esp_driver_spi
+            esp_driver_gpio
             ${USB_REQ}
 )
 

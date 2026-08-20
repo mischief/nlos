@@ -8,7 +8,7 @@
 # probing for a display that is not on the bus does not answer no -- it
 # hangs before the kernel starts. The camera and the card are not
 # wired up here either; a driver for them says so itself.
-CONFIG_LUAOS_BOARD_NONE=y
+CONFIG_LUAOS_BOARD_FREENOVE=y
 
 # and so nothing to keep a copy of
 CONFIG_LUAOS_FB_SHADOW=n

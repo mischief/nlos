@@ -896,7 +896,17 @@ local function recvbody(m)
 	-- land in Lua and wrong when they land anywhere that takes time:
 	-- a sink writing to a file server cannot read while it writes, and
 	-- an unpaced sender overruns whatever is buffering underneath.
-	local can = CANFDX | CANOVIO
+	-- CANOVIO says this receiver can take bytes while it writes,
+	-- which is true where the sink is memory and false where it is a
+	-- file server: the write parks the proc and nothing reads the
+	-- line meanwhile. Claiming it is what lets a sender stream, and
+	-- lrzsz streams on that claim alone -- the window below only
+	-- bounds its block size.
+	local can = CANFDX
+
+	if m.overlap ~= false then
+		can = can | CANOVIO
+	end
 
 	if m.crc32 then
 		can = can | CANFC32
@@ -1281,6 +1291,8 @@ local function newmach(body, opts)
 		-- the same, for a sink that writes to a file server.
 		yieldwrite = opts.yieldwrite,
 		window = opts.window,
+		-- false where a write stops this proc reading. See ZRINIT.
+		overlap = opts.overlap,
 	}, Mach)
 
 	m.co = coroutine.create(function()

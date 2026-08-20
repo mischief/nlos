@@ -16,9 +16,10 @@
 
 #include <sdkconfig.h>
 
-#if CONFIG_LUAOS_BOARD_TDECK
+#if CONFIG_LUAOS_BOARD_TDECK || CONFIG_LUAOS_BOARD_FREENOVE
 
 #include <driver/gpio.h>
+#include <driver/sdmmc_host.h>
 #include <driver/sdspi_host.h>
 #include <driver/spi_common.h>
 #include <esp_heap_caps.h>
@@ -56,6 +57,68 @@ static int present;
  * costs a memcpy.
  */
 static void *dma;
+
+#if CONFIG_LUAOS_BOARD_FREENOVE
+
+/* SDMMC one-bit: three pins and no chip select, where the T-Deck below
+ * shares an SPI bus. The pins are the carrier's, not a choice.
+ */
+#define FREENOVE_SD_CMD	38
+#define FREENOVE_SD_CLK	39
+#define FREENOVE_SD_D0	40
+
+int
+esp_blk_present(void)
+{
+	sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+	sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+
+	if (probed)
+		return present;
+	probed = 1;
+
+	host.slot = SDMMC_HOST_SLOT_1;
+	host.flags = SDMMC_HOST_FLAG_1BIT;
+	host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+
+	slot.width = 1;
+	slot.clk = FREENOVE_SD_CLK;
+	slot.cmd = FREENOVE_SD_CMD;
+	slot.d0 = FREENOVE_SD_D0;
+	slot.flags = SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+	if (sdmmc_host_init() != ESP_OK)
+		return 0;
+	if (sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot) != ESP_OK)
+		return 0;
+	if (sdmmc_card_init(&host, &card) != ESP_OK)
+		return 0;
+
+	dma = heap_caps_malloc(ESP_BLK_MAXSEC * card.csd.sector_size,
+	    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+	if (dma == NULL)
+		return 0;
+
+	/* the capacity is the card's own answer, so printing it says the
+	 * card enumerated and not merely that pins were set.
+	 */
+	{
+		char m[96];
+		unsigned long long mb = (unsigned long long)card.csd.capacity *
+		    card.csd.sector_size / (1024 * 1024);
+		int n = snprintf(m, sizeof m,
+		    "blk: %lluMB, %d sectors of %d bytes, %dkHz\n", mb,
+		    card.csd.capacity, card.csd.sector_size,
+		    (int)card.max_freq_khz);
+
+		console_write(m, (size_t)n);
+	}
+
+	present = 1;
+	return 1;
+}
+
+#else
 
 int
 esp_blk_present(void)
@@ -125,6 +188,8 @@ esp_blk_present(void)
 	return 1;
 }
 
+#endif /* CONFIG_LUAOS_BOARD_FREENOVE */
+
 uint64_t
 esp_blk_sectors(void)
 {
@@ -166,7 +231,7 @@ esp_blk_write(uint64_t lba, const void *buf, uint32_t nbytes)
 	return 0;
 }
 
-#else /* !CONFIG_LUAOS_BOARD_TDECK */
+#else /* no card on this board */
 
 /* No SD wiring for this board, so the probe must not touch a bus.
  *
@@ -212,4 +277,4 @@ esp_blk_write(uint64_t lba, const void *buf, uint32_t nbytes)
 	return -1;
 }
 
-#endif /* CONFIG_LUAOS_BOARD_TDECK */
+#endif /* a board with a card */

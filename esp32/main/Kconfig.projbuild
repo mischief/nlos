@@ -28,6 +28,14 @@ config LUAOS_BOARD_TDECK
 	  8MB octal PSRAM, 16MB flash, microSD on the SPI bus shared
 	  with the display and the LoRa radio.
 
+config LUAOS_BOARD_FREENOVE
+	bool "Freenove FNK0085"
+	help
+	  An ESP32-S3-WROOM on a carrier: 8MB PSRAM, 16MB flash, a
+	  microSD slot on SDMMC and a camera. No display and no
+	  keyboard, and the console is the carrier's serial bridge, so
+	  the chip's own USB port is free to be a host.
+
 config LUAOS_BOARD_CARDPUTER
 	bool "M5Stack Cardputer"
 	help

@@ -132,7 +132,15 @@ tty.rawon()
 
 -- yieldwrite: the sink parks on the file server, so the writes happen
 -- outside the receiver's coroutine. See lib/zmodem.lua's Mach:sinkcall.
-local m = zmodem.receiver({ sink = sink, yieldwrite = true })
+-- What this receiver can really do, which is not what the default
+-- says. A write parks this proc and nothing reads the line meanwhile,
+-- so it cannot take bytes during disk io: overlap = false says so, and
+-- the window bounds what may arrive before we ack. Our own sz honours
+-- both. lrzsz honours neither and streams regardless -- see docs.
+local WINDOW = 8192
+
+local m = zmodem.receiver({ sink = sink, yieldwrite = true,
+    window = WINDOW, overlap = false })
 -- pcall, because a sink that fails leaves by raising: the console must
 -- get cooked mode back either way, or the shell returns with no line
 -- editing and nothing on screen to say why.
