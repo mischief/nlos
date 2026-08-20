@@ -484,25 +484,33 @@ pump_devkbd(void)
 	if (c < 0)
 		return;
 
-	/* Every bucket, because port_push asks for that: it carries
-	 * IPC_ASSERT_LOCKED, which is the whole-lock demand, not
-	 * IPC_ASSERT_PORT. Narrowing this means narrowing port_push
-	 * first. Held across the drain.
-	 */
 	/* serialized string, as pump_keyboard sends. One message per drain
 	 * rather than per key, because an arrow is the three bytes ESC [ A:
 	 * a reader given them one at a time sees a bare ESC, and every
 	 * program treating that as "leave" quits on an arrow.
 	 */
-	unsigned char msg[5 + KBDBATCH] = { 'S', 0, 0, 0, 0 };
+	unsigned char msg[5 + KBDBATCH];
 	size_t n = 0;
 
+	msg[0] = 'S';
+
+	/* Every bucket, because port_push asks for that: it carries
+	 * IPC_ASSERT_LOCKED, which is the whole-lock demand, not
+	 * IPC_ASSERT_PORT. Narrowing this means narrowing port_push
+	 * first. Held across the drain.
+	 */
 	ipclock_enter();
 	do {
 		msg[5 + n++] = (unsigned char)c;
 	} while (n < KBDBATCH && (c = platform_kbd_read()) >= 0);
+
+	/* all four length bytes, so the header does not depend on the
+	 * initializer having zeroed the two a small batch leaves alone
+	 */
 	msg[1] = (unsigned char)(n & 0xff);
 	msg[2] = (unsigned char)((n >> 8) & 0xff);
+	msg[3] = (unsigned char)((n >> 16) & 0xff);
+	msg[4] = (unsigned char)((n >> 24) & 0xff);
 	port_push(devkbdport, msg, 5 + n, 0, 0);
 	ipclock_leave();
 }

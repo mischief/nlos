@@ -43,8 +43,23 @@ function Ws:close()
 	end
 end
 
-function M.new(handle)
+-- A session of our own, so an id names a socket of ours and not one a
+-- neighbour opened: the task keeps a space per port and a port carries
+-- no sender identity. A task too old to answer leaves us on the shared
+-- one, which still works and is what the isolation is worth.
+local function session(handle)
 	local req = requester(handle)
+	local r = req({ op = "session" })
+
+	if type(r) == "table" and r.port and r.port.__right then
+		return r.port.__right
+	end
+	return handle
+end
+
+function M.new(handle)
+	local own = session(handle)
+	local req = requester(own)
 	local n = { handle = handle }	-- for re-granting: {__right = n.handle}
 
 	-- open(url) -> socket, or nil and why. Answers once the peer has
