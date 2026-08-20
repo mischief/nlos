@@ -37,7 +37,7 @@ local function diag(s)
 	io.write("# " .. tostring(s) .. "\n")
 end
 
-io.write("1..23\n")
+io.write("1..25\n")
 
 -- ---- deterministic filler ----
 --
@@ -268,6 +268,32 @@ do
 	end
 	ok(tx.state == "error" and tx.err == "no receiver",
 	    "a sender with no receiver stops trying")
+end
+
+-- ---- a silent line is let go of ----
+--
+-- Retries high enough to never fire, so what returns here can only be
+-- the idle bound. On a board this is the console going back to cooked
+-- mode instead of needing a reset.
+
+do
+	local now = 0
+	local rx = zmodem.receiver({ retries = 1 << 40, idle = 15000 })
+	local line = {
+		now = function() return now end,
+		write = function() end,
+		read = function(ms)
+			now = now + ((ms and ms > 0) and ms or 100)
+			return nil
+		end,
+	}
+	local res, err = zmodem.drive(rx, line)
+
+	ok(res == nil and type(err) == "string" and
+	    err:find("nothing from the other end", 1, true) ~= nil,
+	    "a receiver on a silent line gives up: " .. tostring(err))
+	ok(now >= 15000 and now < 60000,
+	    ("and at the bound, not before or long after: %dms"):format(now))
 end
 
 -- ---- escaping is what the receiver asked for ----
