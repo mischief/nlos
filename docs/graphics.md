@@ -137,3 +137,26 @@ latency is under the time a screen grab takes.
 than a hand. Use `mousedown`, a sleep, then `mouseup` to imitate a real
 click, and the fast form to see what happens to input that arrives
 faster than the machine polls.
+
+## a precomputed table is not free
+
+Lua rounds a table's array part up to a power of two, and every slot is
+a full value. 1983 entries occupy 2048 slots of sixteen bytes, so one
+array of them is 32KB and seven parallel arrays are 230KB. Measured in
+the machine rather than reasoned about:
+
+	collectgarbage()
+	local b = sys.meminfo()
+	-- build the tables here
+	collectgarbage()
+	print(sys.meminfo() - b)
+
+Precompute what is expensive, not what is merely repeated. A square
+root is worth a table on a chip with no double precision in hardware; a
+multiply, a compare against a row's width, or the loop counter itself
+is not. Deriving six of seven arrays and keeping only the square root
+halved a panel app, from 1000403 bytes live to 501394, and left the
+picture identical to the pixel.
+
+`ps` gives every proc's live and peak bytes, so the question "where did
+it go" has an answer that does not need guessing.
