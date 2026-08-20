@@ -182,12 +182,6 @@ platform_net_ready(void)
 }
 
 int
-platform_have_blk(void)
-{
-	return 0;
-}
-
-int
 platform_have_flash(void)
 {
 	return 0;
@@ -281,7 +275,6 @@ int luaopen_los_platform_flash(lua_State *L);
 int luaopen_los_platform_hci(lua_State *L);
 int luaopen_los_platform_wifi(lua_State *L);
 int luaopen_los_platform_p9(lua_State *L);
-int luaopen_los_platform_blk(lua_State *L);
 int luaopen_los_efi(lua_State *L);
 int luaopen_los_rom(lua_State *L);
 
@@ -322,13 +315,6 @@ luaopen_los_platform_wifi(lua_State *L)
 
 int
 luaopen_los_platform_p9(lua_State *L)
-{
-	luaL_newlib(L, emptylib);
-	return 1;
-}
-
-int
-luaopen_los_platform_blk(lua_State *L)
 {
 	luaL_newlib(L, emptylib);
 	return 1;

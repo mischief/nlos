@@ -1,0 +1,4 @@
+[
+	{"at": 4000, "type": "lua\r"},
+	{"at": 6000, "type": "local f = assert(io.open('/config/kept','w')) f:write('CFGMARKER-eaf3') f:close()\r"}
+]

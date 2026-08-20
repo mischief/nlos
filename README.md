@@ -129,8 +129,13 @@ One freestanding WebAssembly module, built by clang alone -- no
 emscripten, no WASI. The whole platform seam is a handful of imports --
 the console, a clock, entropy, the screen, the keyboard, the pointer and
 a websocket -- so any embedder that supplies those gets a machine. The
-root is the tree built into the module, there is one cpu, and there is
-no disk and no radio.
+root is the tree built into the module, there is one cpu, and there is no
+radio.
+
+`/config` is a FAT volume on a small disk that lives in shared memory and
+is kept in `localStorage`, so a key or a setting survives a reload. It is
+made on first boot and served by `task/cfgsrv.lua` over the same block
+device every other machine has.
 
 The network is websockets and nothing under them, because that is what
 a browser lends: `PRIV_WS`, `task/wssrv.lua` and `lib/client/ws.lua`, in

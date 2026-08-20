@@ -66,7 +66,11 @@ local function conf()
 	end
 	return N:stat(CONF) ~= nil
 end
-local RELAY = "wss://relay.damus.io"
+-- where to ask when /config names nobody. Measured rather than
+-- picked: relay.damus.io sits behind a proxy that answers 503 to
+-- something like two connections in five, which reads as a machine
+-- with no network. Any relay will do; this one answered every time.
+local RELAY = "wss://nos.lol"
 local WANT = 12					-- events per fetch
 
 local mode = fb.mode()

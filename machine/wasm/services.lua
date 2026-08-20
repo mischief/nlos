@@ -14,6 +14,12 @@ return {
 	-- one of them a terminal. Naming fb, kbd and ptr is what decides
 	-- it -- an embedder that opened none has all three absent, skips
 	-- this, and comes up on its console alone.
+	-- what survives a reload: a FAT volume on the small disk the
+	-- embedder keeps. Before dio, so an app started from the tray
+	-- inherits the mount and can keep a key or a setting.
+	{ path = "/task/cfgsrv.lua", name = "config", caps = { "blk" },
+	  mount = "/config" },
+
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
 	  optcaps = { "power", "ws" } },
 

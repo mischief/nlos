@@ -150,6 +150,10 @@ const imports = {
 		ws_send: () => 0,
 		ws_recv: () => -2,
 		ws_close: () => {},
+		// no config volume either: nothing here outlives the run.
+		blk_size: () => 0,
+		blk_read: () => -1,
+		blk_write: () => -1,
 	},
 };
 

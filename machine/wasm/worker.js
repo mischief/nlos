@@ -16,15 +16,18 @@ const PTRY = 4;
 const PTRB = 5;
 const PTRMOVED = 6;
 const PTRWHEEL = 7;	// wheel clicks not yet reported; sign is direction
-const KEYS = 8;
+const DIRTY = 8;	// sector writes ever made; the page watches it
+const KEYS = 16;
 const KEYRING = 256;
 
 const WHEELUP = 8, WHEELDOWN = 16;
+const SECTOR = 512;
 
 let sab = null;		// Int32Array over the input buffer
 let rgba = null;	// Uint8Array over the shared screen, as the page reads it
 let net32 = null;	// the socket ring's header
 let net8 = null;	// and its bytes
+let disk = null;	// the config volume, shared with the page
 let mem = null;		// the module's linear memory
 let fbptr = 0, fbw = 0, fbh = 0;
 
@@ -206,12 +209,34 @@ function imports() {
 				if (socks.delete(id))
 					postMessage({ ws: { op: 'close', id } });
 			},
+
+			// the config volume. Shared memory, so a sector is a
+			// copy and never a round trip: the page keeps it
+			// somewhere a reload will find it, and only has to be
+			// told that it changed.
+			blk_size: () => (disk ? disk.length / SECTOR : 0),
+			blk_read(lba, p, nsec) {
+				if (!disk || (lba + nsec) * SECTOR > disk.length)
+					return -1;
+				new Uint8Array(mem.buffer, p, nsec * SECTOR)
+					.set(disk.subarray(lba * SECTOR,
+						(lba + nsec) * SECTOR));
+				return 0;
+			},
+			blk_write(lba, p, nsec) {
+				if (!disk || (lba + nsec) * SECTOR > disk.length)
+					return -1;
+				disk.set(new Uint8Array(mem.buffer, p,
+					nsec * SECTOR), lba * SECTOR);
+				Atomics.add(sab, DIRTY, 1);
+				return 0;
+			},
 		},
 	};
 }
 
 onmessage = async (e) => {
-	const { shared, screen, netring, url, membytes, w, h } = e.data;
+	const { shared, screen, netring, config, url, membytes, w, h } = e.data;
 
 	try {
 		sab = new Int32Array(shared);
@@ -221,6 +246,8 @@ onmessage = async (e) => {
 			net32 = new Int32Array(netring, 0, 2);
 			net8 = new Uint8Array(netring);
 		}
+		if (config)
+			disk = new Uint8Array(config);
 
 		const src = await WebAssembly.instantiateStreaming(
 			fetch(url), imports());

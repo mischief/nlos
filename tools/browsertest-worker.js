@@ -30,6 +30,7 @@ globalThis.onmessage({ data: {
 	shared: workerData.shared,
 	screen: workerData.screen,
 	netring: workerData.netring,
+	config: workerData.config,
 	url: 'luaos.wasm',
 	membytes: workerData.membytes,
 	w: workerData.w,

@@ -65,6 +65,15 @@ HOSTFN(ws_send) int host_ws_send(int id, const void *p, size_t n);
 HOSTFN(ws_recv) int host_ws_recv(int id, void *p, size_t max);
 HOSTFN(ws_close) void host_ws_close(int id);
 
+/* the config volume: a small disk the embedder keeps somewhere it
+ * survives a reload. Sectors rather than bytes, because that is what a
+ * block device is; size answers 0 where the embedder keeps nothing.
+ * Both answer at once -- the store is memory the host already holds.
+ */
+HOSTFN(blk_size) int host_blk_size(void);
+HOSTFN(blk_read) int host_blk_read(int lba, void *p, int nsec);
+HOSTFN(blk_write) int host_blk_write(int lba, const void *p, int nsec);
+
 #undef HOSTFN
 
 #endif

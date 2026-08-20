@@ -41,7 +41,13 @@ html, body {
 
 const WAKE = 0, KHEAD = 1, KTAIL = 2;
 const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6, PTRWHEEL = 7;
-const KEYS = 8, KEYRING = 256;
+const DIRTY = 8;
+const KEYS = 16, KEYRING = 256;
+
+// the config volume, and how much of localStorage it is allowed to be.
+// Small on purpose: it holds a key and a setting, not a disk.
+const CONFIG_BYTES = 512 * 1024;
+const CONFIG_KEY = 'luaos.config';
 
 const note = document.getElementById('note');
 const canvas = document.getElementById('screen');
@@ -61,6 +67,62 @@ if (!crossOriginIsolated) {
 
 const shared = new SharedArrayBuffer((KEYS + KEYRING) * 4);
 const sab = new Int32Array(shared);
+
+// what survives a reload. The volume is shared memory, so the machine
+// reads and writes it with no round trip and nothing to wait for; this
+// side only has to notice it changed and put it back in localStorage --
+// which the machine could not reach anyway, since it is a worker and
+// localStorage belongs to the window.
+const config = new SharedArrayBuffer(CONFIG_BYTES);
+const disk = new Uint8Array(config);
+
+function loadconfig() {
+	const s = localStorage.getItem(CONFIG_KEY);
+
+	if (!s)
+		return;
+	try {
+		const raw = atob(s);
+		const n = Math.min(raw.length, disk.length);
+
+		for (let i = 0; i < n; i++)
+			disk[i] = raw.charCodeAt(i);
+	} catch (e) {
+		// a store we cannot read is one we overwrite: the machine
+		// reams a blank volume and carries on.
+		localStorage.removeItem(CONFIG_KEY);
+	}
+}
+
+function saveconfig() {
+	// String.fromCharCode takes a bounded argument list, so the bytes
+	// go in chunks.
+	let s = '';
+
+	for (let i = 0; i < disk.length; i += 8192)
+		s += String.fromCharCode.apply(null, disk.subarray(i, i + 8192));
+	try {
+		localStorage.setItem(CONFIG_KEY, btoa(s));
+	} catch (e) {
+		console.warn('lua-os: /config not kept:', e && e.name);
+	}
+}
+
+loadconfig();
+
+// the machine counts its sector writes and this watches the count: a
+// message per sector would be one per byte of a small file.
+let lastdirty = 0;
+
+setInterval(() => {
+	const n = Atomics.load(sab, DIRTY);
+
+	if (n !== lastdirty) {
+		lastdirty = n;
+		saveconfig();
+	}
+}, 2000);
+addEventListener('pagehide', saveconfig);
 
 // the screen the worker writes and this thread reads. Shared rather
 // than sent: a frame is 3MB and copying one per paint would cost more
@@ -257,6 +319,7 @@ worker.postMessage({
 	shared,
 	screen,
 	netring,
+	config,
 	url: 'luaos.wasm',
 	membytes: 96 * 1024 * 1024,
 	w: W,

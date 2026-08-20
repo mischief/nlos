@@ -1,6 +1,7 @@
 # the wasm machine: one module, its imports and the tree inside it.
 
 kernel_src += files(
+  'blk.c',
   'clock.c',
   'console.c',
   'drivers.c',

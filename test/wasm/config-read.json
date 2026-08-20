@@ -1,0 +1,4 @@
+[
+	{"at": 4000, "type": "lua\r"},
+	{"at": 6000, "type": "local f = io.open('/config/kept') local ok = f and f:read('a') == 'CFGMARKER-eaf3' local g = assert(io.open('/config/verdict','w')) g:write(ok and 'CFGFOUND-9d1c' or 'CFGLOST') g:close()\r"}
+]

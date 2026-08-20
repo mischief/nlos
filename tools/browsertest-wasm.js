@@ -20,7 +20,7 @@ const W = 1024, H = 768;
 
 const RING = require(path.join(path.dirname(WORKER), 'ring.js'));
 
-const shared = new SharedArrayBuffer((8 + 256) * 4);
+const shared = new SharedArrayBuffer((16 + 256) * 4);
 const sab = new Int32Array(shared);
 const screen = new SharedArrayBuffer(W * H * 4);
 const pixels = new Uint8Array(screen);
@@ -30,7 +30,17 @@ const net8 = new Uint8Array(netring);
 
 const WAKE = 0, KHEAD = 1, KTAIL = 2;
 const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6, PTRWHEEL = 7;
-const KEYS = 8, KEYRING = 256;
+const DIRTY = 8;
+const KEYS = 16, KEYRING = 256;
+
+// the config volume, kept in a file so a second run finds what the
+// first one wrote -- which is what the page's localStorage is for.
+const CONFIG = process.env.CONFIG || '';
+const config = new SharedArrayBuffer(512 * 1024);
+const disk = new Uint8Array(config);
+
+if (CONFIG && fs.existsSync(CONFIG))
+	disk.set(fs.readFileSync(CONFIG).subarray(0, disk.length));
 
 // the page's canvas: an ImageData filled from the shared screen.
 const img = { data: new Uint8ClampedArray(W * H * 4) };
@@ -176,7 +186,7 @@ let next = 0;
 
 const worker = new Worker(path.join(__dirname, 'browsertest-worker.js'), {
 	workerData: {
-		shared, screen, netring,
+		shared, screen, netring, config,
 		wasm: WASM, worker: WORKER,
 		dir: path.dirname(WORKER),
 		membytes: 96 * 1024 * 1024,
@@ -238,7 +248,10 @@ const timer = setInterval(() => {
 	if (elapsed > MS) {
 		clearInterval(timer);
 		console.log(`paints: ${paints}`);
+		console.log(`config writes: ${Atomics.load(sab, DIRTY)}`);
 		snap(OUT);
+		if (CONFIG)
+			fs.writeFileSync(CONFIG, Buffer.from(disk));
 		// the worker's console goes to ours through a pipe, and an
 		// abrupt exit loses whatever is still in it -- which is the
 		// whole boot log.

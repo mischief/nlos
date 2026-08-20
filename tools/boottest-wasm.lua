@@ -75,7 +75,7 @@ end
 -- an app started from the tray survives the arrow keys (an arrow is
 -- ESC [ A, and a program reading a bare ESC quits), and the wheel
 -- reaches a program that reads it.
-local bchecks = 4
+local bchecks = 6
 local bout = ""
 
 if browser then
@@ -85,6 +85,35 @@ end
 
 local function px(name)
 	return bout:match("px " .. name .. " (%x+)")
+end
+
+-- the config volume, twice: one boot writes a file into it and a second
+-- reads it back and records what it found. The verdict goes in the
+-- volume rather than to the console, because a program in the panel's
+-- terminal writes to the screen and nothing else.
+local cfgimg, cfgwrote, cfgkept
+
+if browser then
+	cfgimg = os.tmpname()
+	os.remove(cfgimg)
+
+	local dir = script:match("^(.*)/[^/]+$") or "."
+	local function pass(s, ms)
+		run(("CONFIG=%s %s %s %s %s /dev/null %d %s")
+		    :format(q(cfgimg), q(node), q(browser), q(module),
+			q(worker), ms, q(dir .. "/" .. s)))
+		local f = io.open(cfgimg, "rb")
+		local bytes = f and f:read("a") or ""
+
+		if f then
+			f:close()
+		end
+		return bytes
+	end
+
+	cfgwrote = pass("config-write.json", 11000):find("CFGMARKER%-eaf3")
+	cfgkept = pass("config-read.json", 9000):find("CFGFOUND%-9d1c")
+	os.remove(cfgimg)
 end
 
 print("1.." .. (#checks + #gchecks + bchecks + 1))
@@ -99,10 +128,14 @@ if browser then
 	tap(before == "edc22e", "an app starts from the tray")
 	tap(after == before, "the arrow keys do not kill it")
 	tap(pen1 and pen2 and pen1 ~= pen2, "the wheel changes the pen")
+	tap(cfgwrote, "a file written to /config reaches the volume")
+	tap(cfgkept, "and the next boot reads it back")
 else
 	for _, name in ipairs({ "the page paints the panel",
 	    "an app starts from the tray", "the arrow keys do not kill it",
-	    "the wheel changes the pen" }) do
+	    "the wheel changes the pen",
+	    "a file written to /config reaches the volume",
+	    "and the next boot reads it back" }) do
 		n = n + 1
 		print("ok " .. n .. " - " .. name .. " # skip no script given")
 	end

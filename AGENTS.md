@@ -961,6 +961,20 @@ blocked worker may still send; what comes back arrives through
 synchronously. `Atomics.wait` runs no callbacks -- if you find yourself
 wanting a callback in the worker, that is the wall you are hitting.
 
+**`/config` is a FAT volume in shared memory.** The disk is a
+`SharedArrayBuffer` the page allocates, so a sector is a copy and never
+a round trip -- which is what lets `los.platform.blk` answer
+synchronously from a worker that cannot wait for anything. The page
+loads it from `localStorage` before starting the machine and writes it
+back when it changes; the machine could not reach `localStorage` itself
+in any case, since that belongs to the window and not to a worker. What
+signals a change is a counter in the shared block that the page watches,
+not a message per sector.
+
+`lib/fat` does not merely answer nil on a blank device -- it reads a
+boot sector of zeroes and raises on the arithmetic. `task/cfgsrv.lua`
+pcalls it and reams either way.
+
 A task that spawns a thread must run its own receive loop as a thread
 too and end with `thread.run()`. A bare `while true do thread.recv() end`
 in the main chunk is the only thread that ever runs, and anything
