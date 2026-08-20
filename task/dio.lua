@@ -1172,6 +1172,12 @@ local lasttap, lastms = nil, 0
 local WHEELUP = 8
 local WHEELDOWN = 16
 
+-- the ball rolled sideways. Nothing here scrolls with it -- a list has
+-- one axis -- so it is only ever handed to the app in front, which is
+-- what lets one take two axes of rotation from the same ball.
+local WHEELLEFT = 32
+local WHEELRIGHT = 64
+
 thread.spawn(function()
 	local down = false
 	local bad = 0
@@ -1228,7 +1234,20 @@ thread.spawn(function()
 			bad = 0
 			local pressed = (b & BUT1) ~= 0
 			local iswheel = (b & (WHEELUP | WHEELDOWN)) ~= 0
+			local sideways = (b & (WHEELLEFT | WHEELRIGHT)) ~= 0
 			local by = ((b & WHEELDOWN) ~= 0) and 1 or -1
+
+			-- straight through: no list scrolls sideways, and
+			-- routing it by position would send it to whatever
+			-- was last touched rather than to the front app.
+			if sideways then
+				if front and apps[front] and
+				    apps[front].mouse then
+					apps[front].mouse.post(x - APPX,
+					    y - APPY, b)
+				end
+				goto continue
+			end
 
 			-- A wheel record carries where the pointer is, and on
 			-- a panel that is where a finger last was: nothing

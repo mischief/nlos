@@ -1,14 +1,17 @@
--- gpsui: where the machine is, on the panel. q or the tray leaves.
+-- gpsui: where the machine is, on the panel. q or the tray leaves,
+-- and the scroll wheel or the ball turns the earth.
 --
--- A sky plot around a globe: north is up, azimuth runs clockwise, and
--- elevation is how close to the earth a satellite sits -- overhead
--- rests on the limb, the horizon is out at the ring.
+-- Satellites are placed where they are, not where a dial would put
+-- them: a bearing and an elevation from the receiver, a range from the
+-- orbit, and the whole scene projected. See lib/geometry.lua.
 
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
 local font = require("los.font")
 local memdraw = require("memdraw")
+local geom = require("geometry")
+local mouse = require("mouse")
 
 local fb = prog.screen()
 
@@ -74,71 +77,177 @@ end
 local PLOTY = ROW[5] + ROWH + 2
 local S = math.min(H - PLOTY - FH - 8, W - 4)
 local CX, CY = S // 2, S // 2
-local RING = S // 2 - 3
-local R = math.max(8, (RING * 42) // 100)
+local RPX = S // 2 - 12		-- the earth, in pixels
 
-local SEA, LAND, LIMB = 0x1b3a6b, 0x2e7d4f, 0x4a7ad0
-local HORIZON = 0x243044
-local SAT, SATW, SATOK = 0xd03030, 0xd0a020, 0x40d060
+local SEA, LAND = 0x14498a, 0x2f7a44
+local SEADK, LANDDK = 0x081f3c, 0x123018
+local LIMB, GRID = 0x6fa8ff, 0x1a2a44
+local HERE = 0xffd020
+local SAT, SATW, SATOK, BEHIND = 0xd03030, 0xd0a020, 0x40d060, 0x304050
 
--- Crude on purpose: a few caps of land over a shaded sea reads as the
--- earth at this size, where a coastline would read as noise.
-local LANDMASS = {
-	{ -0.28, -0.30, 0.34 }, { 0.14, -0.12, 0.36 },
-	{ -0.02, 0.38, 0.28 }, { 0.48, 0.26, 0.22 },
-}
+-- 96 by 48 cells of land or sea, rasterised from continent outlines by
+-- tools/mkworld.lua. Sampling one bit is what the board can afford per
+-- pixel; testing a polygon is not.
+local NX, NY = 96, 48
+local WORLDHEX =
+	"000000000000000000000000000000000000000000000000000000007fe0" ..
+	"000000000000000000007fe00000007f8000000000007fe000001ffffff8" ..
+	"07ff0ff87fc00383ffffffff1ffffffc3f000ffffffffff81ffffffe1800" ..
+	"3fffffffffc00e3ffffe0001fffffffffc000007ffff0003fffffffffc00" ..
+	"0003ffff8003fffffffff0000001fffe0003ffffffffe0000001fffc0007" ..
+	"fff9ffffe2000001fff80003fbe03fff84000001fff00000e0001fff8800" ..
+	"0000ffe00003fc000fff800000003fe00007ff8007ff000000001fc0000f" ..
+	"ff8001fe000000000f00000fffc00078000000000200000fffe000380000" ..
+	"00000040000fffe000100000000000210007fff8000000000000003fc003" ..
+	"fff8000000000000003ff0003ff8003800000000003ff8003ff8003ff800" ..
+	"0000003ffe001ff00007fe000000001ffc001fe0000000000000000ffc00" ..
+	"1fe000003c000000000ff8001fc80000fe0000000007f0001fc80001fe00" ..
+	"00000007e0000f800003ff0000000007c0000f000003ff80000000078000" ..
+	"06000003ff00000000070000000000000700000000070000000000000002" ..
+	"0000000600000000000000040000000c0000000000000000000000000000" ..
+	"000000000000000000000000000000000000000000000000000000000000" ..
+	"00000000000000000000000000000000ffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ..
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 
-local function inland(nx, ny)
-	for _, c in ipairs(LANDMASS) do
-		local dx, dy = nx - c[1], ny - c[2]
+local WORLD = (WORLDHEX:gsub("%x%x", function(h)
+	return string.char(tonumber(h, 16))
+end))
 
-		if dx * dx + dy * dy < c[3] * c[3] then
-			return true
-		end
+-- z is a sine of latitude and the rows are equal steps of it, so one
+-- asin is the row. A scan of the 48 edges would be two dozen compares
+-- in lua where this is one call into C.
+local ROWSCALE = NY / math.pi
+local COLSCALE = NX / (2 * math.pi)
+
+local function landat(z, lon)
+	local row = math.floor((math.pi / 2 - math.asin(z)) * ROWSCALE)
+	local col = math.floor((lon + math.pi) * COLSCALE)
+
+	if row < 0 then
+		row = 0
+	elseif row >= NY then
+		row = NY - 1
 	end
-	return false
+	if col < 0 then
+		col = 0
+	elseif col >= NX then
+		col = NX - 1
+	end
+
+	local bit = row * NX + col
+	local b = WORLD:byte(bit // 8 + 1) or 0
+
+	return (b >> (7 - bit % 8)) & 1 == 1
 end
 
--- Built once and kept: the globe and the horizon do not change, and
--- rebuilding a lit sphere per frame would cost more than the fix.
-local function makeglobe()
-	local img = memdraw.image(S, S, BG, FMT)
+-- ---- the view ----
+--
+-- East, north and up at the receiver, which puts the observer in the
+-- middle and the sky where it is. Scrolling turns that frame, so the
+-- same scene swings out to the earth seen from outside.
 
-	for i = 0, 71 do
-		local a = i * math.pi / 36
+local yaw, pitch = 0, 0
+local view = { bx = nil, by = nil, bz = nil }
 
-		img:set(CX + math.floor(math.sin(a) * RING + 0.5),
-		    CY - math.floor(math.cos(a) * RING + 0.5), HORIZON)
+local function setview(lat, lon)
+	local rf = geom.horizon(lat or 0, lon or 0)
+	local bx, by, bz = rf.bx, rf.by, rf.bz
+
+	-- turn about the screen's own axes: up-down tilts, left-right
+	-- spins, and both are about the axes the viewer sees.
+	if pitch ~= 0 then
+		by = geom.qrotate(by, bx, pitch)
+		bz = geom.qrotate(bz, bx, pitch)
 	end
+	if yaw ~= 0 then
+		bx = geom.qrotate(bx, bz, yaw)
+		by = geom.qrotate(by, bz, yaw)
+	end
+	view.bx, view.by, view.bz = bx, by, bz
+	view.rf = rf
+end
 
-	for dy = -R, R do
-		local half = math.floor(math.sqrt(R * R - dy * dy))
+-- a point in space to a pixel, with its depth: +z is toward the eye
+local function project(p)
+	local s = RPX / geom.RE
 
-		for dx = -half, half do
-			local nx, ny = dx / R, dy / R
-			-- lit from the upper left, so the limb on the far
-			-- side falls into shadow and the ball reads round
-			local z = math.sqrt(math.max(0, 1 - nx * nx - ny * ny))
-			local lit = -nx * 0.55 - ny * 0.55 + z * 0.62
-			local c = inland(nx, ny) and LAND or SEA
+	return CX + (p.x * view.bx.x + p.y * view.bx.y + p.z * view.bx.z) * s,
+	    CY - (p.x * view.by.x + p.y * view.by.y + p.z * view.by.z) * s,
+	    p.x * view.bz.x + p.y * view.bz.y + p.z * view.bz.z
+end
 
-			if half - math.abs(dx) < 1 then
+-- The globe, a pixel at a time. The surface point under a pixel is the
+-- front of the sphere, so its normal is the pixel itself with the z
+-- that closes the unit vector; the rest is which cell that is.
+local function drawglobe(img)
+	local bx, by, bz = view.bx, view.by, view.bz
+
+	for py = -RPX, RPX do
+		local half = math.floor(math.sqrt(RPX * RPX - py * py))
+		local vy = -py / RPX
+
+		for px = -half, half do
+			local vx = px / RPX
+			-- clamped: the rounding that puts a pixel one
+			-- inside the disc can still leave this below zero,
+			-- and a nan here indexes the map with a nan.
+			local d = 1 - vx * vx - vy * vy
+			local vz = d > 0 and math.sqrt(d) or 0
+			-- view coordinates back into the world
+			local wx = vx * bx.x + vy * by.x + vz * bz.x
+			local wy = vx * bx.y + vy * by.y + vz * bz.y
+			local wz = vx * bx.z + vy * by.z + vz * bz.z
+			-- lit from the upper left and a little in front
+			local lit = -vx * 0.5 + vy * 0.5 + vz * 0.72
+			local sea = not landat(wz, math.atan(wy, wx))
+			local c
+
+			if half - math.abs(px) < 1 then
 				c = LIMB
-			elseif lit < 0.10 then
-				c = (c & 0xfcfcfc) >> 2
-			elseif lit < 0.40 then
-				c = (c & 0xfefefe) >> 1
-			elseif lit > 0.80 then
-				c = c + 0x141c28
+			elseif lit < 0.25 then
+				c = sea and SEADK or LANDDK
+			elseif lit > 0.82 then
+				c = (sea and SEA or LAND) + 0x102010
+			else
+				c = sea and SEA or LAND
 			end
-			img:set(CX + dx, CY + dy, c)
+			img:set(CX + px, CY + py, c)
 		end
 	end
-	return img
 end
 
-local EARTH = makeglobe()
-local SKY = memdraw.image(S, S, BG, FMT)
+-- the meridians and parallels, drawn over the ball so a rotation reads
+-- as a rotation rather than as the map sliding about
+local function drawgrid(img)
+	for lat = -60, 60, 30 do
+		for lon = -180, 175, 5 do
+			local p = geom.geodetic(lat, lon)
+			local x, y, z = project(p)
+
+			if z > 0 then
+				img:set(math.floor(x + 0.5),
+				    math.floor(y + 0.5), GRID)
+			end
+		end
+	end
+	for lon = -180, 150, 30 do
+		for lat = -85, 85, 5 do
+			local p = geom.geodetic(lat, lon)
+			local x, y, z = project(p)
+
+			if z > 0 then
+				img:set(math.floor(x + 0.5),
+				    math.floor(y + 0.5), GRID)
+			end
+		end
+	end
+end
+
+local function dot(img, x, y, c, r)
+	img:fill(memdraw.rect(math.floor(x + 0.5) - r,
+	    math.floor(y + 0.5) - r, r * 2 + 1, r * 2 + 1), c)
+end
 
 local function satcolor(snr)
 	local n = snr or 0
@@ -149,25 +258,52 @@ local function satcolor(snr)
 	return n > 0 and SATW or SAT
 end
 
--- A satellite with no azimuth has never been located, only heard of,
--- so it is not placed: a dot at a made-up bearing is worse than none.
-local function plot(sky)
-	SKY:draw(memdraw.pt(0, 0), EARTH)
+local SKYIMG = memdraw.image(S, S, BG, FMT)
+
+-- Everything at once, because a satellite behind the earth has to be
+-- drawn before the earth and one in front after it.
+local function plot(sky, lat, lon)
+	setview(lat, lon)
+	SKYIMG:fill(SKYIMG:rect(), BG)
+
+	local pts = {}
 
 	for _, s in ipairs(sky) do
 		if s.azim and s.elev then
-			local a = math.rad(s.azim)
-			local rad = R + (1 - math.min(s.elev, 90) / 90) *
-			    (RING - R)
-			local x = CX + math.floor(math.sin(a) * rad + 0.5)
-			local y = CY - math.floor(math.cos(a) * rad + 0.5)
+			local p = geom.skypoint(view.rf, s.azim, s.elev)
+			local x, y, z = project(p)
 
-			SKY:fill(memdraw.rect(x - 1, y - 1, 3, 3),
-			    satcolor(s.snr))
+			pts[#pts + 1] = { x = x, y = y, z = z, snr = s.snr }
 		end
 	end
+
+	-- behind first
+	for _, p in ipairs(pts) do
+		if p.z <= 0 then
+			dot(SKYIMG, p.x, p.y, BEHIND, 1)
+		end
+	end
+
+	drawglobe(SKYIMG)
+	drawgrid(SKYIMG)
+
+	-- where the receiver says it is, on the ball it is on
+	if lat and lon then
+		local x, y, z = project(geom.geodetic(lat, lon))
+
+		if z > 0 then
+			dot(SKYIMG, x, y, HERE, 1)
+		end
+	end
+
+	for _, p in ipairs(pts) do
+		if p.z > 0 then
+			dot(SKYIMG, p.x, p.y, satcolor(p.snr), 1)
+		end
+	end
+
 	fb.load({ x = (W - S) // 2, y = PLOTY, w = S, h = S },
-	    memdraw.bytes(SKY, SKY:rect()), true, true, FMT)
+	    memdraw.bytes(SKYIMG, SKYIMG:rect()), true, true, FMT)
 end
 
 -- ---- the numbers ----
@@ -241,10 +377,12 @@ local running = true
 
 fb.fill({ x = 0, y = 0, w = W, h = H }, BG, true)
 
--- what the sky looked like last, so a plot that has not changed is not
--- sent again: the globe is one message of the window's whole width.
-local function signature(sky)
-	local parts = {}
+-- what the scene looked like last, so one that has not changed is not
+-- drawn again: the globe is a pixel loop and one message of its own
+-- size, and neither is worth spending on an unmoved sky.
+local function signature(sky, lat, lon)
+	local parts = { ("%d.%d.%.2f.%.2f"):format(math.floor((lat or 0) * 100),
+	    math.floor((lon or 0) * 100), yaw, pitch) }
 
 	for _, s in ipairs(sky) do
 		parts[#parts + 1] = ("%d.%d.%d.%d"):format(s.prn or 0,
@@ -254,20 +392,62 @@ local function signature(sky)
 	return table.concat(parts, ",")
 end
 
+-- the last position it had, so the earth stays where it was when the
+-- fix drops rather than snapping back to (0N, 0E)
+local atlat, atlon
+
+local function frame()
+	local f = ask("fix")
+	local sky = rows(f, ask("stats"))
+
+	if f and f.lat and f.lon then
+		atlat, atlon = f.lat, f.lon
+	end
+	return sky, signature(sky, atlat, atlon)
+end
+
+local redraw = true
+
 thread.spawn(function()
 	local last
 
 	while running do
-		local sky = rows(ask("fix"), ask("stats"))
-		local sig = signature(sky)
+		local sky, sig = frame()
 
-		if sig ~= last then
-			plot(sky)
-			last = sig
+		if redraw or sig ~= last then
+			plot(sky, atlat, atlon)
+			last, redraw = sig, false
 		end
 		thread.sleep(EVERY_MS)
 	end
 end)
+
+-- the pointer is a port of its own and a thread of its own reads it:
+-- alt cannot tell a port that hung up from a quiet one.
+local point = prog.mouse()
+
+if point then
+	thread.spawn(function()
+		local STEP = math.pi / 18	-- ten degrees a click
+
+		while running do
+			local _, _, b = point.read()
+
+			if not b then
+				return
+			end
+			if (b & mouse.WHEELLEFT) ~= 0 then
+				yaw, redraw = yaw - STEP, true
+			elseif (b & mouse.WHEELRIGHT) ~= 0 then
+				yaw, redraw = yaw + STEP, true
+			elseif (b & mouse.WHEELUP) ~= 0 then
+				pitch, redraw = pitch - STEP, true
+			elseif (b & mouse.WHEELDOWN) ~= 0 then
+				pitch, redraw = pitch + STEP, true
+			end
+		end
+	end)
+end
 
 if ev then
 	thread.spawn(function()
