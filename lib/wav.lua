@@ -40,7 +40,14 @@ function M.header(s)
 			w.format = u16(s, body)
 			w.channels = u16(s, body + 2)
 			w.rate = u32(s, body + 4)
+			w.block = u16(s, body + 12)
 			w.width = u16(s, body + 14)
+			-- how many samples a block holds is the encoder's
+			-- to say, not ours to derive: the trailing bytes of
+			-- a block need not all be audio.
+			if len >= 20 and body + 19 <= #s then
+				w.perblock = u16(s, body + 18)
+			end
 		elseif id == "data" then
 			w.at = body
 			w.bytes = len
@@ -58,6 +65,23 @@ function M.header(s)
 	if not w.at then
 		return nil, "no data chunk"
 	end
+	if w.format == 17 then
+		-- four bits a sample, so there is no whole number of bytes
+		-- per frame and `frame` is what a block decodes to instead
+		w.adpcm = true
+		w.coded = w.width
+		-- what a caller asks a device for is the decoded width: the
+		-- four bits on disk are this decoder's business and nobody
+		-- else's, and no sound card offers a four bit stream.
+		w.width = 16
+		if not w.block or w.block < w.channels * 4 then
+			return nil, "no block size"
+		end
+		w.perblock = w.perblock or
+		    (1 + ((w.block - w.channels * 4) * 2) // w.channels)
+		w.frame = w.channels * 2
+		return w
+	end
 	if w.format ~= 1 then
 		return nil, "not pcm"
 	end
@@ -67,6 +91,9 @@ end
 
 -- seconds(info) -> how long it plays
 function M.seconds(w)
+	if w.adpcm then
+		return (w.bytes // w.block) * w.perblock / w.rate
+	end
 	return w.bytes / (w.rate * w.frame)
 end
 

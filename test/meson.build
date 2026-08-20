@@ -637,6 +637,21 @@ test('zmodem-protocol', lua_interp,
   protocol: 'tap',
   timeout: 60,
 )
+# the audio decoder, both halves against each other. adpcm.so is on
+# LUA_CPATH so require("adpcm.native") reaches the same C the guest
+# runs rather than a lookalike.
+if lua54_dep.found()
+  adpcm_env = environment()
+  adpcm_env.set('LUA_CPATH',
+    meson.project_build_root() / '?.so', separator: ';')
+  test('adpcm-decode', lua_interp,
+    args: [files('host_adpcm.lua')],
+    protocol: 'tap',
+    timeout: 60,
+    env: adpcm_env,
+    depends: [adpcm_native_host],
+  )
+endif
 
 # lib/ble/hci.lua, sans-io like zmodem above it. The codec half needs
 # nothing; the rest spawns btvirt on a port of its own and exchanges

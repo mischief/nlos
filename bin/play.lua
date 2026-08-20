@@ -11,6 +11,7 @@ local prog = require("prog")
 local usb = require("usb")
 local uac = require("uac")
 local wav = require("wav")
+local adpcm = require("adpcm")
 local unistd = require("posix.unistd")
 
 -- big enough that the per-read cost is not the pace: a read costs tens
@@ -102,20 +103,57 @@ unistd.write(1, ("play: %s, %d Hz %d ch, %.1fs\n"):format(path, rate,
 
 -- the samples, from where the header said they start. A short write is
 -- the device's pace, so what it would not take is offered again.
-f:seek(w.at - 1)
+f:seek("set", w.at - 1)
+
+-- compressed audio is read a whole number of blocks at a time: a block
+-- carries the state the next one resumes from, so half of one decodes
+-- to nothing.
+local step = CHUNK
+
+if w.adpcm then
+	step = (CHUNK // w.block) * w.block
+	if step < w.block then
+		step = w.block
+	end
+end
 
 local left = w.bytes
 local pending = ""
+local carry = ""
 
 while left > 0 or #pending > 0 do
 	if #pending == 0 then
-		local want = left < CHUNK and left or CHUNK
+		local want = left < step and left or step
+		local raw = f:read(want) or ""
 
-		pending = f:read(want) or ""
-		if pending == "" then
+		if raw == "" then
 			break
 		end
-		left = left - #pending
+		left = left - #raw
+
+		if w.adpcm then
+			-- a read answers with what it has, not with what
+			-- was asked for, so what is left over is the front
+			-- of the next block and not something to drop
+			raw = carry .. raw
+
+			local out, o = {}, 1
+
+			while o + w.block - 1 <= #raw do
+				local d, why = adpcm.block(raw, o,
+				    w.channels, w.block)
+
+				if not d then
+					die(why)
+				end
+				out[#out + 1] = d
+				o = o + w.block
+			end
+			carry = raw:sub(o)
+			pending = table.concat(out)
+		else
+			pending = raw
+		end
 	end
 
 	local took = sys.usbwrite(pending)

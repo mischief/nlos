@@ -1362,6 +1362,13 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_gefs_native);
 	lua_setfield(p->L, -2, "gefs.native");
+	/* adpcm.native (src/adpcm_native.c): the audio decoder's hot
+	 * loop, ambient for the same reason -- a pure function of the
+	 * bytes handed to it. lib/adpcm.lua is the reference and picks
+	 * this up when it is there.
+	 */
+	lua_pushcfunction(p->L, luaopen_adpcm_native);
+	lua_setfield(p->L, -2, "adpcm.native");
 
 	/* dev: the backend interface, in C so a proc with a namespace does
 	 * not carry a copy of it. Registered under the bare name, so

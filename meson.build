@@ -373,6 +373,17 @@ if lua54_dep.found()
   gefs_host_env.append('LUA_CPATH',
     meson.current_build_dir() / '?.so', separator: ';')
   gefs_host_deps += [gefs_native_host, buf_native_host]
+
+  # the decoder's hot loop, so the host test runs the C the guest runs
+  # rather than a lookalike. require("adpcm.native") reaches it through
+  # luaopen_adpcm_native in adpcm.so.
+  adpcm_native_host = shared_module('adpcm',
+    ['src/adpcm_native.c'],
+    name_prefix: '',
+    dependencies: lua54_dep,
+    native: true,
+    build_by_default: true,
+  )
 endif
 
 # the esp32 boards: run targets that drive ESP-IDF, since that build
