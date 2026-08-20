@@ -19,6 +19,7 @@ kernel_src += files(
 # is every lua file under lib, bin and task: a curated list would be a
 # second place to forget a new module.
 hosted_embed = run_command(lua_interp, files('../../../tools/embedtree.lua'),
+  meson.project_source_root(),
   check: true).stdout().strip().split('\n')
 
 embed_args = ['/etc/services.lua=' + meson.project_source_root() /
