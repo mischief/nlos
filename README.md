@@ -373,5 +373,8 @@ argued in AGENTS.md.
 - [docs/debugging.md](docs/debugging.md) -- asking a proc what it is
   doing: stacks, the Broke state a faulted proc is held in, and the
   line-trace ring.
+- [docs/graphics.md](docs/graphics.md) -- writing a program that draws:
+  where the pixels live, what a pointer record promises, and how to
+  measure a frame rather than squint at one.
 - [docs/namespace-design.md](docs/namespace-design.md) -- a parked design;
   a recorded argument rather than a commitment.
