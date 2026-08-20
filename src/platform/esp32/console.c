@@ -134,7 +134,7 @@ console_init(void)
 	 * meanwhile has to fit, or the sender retransmits -- 1.9x the
 	 * bytes for a 24KB file at 4096.
 	 */
-	cfg.rx_buffer_size = 16384;
+	cfg.rx_buffer_size = 65536;
 
 	if (usb_serial_jtag_driver_install(&cfg) == ESP_OK)
 		usb_serial_jtag_vfs_use_driver();

@@ -32,9 +32,11 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 
 -- the most bytes readraw will gather into one reply. A batch is held as
--- one lua string per byte until the concat, so this is a memory ceiling
--- rather than a throughput knob.
-local MAXRAW = 512
+-- one chunk per message until the concat, so this is a memory ceiling
+-- as well as a throughput one: a reader asking for more than this pays
+-- a round trip per bound rather than per ask, and on a board that trip
+-- is milliseconds. A transfer asks for 4096.
+local MAXRAW = 4096
 
 -- how long readraw waits for more once it has some. A reader moving a
 -- file asks for hundreds of bytes and a line delivers them in pieces,

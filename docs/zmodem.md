@@ -4,21 +4,22 @@
 shell is on, so a board with nothing but a serial line still has a way
 in. `lib/zmodem.lua` is the protocol, sans-io, and both use it.
 
-Between two lua-os machines this works as it stands: `rz` advertises a
-receive window and clears CANOVIO, because a write parks the proc and
-nothing reads the line while it is parked, and `sz` honours both.
+	sz -b file                  from a desktop, over the port
+	picocom --send-cmd "sz -b"
 
-lrzsz's `sz` reads those and streams anyway; its transmit window is a
-separate thing, set only by `-w`. Until the receiver takes bytes as
-fast as a sender offers them, a large transfer from lrzsz needs
-`-w 4096` or it retries its way to a halt. That is a gap to close, not
-a setting to keep.
+No flags beyond `-b`, and none on this side: `rz` starts itself, since
+a sender writes "rz\r" before its first header.
 
-## reproducing it without a board
+`rz` advertises a receive window and clears CANOVIO, both truthfully: a
+write parks the proc, and nothing reads the line while it is parked.
+Our own `sz` honours them and waits. lrzsz ignores both and streams, so
+what has to hold is the path underneath -- the console queues rather
+than drops, and it hands a reader as much as it asked for.
+
+## reproducing a failure without a board
 
 The hosted machine's console is stdin and stdout, so a real `sz` talks
-to a real `rz` with no hardware. `sz` writes "rz\r" before its first
-header, so nothing has to be typed:
+to a real `rz` with no hardware:
 
 	socat EXEC:"sz -b FILE" \
 	    EXEC:"build-hosted/src/platform/hosted/luaos-hosted -r DIR -w"
