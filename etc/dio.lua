@@ -111,6 +111,13 @@ return {
 		  category = "games", label = "K", color = 0x8b5a2b,
 		  keys = true, desc = "push every crate onto a mark" },
 
+		-- a playlist and a player. Keys for q; the device it
+		-- plays through is asked for by name at the sys level
+		-- rather than granted here, so nothing is lent to it.
+		{ name = "amp", cmd = "/bin/amp.lua", category = "media",
+		  label = "A", color = 0x2ecc40, keys = true,
+		  desc = "browse tracks, build a playlist, play it" },
+
 		{ name = "scribble", cmd = "/bin/scribble.lua",
 		  category = "toys", label = "S", color = 0x2ecc40,
 		  desc = "draw on the screen with a finger" },
