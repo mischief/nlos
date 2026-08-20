@@ -217,15 +217,16 @@ end
 -- screen, the poles stay top and bottom, and turning runs longitude
 -- past. Starting at the receiver's own meridian, so what is in front
 -- on the first frame is where the machine is.
-local yaw = 0
+local STEPS = 16
+local TURNSTEP = 2 * math.pi / STEPS
 local view = { bx = nil, by = nil, bz = nil }
 
-local function setview(lat, lon)
+local function setview(lat, lon, forstep)
 	-- the observer's frame, never turned: a bearing and an elevation
 	-- are measured from where the receiver is, not from wherever the
 	-- globe has been rolled to.
 	local rf = geom.horizon(lat or 0, lon or 0)
-	local a = (lon or 0) * geom.DEG + yaw
+	local a = (lon or 0) * geom.DEG + (forstep or 0) * TURNSTEP
 	local sa, ca = math.sin(a), math.cos(a)
 
 	view.bx = geom.Vec3(-sa, ca, 0)		-- east, across the screen
@@ -370,8 +371,6 @@ end
 -- reads at 96 pixels across. Each is drawn once, handed over as an
 -- image, and afterwards is a message naming it: the pixels stop
 -- crossing the port, so a turn already seen costs nothing.
-local STEPS = 16
-local TURNSTEP = 2 * math.pi / STEPS
 local step = 0
 local WINX, WINY = (W - S) // 2, PLOTY
 local EARTHIMG = memdraw.image(S, S, BG, FMT)
@@ -407,14 +406,10 @@ local function render(which, lat, lon, bg)
 		return kept[which]
 	end
 
-	local was = step
-
-	step = which
-	setview(lat, lon)
+	setview(lat, lon, which)
 	EARTHIMG:fill(EARTHIMG:rect(), BG)
 	drawglobe(EARTHIMG, bg)
 	drawgrid(EARTHIMG)
-	step = was
 
 	local id = fb.alloc(S, S, FMT, BG)
 
@@ -467,8 +462,7 @@ end
 -- The globe goes down first and erases the frame before it, so the
 -- satellites are drawn after and nothing has to be rubbed out.
 local function plot(sky, lat, lon)
-	yaw = step * TURNSTEP
-	setview(lat, lon)
+	setview(lat, lon, step)
 
 	local id = globe(lat, lon) or render(step, lat, lon, false)
 
