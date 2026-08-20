@@ -28,6 +28,14 @@ return {
 	-- names to addresses, for anything above it.
 	{ path = "/task/dns.lua", caps = { "ip", "dhcpd" }, ns = false },
 
+	-- the disk as a filesystem. There is no partition table to slice
+	-- here: a host attaches one virtio-blk device and the whole of it
+	-- is the volume, so gefssrv takes the raw block capability where
+	-- the efi machines hand it a partition. A guest booted without a
+	-- disk grants no blk and comes up without /n/gefs.
+	{ path = "/task/gefssrv.lua", name = "gefs", caps = { "blk" },
+	  args = { label = "main" }, mount = "/n/gefs" },
+
 	-- No srvd, no panel, no 9P export. A microvm is a test and
 	-- development target reached over its serial line; a host that
 	-- wants any of those adds them to this file.
