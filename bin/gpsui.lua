@@ -619,6 +619,9 @@ end)
 
 -- the pointer is a port of its own and a thread of its own reads it:
 -- alt cannot tell a port that hung up from a quiet one.
+-- how long a burst from one roll of the ball lasts, near enough
+local TURNGAP = 350
+local lastturn = 0
 local point = prog.mouse()
 
 if point then
@@ -635,11 +638,24 @@ if point then
 			-- Both axes turn the one we have: the ball is
 			-- rolled whichever way comes to hand, and a roll
 			-- that did nothing would read as a dead control.
+			local d = 0
+
 			if (b & (mouse.WHEELLEFT | mouse.WHEELUP)) ~= 0 then
-				step, redraw = (step - 1) % STEPS, true
+				d = -1
 			elseif (b & (mouse.WHEELRIGHT | mouse.WHEELDOWN)) ~= 0
 			    then
-				step, redraw = (step + 1) % STEPS, true
+				d = 1
+			end
+
+			-- One turn per flick. A trackball is not a detented
+			-- wheel: rolling it once sends a burst of records,
+			-- and a step for each of them spun the earth half
+			-- way round. The rest of the burst is dropped.
+			local now = sys.uptime_ms()
+
+			if d ~= 0 and now - lastturn >= TURNGAP then
+				lastturn = now
+				step, redraw = (step + d) % STEPS, true
 			end
 		end
 	end)
