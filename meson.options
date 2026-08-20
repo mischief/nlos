@@ -24,9 +24,13 @@ option('fw_network', type: 'feature', value: 'auto',
 # and the terminal is the console. It links the host's libc rather than
 # src/libc, has no devices, and exists to run the tree without an image
 # or an emulator in the way.
-option('platform', type: 'combo', choices: ['efi', 'microvm', 'hosted'],
+# wasm: one WebAssembly module, freestanding, with the host supplying a
+# console, a clock and entropy through imports. Its root is the embedded
+# tree, and it runs wherever a wasm engine does. wasm32-only, and needs
+# --cross-file cross/wasm32.txt.
+option('platform', type: 'combo', choices: ['efi', 'microvm', 'hosted', 'wasm'],
   value: 'efi',
-  description: 'efi (firmware boot, all arches), microvm (bare PVH, x86_64) or hosted (a linux process)')
+  description: 'efi (firmware boot, all arches), microvm (bare PVH, x86_64), hosted (a linux process) or wasm (one wasm module)')
 
 # What the microvm image runs when fw_cfg injects nothing.
 #

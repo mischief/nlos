@@ -1,0 +1,21 @@
+# meson setup build-wasm --cross-file cross/wasm32.txt -Dplatform=wasm
+#
+# clang is the whole toolchain: it targets wasm32 out of the box and
+# drives wasm-ld. No sysroot, because the machine is freestanding and
+# brings src/libc with it.
+
+[binaries]
+c = ['clang', '--target=wasm32-unknown-unknown']
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+objcopy = 'llvm-objcopy'
+
+[host_machine]
+system = 'none'
+kernel = 'none'
+cpu_family = 'wasm32'
+cpu = 'wasm32'
+endian = 'little'
+
+[properties]
+needs_exe_wrapper = true

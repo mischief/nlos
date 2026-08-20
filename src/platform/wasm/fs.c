@@ -1,0 +1,183 @@
+/* what the C loader can open: the tree built into the module, and
+ * nothing else. A miss is just a miss -- what a proc opens through its
+ * namespace never comes through here.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "embedfs.h"
+#include "fs.h"
+
+struct fs_handle {
+	const char *path;
+	const unsigned char *data;
+	size_t len;
+	size_t pos;
+};
+
+int
+fs_init(void)
+{
+	return 0;	/* the embed half always exists */
+}
+
+static const struct embedfile *
+find_embed(const char *path)
+{
+	for (size_t i = 0; i < embedfs_nfiles; i++)
+		if (strcmp(embedfs_files[i].path, path) == 0)
+			return &embedfs_files[i];
+	return NULL;
+}
+
+/* the whole of an embedded file in one malloc'd buffer, for a caller
+ * that wants the bytes rather than a handle -- kernel_spawn_buffer
+ * takes a chunk, not a stream. NUL-terminated for anything that treats
+ * it as a string; the length excludes that byte.
+ */
+int
+embed_load(const char *path, char **buf, size_t *len)
+{
+	const struct embedfile *e = find_embed(path);
+
+	if (!e)
+		return -1;
+
+	char *b = malloc(e->len + 1);
+
+	if (!b)
+		return -1;
+	memcpy(b, e->data, e->len);
+	b[e->len] = '\0';
+	*buf = b;
+	*len = e->len;
+	return 0;
+}
+
+void *
+fs_open(const char *path, int write)
+{
+	if (write)
+		return NULL;	/* embed is read-only; no mount to write to yet */
+
+	const struct embedfile *e = find_embed(path);
+
+	if (!e)
+		return NULL;	/* would fall through to a mount lookup here */
+
+	struct fs_handle *h = malloc(sizeof *h);
+
+	if (!h)
+		return NULL;
+	h->path = e->path;
+	h->data = e->data;
+	h->len = e->len;
+	h->pos = 0;
+	return h;
+}
+
+long
+fs_read(void *f, void *buf, long n)
+{
+	struct fs_handle *h = f;
+	long avail = (long)(h->len - h->pos);
+
+	if (n > avail)
+		n = avail;
+	if (n < 0)
+		n = 0;
+	memcpy(buf, h->data + h->pos, (size_t)n);
+	h->pos += (size_t)n;
+	return n;
+}
+
+long
+fs_write(void *f, const void *buf, long n)
+{
+	(void)f;
+	(void)buf;
+	(void)n;
+	return -1;	/* embed is read-only */
+}
+
+int
+fs_seek(void *f, long pos, int whence)
+{
+	struct fs_handle *h = f;
+	long base;
+
+	switch (whence) {
+	case 0:	/* SEEK_SET */
+		base = 0;
+		break;
+	case 1:	/* SEEK_CUR */
+		base = (long)h->pos;
+		break;
+	case 2:	/* SEEK_END */
+		base = (long)h->len;
+		break;
+	default:
+		return -1;
+	}
+
+	long np = base + pos;
+
+	if (np < 0 || (size_t)np > h->len)
+		return -1;
+	h->pos = (size_t)np;
+	return 0;
+}
+
+long
+fs_tell(void *f)
+{
+	struct fs_handle *h = f;
+
+	return (long)h->pos;
+}
+
+int
+fs_flush(void *f)
+{
+	(void)f;
+	return 0;
+}
+
+void
+fs_close(void *f)
+{
+	free(f);
+}
+
+int
+fs_readdir(void *f, struct fs_dirent *ent)
+{
+	(void)f;
+	(void)ent;
+	return -1;	/* the embed set is flat; nothing here is a directory */
+}
+
+int
+fs_stat(void *f, struct fs_dirent *ent)
+{
+	struct fs_handle *h = f;
+	const char *slash = strrchr(h->path, '/');
+	const char *base = slash ? slash + 1 : h->path;
+
+	memset(ent, 0, sizeof *ent);
+	snprintf(ent->name, sizeof ent->name, "%s", base);
+	ent->size = h->len;
+	ent->isdir = 0;
+	return 0;
+}
+
+/* no directories here: this file source hands out what it was given at
+ * build time, or what the firmware already holds. */
+int
+fs_mkdir(const char *path)
+{
+	(void)path;
+	return -1;
+}

@@ -114,6 +114,25 @@ foreach t : shared_tests
 endforeach
 endif # platform == 'hosted'
 
+if platform == 'wasm'
+# one test, and it is a smoke test: the module's proc 0 is always
+# /init.lua, so there is no payload to inject and nothing here can emit
+# TAP from inside the guest. The harness reads the console instead.
+#
+# Skipped where there is no engine to run it, which is the same trade
+# the sdl and lrzsz tests make.
+node_prog = find_program('node', 'nodejs', required: false)
+if node_prog.found()
+  test('wasm-boot', lua_interp,
+    args: [files('../tools/boottest-wasm.lua'),
+      files('../machine/wasm/run.js'), luaos_wasm],
+    protocol: 'tap', timeout: 120,
+    env: { 'NODE': node_prog.full_path() },
+    depends: luaos_wasm,
+  )
+endif
+endif # platform == 'wasm'
+
 if platform == 'efi'
 # ---- tests ----
 # boot tests: the payload is injected via fw_cfg and replaces

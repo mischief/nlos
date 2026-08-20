@@ -5,11 +5,11 @@ Plan 9. Most logic in Lua, small C glue. Isolated Lua states as
 processes, capabilities for all IPC, and a namespace per proc that is
 the only thing it can reach.
 
-Four machines, one system above the platform layer: UEFI (x86_64,
+Five machines, one system above the platform layer: UEFI (x86_64,
 aarch64, riscv64), qemu's firmware-less `microvm`, an ESP32-S3 handheld
-(the LilyGO T-Deck), and a linux process. They differ in
-`src/platform/` and in which services they start; `init.lua` is the
-same file on all of them.
+(the LilyGO T-Deck), a linux process, and one WebAssembly module. They
+differ in `src/platform/` and in which services they start; `init.lua`
+is the same file on all of them.
 
 Built from scratch -- no gnu-efi, no mingw, no EDK II, no glibc. Vanilla
 Lua 5.4 as an unpatched submodule; everything else is ours.
@@ -109,6 +109,23 @@ ninja -C build-microvm qemu     # no firmware: own PVH entry, idt, lapic
 microvm boots in milliseconds and has more than one cpu, which is why
 the smp and scheduling tests live there. Its root is a host directory
 over virtio-9p, and it has no network stack.
+
+```sh
+meson setup build-wasm --cross-file cross/wasm32.txt -Dplatform=wasm
+ninja -C build-wasm
+node machine/wasm/run.js build-wasm/src/platform/wasm/luaos.wasm
+```
+
+One freestanding WebAssembly module, built by clang alone -- no
+emscripten, no WASI. The whole platform seam is six imports (write,
+read, now_ns, wait, random, exit), so any embedder that supplies those
+gets a machine; `machine/wasm/run.js` is the one for node, in about
+seventy lines. The root is the tree built into the module, there is one
+cpu, and there are no devices at all.
+
+`setjmp` is what makes this work: wasm has no stack to save, so the
+compiler lowers every `setjmp` onto the exception-handling proposal and
+calls into `src/wasm32/sjlj.c`. Lua's every error travels that path.
 
 The ESP32-S3 build is CMake rather than meson, because it is an ESP-IDF
 project -- see [esp32/README.md](esp32/README.md) for the boards, the

@@ -41,6 +41,10 @@ if platform == 'microvm' and arch != 'x86_64'
   error('microvm platform is x86_64-only')
 endif
 
+if platform == 'wasm' and arch != 'wasm32'
+  error('the wasm platform needs --cross-file cross/wasm32.txt')
+endif
+
 # every port needs the platform layer (src/<arch>/machine.c, setjmp.S)
 # plus a way to reach fw_cfg, a second serial port, and the libm floor.
 # efi also needs header.S (the hand PE32+ header/entry) and reloc.c
@@ -52,6 +56,14 @@ endif
 # clock, setjmp and libm all come from the host's own libc.
 if platform == 'hosted'
   plat_src = []
+elif platform == 'wasm'
+  # no setjmp.S: wasm has no stack to save, so the compiler lowers
+  # setjmp itself and calls what src/wasm32/sjlj.c defines.
+  plat_src = files(
+    'src' / arch / 'machine.c',
+    'src' / arch / 'sjlj.c',
+    'src' / arch / 'longjmp.S',
+  )
 else
   plat_src = files(
     'src' / arch / 'machine.c',
@@ -72,10 +84,10 @@ if platform == 'hosted'
   arch_args = []
   arch_src = []
   boot_efi = ''
-elif arch == 'x86_64' or arch == 'aarch64' or arch == 'riscv64'
+elif arch == 'x86_64' or arch == 'aarch64' or arch == 'riscv64' or arch == 'wasm32'
   subdir('src' / arch)
 else
-  error('no src/' + arch + ': x86_64, aarch64 and riscv64 are ported')
+  error('no src/' + arch + ': x86_64, aarch64, riscv64 and wasm32 are ported')
 endif
 
 # hosted compiles against the host's libc, so include/ stays OFF the
@@ -113,10 +125,23 @@ endif
 gccinc = run_command(cc.cmd_array() + ['-print-file-name=include'],
   check: true).stdout().strip()
 
+# wasm relocates nothing: a module is loaded at offset zero of its own
+# linear memory, so the pic half below describes a scheme it has no use
+# for. What it needs instead is the exception handling the compiler
+# lowers setjmp onto; see src/wasm32/sjlj.c.
+if platform == 'wasm'
+  codegen_args = [
+    '-mexception-handling',
+    '-mbulk-memory',
+    '-mllvm', '-wasm-enable-sjlj',
+    '-mllvm', '-wasm-use-legacy-eh=false',
+  ]
+else
+  codegen_args = ['-fpic', '-fvisibility=hidden']
+endif
+
 freestanding_args = [
   '-ffreestanding',
-  '-fpic',
-  '-fvisibility=hidden',
   '-fno-stack-protector',
   '-fno-strict-aliasing',
   '-fshort-wchar',
@@ -129,7 +154,7 @@ freestanding_args = [
   '-DLUA_USER_H="coreg.h"',
   '-DLUA_PATH_DEFAULT="/?.lua;/lib/?.lua"',
   '-DLUA_CPATH_DEFAULT=""',
-] + arch_args
+] + codegen_args + arch_args
 
 if platform != 'hosted'
   plat_args = freestanding_args

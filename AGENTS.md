@@ -6,10 +6,10 @@ to edit this repo next.
 
 Lua 5.4 on the bare machine: Lua, Mach and Plan 9 fused. Isolated Lua
 states as processes, Mach-style ports and rights for all IPC, and a
-namespace per proc that bounds what it can reach. Four machines -- UEFI,
-qemu's firmware-less `microvm`, an ESP32-S3 handheld, and a linux
-process -- differing in `src/platform/` and in which services they
-start, above which the system is one tree. A playground with discipline -- toy
+namespace per proc that bounds what it can reach. Five machines -- UEFI,
+qemu's firmware-less `microvm`, an ESP32-S3 handheld, a linux process
+and a WebAssembly module -- differing in `src/platform/` and in which
+services they start, above which the system is one tree. A playground with discipline -- toy
 scope, real protocols, real isolation, real tests. The point is to find
 out how much OS fits in Lua, not to ship a product.
 
@@ -890,6 +890,34 @@ The TSC has no floor, catches time spent in C as well as in the VM, is
 cheap, and is what real schedulers use. It does attribute qemu and
 firmware overhead to whoever happened to be running, which is a known and
 accepted cost here.
+
+## The wasm machine
+
+`-Dplatform=wasm` with `--cross-file cross/wasm32.txt` builds one
+freestanding module against `wasm32-unknown-unknown`. clang is the whole
+toolchain: no emscripten, no WASI, no sysroot. Two things about it are
+not obvious from the code.
+
+**setjmp is the compiler's, and the tag is ours.** wasm exposes no
+stack, so `src/wasm32/setjmp.S` cannot exist. `-mllvm
+-wasm-enable-sjlj` rewrites every function holding a `setjmp` into a
+`try_table` and emits calls to `__wasm_setjmp`, `__wasm_setjmp_test` and
+`__wasm_longjmp`, which `src/wasm32/sjlj.c` defines. The throw itself
+needs assembly, because only assembly can name an exception tag, and the
+`__c_longjmp` tag must be *defined* in a `.tag.__c_longjmp` section --
+declaring it with `.tagtype` alone leaves it undefined at link. Lua's
+every error travels this path, so a mistake here is not subtle.
+
+Ask for the modern encoding with `-mllvm -wasm-use-legacy-eh=false`.
+V8 no longer accepts the legacy `try`/`catch` the compiler emits by
+default.
+
+**The embedder cannot be asynchronous.** `boot()` never returns, so a
+host that called it has no event loop left: every import must answer
+synchronously. `machine/wasm/run.js` therefore reads the console from a
+non-blocking descriptor rather than from node's `data` event, and sleeps
+with `Atomics.wait`. A browser tab cannot do either on its main thread,
+which is what decides that a browser port runs the module in a worker.
 
 ## More than one cpu
 

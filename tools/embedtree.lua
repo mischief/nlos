@@ -9,6 +9,10 @@
 local DIRS = { "lib", "bin", "task" }
 local FILES = { "init.lua" }
 
+-- the root to look under, since a build system does not promise which
+-- directory it runs this from. Paths printed stay repo-relative.
+local root = ... or "."
+
 local out = {}
 
 for _, d in ipairs(FILES) do
@@ -16,7 +20,8 @@ for _, d in ipairs(FILES) do
 end
 
 for _, d in ipairs(DIRS) do
-	local p = io.popen(("find %s -name '*.lua' -type f"):format(d))
+	local p = io.popen(("cd %s && find %s -name '*.lua' -type f")
+	    :format(root, d))
 
 	for line in p:lines() do
 		out[#out + 1] = line

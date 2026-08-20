@@ -17,6 +17,8 @@ inline double sqrt(double x)  { return __builtin_sqrt(x); }
  * would be calling themselves. real functions there, in
  * src/riscv64/math.c -- along with round, which gets no wrapper because
  * nothing names it: src/libc/softmath.c reaches it via the builtin.
+ * wasm has floor and ceil as instructions but rounds ties to even, so
+ * round alone is a real function there.
  */
 #if defined(__riscv)
 double	floor(double x);
@@ -25,6 +27,9 @@ double	round(double x);
 #else
 inline double floor(double x) { return __builtin_floor(x); }
 inline double ceil(double x)  { return __builtin_ceil(x); }
+#if defined(__wasm__)
+double	round(double x);
+#endif
 #endif
 
 double	fmod(double x, double y);
