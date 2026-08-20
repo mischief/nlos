@@ -161,7 +161,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'efigefs', 'version', 'oom', 'selfpipe', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
               'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
-              'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr']
+              'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr', 'gpsweight']
 foreach t : boot_tests
   test('boot-' + t, boottest,
     args: [luaos_img, files('boot/test_' + t + '.lua')],
@@ -520,6 +520,14 @@ test('mouse-queue', lua_interp,
 # so a whole game is played with the luck chosen.
 test('slide-board', lua_interp,
   args: [files('host_slide.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
+# NMEA 0183. Sans-io like the zmodem codec, so the whole parser runs
+# here and a board adds only the uart it arrives on.
+test('nmea-parser', lua_interp,
+  args: [files('host_nmea.lua')],
   protocol: 'tap',
   timeout: 20,
 )
