@@ -18,7 +18,13 @@ void	pmm_meminfo(size_t *total, size_t *avail, size_t *largest);
 
 void	wasm_stall_us(unsigned long us);
 
+/* the screen. A zero width or height is a machine with none, which is
+ * what the console-only embedders ask for.
+ */
+int	fb_open(int w, int h);
+void	fb_flush(void);
+
 /* the boot entry, exported to the embedder as "boot". */
-void	wasm_boot(unsigned long long membytes);
+void	wasm_boot(unsigned long long membytes, int w, int h);
 
 #endif

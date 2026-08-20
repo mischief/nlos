@@ -112,20 +112,42 @@ over virtio-9p, and it has no network stack.
 
 ```sh
 meson setup build-wasm --cross-file cross/wasm32.txt -Dplatform=wasm
-ninja -C build-wasm
-node machine/wasm/run.js build-wasm/src/platform/wasm/luaos.wasm
+ninja -C build-wasm wasm          # then open http://localhost:8000/
+```
+
+The full panel in a browser tab: `task/dio.lua`, a terminal, the
+launcher, the framebuffer, the keyboard and the pointer. Firefox and
+Chrome both. Every visitor gets a whole machine of their own, isolated
+by the tab rather than by anything on the server -- the server sends
+three files and holds no per-client state at all.
+
+```sh
+ninja -C build-wasm wasm-console  # the same module in a terminal
 ```
 
 One freestanding WebAssembly module, built by clang alone -- no
-emscripten, no WASI. The whole platform seam is six imports (write,
-read, now_ns, wait, random, exit), so any embedder that supplies those
-gets a machine; `machine/wasm/run.js` is the one for node, in about
-seventy lines. The root is the tree built into the module, there is one
-cpu, and there are no devices at all.
+emscripten, no WASI. The whole platform seam is ten imports (write,
+read, now_ns, wait, random, exit, fb_open, fb_flush, kbd, ptr), so any
+embedder that supplies those gets a machine. The root is the tree built
+into the module, there is one cpu, and there are no other devices: no
+disk, no network, no radio.
 
-`setjmp` is what makes this work: wasm has no stack to save, so the
+Two things decide the shape of the browser embedder.
+
+`setjmp` is what makes it run at all: wasm has no stack to save, so the
 compiler lowers every `setjmp` onto the exception-handling proposal and
 calls into `src/wasm32/sjlj.c`. Lua's every error travels that path.
+
+`boot()` never returns, so whichever thread calls it stops answering
+events forever. The machine therefore runs in a worker
+(`machine/wasm/worker.js`), the page owns the events
+(`machine/wasm/index.html`), and what is typed or clicked crosses
+between them through a `SharedArrayBuffer` the worker reads
+synchronously. That buffer is why the page must be served with
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` -- `machine/wasm/serve.js`
+is a development server that does, and any host serving this needs the
+same two headers.
 
 The ESP32-S3 build is CMake rather than meson, because it is an ESP-IDF
 project -- see [esp32/README.md](esp32/README.md) for the boards, the

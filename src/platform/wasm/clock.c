@@ -83,6 +83,11 @@ shim_wait_for_event(UINTN n, EFI_EVENT *evs, UINTN *index)
 	unsigned long long next = (now / period_us + 1) * period_us;
 	int ms = (int)((next - now + 999) / 1000);
 
+	/* a screen sleeps with the machine: an idle guest that left it
+	 * dirty must still show what it drew.
+	 */
+	fb_flush();
+
 	host_wait(ms < 1 ? 1 : ms);
 	if (index)
 		*index = 0;

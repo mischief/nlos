@@ -10,6 +10,13 @@ return {
 	{ path = "/task/srvd.lua", name = "srv",
 	  mount = "/srv", mountfs = "srvfs" },
 
-	-- No disk, no network and no panel: there is nothing here to grant
-	-- for any of them.
+	-- the panel, where the embedder opened a screen: a tray of apps,
+	-- one of them a terminal. Naming fb, kbd and ptr is what decides
+	-- it -- an embedder that opened none has all three absent, skips
+	-- this, and comes up on its console alone.
+	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
+	  optcaps = { "power" } },
+
+	-- No disk and no network: there is nothing here to grant for
+	-- either.
 }

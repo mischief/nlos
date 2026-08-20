@@ -19,11 +19,20 @@ local function q(s)
 	return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
-local cmd = ("printf 'reboot\\n' | %s %s %s 2>&1")
-    :format(q(node), q(runner), q(module))
-local p = io.popen(cmd)
-local out = p:read("a")
-local ok = p:close()
+local function boot(input, flags)
+	local p = io.popen(("printf %s | %s %s %s %s 2>&1")
+	    :format(q(input), q(node), q(runner), q(module), flags or ""))
+	local out = p:read("a")
+
+	return out, p:close()
+end
+
+local out, ok = boot("reboot\\n")
+
+-- the same machine with a screen, which is what starts the panel. The
+-- keyboard has the input there, so `reboot` is typed at the terminal
+-- dio boots rather than at the console.
+local gout = boot("reboot\\r", "--fb 320x240 --shot /dev/null 6000")
 
 local checks = {
 	{ "boots", "boot: lua%-os starting %(wasm%)" },
@@ -32,13 +41,27 @@ local checks = {
 	{ "takes what is typed", "rebooting" },
 }
 
-print("1.." .. (#checks + 1))
-for i, c in ipairs(checks) do
-	local name, pat = c[1], c[2]
+local gchecks = {
+	{ "opens a screen", "fb: 320x240 bgrx" },
+	{ "starts the panel", "init: svc: dio started" },
+	{ "runs a program in it", "term: %d+x%d+" },
+}
 
-	print((out:match(pat) and "ok " or "not ok ") .. i .. " - " .. name)
+local n = 0
+
+local function report(text, list)
+	for _, c in ipairs(list) do
+		n = n + 1
+		print((text:match(c[2]) and "ok " or "not ok ") .. n ..
+		    " - " .. c[1])
+	end
 end
-print((ok and "ok " or "not ok ") .. (#checks + 1) .. " - exits cleanly")
+
+print("1.." .. (#checks + #gchecks + 1))
+report(out, checks)
+report(gout, gchecks)
+n = n + 1
+print((ok and "ok " or "not ok ") .. n .. " - exits cleanly")
 
 if not ok or not out:match("rebooting") then
 	io.stderr:write(out)

@@ -34,6 +34,20 @@ HOSTFN(random) int host_random(void *p, size_t n);
 /* every proc has exited, or something asked to power off. */
 HOSTFN(exit) _Noreturn void host_exit(int code);
 
+/* the screen, if the embedder opened one. The pixels stay in our
+ * memory and the host reads them from there, which is what makes them
+ * readable as well as writable -- fb_flush hands over the address and
+ * the damaged rectangle, and the host paints it.
+ */
+HOSTFN(fb_open) int host_fb_open(int w, int h, void *pixels);
+HOSTFN(fb_flush) void host_fb_flush(int x, int y, int w, int h);
+
+/* the panel's keyboard and pointer, which are not the console's. Both
+ * answer at once: a host with nothing waiting says so.
+ */
+HOSTFN(kbd) int host_kbd(void);
+HOSTFN(ptr) int host_ptr(int *x, int *y, int *buttons);
+
 #undef HOSTFN
 
 #endif

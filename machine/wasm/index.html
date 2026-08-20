@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lua-os</title>
+<style>
+html, body {
+	margin: 0;
+	height: 100%;
+	background: #000;
+	overflow: hidden;
+}
+#screen {
+	display: block;
+	margin: 0 auto;
+	height: 100%;
+	image-rendering: pixelated;
+	touch-action: none;
+	/* the browser's cursor stays: this screen has no hardware one for
+	   task/fb.lua to draw, the way the T-Deck's lcd does. */
+}
+#note {
+	position: fixed;
+	inset: 0;
+	display: grid;
+	place-content: center;
+	color: #999;
+	font: 14px monospace;
+	white-space: pre-wrap;
+	text-align: center;
+}
+</style>
+
+<canvas id="screen" width="1024" height="768" tabindex="0"></canvas>
+<div id="note">starting…</div>
+
+<script>
+// the page half: it owns the events and owns nothing else. The machine
+// runs in a worker, because boot() never returns and would leave this
+// thread unable to answer anything -- including the events below.
+
+const WAKE = 0, KHEAD = 1, KTAIL = 2;
+const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6;
+const KEYS = 8, KEYRING = 256;
+
+const note = document.getElementById('note');
+const canvas = document.getElementById('screen');
+
+if (!crossOriginIsolated) {
+	note.textContent =
+		'this page needs cross-origin isolation for SharedArrayBuffer.\n' +
+		'serve it with COOP: same-origin and COEP: require-corp --\n' +
+		'machine/wasm/serve.js does exactly that.';
+	throw new Error('not cross-origin isolated');
+}
+
+const shared = new SharedArrayBuffer((KEYS + KEYRING) * 4);
+const sab = new Int32Array(shared);
+
+// a key the machine has not read yet. Dropped when the ring is full
+// rather than wrapped onto unread keys.
+function keypush(c) {
+	const tail = Atomics.load(sab, KTAIL);
+	const next = (tail + 1) % KEYRING;
+
+	if (next === Atomics.load(sab, KHEAD))
+		return;
+	Atomics.store(sab, KEYS + tail, c);
+	Atomics.store(sab, KTAIL, next);
+}
+
+function wake() {
+	Atomics.notify(sab, WAKE);
+}
+
+// what a terminal sends, because the line editor on the other end of
+// this was written against a serial line.
+const NAMED = {
+	Enter: [13], Backspace: [127], Escape: [27], Tab: [9],
+	ArrowUp: [27, 91, 65], ArrowDown: [27, 91, 66],
+	ArrowRight: [27, 91, 67], ArrowLeft: [27, 91, 68],
+	Home: [27, 91, 72], End: [27, 91, 70], Delete: [27, 91, 51, 126],
+};
+
+addEventListener('keydown', (e) => {
+	if (e.metaKey)
+		return;
+	if (e.ctrlKey) {
+		const k = e.key.toLowerCase();
+
+		if (k >= 'a' && k <= 'z') {
+			keypush(k.charCodeAt(0) - 96);
+			e.preventDefault();
+			wake();
+		}
+		return;
+	}
+	const seq = NAMED[e.key];
+
+	if (seq) {
+		for (const c of seq)
+			keypush(c);
+	} else if ([...e.key].length === 1) {
+		for (const c of new TextEncoder().encode(e.key))
+			keypush(c);
+	} else {
+		return;
+	}
+	e.preventDefault();
+	wake();
+});
+
+// the canvas is scaled to the window, so a click has to come back
+// through the same transform or the pointer drifts further from the
+// cursor the larger the window gets.
+function ptrpos(e) {
+	const r = canvas.getBoundingClientRect();
+	let x = Math.floor((e.clientX - r.left) / r.width * canvas.width);
+	let y = Math.floor((e.clientY - r.top) / r.height * canvas.height);
+
+	x = Math.max(0, Math.min(canvas.width - 1, x));
+	y = Math.max(0, Math.min(canvas.height - 1, y));
+	Atomics.store(sab, PTRX, x);
+	Atomics.store(sab, PTRY, y);
+	// the DOM says 1 left, 2 right, 4 middle; the guest says
+	// 1 left, 2 middle, 4 right.
+	const b = e.buttons;
+
+	Atomics.store(sab, PTRB, (b & 1) | ((b & 4) >> 1) | ((b & 2) << 1));
+	Atomics.store(sab, PTRMOVED, 1);
+	wake();
+}
+
+for (const t of ['pointermove', 'pointerdown', 'pointerup'])
+	canvas.addEventListener(t, (e) => { ptrpos(e); e.preventDefault(); });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+const worker = new Worker('worker.js');
+
+worker.onmessage = (e) => {
+	if (e.data.ready)
+		note.style.display = 'none';
+	if (e.data.halted !== undefined) {
+		note.textContent = 'machine halted';
+		note.style.display = '';
+	}
+};
+
+const offscreen = canvas.transferControlToOffscreen();
+
+worker.postMessage({
+	canvas: offscreen,
+	shared,
+	url: 'luaos.wasm',
+	membytes: 96 * 1024 * 1024,
+}, [offscreen]);
+
+canvas.focus();
+</script>

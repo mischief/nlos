@@ -194,39 +194,6 @@ platform_have_flash(void)
 }
 
 int
-platform_have_fb(void)
-{
-	return 0;
-}
-
-int
-platform_have_kbd(void)
-{
-	return 0;
-}
-
-int
-platform_kbd_read(void)
-{
-	return -1;
-}
-
-int
-platform_have_ptr(void)
-{
-	return 0;
-}
-
-int
-platform_ptr_read(int *x, int *y, int *buttons)
-{
-	(void)x;
-	(void)y;
-	(void)buttons;
-	return 0;
-}
-
-int
 platform_have_hci(void)
 {
 	return 0;
@@ -439,7 +406,6 @@ luaopen_los_rom(lua_State *L)
 
 int luaopen_los_platform_tcp(lua_State *L);
 int luaopen_los_platform_udp(lua_State *L);
-int luaopen_los_platform_fb(lua_State *L);
 
 int
 luaopen_los_platform_tcp(lua_State *L)
@@ -450,13 +416,6 @@ luaopen_los_platform_tcp(lua_State *L)
 
 int
 luaopen_los_platform_udp(lua_State *L)
-{
-	luaL_newlib(L, emptylib);
-	return 1;
-}
-
-int
-luaopen_los_platform_fb(lua_State *L)
 {
 	luaL_newlib(L, emptylib);
 	return 1;

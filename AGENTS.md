@@ -916,8 +916,20 @@ default.
 host that called it has no event loop left: every import must answer
 synchronously. `machine/wasm/run.js` therefore reads the console from a
 non-blocking descriptor rather than from node's `data` event, and sleeps
-with `Atomics.wait`. A browser tab cannot do either on its main thread,
-which is what decides that a browser port runs the module in a worker.
+with `Atomics.wait`. This is what decides the browser embedder's whole
+shape: the machine runs in a worker, the page owns the events, and input
+crosses between them through a `SharedArrayBuffer` -- which in turn is
+why the page needs `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`. A page served without
+those two headers cannot allocate the buffer and the machine cannot be
+typed at. Deploying this anywhere means carrying them.
+
+The screen is the same shadow buffer every other platform has: the
+pixels stay in linear memory and the host reads them from there, so
+`fb.unload` works and `lib/draw` reads back what it drew. `fb_flush`
+hands over the damaged rectangle and the worker converts BGRx to the
+RGBA an `ImageData` wants. There is no hardware cursor -- only the
+T-Deck's lcd has one -- so the browser's own must stay visible.
 
 ## More than one cpu
 

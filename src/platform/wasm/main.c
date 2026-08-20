@@ -38,7 +38,7 @@ platform_watchdog(unsigned secs)
 
 __attribute__((export_name("boot")))
 void
-wasm_boot(unsigned long long membytes)
+wasm_boot(unsigned long long membytes, int w, int h)
 {
 	char cbuf[96];
 	char *payload;
@@ -46,6 +46,14 @@ wasm_boot(unsigned long long membytes)
 
 	mem_init(membytes ? membytes : DEFAULT_MEM);
 	kernel_clock_init();
+
+	/* before kernel_init, which asks what this machine has: a screen
+	 * opened after it would exist with no task driving it.
+	 */
+	if (w > 0 && h > 0 && fb_open(w, h) == 0) {
+		snprintf(cbuf, sizeof cbuf, "fb: %dx%d bgrx", w, h);
+		kernel_say(cbuf);
+	}
 
 	if (fs_init() != 0)
 		kernel_say("boot: fs_init FAILED (the embed has no failure mode)");
