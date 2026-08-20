@@ -410,6 +410,14 @@ enum {
 	 * the authority to open connections with it.
 	 */
 	PRIV_UDP	= 1 << 12,
+
+	/* websockets, where the machine has them and no sockets to build
+	 * them out of. A browser tab is such a machine: it can reach a
+	 * wss:// endpoint and cannot open a tcp connection at all, so the
+	 * framed protocol is the bottom of the stack rather than
+	 * something lib/websocket.lua assembles over one.
+	 */
+	PRIV_WS		= 1 << 13,
 };
 
 /* does this cpu hold a given bucket, every bucket, or any bucket at

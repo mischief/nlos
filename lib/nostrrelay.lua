@@ -27,6 +27,17 @@ function M.connect(net, dns, url, rand)
 	return setmetatable({ ws = ws, url = url }, Relay)
 end
 
+-- a relay over a websocket somebody else opened, for a machine whose
+-- network is websockets and has no socket to build one on. Everything
+-- below this line cannot tell the two apart: send a string, get a
+-- string.
+function M.attach(ws, url)
+	if not ws then
+		return nil, "no websocket"
+	end
+	return setmetatable({ ws = ws, url = url }, Relay)
+end
+
 function Relay:send(msg)
 	return self.ws:send(json.encode(msg))
 end

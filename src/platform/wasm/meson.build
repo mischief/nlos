@@ -1,16 +1,17 @@
 # the wasm machine: one module, its imports and the tree inside it.
 
 kernel_src += files(
-  '../../../src/platform/wasm/clock.c',
-  '../../../src/platform/wasm/console.c',
-  '../../../src/platform/wasm/drivers.c',
-  '../../../src/platform/wasm/fb.c',
-  '../../../src/platform/wasm/fs.c',
-  '../../../src/platform/wasm/main.c',
-  '../../../src/platform/wasm/malloc.c',
-  '../../../src/platform/wasm/mem.c',
-  '../../../src/platform/wasm/pmm.c',
-  '../../../src/platform/wasm/smp.c',
+  'clock.c',
+  'console.c',
+  'drivers.c',
+  'fb.c',
+  'fs.c',
+  'main.c',
+  'malloc.c',
+  'mem.c',
+  'pmm.c',
+  'smp.c',
+  'ws.c',
 )
 
 # the tree, carried in the module, because there is nothing else here to

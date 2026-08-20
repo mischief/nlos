@@ -126,11 +126,18 @@ ninja -C build-wasm wasm-console  # the same module in a terminal
 ```
 
 One freestanding WebAssembly module, built by clang alone -- no
-emscripten, no WASI. The whole platform seam is ten imports (write,
-read, now_ns, wait, random, exit, fb_open, fb_flush, kbd, ptr), so any
-embedder that supplies those gets a machine. The root is the tree built
-into the module, there is one cpu, and there are no other devices: no
-disk, no network, no radio.
+emscripten, no WASI. The whole platform seam is a handful of imports --
+the console, a clock, entropy, the screen, the keyboard, the pointer and
+a websocket -- so any embedder that supplies those gets a machine. The
+root is the tree built into the module, there is one cpu, and there is
+no disk and no radio.
+
+The network is websockets and nothing under them, because that is what
+a browser lends: `PRIV_WS`, `task/wssrv.lua` and `lib/client/ws.lua`, in
+the shape every other device here has. bin/nostrui.lua runs on it
+unchanged in all but two lines -- nostr is a websocket protocol, so the
+relays are reachable directly, with no proxy and nothing kept on the
+server.
 
 Two things decide the shape of the browser embedder.
 

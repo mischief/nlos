@@ -121,6 +121,7 @@ static int have_p9;
 static int have_eth;
 static int have_net;
 static int have_udp;
+static int have_ws;
 static int have_hci;
 static int have_fb;
 static int have_blk;
@@ -734,6 +735,7 @@ kernel_init(void)
 	have_eth = platform_have_eth();
 	have_net = platform_have_net();
 	have_udp = platform_have_udp();
+	have_ws = platform_have_ws();
 	have_hci = platform_have_hci();
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
@@ -906,6 +908,14 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_UDP, .devport = udpport, .devrecv = 1,
 		  .what = "networking (udp from the host)",
 		  .enabled = have_udp, .capname = "udp" },
+		/* websockets, on a machine that has them and nothing under
+		 * them. No devport: a socket is polled rather than routed,
+		 * for the same reason blksrv has none.
+		 */
+		{ .path = "/task/wssrv.lua", .chunkname = "=wssrv",
+		  .priv = PRIV_WS, .devport = 0, .devrecv = 0,
+		  .what = "networking (websockets from the host)",
+		  .enabled = have_ws, .capname = "ws" },
 		/* ip, tcp4 and dhcp are not here. Each owns no device and
 		 * holds only a send right to the task below it, so they
 		 * come off the filesystem, started from a machine's

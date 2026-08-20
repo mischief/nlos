@@ -15,8 +15,9 @@ return {
 	-- it -- an embedder that opened none has all three absent, skips
 	-- this, and comes up on its console alone.
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "power" } },
+	  optcaps = { "power", "ws" } },
 
-	-- No disk and no network: there is nothing here to grant for
-	-- either.
+	-- No disk, and no tcp or udp: what this machine has of the network
+	-- is websockets, which the panel lends on to an app whose entry
+	-- asks for one.
 }

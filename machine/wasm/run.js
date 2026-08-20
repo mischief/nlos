@@ -141,6 +141,15 @@ const imports = {
 		fb_flush: () => {},
 		kbd: () => (fbw ? readbyte() : -1),
 		ptr: () => 0,
+		// no websockets in a terminal: node has them, but boot()
+		// never yields to the event loop that would deliver one.
+		// The browser embedder owns its sockets on the page for
+		// exactly that reason.
+		ws_open: () => -1,
+		ws_state: () => 2,
+		ws_send: () => 0,
+		ws_recv: () => -2,
+		ws_close: () => {},
 	},
 };
 

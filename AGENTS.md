@@ -945,6 +945,27 @@ transferred canvas reaches its placeholder when the worker's task ends,
 and this task never ends, so nothing is ever composited. The machine
 runs perfectly behind a blank page.
 
+**The network is websockets, and the page owns the sockets.** A browser
+lends no tcp, so `PRIV_WS` is the capability and the framed protocol is
+the bottom of the stack rather than something `lib/websocket.lua`
+assembles over a socket. `task/wssrv.lua` owns `los.platform.ws` and
+serves it; `lib/client/ws.lua` answers to the same `send`/`recv`/`alive`
+a socket from `lib/websocket.lua` does, so `lib/nostrrelay.lua` cannot
+tell them apart.
+
+The sockets themselves live on the *page*, for the same reason the
+canvas does: a socket delivers through the event loop, and the worker's
+is stopped inside `boot()`. Commands go out by `postMessage`, which a
+blocked worker may still send; what comes back arrives through
+`machine/wasm/ring.js`, a shared byte ring the worker drains
+synchronously. `Atomics.wait` runs no callbacks -- if you find yourself
+wanting a callback in the worker, that is the wall you are hitting.
+
+A task that spawns a thread must run its own receive loop as a thread
+too and end with `thread.run()`. A bare `while true do thread.recv() end`
+in the main chunk is the only thread that ever runs, and anything
+spawned beside it never wakes.
+
 **Driving the page without a browser.** `tools/browsertest-wasm.js` runs
 the real `worker.js` under node with the browser bits shimmed and paints
 its messages as the page does, taking a script of clicks, keys, wheel

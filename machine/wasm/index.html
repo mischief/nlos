@@ -32,6 +32,7 @@ html, body {
 <canvas id="screen" width="1024" height="768" tabindex="0"></canvas>
 <div id="note">starting…</div>
 
+<script src="ring.js"></script>
 <script>
 // the page half: it owns the events and the glass, and nothing else.
 // The machine runs in a worker, because boot() never returns and would
@@ -176,6 +177,59 @@ canvas.addEventListener('wheel', (e) => {
 	wake();
 }, { passive: false });
 
+// the network, which the page owns because a socket delivers through
+// the event loop and the worker's is stopped inside boot(). Commands
+// arrive by message; everything going back goes through the ring, and
+// a wake so a sleeping machine notices at once.
+const netring = new SharedArrayBuffer(2 * 1024 * 1024);
+const net32 = new Int32Array(netring, 0, 2);
+const net8 = new Uint8Array(netring);
+const socks = new Map();
+
+function netput(kind, id, bytes) {
+	RING.write(net32, net8, kind, id, bytes);
+	wake();
+}
+
+function wscmd(c) {
+	if (c.op === 'send') {
+		const s = socks.get(c.id);
+
+		if (s && s.readyState === 1)
+			s.send(c.data);
+		return;
+	}
+	if (c.op === 'close') {
+		const s = socks.get(c.id);
+
+		if (s) {
+			socks.delete(c.id);
+			try {
+				s.close();
+			} catch (err) { /* already gone */ }
+		}
+		return;
+	}
+
+	let s;
+
+	try {
+		s = new WebSocket(c.url);
+	} catch (err) {
+		netput(RING.STATE, c.id, Uint8Array.of(2));
+		return;
+	}
+	socks.set(c.id, s);
+	s.binaryType = 'arraybuffer';
+	s.onopen = () => netput(RING.STATE, c.id, Uint8Array.of(1));
+	s.onclose = () => netput(RING.STATE, c.id, Uint8Array.of(2));
+	s.onerror = () => netput(RING.STATE, c.id, Uint8Array.of(2));
+	s.onmessage = (e) => netput(RING.MESSAGE, c.id,
+		typeof e.data === 'string' ?
+			new TextEncoder().encode(e.data) :
+			new Uint8Array(e.data));
+}
+
 const worker = new Worker('worker.js');
 
 worker.onmessage = (e) => {
@@ -183,6 +237,8 @@ worker.onmessage = (e) => {
 
 	if (m.paint)
 		paint(m.paint);
+	else if (m.ws)
+		wscmd(m.ws);
 	else if (m.ready)
 		note.style.display = 'none';
 	else if (m.error)
@@ -200,6 +256,7 @@ worker.onerror = (e) =>
 worker.postMessage({
 	shared,
 	screen,
+	netring,
 	url: 'luaos.wasm',
 	membytes: 96 * 1024 * 1024,
 	w: W,

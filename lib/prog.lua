@@ -920,6 +920,9 @@ function M.main()
 	ctx.net = ctx.net and ctx.net.__right or nil
 	-- and udp, which is a task of its own. see M.udp below.
 	ctx.udp = ctx.udp and ctx.udp.__right or nil
+	-- websockets, where they are what the machine has of the network.
+	-- see M.ws below.
+	ctx.ws = ctx.ws and ctx.ws.__right or nil
 	-- the resolver, if the launcher lent us one. see M.dns below.
 	ctx.dns = ctx.dns and ctx.dns.__right or nil
 	-- entropy, as data. see M.rand below; ctx.seed is already bytes.
@@ -1119,6 +1122,19 @@ function M.net()
 		return nil
 	end
 	return require("client.tcp").new(ctx.net)
+end
+
+-- websockets, where the machine has them and no sockets underneath.
+-- A separate call from net() rather than a fallback inside it: what
+-- this lends is a framed protocol to one endpoint, not connections, and
+-- a program written for tcp would be wrong about what it was handed.
+function M.ws()
+	local ctx = M.ctx
+
+	if not ctx or not ctx.ws then
+		return nil
+	end
+	return require("client.ws").new(ctx.ws)
 end
 
 -- udp, wrapped, or nil where the launcher lent none. A separate task

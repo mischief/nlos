@@ -66,6 +66,13 @@ int	platform_have_net(void);
 /* and udp, which is a separate capability and a separate task. */
 int	platform_have_udp(void);
 
+/* can this machine open a websocket, and nothing under one? A browser
+ * tab can: it reaches a wss:// endpoint and cannot open a tcp
+ * connection at all, so the framed protocol is the bottom of the stack
+ * rather than something lib/websocket.lua assembles over a socket.
+ */
+int	platform_have_ws(void);
+
 /* can some outstanding operation make progress now? Only outstanding
  * ones: a socket nobody waits on would say yes forever and never idle.
  */

@@ -51,6 +51,10 @@ local gchecks = {
 	{ "opens a screen", "fb: 320x240 bgrx" },
 	{ "starts the panel", "init: svc: dio started" },
 	{ "runs a program in it", "term: %d+x%d+" },
+	-- the network this machine has, which is websockets and nothing
+	-- under them. Whether a relay answers is not this test's business.
+	{ "has a websocket task", "wssrv: pid %d+" },
+	{ "lends it to the panel", "init: granted:.* ws" },
 }
 
 local n = 0

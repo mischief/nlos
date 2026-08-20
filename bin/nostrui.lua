@@ -39,7 +39,11 @@ if not N then
 	die("no namespace")
 end
 
-local net = prog.net() or die("no network: /etc/dio.lua must say net = true")
+-- either kind of network will do: sockets, or the websockets a machine
+-- has when it has nothing under them.
+local wsc = prog.ws()
+local net = not wsc and (prog.net() or
+    die("no network: /etc/dio.lua must say net = true")) or nil
 local dns = prog.dns()
 local rand = prog.rand()
 local ptr = prog.mouse()
@@ -671,7 +675,18 @@ local function connect()
 
 	thread.spawn(function()
 		local c0 = sys.uptime_ms()
-		local r, err = nostrrelay.connect(net, dns, url, rand)
+		local r, err
+
+		-- a machine whose network is websockets opens one and
+		-- hands it over; one with sockets builds the framing over
+		-- a connection. The relay above cannot tell.
+		if wsc then
+			local sock, why = wsc.open(url)
+
+			r, err = sock and nostrrelay.attach(sock, url), why
+		else
+			r, err = nostrrelay.connect(net, dns, url, rand)
+		end
 
 		if not r then
 			say("! " .. tostring(err), WARN)

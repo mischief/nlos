@@ -1,26 +1,38 @@
 // browsertest-wasm.js MODULE WORKER OUT.PNG [MS] [SCRIPT.json]
 //
-// runs machine/wasm/worker.js under node with the browser bits shimmed
-// and paints its messages as index.html does, so the page can be driven
-// without a browser. The script is [{at: ms, click/key/type/wheel/shot}].
-const fs = require('fs');
-const zlib = require('zlib');
+// the page, in node: it runs machine/wasm/worker.js in a real worker
+// thread and does everything index.html does -- paint, input, sockets --
+// so the browser's own structure is what is under test. The script is
+// [{at: ms, click/key/type/wheel/px/shot}].
 
-const WASM = process.argv[2];
-const WORKER = process.argv[3];
+const fs = require('fs');
+const path = require('path');
+const zlib = require('zlib');
+const { Worker } = require('worker_threads');
+
+const WASM = path.resolve(process.argv[2]);
+const WORKER = path.resolve(process.argv[3]);
 const OUT = process.argv[4];
 const MS = Number(process.argv[5] || 6000);
-const TYPE = process.argv[6] || '';
+const SCRIPT = process.argv[6] || '';
 
 const W = 1024, H = 768;
+
+const RING = require(path.join(path.dirname(WORKER), 'ring.js'));
 
 const shared = new SharedArrayBuffer((8 + 256) * 4);
 const sab = new Int32Array(shared);
 const screen = new SharedArrayBuffer(W * H * 4);
 const pixels = new Uint8Array(screen);
+const netring = new SharedArrayBuffer(2 * 1024 * 1024);
+const net32 = new Int32Array(netring, 0, 2);
+const net8 = new Uint8Array(netring);
 
-// the page's half, verbatim in shape: an ImageData filled from the
-// shared screen, and a canvas put to.
+const WAKE = 0, KHEAD = 1, KTAIL = 2;
+const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6, PTRWHEEL = 7;
+const KEYS = 8, KEYRING = 256;
+
+// the page's canvas: an ImageData filled from the shared screen.
 const img = { data: new Uint8ClampedArray(W * H * 4) };
 const canvas = new Uint8Array(W * H * 4);
 let paints = 0;
@@ -35,27 +47,62 @@ function paint({ x, y, w, h }) {
 	}
 }
 
-globalThis.postMessage = (m) => {
-	if (m.paint)
-		paint(m.paint);
-	else
-		console.log('post:', JSON.stringify(m));
-};
-globalThis.close = () => { finish(); process.exit(0); };
-globalThis.crypto = require('crypto').webcrypto;
-globalThis.performance = require('perf_hooks').performance;
-globalThis.fetch = () => Promise.resolve(null);
+function wake() {
+	Atomics.notify(sab, WAKE);
+}
 
-const realInstantiate = WebAssembly.instantiate.bind(WebAssembly);
+// ---- the network, as index.html owns it ----
 
-WebAssembly.instantiateStreaming = (_, imp) =>
-	realInstantiate(fs.readFileSync(WASM), imp);
+const socks = new Map();
 
-// the page's own event handlers, driven from a script rather than from
-// a person. The worker is blocked in Atomics.wait, so they run from
-// inside the patched wait below.
-const KTAIL = 2, KHEAD = 1, KEYS = 8, KEYRING = 256;
-const PTRX = 3, PTRY = 4, PTRB = 5, PTRMOVED = 6, PTRWHEEL = 7;
+function netput(kind, id, bytes) {
+	RING.write(net32, net8, kind, id, bytes);
+	wake();
+}
+
+function wscmd(c) {
+	if (c.op === 'send') {
+		const s = socks.get(c.id);
+
+		if (s && s.readyState === 1)
+			s.send(c.data);
+		return;
+	}
+	if (c.op === 'close') {
+		const s = socks.get(c.id);
+
+		if (s) {
+			socks.delete(c.id);
+			try {
+				s.close();
+			} catch (e) { /* already gone */ }
+		}
+		return;
+	}
+
+	let s;
+
+	console.log('-- ws open ' + c.url);
+	try {
+		s = new WebSocket(c.url);
+	} catch (e) {
+		netput(RING.STATE, c.id, Uint8Array.of(2));
+		return;
+	}
+	socks.set(c.id, s);
+	s.binaryType = 'arraybuffer';
+	s.onopen = () => {
+		console.log('-- ws open');
+		netput(RING.STATE, c.id, Uint8Array.of(1));
+	};
+	s.onclose = () => netput(RING.STATE, c.id, Uint8Array.of(2));
+	s.onerror = () => netput(RING.STATE, c.id, Uint8Array.of(2));
+	s.onmessage = (e) => netput(RING.MESSAGE, c.id,
+		typeof e.data === 'string' ? new TextEncoder().encode(e.data) :
+			new Uint8Array(e.data));
+}
+
+// ---- input, as index.html sends it ----
 
 const NAMED = {
 	up: [27, 91, 65], down: [27, 91, 66],
@@ -75,6 +122,7 @@ function keypush(seq) {
 		tail = next;
 	}
 	Atomics.store(sab, KTAIL, tail);
+	wake();
 }
 
 function ptrput(x, y, b) {
@@ -82,64 +130,7 @@ function ptrput(x, y, b) {
 	Atomics.store(sab, PTRY, y);
 	Atomics.store(sab, PTRB, b);
 	Atomics.store(sab, PTRMOVED, 1);
-}
-
-// [{at: ms, ...}] where ... is one of type/key/click/wheel/shot.
-const script = TYPE && fs.existsSync(TYPE) ?
-	JSON.parse(fs.readFileSync(TYPE, 'utf8')) : [];
-let next = 0;
-
-function step(elapsed) {
-	while (next < script.length && script[next].at <= elapsed) {
-		const a = script[next++];
-
-		if (a.type)
-			keypush(Buffer.from(a.type, 'utf8'));
-		if (a.key)
-			keypush(NAMED[a.key]);
-		if (a.move)
-			ptrput(a.move[0], a.move[1], 0);
-		if (a.click)
-			ptrput(a.click[0], a.click[1], 1);
-		if (a.release)
-			ptrput(a.release[0], a.release[1], 0);
-		if (a.wheel)
-			Atomics.add(sab, PTRWHEEL, a.wheel);
-		if (a.shot)
-			snap(a.shot);
-		// one pixel of the canvas, named, so a caller can assert on
-		// what is drawn rather than only on what was logged.
-		if (a.px) {
-			const i = (a.px[1] * W + a.px[0]) * 4;
-			const hex = [canvas[i], canvas[i + 1], canvas[i + 2]]
-				.map((v) => v.toString(16).padStart(2, '0'))
-				.join('');
-
-			console.log(`px ${a.say || a.px.join(',')} ${hex}`);
-			continue;
-		}
-		if (a.say)
-			console.log('--', a.say);
-	}
-}
-
-const started = Date.now();
-const realWait = Atomics.wait.bind(Atomics);
-
-Atomics.wait = (arr, i, v, ms) => {
-	const elapsed = Date.now() - started;
-
-	if (elapsed > MS) {
-		finish();
-		process.exit(0);
-	}
-	step(elapsed);
-	return realWait(arr, i, v, Math.min(ms, 20));
-};
-
-function finish() {
-	console.log(`paints: ${paints}`);
-	snap(OUT);
+	wake();
 }
 
 function snap(file) {
@@ -179,9 +170,79 @@ function snap(file) {
 	]));
 }
 
-eval(fs.readFileSync(WORKER, 'utf8'));
+const script = SCRIPT && fs.existsSync(SCRIPT) ?
+	JSON.parse(fs.readFileSync(SCRIPT, 'utf8')) : [];
+let next = 0;
 
-globalThis.onmessage({
-	data: { shared, screen, url: 'luaos.wasm',
-		membytes: 96 * 1024 * 1024, w: W, h: H },
+const worker = new Worker(path.join(__dirname, 'browsertest-worker.js'), {
+	workerData: {
+		shared, screen, netring,
+		wasm: WASM, worker: WORKER,
+		dir: path.dirname(WORKER),
+		membytes: 96 * 1024 * 1024,
+		w: W, h: H,
+	},
 });
+
+worker.on('message', (m) => {
+	if (m.paint)
+		paint(m.paint);
+	else if (m.ws)
+		wscmd(m.ws);
+	else if (m.log !== undefined)
+		console.log(m.log);
+	else if (m.error)
+		console.log('worker error:', m.error);
+});
+worker.on('error', (e) => console.log('worker threw:', e));
+
+const started = Date.now();
+
+const timer = setInterval(() => {
+	const elapsed = Date.now() - started;
+
+	while (next < script.length && script[next].at <= elapsed) {
+		const a = script[next++];
+
+		if (a.type)
+			keypush(Buffer.from(a.type, 'utf8'));
+		if (a.key)
+			keypush(NAMED[a.key]);
+		if (a.move)
+			ptrput(a.move[0], a.move[1], 0);
+		if (a.click)
+			ptrput(a.click[0], a.click[1], 1);
+		if (a.release)
+			ptrput(a.release[0], a.release[1], 0);
+		if (a.wheel) {
+			Atomics.add(sab, PTRWHEEL, a.wheel);
+			wake();
+		}
+		if (a.shot)
+			snap(a.shot);
+		// one pixel of the canvas, named, so a caller can assert on
+		// what is drawn rather than only on what was logged.
+		if (a.px) {
+			const i = (a.px[1] * W + a.px[0]) * 4;
+			const hex = [canvas[i], canvas[i + 1], canvas[i + 2]]
+				.map((v) => v.toString(16).padStart(2, '0'))
+				.join('');
+
+			console.log(`px ${a.say || a.px.join(',')} ${hex}`);
+			continue;
+		}
+		if (a.say)
+			console.log('--', a.say);
+	}
+
+	if (elapsed > MS) {
+		clearInterval(timer);
+		console.log(`paints: ${paints}`);
+		snap(OUT);
+		// the worker's console goes to ours through a pipe, and an
+		// abrupt exit loses whatever is still in it -- which is the
+		// whole boot log.
+		worker.terminate().then(() => setTimeout(() => process.exit(0),
+			200));
+	}
+}, 10);

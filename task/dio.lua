@@ -107,6 +107,9 @@ local tcp = job.tcp and job.tcp.__right
 local power = job.power and job.power.__right
 local ip = job.ip and job.ip.__right
 local dnsh = job.dns and job.dns.__right
+-- websockets, on a machine whose network is one. Lent on to an app the
+-- same way tcp is, and by the same `net = true` in its entry.
+local ws = job.ws and job.ws.__right
 -- the machine's entropy as data, which lib/svc.lua hands every
 -- service. Expanded here so each app gets its own draw.
 local rng = job.seed and
@@ -1002,6 +1005,11 @@ local function start(i, openarg)
 				-- after what it does.
 				udp = entry.net and ip and
 				    { __right = ip } or nil,
+				-- websockets, where this machine's network
+				-- is one: the same `net = true` asks for
+				-- whichever of the two it has.
+				ws = entry.net and ws and
+				    { __right = ws } or nil,
 				-- the machine itself, where the entry asks:
 				-- what spends it is bin/reboot.lua, and a
 				-- program you have to be holding the board

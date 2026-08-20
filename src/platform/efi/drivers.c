@@ -809,3 +809,21 @@ platform_usb_underruns(void)
 {
 	return 0;
 }
+
+/* no websocket here: this machine has sockets, and lib/websocket.lua
+ * builds the framing over one. See PRIV_WS.
+ */
+int
+platform_have_ws(void)
+{
+	return 0;
+}
+
+int luaopen_los_platform_ws(lua_State *L);
+
+int
+luaopen_los_platform_ws(lua_State *L)
+{
+	lua_newtable(L);
+	return 1;
+}

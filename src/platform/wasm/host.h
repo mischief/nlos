@@ -54,6 +54,17 @@ HOSTFN(fb_flush) void host_fb_flush(int x, int y, int w, int h);
 HOSTFN(kbd) int host_kbd(void);
 HOSTFN(ptr) int host_ptr(int *x, int *y, int *buttons);
 
+/* websockets, which are the whole of what a browser lends of the
+ * network. open answers an id or -1; state is 0 connecting, 1 open, 2
+ * gone. recv fills the buffer and answers its length, -1 for nothing
+ * waiting, or -2 when the socket has closed.
+ */
+HOSTFN(ws_open) int host_ws_open(const char *url, size_t n);
+HOSTFN(ws_state) int host_ws_state(int id);
+HOSTFN(ws_send) int host_ws_send(int id, const void *p, size_t n);
+HOSTFN(ws_recv) int host_ws_recv(int id, void *p, size_t max);
+HOSTFN(ws_close) void host_ws_close(int id);
+
 #undef HOSTFN
 
 #endif

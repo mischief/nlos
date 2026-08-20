@@ -25,6 +25,15 @@ return {
 		    "%.conf$", "^[^.]*$" },
 		  desc = "read a file" },
 
+		-- the relays, over the only network this machine has. The
+		-- identity is generated and kept in memory: there is no
+		-- /config here to write an nsec to, so a reload is a new
+		-- one.
+		{ name = "nostr", cmd = "/bin/nostrui.lua",
+		  category = "chat", label = "N", color = 0x8e44ad,
+		  keys = true, net = true,
+		  desc = "read and post notes over nostr" },
+
 		{ name = "2048", cmd = "/bin/2048.lua", category = "games",
 		  label = "2", color = 0xedc22e, keys = true,
 		  desc = "slide the tiles together" },

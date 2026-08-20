@@ -5,6 +5,8 @@
 // reaches the page only when the worker's task ends; these pixels go
 // into a shared buffer, and the page puts them on the glass.
 
+importScripts('ring.js');
+
 // the input layout, in Int32 slots. Must match index.html.
 const WAKE = 0;		// futex word: always 0, notified to wake us
 const KHEAD = 1;	// key ring read index, ours
@@ -21,6 +23,8 @@ const WHEELUP = 8, WHEELDOWN = 16;
 
 let sab = null;		// Int32Array over the input buffer
 let rgba = null;	// Uint8Array over the shared screen, as the page reads it
+let net32 = null;	// the socket ring's header
+let net8 = null;	// and its bytes
 let mem = null;		// the module's linear memory
 let fbptr = 0, fbw = 0, fbh = 0;
 
@@ -93,6 +97,40 @@ function flush(x, y, w, h) {
 	postMessage({ paint: { x, y, w, h } });
 }
 
+// the websockets, which are the whole of what a browser lends of the
+// network. The page owns them, because a socket delivers through the
+// event loop and this thread is inside boot() and never returns to one.
+// Commands go out by postMessage, which a blocked worker may still
+// send; what comes back arrives through the ring.
+const socks = new Map();
+let nextsock = 1;
+
+function drain() {
+	for (;;) {
+		const rec = RING.read(net32, net8);
+
+		if (!rec)
+			return;
+		const s = socks.get(rec.id);
+
+		if (!s)
+			continue;
+		if (rec.kind === RING.STATE)
+			s.state = rec.bytes[0];
+		else
+			s.q.push(rec.bytes);
+	}
+}
+
+function wsopen(p, n) {
+	const url = new TextDecoder().decode(new Uint8Array(mem.buffer, p, n));
+	const id = nextsock++;
+
+	socks.set(id, { q: [], state: 0 });
+	postMessage({ ws: { op: 'open', id, url } });
+	return id;
+}
+
 function imports() {
 	return {
 		luaos: {
@@ -127,17 +165,62 @@ function imports() {
 			fb_flush: flush,
 			kbd,
 			ptr,
+
+			ws_open: wsopen,
+			ws_state(id) {
+				drain();
+				const s = socks.get(id);
+
+				return s ? s.state : 2;
+			},
+			ws_send(id, p, n) {
+				const s = socks.get(id);
+
+				if (!s || s.state !== 1)
+					return 0;
+				postMessage({ ws: { op: 'send', id,
+					data: new TextDecoder().decode(
+						new Uint8Array(mem.buffer,
+							p, n)) } });
+				return 1;
+			},
+			// -1 nothing waiting, -2 gone. A message longer than
+			// the guest's buffer is dropped rather than torn:
+			// half an event is not an event.
+			ws_recv(id, p, max) {
+				drain();
+				const s = socks.get(id);
+
+				if (!s)
+					return -2;
+				if (!s.q.length)
+					return s.state === 2 ? -2 : -1;
+				const bytes = s.q.shift();
+
+				if (bytes.length > max)
+					return -1;
+				new Uint8Array(mem.buffer, p, max).set(bytes);
+				return bytes.length;
+			},
+			ws_close(id) {
+				if (socks.delete(id))
+					postMessage({ ws: { op: 'close', id } });
+			},
 		},
 	};
 }
 
 onmessage = async (e) => {
-	const { shared, screen, url, membytes, w, h } = e.data;
+	const { shared, screen, netring, url, membytes, w, h } = e.data;
 
 	try {
 		sab = new Int32Array(shared);
 		if (screen)
 			rgba = new Uint8Array(screen);
+		if (netring) {
+			net32 = new Int32Array(netring, 0, 2);
+			net8 = new Uint8Array(netring);
+		}
 
 		const src = await WebAssembly.instantiateStreaming(
 			fetch(url), imports());
