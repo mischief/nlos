@@ -59,6 +59,35 @@ static int keyhead, keytail;
 
 static int ptrx, ptry, ptrbuttons, ptrmoved;
 
+/* A press and a release inside one poll window are the whole of a
+ * click, and reporting only the state they left behind reports that
+ * nothing happened. Positions may still be dropped -- a reader that
+ * has fallen behind wants where the pointer is, not where it has
+ * been -- but every button edge is kept and handed over in turn.
+ */
+#define BUTRING 32
+
+static struct butevent {
+	int x, y, buttons;
+} butring[BUTRING];
+static int buthead, buttail;
+
+static void
+butpush(void)
+{
+	int next = (buttail + 1) % BUTRING;
+
+	/* full: overwrite the newest rather than shed the oldest, so
+	 * what a reader ends up holding is still the state that is.
+	 */
+	if (next == buthead)
+		buttail = (buttail + BUTRING - 1) % BUTRING;
+	butring[buttail].x = ptrx;
+	butring[buttail].y = ptry;
+	butring[buttail].buttons = ptrbuttons;
+	buttail = (buttail + 1) % BUTRING;
+}
+
 static void
 keypush(int c)
 {
@@ -208,12 +237,14 @@ pump_locked(void)
 			ptrmoved = 1;
 			break;
 		case SDL_MOUSEBUTTONDOWN:
+			ptrpos(e.button.x, e.button.y);
 			ptrbuttons |= buttonbit(e.button.button);
-			ptrmoved = 1;
+			butpush();
 			break;
 		case SDL_MOUSEBUTTONUP:
+			ptrpos(e.button.x, e.button.y);
 			ptrbuttons &= ~buttonbit(e.button.button);
-			ptrmoved = 1;
+			butpush();
 			break;
 		default:
 			break;
@@ -365,12 +396,20 @@ platform_ptr_read(int *x, int *y, int *buttons)
 		return 0;
 	lock(&fblock);
 	pump_locked();
-	moved = ptrmoved;
-	if (moved) {
-		ptrmoved = 0;
-		*x = ptrx;
-		*y = ptry;
-		*buttons = ptrbuttons;
+	if (buthead != buttail) {
+		*x = butring[buthead].x;
+		*y = butring[buthead].y;
+		*buttons = butring[buthead].buttons;
+		buthead = (buthead + 1) % BUTRING;
+		moved = 1;
+	} else {
+		moved = ptrmoved;
+		if (moved) {
+			ptrmoved = 0;
+			*x = ptrx;
+			*y = ptry;
+			*buttons = ptrbuttons;
+		}
 	}
 	unlock(&fblock);
 	return moved;
