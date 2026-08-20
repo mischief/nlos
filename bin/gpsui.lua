@@ -153,19 +153,16 @@ end
 -- middle and the sky where it is. Scrolling turns that frame, so the
 -- same scene swings out to the earth seen from outside.
 
-local yaw, pitch = 0, 0
+-- One axis. Turning about the line of sight keeps the observer in the
+-- middle and the horizon where it is; tilting would swing the ground
+-- out of the frame and leave nothing to read the scene against.
+local yaw = 0
 local view = { bx = nil, by = nil, bz = nil }
 
 local function setview(lat, lon)
 	local rf = geom.horizon(lat or 0, lon or 0)
 	local bx, by, bz = rf.bx, rf.by, rf.bz
 
-	-- turn about the screen's own axes: up-down tilts, left-right
-	-- spins, and both are about the axes the viewer sees.
-	if pitch ~= 0 then
-		by = geom.qrotate(by, bx, pitch)
-		bz = geom.qrotate(bz, bx, pitch)
-	end
 	if yaw ~= 0 then
 		bx = geom.qrotate(bx, bz, yaw)
 		by = geom.qrotate(by, bz, yaw)
@@ -191,6 +188,7 @@ end
 -- difference between a redraw and a wait.
 local STEP = 2
 local DPX, DPY, DVX, DVY, DVZ, DLIT, DLIMB = {}, {}, {}, {}, {}, {}, {}
+local DROW = {}
 
 do
 	local n = 0
@@ -213,22 +211,28 @@ do
 			DLIT[n] = -vx * 0.5 + vy * 0.5 + vz * 0.72
 			DLIMB[n] = half - math.abs(px) < STEP + 1
 		end
+		DROW[n] = true		-- the last sample of this row
 	end
 	DPX.n = n
 end
 
+-- A rectangle a sample is what the picture asks for and not what it
+-- costs: an ocean is a long run of one colour, and the measurement says
+-- the frame is the calls rather than the arithmetic -- 7.6% of it was
+-- floating point. So a run of one colour along a row goes out as one
+-- rectangle, and DROW says where a row ends.
 local function drawglobe(img)
 	local bx, by, bz = view.bx, view.by, view.bz
 	local bxx, bxy, bxz = bx.x, bx.y, bx.z
 	local byx, byy, byz = by.x, by.y, by.z
 	local bzx, bzy, bzz = bz.x, bz.y, bz.z
-	local rect = memdraw.rect
+	local fill, rect = img.fill, memdraw.rect
+	local runc, runx, runn = nil, 0, 0
 
 	for i = 1, DPX.n do
 		local vx, vy, vz = DVX[i], DVY[i], DVZ[i]
 		local wy = vx * bxy + vy * byy + vz * bzy
 		local wz = vx * bxz + vy * byz + vz * bzz
-		local lit = DLIT[i]
 		local c
 
 		if DLIMB[i] then
@@ -236,6 +240,7 @@ local function drawglobe(img)
 		else
 			local wx = vx * bxx + vy * byx + vz * bzx
 			local sea = not landat(wz, math.atan(wy, wx))
+			local lit = DLIT[i]
 
 			if lit < 0.25 then
 				c = sea and SEADK or LANDDK
@@ -245,7 +250,20 @@ local function drawglobe(img)
 				c = sea and SEA or LAND
 			end
 		end
-		img:fill(rect(DPX[i], DPY[i], STEP, STEP), c)
+
+		if c == runc then
+			runn = runn + STEP
+		else
+			if runc then
+				fill(img, rect(runx, DPY[i - 1], runn, STEP),
+				    runc)
+			end
+			runc, runx, runn = c, DPX[i], STEP
+		end
+		if DROW[i] then
+			fill(img, rect(runx, DPY[i], runn, STEP), runc)
+			runc = nil
+		end
 	end
 end
 
@@ -290,76 +308,114 @@ local function satcolor(snr)
 	return n > 0 and SATW or SAT
 end
 
-local SKYIMG = memdraw.image(S, S, BG, FMT)
+-- ---- the earth, kept by the draw server ----
+--
+-- Sixteen positions and no more, which is as much of a turn as this
+-- reads at 96 pixels across. Each is drawn once, handed over as an
+-- image, and afterwards is a message naming it: the pixels stop
+-- crossing the port, so a turn already seen costs nothing.
+local STEPS = 16
+local TURNSTEP = 2 * math.pi / STEPS
+local step = 0
+local WINX, WINY = (W - S) // 2, PLOTY
 local EARTHIMG = memdraw.image(S, S, BG, FMT)
-local earthkey
+local kept = {}		-- step -> the id the server knows it by
+local keptat		-- and the position they were all drawn for
 
--- The earth is the expensive half and changes only when the view does,
--- so it is kept and copied. A satellite moves every second and costs a
--- rectangle.
--- Coarse on purpose: a fix jitters in its last digits, and rebuilding
--- the globe for metres of wander is the whole cost of the app paid for
--- a ten-thousandth of a degree nobody can see.
-local function earth(lat, lon)
-	local key = ("%.2f.%.2f.%.3f.%.3f"):format(lat or 0, lon or 0, yaw,
-	    pitch)
-
-	if key ~= earthkey then
-		EARTHIMG:fill(EARTHIMG:rect(), BG)
-		drawglobe(EARTHIMG)
-		drawgrid(EARTHIMG)
-		earthkey = key
+local function forget()
+	for i, id in pairs(kept) do
+		pcall(fb.free, id, false)
+		kept[i] = nil
 	end
-	SKYIMG:draw(memdraw.pt(0, 0), EARTHIMG)
 end
 
--- Everything at once, because a satellite behind the earth has to be
--- drawn before the earth and one in front after it.
+-- Coarse on purpose: a fix jitters in its last digits, and throwing
+-- away sixteen globes for metres of wander would cost the whole app
+-- for a ten-thousandth of a degree nobody can see.
+local function globe(lat, lon)
+	local at = ("%.2f.%.2f"):format(lat or 0, lon or 0)
+
+	if at ~= keptat then
+		forget()
+		keptat = at
+	end
+
+	local id = kept[step]
+
+	if id then
+		return id
+	end
+
+	EARTHIMG:fill(EARTHIMG:rect(), BG)
+	drawglobe(EARTHIMG)
+	drawgrid(EARTHIMG)
+
+	id = fb.alloc(S, S, FMT, BG)
+	if not id then
+		return nil
+	end
+	if not fb.load({ x = 0, y = 0, w = S, h = S },
+	    memdraw.bytes(EARTHIMG, EARTHIMG:rect()), true, true, FMT, id) then
+		pcall(fb.free, id, false)
+		return nil
+	end
+	kept[step] = id
+	return id
+end
+
+local function satcolor(snr)
+	local n = snr or 0
+
+	if n >= 35 then
+		return SATOK
+	end
+	return n > 0 and SATW or SAT
+end
+
+local function dot(x, y, c)
+	fb.fill({ x = WINX + math.floor(x + 0.5) - 1,
+	    y = WINY + math.floor(y + 0.5) - 1, w = 3, h = 3 }, c, false)
+end
+
+-- The globe goes down first and erases the frame before it, so the
+-- satellites are drawn after and nothing has to be rubbed out.
 local function plot(sky, lat, lon)
+	yaw = step * TURNSTEP
 	setview(lat, lon)
 
-	local pts = {}
+	local id = globe(lat, lon)
+
+	if id then
+		fb.draw(nil, id, { x = 0, y = 0, w = S, h = S },
+		    { x = WINX, y = WINY }, false)
+	end
 
 	for _, s in ipairs(sky) do
 		if s.azim and s.elev then
-			local p = geom.skypoint(view.rf, s.azim, s.elev)
-			local x, y, z = project(p)
+			local x, y, z = project(geom.skypoint(view.rf, s.azim,
+			    s.elev))
+			local dx, dy = x - CX, y - CY
 
-			pts[#pts + 1] = { x = x, y = y, z = z, snr = s.snr }
+			-- a sphere hides exactly what its outline covers,
+			-- so that is a distance and not a depth buffer
+			if z > 0 then
+				dot(x, y, satcolor(s.snr))
+			elseif dx * dx + dy * dy > RPX * RPX then
+				dot(x, y, BEHIND)
+			end
 		end
 	end
 
-	earth(lat, lon)
-
-	-- Behind the earth and outside its outline: those are the ones
-	-- still visible. A sphere hides exactly what its silhouette
-	-- covers, so that is a distance from the centre and not a depth
-	-- buffer.
-	for _, p in ipairs(pts) do
-		local dx, dy = p.x - CX, p.y - CY
-
-		if p.z <= 0 and dx * dx + dy * dy > RPX * RPX then
-			dot(SKYIMG, p.x, p.y, BEHIND, 1)
-		end
-	end
-
-	-- where the receiver says it is, on the ball it is on
 	if lat and lon then
 		local x, y, z = project(geom.geodetic(lat, lon))
 
 		if z > 0 then
-			dot(SKYIMG, x, y, HERE, 1)
+			dot(x, y, HERE)
 		end
 	end
-
-	for _, p in ipairs(pts) do
-		if p.z > 0 then
-			dot(SKYIMG, p.x, p.y, satcolor(p.snr), 1)
-		end
+	if fb.sync then
+		fb.sync()
 	end
-
-	fb.load({ x = (W - S) // 2, y = PLOTY, w = S, h = S },
-	    memdraw.bytes(SKYIMG, SKYIMG:rect()), true, true, FMT)
 end
 
 -- ---- the numbers ----
@@ -437,8 +493,8 @@ fb.fill({ x = 0, y = 0, w = W, h = H }, BG, true)
 -- drawn again: the globe is a pixel loop and one message of its own
 -- size, and neither is worth spending on an unmoved sky.
 local function signature(sky, lat, lon)
-	local parts = { ("%d.%d.%.2f.%.2f"):format(math.floor((lat or 0) * 100),
-	    math.floor((lon or 0) * 100), yaw, pitch) }
+	local parts = { ("%d.%d.%.3f"):format(math.floor((lat or 0) * 100),
+	    math.floor((lon or 0) * 100), step) }
 
 	for _, s in ipairs(sky) do
 		parts[#parts + 1] = ("%d.%d.%d.%d"):format(s.prn or 0,
@@ -484,7 +540,8 @@ local point = prog.mouse()
 
 if point then
 	thread.spawn(function()
-		local STEP = math.pi / 18	-- ten degrees a click
+		-- one of the sixteen a click, so every position a roll can
+		-- reach is one the server already holds after the first lap
 
 		while running do
 			local _, _, b = point.read()
@@ -492,14 +549,14 @@ if point then
 			if not b then
 				return
 			end
-			if (b & mouse.WHEELLEFT) ~= 0 then
-				yaw, redraw = yaw - STEP, true
-			elseif (b & mouse.WHEELRIGHT) ~= 0 then
-				yaw, redraw = yaw + STEP, true
-			elseif (b & mouse.WHEELUP) ~= 0 then
-				pitch, redraw = pitch - STEP, true
-			elseif (b & mouse.WHEELDOWN) ~= 0 then
-				pitch, redraw = pitch + STEP, true
+			-- Both axes turn the one we have: the ball is
+			-- rolled whichever way comes to hand, and a roll
+			-- that did nothing would read as a dead control.
+			if (b & (mouse.WHEELLEFT | mouse.WHEELUP)) ~= 0 then
+				step, redraw = (step - 1) % STEPS, true
+			elseif (b & (mouse.WHEELRIGHT | mouse.WHEELDOWN)) ~= 0
+			    then
+				step, redraw = (step + 1) % STEPS, true
 			end
 		end
 	end)
