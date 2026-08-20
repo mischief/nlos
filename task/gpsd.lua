@@ -44,15 +44,18 @@ local function reply(m, msg)
 	end
 end
 
--- the sky itself, not just its size: a caller waiting for a fix wants
--- to see which are being heard and how loudly, since that is the part
--- that changes when the receiver is moved.
+-- What is being received, and not what the almanac says is overhead:
+-- a satellite with no signal is the same list in a basement as under
+-- open sky, and it is the heard ones that decide whether there is a
+-- fix and that change when the receiver is moved.
 local function sky()
 	local out = {}
 
 	for _, s in ipairs(fix.sats) do
-		out[#out + 1] = { prn = s.prn, snr = s.snr, elev = s.elev,
-		    azim = s.azim, talker = s.talker }
+		if (s.snr or 0) > 0 then
+			out[#out + 1] = { prn = s.prn, snr = s.snr,
+			    elev = s.elev, azim = s.azim, talker = s.talker }
+		end
 	end
 	return out
 end
@@ -63,8 +66,7 @@ local function position()
 		has = fix:has(), lat = fix.lat, lon = fix.lon,
 		alt = fix.alt, speed_knots = fix.speed_knots,
 		track = fix.track, nsats = fix.nsats, hdop = fix.hdop,
-		fixtype = fix.fixtype, sats = #fix.sats,
-		tracked = fix:tracked(),
+		fixtype = fix.fixtype, heard = fix:tracked(),
 		time = fix.time, date = fix.date, epoch = fix:epoch(),
 	}
 end
@@ -77,8 +79,7 @@ local function announce()
 		return
 	end
 	said = true
-	sys.log("gpsd: a fix, %d in view, %d tracked", #fix.sats,
-	    fix:tracked())
+	sys.log("gpsd: a fix, %d satellites heard", fix:tracked())
 end
 
 -- Every sentence goes to every listener, as hci.lua does with packets:

@@ -32,8 +32,10 @@ end
 
 local function show(f)
 	if not f.has then
-		out(("no fix yet: %d in view, %d with signal\n"):format(
-		    f.sats or 0, f.tracked or 0))
+		-- heard, not in view: what the almanac says is overhead
+		-- reads the same in a basement, and four heard is what a
+		-- fix takes.
+		out(("no fix yet: %d heard\n"):format(f.heard or 0))
 		return
 	end
 	out(("%.6f %.6f"):format(f.lat, f.lon))
@@ -43,8 +45,8 @@ local function show(f)
 	if f.speed_knots then
 		out(("  %.1fkn"):format(f.speed_knots))
 	end
-	out(("\n%d satellites in view, %s used, hdop %s, %sd fix\n"):format(
-	    f.sats or 0, tostring(f.nsats or 0), tostring(f.hdop or "?"),
+	out(("\n%d heard, %s used, hdop %s, %sd fix\n"):format(
+	    f.heard or 0, tostring(f.nsats or 0), tostring(f.hdop or "?"),
 	    tostring(f.fixtype or "?")))
 	if f.date and f.time then
 		out(("%04d-%02d-%02d %02d:%02d:%02.0f UTC\n"):format(

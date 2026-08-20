@@ -153,21 +153,24 @@ end
 -- middle and the sky where it is. Scrolling turns that frame, so the
 -- same scene swings out to the earth seen from outside.
 
--- One axis. Turning about the line of sight keeps the observer in the
--- middle and the horizon where it is; tilting would swing the ground
--- out of the frame and leave nothing to read the scene against.
+-- The camera rides the equator and looks at the axis: north is up the
+-- screen, the poles stay top and bottom, and turning runs longitude
+-- past. Starting at the receiver's own meridian, so what is in front
+-- on the first frame is where the machine is.
 local yaw = 0
 local view = { bx = nil, by = nil, bz = nil }
 
 local function setview(lat, lon)
+	-- the observer's frame, never turned: a bearing and an elevation
+	-- are measured from where the receiver is, not from wherever the
+	-- globe has been rolled to.
 	local rf = geom.horizon(lat or 0, lon or 0)
-	local bx, by, bz = rf.bx, rf.by, rf.bz
+	local a = (lon or 0) * geom.DEG + yaw
+	local sa, ca = math.sin(a), math.cos(a)
 
-	if yaw ~= 0 then
-		bx = geom.qrotate(bx, bz, yaw)
-		by = geom.qrotate(by, bz, yaw)
-	end
-	view.bx, view.by, view.bz = bx, by, bz
+	view.bx = geom.Vec3(-sa, ca, 0)		-- east, across the screen
+	view.by = geom.Vec3(0, 0, 1)		-- the pole, up it
+	view.bz = geom.Vec3(ca, sa, 0)		-- and out toward the eye
 	view.rf = rf
 end
 
@@ -294,19 +297,6 @@ local function drawgrid(img)
 	end
 end
 
-local function dot(img, x, y, c, r)
-	img:fill(memdraw.rect(math.floor(x + 0.5) - r,
-	    math.floor(y + 0.5) - r, r * 2 + 1, r * 2 + 1), c)
-end
-
-local function satcolor(snr)
-	local n = snr or 0
-
-	if n >= 35 then
-		return SATOK
-	end
-	return n > 0 and SATW or SAT
-end
 
 -- ---- the earth, kept by the draw server ----
 --
@@ -363,13 +353,15 @@ local function globe(lat, lon)
 	return id
 end
 
+-- Everything drawn is heard, so the colour is how well: red is one the
+-- receiver can barely make out, green one it can fix on.
 local function satcolor(snr)
 	local n = snr or 0
 
 	if n >= 35 then
 		return SATOK
 	end
-	return n > 0 and SATW or SAT
+	return n >= 20 and SATW or SAT
 end
 
 local function dot(x, y, c)
@@ -453,16 +445,11 @@ local function rows(f, st)
 	text(2, ROW[4], ("%s %s UTC"):format(ymd(f and f.date),
 	    hms(f and f.time)), FG, BG, COLS)
 
+	-- everything gpsd sends is heard, so the count is the list
 	local sky = (f and f.sky) or {}
-	local heard = 0
 
-	for _, s in ipairs(sky) do
-		if (s.snr or 0) > 0 then
-			heard = heard + 1
-		end
-	end
-	text(2, ROW[5], ("%d in view, %d heard"):format(#sky, heard), DIM,
-	    BG, COLS)
+	text(2, ROW[5], ("%d heard, %d used"):format(#sky, f and f.nsats or 0),
+	    DIM, BG, COLS)
 
 	if st then
 		text(2, H - FH - 2, ("%s baud  %d ok  %d bad"):format(
