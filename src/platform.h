@@ -95,6 +95,22 @@ int	platform_have_lora(void);
  */
 unsigned long platform_hci_irqs(void);
 
+/* is there a gnss receiver on a serial port? T-Deck Plus only, where a
+ * module sits on the pins the Grove connector otherwise carries. What
+ * this hands over is bytes; the sentences in them are framed above.
+ */
+int	platform_have_gps(void);
+
+/* bytes the receiver has left waiting. What the gps pump asks, and it
+ * has to be the driver's own count rather than one kept here: a tally
+ * of what was read cannot say a first byte has arrived, and a task
+ * woken only by its own reads is never woken at all.
+ */
+unsigned long platform_gps_pending(void);
+
+/* bytes taken from the receiver since boot, for reporting. */
+unsigned long platform_gps_rx(void);
+
 /* is there a block device? microvm answers by probing for a virtio-blk;
  * efi always says no today, for want of an EFI_BLOCK_IO shim rather
  * than for want of a device -- see the comment on its

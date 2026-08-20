@@ -109,6 +109,7 @@ extern void kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
  */
 static struct kport *ethport;
 static struct kport *hciport;
+static struct kport *gpsport;
 
 /* the tcp task's wakeup, on the same terms as ethport: pushed when the
  * platform says a connection has something to answer, so a machine with
@@ -123,6 +124,7 @@ static int have_net;
 static int have_udp;
 static int have_ws;
 static int have_hci;
+static int have_gps;
 static int have_fb;
 static int have_lora;
 static int have_blk;
@@ -428,6 +430,24 @@ pump_hci(void)
 	ipclock_leave();
 }
 
+/* ---- gps pump ---- */
+
+/* a receiver emits once a second and the task waits between, so
+ * something has to say that bytes have landed. What is waiting rather
+ * than what was taken: a count of our own reads could only rise after
+ * a read, and the read is what this wakeup exists to cause.
+ */
+static void
+pump_gps(void)
+{
+	if (!have_gps || !gpsport || platform_gps_pending() == 0)
+		return;
+	ipclock_enter();
+	if (!atomic_load_explicit(&gpsport->head, memory_order_relaxed))
+		port_push(gpsport, (const unsigned char *)"N", 1, 0, 0);
+	ipclock_leave();
+}
+
 /* ---- keyboard pump ---- */
 
 /* the firmware's serial console reports the arrow/navigation keys and the
@@ -706,6 +726,7 @@ kernel_init(void)
 	diskport = port_new();
 	ethport = port_new();
 	hciport = port_new();
+	gpsport = port_new();
 	netport = port_new();
 	udpport = port_new();
 	schedport = port_new();
@@ -727,6 +748,8 @@ kernel_init(void)
 	diskport->nrights++;
 	ethport->nrights++;
 	hciport->nrights++;
+	if (gpsport)
+		gpsport->nrights++;
 	netport->nrights++;
 	udpport->nrights++;
 	schedport->nrights++;
@@ -746,6 +769,7 @@ kernel_init(void)
 	have_udp = platform_have_udp();
 	have_ws = platform_have_ws();
 	have_hci = platform_have_hci();
+	have_gps = platform_have_gps();
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
 	have_lora = platform_have_lora();
@@ -901,6 +925,15 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_HCI, .devport = hciport, .devrecv = 1,
 		  .what = "bluetooth (raw hci)", .enabled = have_hci,
 		  .capname = "hci" },
+		/* the gnss receiver: bytes off a serial port, and the
+		 * sentences in them read on the far side of this task's
+		 * port. Present on a board that could carry a module,
+		 * whether or not one is fitted -- only its answers say.
+		 */
+		{ .path = "/task/gpsd.lua", .chunkname = "=gpsd",
+		  .priv = PRIV_GPS, .devport = gpsport, .devrecv = 1,
+		  .what = "the gnss receiver", .enabled = have_gps,
+		  .capname = "gps" },
 		/* tcp from the machine rather than from lib/tcp4.lua: a
 		 * platform with connections but no frames to build them out
 		 * of. Everything above holds a right to this task and cannot
@@ -1652,6 +1685,7 @@ kernel_run(void)
 		pump_eth();
 		pump_net();
 		pump_hci();
+		pump_gps();
 		pump_keyboard();
 		pump_devkbd();
 		pump_devptr();

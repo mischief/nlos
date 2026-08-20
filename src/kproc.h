@@ -427,6 +427,12 @@ enum {
 	 * this task's port -- the same split the hci one above makes.
 	 */
 	PRIV_LORA	= 1 << 14,
+	/* a gnss receiver on a serial port. Its own capability and not
+
+	 * part of any other: a proc that should know where it is has no
+	 * business with the radio the same board carries.
+	 */
+	PRIV_GPS	= 1 << 15,
 };
 
 /* does this cpu hold a given bucket, every bucket, or any bucket at

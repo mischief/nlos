@@ -523,6 +523,34 @@ luaopen_los_platform_hci(lua_State *L)
 	return 1;
 }
 
+/* no gnss receiver, defined because proc.c names it everywhere */
+int
+platform_have_gps(void)
+{
+	return 0;
+}
+
+unsigned long
+platform_gps_rx(void)
+{
+	return 0;
+}
+
+unsigned long
+platform_gps_pending(void)
+{
+	return 0;
+}
+
+int luaopen_los_platform_gps(lua_State *L);
+
+int
+luaopen_los_platform_gps(lua_State *L)
+{
+	luaL_newlib(L, hci_emptylib);
+	return 1;
+}
+
 /* ---- los.platform.blk: virtio-blk, raw sectors ----
  *
  * Sectors and a capacity, and nothing above them: no partitions, no

@@ -936,6 +936,8 @@ function M.main()
 	ctx.hci = ctx.hci and ctx.hci.__right or nil
 	ctx.lora = ctx.lora and ctx.lora.__right or nil
 	ctx.mesh = ctx.mesh and ctx.mesh.__right or nil
+	-- the gnss receiver, if the launcher lent one. bin/gps.lua asks.
+	ctx.gps = ctx.gps and ctx.gps.__right or nil
 	-- the bluetooth service. What an ordinary program asks for: blesrv
 	-- arbitrates the controller, where hci above it is the raw radio.
 	ctx.ble = ctx.ble and ctx.ble.__right or nil
@@ -1203,6 +1205,14 @@ function M.mesh()
 	local ctx = M.ctx
 
 	return ctx and ctx.mesh or nil
+end
+
+-- the gnss receiver, on a board that carries one. nil elsewhere, which
+-- is what a program checks rather than asking what board it is on.
+function M.gps()
+	local ctx = M.ctx
+
+	return ctx and ctx.gps or nil
 end
 
 -- the bluetooth service, which is what a program should ask for: one

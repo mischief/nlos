@@ -68,6 +68,14 @@ void	vfs_embed_register(void);
 #define TDECK_I2S_WS		5
 #define TDECK_I2S_DOUT		6
 
+/* the gnss module on a Plus, on the pins a plain T-Deck leaves on the
+ * Grove header. Named from this end: the receiver's own TX reaches
+ * TDECK_GPS_RX. U0TXD is GPIO43, so a board carrying a module has no
+ * console on these pins.
+ */
+#define TDECK_GPS_TX		43
+#define TDECK_GPS_RX		44
+
 /* the largest single SPI transfer any T-Deck driver asks for. A display
  * band dwarfs the card's 32-sector read, so this is the display's.
  */
@@ -78,6 +86,15 @@ void	vfs_embed_register(void);
  * Miss it and the card, the panel and the keyboard all read as absent.
  */
 int	esp_tdeck_power_on(void);
+
+/* the gnss receiver, in gps.c. open() also sets the baud of a port
+ * already up: a receiver at the wrong one answers with noise rather
+ * than silence, so trying is the only way to tell which is fitted.
+ */
+int	esp_gps_open(int baud);
+int	esp_gps_read(char *out, int n);
+int	esp_gps_write(const char *s, int n);
+unsigned long esp_gps_rx(void);
 
 /* bring up the shared SPI bus, powering the rail first. Idempotent, so
  * whichever of blk and lcd probes first pays for it.

@@ -42,6 +42,7 @@ set(PLATFORM_SRC
     ${LUAOS_ROOT}/src/platform/esp32/drivers.c
     ${LUAOS_ROOT}/src/platform/esp32/i2s.c
     ${LUAOS_ROOT}/src/platform/esp32/flashblk.c
+    ${LUAOS_ROOT}/src/platform/esp32/gps.c
     ${LUAOS_ROOT}/src/platform/esp32/fs.c
     ${LUAOS_ROOT}/src/platform/esp32/idf_shim.c
     ${LUAOS_ROOT}/src/platform/esp32/kbd.c
@@ -93,6 +94,8 @@ idf_component_register(
             bt
             sdmmc esp_driver_sdspi esp_driver_sdmmc esp_driver_spi
             esp_driver_gpio
+            # the gnss receiver on a T-Deck Plus, read by gps.c
+            esp_driver_uart
             ${USB_REQ}
 )
 
@@ -254,6 +257,10 @@ set(EMBED_FILES
     lib/nodedb.lua
     lib/protobuf.lua
     lib/sx1262.lua
+    # the gnss receiver, spawned by the kernel before luafs is
+    # mounted, so its parser has to be here beside it
+    task/gpsd.lua
+    lib/nmea.lua
     task/ip.lua
     task/tcp4.lua
     task/dhcpd.lua

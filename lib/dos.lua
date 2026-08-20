@@ -172,6 +172,10 @@ function M.new(caps)
 		-- the lora radio, same terms: one task owns the chip and a
 		-- session that arrived over a network is lent nothing.
 		lora = caps.lora,
+		-- the receiver, on the same terms: where this machine is
+		-- is not something a session arriving over a network is
+		-- told.
+		gps = caps.gps,
 		-- the bluetooth service, which is what a program that is
 		-- not a diagnostic should hold: blesrv arbitrates, raw hci
 		-- does not.
@@ -524,6 +528,10 @@ function Sh:spawn1(path, argv, streams)
 	end
 	if self.lora then
 		msg.lora = { __right = self.lora }
+	end
+	-- and the receiver, for bin/gps.lua and anything logging a track
+	if self.gps then
+		msg.gps = { __right = self.gps }
 	end
 	if self.ble then
 		msg.ble = { __right = self.ble }

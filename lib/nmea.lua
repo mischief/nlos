@@ -313,8 +313,11 @@ local Fix = {}
 
 Fix.__index = Fix
 
+-- view is the latest complete run per talker; gsv is the one being
+-- received. sats is every view together, which is what a caller reads.
 function M.newfix()
-	return setmetatable({ nsen = 0, sats = {}, gsv = {} }, Fix)
+	return setmetatable({ nsen = 0, sats = {}, gsv = {}, view = {} },
+	    Fix)
 end
 
 -- days since the epoch from a civil date, so a logger can stamp a line
@@ -390,21 +393,58 @@ function Fix:update(t)
 		self.vdop = t.vdop
 	end
 
-	-- the view is swapped in whole: a partial run would report a
-	-- shrinking sky while the messages arrive.
+	-- A run per talker, and they interleave: a multi-constellation
+	-- receiver sends GPGSV, then GAGSV, then GBGSV, each numbered
+	-- from one. Merging them by number alone leaves the sky as
+	-- whichever constellation reported last. Each run is swapped in
+	-- whole, because a partial one reports a shrinking view.
 	if ty == "GSV" and t.msg and t.nmsg then
+		local who = t.talker
+
 		if t.msg == 1 then
-			self.gsv = {}
+			self.gsv[who] = {}
 		end
-		for _, s in ipairs(t.sats or {}) do
-			self.gsv[#self.gsv + 1] = s
-		end
-		if t.msg == t.nmsg then
-			self.sats = self.gsv
-			self.gsv = {}
+
+		local run = self.gsv[who]
+
+		if run then
+			for _, s in ipairs(t.sats or {}) do
+				s.talker = who
+				run[#run + 1] = s
+			end
+			if t.msg == t.nmsg then
+				self.view[who] = run
+				self.gsv[who] = nil
+				self:resky()
+			end
 		end
 	end
 	return true
+end
+
+-- the whole sky, every constellation's latest complete run together.
+function Fix:resky()
+	local all = {}
+
+	for _, run in pairs(self.view) do
+		for _, s in ipairs(run) do
+			all[#all + 1] = s
+		end
+	end
+	self.sats = all
+end
+
+-- how many are actually being received, which is not how many are up
+-- there: a satellite in view with no signal reports snr 0 or none.
+function Fix:tracked()
+	local n = 0
+
+	for _, s in ipairs(self.sats) do
+		if (s.snr or 0) > 0 then
+			n = n + 1
+		end
+	end
+	return n
 end
 
 -- A fix is a position this receiver stands behind: RMC said active, or

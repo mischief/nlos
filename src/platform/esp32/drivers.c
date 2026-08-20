@@ -482,6 +482,72 @@ luaopen_los_platform_eth(lua_State *L)
 	return 1;
 }
 
+/* ---- los.platform.gps: the gnss receiver ----
+ *
+ * Bytes, not sentences: a serial line hands over whatever arrived, and
+ * framing belongs to whoever reads it.
+ */
+
+/* open(baud) -> ok. Also sets the baud of a port already up, so a
+ * caller may try one and then another. Nothing here judges the answer.
+ */
+static int
+gps_open(lua_State *L)
+{
+	int baud = (int)luaL_optinteger(L, 1, 9600);
+
+	lua_pushboolean(L, esp_gps_open(baud) == 0);
+	return 1;
+}
+
+static int
+gps_read(lua_State *L)
+{
+	char buf[512];
+	int n = esp_gps_read(buf, (int)luaL_optinteger(L, 1, sizeof buf));
+
+	if (n <= 0)
+		return 0;		/* nil: nothing waiting */
+	lua_pushlstring(L, buf, (size_t)n);
+	return 1;
+}
+
+static int
+gps_write(lua_State *L)
+{
+	size_t n;
+	const char *s = luaL_checklstring(L, 1, &n);
+
+	lua_pushinteger(L, esp_gps_write(s, (int)n));
+	return 1;
+}
+
+static int
+gps_stats(lua_State *L)
+{
+	lua_createtable(L, 0, 1);
+	lua_pushinteger(L, (lua_Integer)esp_gps_rx());
+	lua_setfield(L, -2, "rx");
+	return 1;
+}
+
+static const luaL_Reg gpslib[] = {
+	{ "open", gps_open },
+	{ "read", gps_read },
+	{ "write", gps_write },
+	{ "stats", gps_stats },
+	{ NULL, NULL },
+};
+
+int luaopen_los_platform_gps(lua_State *L);
+
+int
+luaopen_los_platform_gps(lua_State *L)
+{
+	luaL_newlib(L, gpslib);
+	return 1;
+}
+
 /* ---- los.platform.hci: the bluetooth controller ----
  *
  * Whole HCI packets, H4 type byte included, the way a uart transport

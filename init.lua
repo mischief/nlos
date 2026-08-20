@@ -361,6 +361,9 @@ local repl_worker_src = [[
 	local hcih = m.hci and m.hci.__right
 	-- the lora radio, likewise: the task, not the bus
 	local lorah = m.lora and m.lora.__right
+	-- the gnss receiver, likewise: a position is not a secret, but
+	-- where this machine is is not every program's business.
+	local gpsh = m.gps and m.gps.__right
 	-- the bluetooth service, which blesrv publishes and init grants.
 	local bleh = m.ble and m.ble.__right
 	-- the mesh service, which meshsrv publishes and init grants
@@ -449,8 +452,7 @@ local repl_worker_src = [[
 		    -- same programs under the panel's terminal take both.
 		    dns = dnsh,
 		    udp = udph, power = powerh, dbg = dbgh, hci = hcih,
-		    lora = lorah,
-		    ble = bleh, mesh = meshh },
+		    ble = bleh, mesh = meshh, gps = gpsh },
 		    "lua-os. programs live in /bin; `lua` is a prompt.\n")
 	end
 
@@ -602,6 +604,11 @@ while true do
 	-- this is a right to ask it, not to the spi bus under it.
 	if caps_of.lora then
 		grant.lora = { __right = caps_of.lora }
+	end
+	-- the receiver, where the board carries one. A read tells a
+	-- program where it is, so it is granted rather than ambient.
+	if caps_of.gps then
+		grant.gps = { __right = caps_of.gps }
 	end
 	if avail.tcp then
 		grant.tcp = { __right = avail.tcp }

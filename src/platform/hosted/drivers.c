@@ -318,6 +318,25 @@ platform_hci_irqs(void)
 	return 0;
 }
 
+/* no gnss receiver: a process has no serial port of its own. */
+int
+platform_have_gps(void)
+{
+	return 0;
+}
+
+unsigned long
+platform_gps_rx(void)
+{
+	return 0;
+}
+
+unsigned long
+platform_gps_pending(void)
+{
+	return 0;
+}
+
 /* a process runs on the host's power, whatever that is. */
 int
 platform_battery(int *mv)
@@ -347,6 +366,7 @@ int luaopen_los_platform_wire(lua_State *L);
 int luaopen_los_platform_eth(lua_State *L);
 int luaopen_los_platform_flash(lua_State *L);
 int luaopen_los_platform_hci(lua_State *L);
+int luaopen_los_platform_gps(lua_State *L);
 int luaopen_los_platform_wifi(lua_State *L);
 int luaopen_los_platform_p9(lua_State *L);
 int luaopen_los_rom(lua_State *L);
@@ -374,6 +394,13 @@ luaopen_los_platform_flash(lua_State *L)
 
 int
 luaopen_los_platform_hci(lua_State *L)
+{
+	luaL_newlib(L, emptylib);
+	return 1;
+}
+
+int
+luaopen_los_platform_gps(lua_State *L)
 {
 	luaL_newlib(L, emptylib);
 	return 1;

@@ -166,6 +166,43 @@ f = nmea.newfix()
 f:update(nmea.parse(GSV[1]))
 is(#f.sats, 0, "one message of three publishes nothing")
 
+-- ---- more than one constellation ----
+--
+-- A u-blox M10Q sends GPGSV, then GAGSV, then GBGSV and GQGSV, each
+-- run numbered from one. Keyed by number alone the sky would be
+-- whichever talker reported last.
+
+f = nmea.newfix()
+for _, s in ipairs(GSV) do
+	f:update(nmea.parse(s))
+end
+is(#f.sats, 11, "one constellation's run is the sky so far")
+
+local GA = {
+	"$GAGSV,2,1,05,02,40,100,35,03,20,200,30,05,60,300,40,07,10,050,00*XX",
+	"$GAGSV,2,2,05,09,75,120,45*XX",
+}
+
+for i, s in ipairs(GA) do
+	local body = s:match("^%$([^*]*)")
+
+	GA[i] = nmea.sentence(body):gsub("\r\n$", "")
+end
+for _, s in ipairs(GA) do
+	f:update(nmea.parse(s))
+end
+is(#f.sats, 16, "a second talker adds to the sky, it does not replace it")
+
+-- and a fresh run from one talker replaces only that talker's
+f:update(nmea.parse(nmea.sentence(
+    "GAGSV,1,1,01,02,40,100,35"):gsub("\r\n$", "")))
+is(#f.sats, 12, "a talker's new run replaces its own and no other")
+
+-- in view is not being received: a satellite with snr 0 is up there
+-- and not heard, which is what an indoor receiver reports
+-- four of the eleven GPS have a reading, and the one Galileo left
+is(f:tracked(), 5, "only the ones with signal are tracked")
+
 -- ---- the fix ----
 
 f = nmea.newfix()

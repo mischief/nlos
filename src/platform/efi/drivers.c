@@ -374,6 +374,36 @@ luaopen_los_platform_hci(lua_State *L)
 	return 1;
 }
 
+/* no gnss receiver, and defined for the same reason as the hci module
+ * above: proc.c names it on every platform.
+ */
+int
+platform_have_gps(void)
+{
+	return 0;
+}
+
+unsigned long
+platform_gps_rx(void)
+{
+	return 0;
+}
+
+unsigned long
+platform_gps_pending(void)
+{
+	return 0;
+}
+
+int luaopen_los_platform_gps(lua_State *L);
+
+int
+luaopen_los_platform_gps(lua_State *L)
+{
+	luaL_newlib(L, hci_emptylib);
+	return 1;
+}
+
 /* los.platform.eth lives in snp.c on this platform: the firmware's
  * EFI_SIMPLE_NETWORK_PROTOCOL, with our own stack above it.
  */
