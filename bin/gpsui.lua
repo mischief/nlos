@@ -555,6 +555,7 @@ end
 
 local ev = prog.events()
 local EVERY_MS = 1000
+local SLICE_MS = 40
 local running = true
 
 fb.fill({ x = 0, y = 0, w = W, h = H }, BG, true)
@@ -607,15 +608,25 @@ thread.spawn(function()
 		if not redraw then
 			prefetch(atlat, atlon)
 		end
-		thread.sleep(EVERY_MS)
+
+		-- The clock and the sky want a pass a second, and a turn
+		-- wants one now: slept in slices, so a roll is answered
+		-- within one rather than in what was left of the second.
+		local slept = 0
+
+		while running and slept < EVERY_MS and not redraw do
+			thread.sleep(SLICE_MS)
+			slept = slept + SLICE_MS
+		end
 	end
 end)
 
 -- the pointer is a port of its own and a thread of its own reads it:
 -- alt cannot tell a port that hung up from a quiet one.
--- how long a burst from one roll of the ball lasts, near enough
-local TURNGAP = 350
-local lastturn = 0
+-- the quiet that ends a burst: shorter than the gap between notches
+-- a hand makes, longer than the gap between records one flick sends
+local TURNGAP = 40
+local lastrec = 0
 local point = prog.mouse()
 
 if point then
@@ -642,14 +653,17 @@ if point then
 			end
 
 			-- One turn per flick. A trackball is not a detented
-			-- wheel: rolling it once sends a burst of records,
-			-- and a step for each of them spun the earth half
-			-- way round. The rest of the burst is dropped.
+			-- wheel: one roll sends a burst, and a step apiece
+			-- spun the earth half way round. A burst is records
+			-- that keep arriving; a notch is one on its own.
 			local now = sys.uptime_ms()
 
-			if d ~= 0 and now - lastturn >= TURNGAP then
-				lastturn = now
-				step, redraw = (step + d) % STEPS, true
+			if d ~= 0 then
+				if now - lastrec >= TURNGAP then
+					step = (step + d) % STEPS
+					redraw = true
+				end
+				lastrec = now
 			end
 		end
 	end)
