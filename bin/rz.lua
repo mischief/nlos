@@ -139,8 +139,13 @@ tty.rawon()
 -- both. lrzsz honours neither and streams regardless -- see docs.
 local WINDOW = 8192
 
+-- a sender that was killed says nothing more, and the console is raw
+-- until this returns: without a bound the board needs a reset to type
+-- at again. Long enough that a slow write is never mistaken for it.
+local IDLE = 15000
+
 local m = zmodem.receiver({ sink = sink, yieldwrite = true,
-    window = WINDOW, overlap = false })
+    window = WINDOW, overlap = false, idle = IDLE })
 -- pcall, because a sink that fails leaves by raising: the console must
 -- get cooked mode back either way, or the shell returns with no line
 -- editing and nothing on screen to say why.

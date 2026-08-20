@@ -1293,6 +1293,8 @@ local function newmach(body, opts)
 		window = opts.window,
 		-- false where a write stops this proc reading. See ZRINIT.
 		overlap = opts.overlap,
+		-- the whole session's bound on a silent peer. See M.drive.
+		idle = opts.idle,
 	}, Mach)
 
 	m.co = coroutine.create(function()
@@ -1329,7 +1331,13 @@ end
 -- Both kinds of blocking happen HERE, outside the coroutine, and that
 -- is the point: a yield inside it unwinds to Mach:run rather than to
 -- the caller's own scheduler.
+-- `idle` bounds the whole session against a peer that stopped talking.
+-- The per-state retry counts do not: anything arriving resets them, and
+-- a line with noise on it is never quiet enough to run one out. Work
+-- counts as life, so a slow write is not mistaken for a dead sender.
 function M.drive(m, line)
+	local heard = line.now()
+
 	while true do
 		local st = m:run(line.now())
 		local out = m:pull()
@@ -1356,12 +1364,18 @@ function M.drive(m, line)
 			-- from out here.
 			m.sinkres = m:sinkdo(m.sinkreq.op, m.sinkreq.a,
 			    m.sinkreq.b)
+			heard = line.now()
 		end
 		if m.wantinput then
 			local d = line.read(m:timeleft(line.now()))
 
 			if d and #d > 0 then
 				m:feed(d)
+				heard = line.now()
+			elseif m.idle and line.now() - heard >= m.idle then
+				m.err = "nothing from the other end for " ..
+				    (m.idle // 1000) .. "s"
+				return nil, m.err
 			end
 		end
 	end

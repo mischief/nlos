@@ -488,7 +488,16 @@ function Panel:push(file, dir)
 	-- session: lrzsz sets the line raw and flushes it, and a child
 	-- without a controlling terminal gets EIO for both rather than
 	-- SIGTTOU.
-	local pid = self.hu.spawn({ "sz", "-q", "-b", file },
+	-- SZFLAGS replaces the defaults, so a session can reproduce
+	-- whatever invocation is being complained about
+	local argv = { "sz" }
+
+	for w in (os.getenv("SZFLAGS") or "-q -b"):gmatch("%S+") do
+		argv[#argv + 1] = w
+	end
+	argv[#argv + 1] = file
+
+	local pid = self.hu.spawn(argv,
 	    { stdin = self.fd, stdout = self.fd, stderr = 2,
 	      session = true })
 

@@ -104,7 +104,9 @@ tty.rawon()
 
 -- yieldread: the reader parks on the file server, so the read must
 -- happen outside the sender's coroutine. See lib/zmodem.lua's Mach:want.
-local m = zmodem.sender(files, { yieldread = true })
+-- the same bound the receiver keeps: a peer that went away must not
+-- hold this console raw. See lib/zmodem.lua's M.drive.
+local m = zmodem.sender(files, { yieldread = true, idle = 15000 })
 local ok, res, err = pcall(zmodem.drive, m, line)
 
 -- the receiver says "OO" after the session ends, and it arrives once we
