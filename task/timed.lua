@@ -164,12 +164,14 @@ local function fromsky()
 		return nil
 	end
 
-	local reply = sys.newport("timed.gps")
-	local guard <close> = sys.owned(reply)
+	-- the thread's own reply port and a SEND right to it, which is
+	-- what a reply travels on: handing over the receive right gives
+	-- the answer away instead of asking for it.
+	local rp, send = thread.replyport()
 
-	sys.send(gpsh, { op = "fix", reply = { __right = reply } })
+	sys.send(gpsh, { op = "fix", reply = { __right = send } })
 
-	local f = thread.recvtimeout(reply, 2000)
+	local f = thread.recvtimeout(rp, 2000)
 
 	if type(f) == "table" and f.has and f.epoch then
 		return f.epoch
