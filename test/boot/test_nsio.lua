@@ -17,7 +17,7 @@ local ns = require("ns")
 local espfs = require("espfs")
 local tap = require("tap")
 
-tap.plan(18)
+tap.plan(19)
 
 local N = ns.new()
 
@@ -98,6 +98,18 @@ do
 end
 tap.is(N:readfile("/synth/made.txt"), "written through io\n",
     "io.open('w') creates and writes through the namespace")
+
+-- create refuses a name that exists, so "w" must fall back to opening
+-- and truncating. Without that, only the first write to a path ever
+-- worked and every later one answered "file already exists".
+do
+	local f = assert(io.open("/synth/made.txt", "w"))
+
+	f:write("again\n")
+	f:close()
+end
+tap.is(N:readfile("/synth/made.txt"), "again\n",
+    "io.open('w') replaces a file that is already there")
 
 -- ---- the namespace is now the boundary, not advisory ----
 --

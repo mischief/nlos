@@ -370,8 +370,15 @@ function M.open(path, mode, N)
 	local m = mode:gsub("b", "")
 
 	if m == "w" or m == "a" then
+		-- create refuses a name that is already there, as 9P's
+		-- create does. Opening for "w" is the fallback and means
+		-- truncate, so lua's "w" replaces a file rather than
+		-- failing on the second write to the same path.
 		local c, err = N:create(path, "rw")
 
+		if not c then
+			c, err = N:open(path, m == "a" and "rw" or "w")
+		end
 		if not c then
 			return nil, err
 		end

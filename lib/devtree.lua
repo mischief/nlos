@@ -163,9 +163,33 @@ function M.mem(tree)
 		}
 	end
 
+	-- "w" truncates, as it does in lib/fatfs: a shorter body must not
+	-- leave the tail of the longer one behind it.
+	local function slot(h)
+		local parent, key = tree, nil
+
+		for elem in h.path:gmatch("[^/]+") do
+			if type(parent[elem]) == "table" then
+				parent = parent[elem]
+			else
+				key = elem
+			end
+		end
+		return parent, key
+	end
+
 	function B.open(h, mode)
 		if mode ~= "r" and type(h.node) == "table" then
 			error_(dev.Eisdir)
+		end
+		if mode == "w" then
+			local parent, key = slot(h)
+
+			if not key then
+				error_(dev.Eio)
+			end
+			parent[key] = ""
+			h.node = ""
 		end
 		return dev.closable(B, h)
 	end
@@ -194,15 +218,8 @@ function M.mem(tree)
 		end
 		-- find our slot in the parent so the tree, not just this
 		-- handle, sees the change
-		local parent, key = tree, nil
+		local parent, key = slot(h)
 
-		for elem in h.path:gmatch("[^/]+") do
-			if type(parent[elem]) == "table" then
-				parent = parent[elem]
-			else
-				key = elem
-			end
-		end
 		if not key then
 			error_(dev.Eio)
 		end
