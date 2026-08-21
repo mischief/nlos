@@ -278,7 +278,15 @@ end
 -- Unlike UDP's, TCP's checksum is not optional: a segment that does not
 -- add up is discarded, so this is required on both sides.
 local function pseudo(src, dst, len)
-	return src .. dst .. string.pack(">I1I1I2", 0, ip4.PROTO_TCP, len)
+	return string.pack(">c4c4I1I1I2", src, dst, 0, ip4.PROTO_TCP, len)
+end
+
+-- the pseudo-header's contribution, as a partial sum to carry into the
+-- sum over the segment. ip4.checksum returns the complement, so this
+-- undoes it; feeding the two separately is what lets a full-sized
+-- segment be summed where it lies instead of behind a copy of itself.
+local function pseudosum(src, dst, len)
+	return (~ip4.checksum(pseudo(src, dst, len))) & 0xffff
 end
 
 -- seg is { sport, dport, seq, ack, flags, wnd, urp, opt, data }; src and
@@ -322,7 +330,7 @@ function tcp4.encode(seg, src, dst, out, at)
 			out:copy(at + hlen, data)
 		end
 		out:setu16be(at + 16, ip4.checksum(out:view(at, at + len - 1),
-		    (~ip4.checksum(pseudo(src, dst, len))) & 0xffff))
+		    pseudosum(src, dst, len)))
 		return alloced and out or len
 	end
 
@@ -330,7 +338,7 @@ function tcp4.encode(seg, src, dst, out, at)
 	    seg.sport, seg.dport, seg.seq & MASK, (seg.ack or 0) & MASK,
 	    off | (seg.flags & 0xff), seg.wnd or 0, 0, seg.urp or 0)
 	local body = hdr .. opts .. data
-	local ck = ip4.checksum(pseudo(src, dst, #body) .. body)
+	local ck = ip4.checksum(body, pseudosum(src, dst, #body))
 
 	-- a computed zero is transmitted as zero here, unlike UDP: TCP has
 	-- no "no checksum" encoding to collide with.
@@ -356,9 +364,16 @@ function tcp4.decode(p, src, dst)
 		return nil
 	end
 
-	if src and dst and ip4.checksum(pseudo(src, dst, #p) .. p) ~= 0 then
+	if src and dst and
+	    ip4.checksum(p, pseudosum(src, dst, #p)) ~= 0 then
 		return nil
 	end
+
+	-- twenty bytes of header and nothing after it is every segment
+	-- once the handshake is done, and the empty parse still costs a
+	-- substring and a table.
+	local opt = hlen > tcp4.HDRLEN and
+	    tcp4.decode_options(p:sub(tcp4.HDRLEN + 1, hlen)) or {}
 
 	return {
 		sport = sport,
@@ -369,7 +384,7 @@ function tcp4.decode(p, src, dst)
 		wnd = wnd,
 		ck = ck,
 		urp = urp,
-		opt = tcp4.decode_options(p:sub(tcp4.HDRLEN + 1, hlen)),
+		opt = opt,
 		data = p:sub(hlen + 1),
 	}
 end
