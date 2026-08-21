@@ -140,3 +140,12 @@ CONFIG_COMPILER_STACK_CHECK_MODE_STRONG=y
 # is also the console. Nothing starts it: a program that plays opens
 # it, and it comes up with the peripheral rail.
 CONFIG_LUAOS_I2S_AUDIO=y
+
+# The lua heaps live in PSRAM, so every table, string and function a
+# proc touches is read through this cache. A task resumed for one
+# segment finds none of its working set there, and 16KB of code plus
+# 32KB of data is not enough to hold an interpreter and a protocol
+# between two resumes.
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
