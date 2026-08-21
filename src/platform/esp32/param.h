@@ -62,16 +62,12 @@
 #endif
 
 /* Lua's gc pause: how far the heap may grow past live before the next
- * cycle, as a percentage. The stock 200 lets the heap double, and the
- * overshoot is memory nothing else on the board can have. Collecting
- * more often costs cpu this machine has and memory it does not.
- *
- * No figure here: what the machine holds depends on what it is running,
- * and the one that used to be quoted was out by an order of magnitude
- * within a few months. `stats` at the prompt answers it for the board
- * in front of you.
+ * cycle, as a percentage. Memory traded for cpu, at a steep rate down
+ * here -- collector work per byte allocated goes as 100/(pause-100),
+ * so below about 200 a proc pays several times over for each byte.
+ * `stats` at the prompt says what this board actually holds.
  */
-#define GCPAUSE		120
+#define GCPAUSE		300
 
 /* the scheduler's slice, longer here than the 2ms the other platforms
  * take.
