@@ -31,7 +31,14 @@ CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 # third proc cannot finish its requires -- which is the state qemu is
 # permanently in, since it emulates no PSRAM at all.
 CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+
+# Internal SRAM is what the DMA, the task stacks and the caches come
+# out of, and only 250KB of it exists. The wifi driver's buffers go to
+# PSRAM, and the reserve below is held back from malloc so an audio
+# ring or a panel transfer can still be allocated on a full machine.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 
 # The console is where the two target machines genuinely disagree, and
 # there is no single setting that serves both.

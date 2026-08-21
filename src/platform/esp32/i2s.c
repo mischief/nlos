@@ -24,11 +24,12 @@ static unsigned long late;
 static int filling;	/* loading the buffers before the clock starts */
 
 /* how much the DMA holds, and so how late a writer may be before the
- * amplifier runs dry. A descriptor carries at most 4092 bytes, which
- * at four bytes a frame is 1023; eight of those is 170ms at 48kHz and
- * 32KB of the internal memory they must come from.
+ * amplifier runs dry. A descriptor carries at most 4092 bytes and its
+ * size must be a whole number of cache lines, so at four bytes a frame
+ * and 64 bytes a line the most that fits is 1008. Eight of those is
+ * 168ms at 48kHz, out of the internal memory they must come from.
  */
-#define DMA_FRAMES 1020
+#define DMA_FRAMES 1008
 #define DMA_COUNT 8
 
 int
