@@ -118,14 +118,19 @@ function M.setsink(name)
 	return true
 end
 
--- what this machine could play through, whether or not it would
+-- what this machine could play through, whether or not it would.
+--
+-- usbhave, never usbhost: the latter starts the controller, and on a
+-- board whose console is that port the console is gone until the next
+-- boot. Asking what the machine can do must not change what it is
+-- doing.
 function M.sinks()
 	local out = {}
 
 	if sys.i2shave and sys.i2shave() then
 		out[#out + 1] = "i2s"
 	end
-	if sys.usbhost and sys.usbhost() then
+	if sys.usbhave and sys.usbhave() then
 		out[#out + 1] = "usb"
 	end
 	return out
@@ -147,7 +152,10 @@ function M.open(rate, channels, width)
 	elseif want == "i2s" then
 		order = { i2sopen }
 	elseif costly then
-		order = { i2sopen, usbopen }
+		-- and not as a fallback either: falling back to usb here
+		-- would take the console on the way past, which is not a
+		-- thing to do because the amplifier was busy.
+		order = { i2sopen }
 	else
 		order = { usbopen, i2sopen }
 	end

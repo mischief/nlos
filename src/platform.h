@@ -163,6 +163,12 @@ int	platform_battery(int *mv);
  */
 int	platform_usbhost(void);
 
+/* whether this machine has one at all, which starting it is the only
+ * other way to find out -- and that answer cannot be given back. A
+ * caller listing what the machine could do asks this one.
+ */
+int	platform_usb_have(void);
+
 /* the audio device on that port, as the descriptors describe it. The
  * choice of interface, setting, endpoint and rate is made above, in
  * lib/uac.lua: this only carries it out. Bytes are signed 16-bit

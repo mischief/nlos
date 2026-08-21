@@ -519,6 +519,12 @@ platform_usb_isconsole(void)
 }
 
 int
+platform_usb_have(void)
+{
+	return 1;
+}
+
+int
 platform_usbhost(void)
 {
 	static int started;
@@ -535,6 +541,12 @@ platform_usbhost(void)
 /* a chip without the controller, or a board that did not ask for it */
 int
 platform_usbhost(void)
+{
+	return 0;
+}
+
+int
+platform_usb_have(void)
 {
 	return 0;
 }

@@ -1976,6 +1976,18 @@ api_usbhost(lua_State *L)
 	return 1;
 }
 
+/* sys.usbhave() -> whether this machine has a host controller, without
+ * starting it. sys.usbhost above is the only other way to find out and
+ * it cannot be undone, so listing what the machine could play through
+ * asks this instead.
+ */
+static int
+api_usbhave(lua_State *L)
+{
+	lua_pushboolean(L, platform_usb_have());
+	return 1;
+}
+
 /* sys.usbdesc() -> the active configuration descriptor as a string, or
  * nil where nothing is plugged in. lib/usb.lua reads it.
  */
@@ -2701,6 +2713,7 @@ static const luaL_Reg kapi[] = {
 	{ "meminfo", api_meminfo },
 	{ "battery", api_battery },
 	{ "usbhost", api_usbhost },
+	{ "usbhave", api_usbhave },
 	{ "usbdesc", api_usbdesc },
 	{ "usbplay", api_usbplay },
 	{ "usbwrite", api_usbwrite },

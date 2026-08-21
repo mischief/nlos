@@ -566,6 +566,13 @@ test('usb', lua_interp,
   timeout: 20,
 )
 
+# Which device the samples go to, and that listing them starts nothing.
+test('audio', lua_interp,
+  args: [files('host_audio.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # /net/wifi, parsed once for both faces of the app.
 test('wifi', lua_interp,
   args: [files('host_wifi.lua')],
