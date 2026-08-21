@@ -50,6 +50,11 @@ end
 -- genuinely want more can raise it.
 M.MAXBODY = 1024 * 1024
 
+-- How much to ask the stack for at once. Every read is a round trip to
+-- the tcp task, so a small one puts that trip inside every few
+-- segments. Half of MAXMSG, since the answer travels as one message.
+M.READCHUNK = 32 * 1024
+
 
 -- ---- a connection, reused ----
 -- A handshake costs seconds on a board where the network costs
@@ -73,7 +78,7 @@ function Conn:fill(want)
 			return want(self.buf, true), "connection closed"
 		end
 
-		local data = self.tcp.recv(self.conn, 4096)
+		local data = self.tcp.recv(self.conn, M.READCHUNK)
 
 		if not data or data == "" then
 			-- one more look: a body ended by the close is
@@ -109,9 +114,12 @@ function Conn:drain(len, sink)
 		end
 
 		local take = #self.buf < left and #self.buf or left
-		local piece = self.buf:sub(1, take)
+		-- taking all of it is the common case with a read as large
+		-- as the buffer, and slicing would copy it twice to say so.
+		local all = take == #self.buf
+		local piece = all and self.buf or self.buf:sub(1, take)
 
-		self.buf = self.buf:sub(take + 1)
+		self.buf = all and "" or self.buf:sub(take + 1)
 		left = left - take
 		if not sink(piece) then
 			return nil, "sink refused the body"
