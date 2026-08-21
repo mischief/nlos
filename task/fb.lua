@@ -367,9 +367,38 @@ end
 -- promise this task keeps, so a screenshot on a platform whose driver
 -- has not learned it is slow rather than absent. The length is what
 -- says which happened -- there is nothing else to ask.
-function ops.unload(m)
+-- the glass as it is now, into an image of the caller's own. A reader
+-- that takes the screen a band at a time -- a screenshot -- otherwise
+-- gets each band from a different moment, and a screen that moves
+-- during the read comes back as a composite of several.
+--
+-- An ordinary image, so it is freed and reaped like any other.
+function ops.snap(m, space)
+	local mode = platform.mode()
+	local w, h = mode.w, mode.h
+	local id = ops.alloc({ w = w, h = h, fmt = "bgrx" }, space)
+	local img = image(space, id)
+
+	img:rows(0, 0, w, h, platform.unload(0, 0, w, h, "bgrx"), "bgrx")
+	return { id = id, w = w, h = h }
+end
+
+function ops.unload(m, space)
 	local x, y, w, h = rect(m.r)
-	local pix = platform.unload(x, y, w, h, m.fmt)
+	local from = m.id and image(space, m.id)
+	local pix
+
+	if from then
+		pix = md().bytes(from, { x = x, y = y, w = w, h = h })
+
+		-- the narrowing below walks bytes, and a buffer is not a
+		-- string: tostring() on one is its name, not its contents.
+		if m.fmt == "rgb" and type(pix) ~= "string" then
+			pix = pix:str()
+		end
+	else
+		pix = platform.unload(x, y, w, h, m.fmt)
+	end
 
 	if m.fmt ~= "rgb" or type(pix) ~= "string" or #pix == w * h * 3 then
 		return pix

@@ -123,6 +123,13 @@ function M.new(handle, chunk)
 	function f.free(id, wait)
 		return tell({ op = "free", id = id }, wait)
 	end
+	-- the glass as it is now, as an image of our own. What a reader
+	-- taking the screen a band at a time wants: the bands then come
+	-- from one moment rather than from several. Free it like any
+	-- other image.
+	function f.snap()
+		return ask({ op = "snap" })
+	end
 	-- src into dst at p; dst nil is the screen. r is the part of src
 	-- to take, and defaults to all of it.
 	function f.draw(dst, src, r, p, wait)
@@ -298,13 +305,15 @@ function M.new(handle, chunk)
 	-- Not BPP above: these are the formats pixels can be read BACK in,
 	-- and "rgb" is not one a load takes. Sharing the map would offer a
 	-- load format the driver refuses.
-	function f.unload(r, fmt)
+	-- id names an image to read instead of the glass, which is what a
+	-- snapshot is read through.
+	function f.unload(r, fmt, id)
 		local bpp = fmt == "rgb" and 3 or 4
 		local stride = r.w * bpp
 		local perband = stride > 0 and (CHUNK // stride) or 0
 
 		if perband >= r.h then
-			return ask({ op = "unload", r = r, fmt = fmt })
+			return ask({ op = "unload", r = r, fmt = fmt, id = id })
 		end
 
 		local out = {}
@@ -327,7 +336,7 @@ function M.new(handle, chunk)
 					if n > half then
 						n = half
 					end
-					local piece, err = ask({ op = "unload",
+					local piece, err = ask({ op = "unload", id = id,
 					    fmt = fmt,
 					    r = { x = r.x + x, y = r.y + y,
 					        w = n, h = 1 } })
@@ -350,7 +359,7 @@ function M.new(handle, chunk)
 			if n > perband then
 				n = perband
 			end
-			local piece, err = ask({ op = "unload", fmt = fmt,
+			local piece, err = ask({ op = "unload", fmt = fmt, id = id,
 			    r = { x = r.x, y = r.y + y, w = r.w, h = n } })
 
 			if not piece then

@@ -79,11 +79,18 @@ local stride = W * 3
 local header = ("P6\n%d %d\n255\n"):format(W, H)
 local size = #header + H * stride
 
+-- the screen as it is now, held by the fb task for the length of the
+-- transfer. A band is fetched when the bytes going on the wire fall in
+-- it, which spans seconds: read from the glass, each band comes from a
+-- different moment and a screen that moves comes back as a composite.
+local snap = rpc(fb, fbport, { op = "snap" }).ok
+local snapid = snap and snap.id
+
 -- the image is never built. read() takes an offset so that a body can
 -- be larger than memory: a row is fetched when the bytes about to go on
 -- the wire fall in it, and only the current one is kept. ZRPOS can
 -- rewind, which a plain generator could not serve -- but a row is
--- always recomputable from the panel.
+-- always recomputable from the snapshot.
 --
 -- unload hands back real colors where the driver keeps a color copy, or
 -- black and white where the shadow is one bit per pixel.
@@ -115,7 +122,7 @@ local function band(y)
 		local t0 = sys.uptime_ms()
 		local n = math.min(BAND, H - y)
 		local r = rpc(fb, fbport, { op = "unload", fmt = "rgb",
-		    r = { x = 0, y = y, w = W, h = n } })
+		    id = snapid, r = { x = 0, y = y, w = W, h = n } })
 
 		if not (r and r.ok) then
 			error("unload rows " .. y .. "+" .. n .. ": " ..
@@ -269,6 +276,10 @@ sys.log("shot: setup %dms drive %dms | write %dms/%d read %dms/%d " ..
     ready - began, drove - ready, twrite, nwrite, tread, nread,
     slowread, tband, nband, nout, tostring(m.rxbufsize),
     tostring(m.rxflags))
+
+if snapid then
+	rpc(fb, fbport, { op = "free", id = snapid })
+end
 
 sys.send(cons, { op = "rawoff" })
 sys.send(cons, { op = "write", data = ("shot: %s %s %d bytes\n"):format(

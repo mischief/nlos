@@ -12,7 +12,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(36)
+tap.plan(40)
 
 tap.ok(caps_of.fb ~= nil, "boot payload was granted fb")
 if not caps_of.fb then
@@ -321,4 +321,46 @@ tap.ok(type(still) == "table" and still.w == mode.w,
 sys.close(deafsend)
 sys.close(deaf)
 
+-- ---- a snapshot does not move while it is read ----
+--
+-- A screenshot reads the screen a band at a time over seconds. From
+-- the glass, each band is a different moment; from a snapshot, they
+-- are one.
+
+fb.fill(memdraw.rect(0, 0, 32, 32), memdraw.red, true)
+
+local snap
+
+do
+	local got, err = fb.snap()
+
+	tap.ok(type(got) == "table" and got.id ~= nil,
+	    "snap answers an image id: " .. tostring(err))
+	snap = got and got.id
+end
+
+if snap then
+	local was = fb.unload(memdraw.rect(0, 0, 32, 32), nil, snap)
+
+	-- the glass moves, the snapshot must not
+	fb.fill(memdraw.rect(0, 0, 32, 32), memdraw.blue, true)
+
+	local now = fb.unload(memdraw.rect(0, 0, 32, 32), nil, snap)
+
+	tap.is(now, was, "the snapshot is the screen as it was, not as it is")
+
+	-- what a screenshot asks for. The pixels come out of an image
+	-- rather than off the glass here, and narrowing them to three
+	-- bytes walks the bytes -- which a buffer is not.
+	local rgbsnap = fb.unload(memdraw.rect(0, 0, 32, 32), "rgb", snap)
+
+	tap.is(type(rgbsnap) == "string" and #rgbsnap or rgbsnap, 32 * 32 * 3,
+	    "a snapshot reads back as rgb, the format a screenshot wants")
+	tap.ok(fb.unload(memdraw.rect(0, 0, 32, 32)) ~= was,
+	    "while the glass itself has moved on")
+	fb.free(snap)
+end
+
 tap.done()
+
+local snap
