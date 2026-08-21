@@ -141,7 +141,12 @@ tcb.TIME_WAIT = "TIME-WAIT"
 -- what we will accept from a writer before saying "no more". Both are
 -- ordinary socket buffer sizes and both are advisory to the caller,
 -- which may pass its own.
-local RCVBUF_DEFAULT = 32 * 1024
+--
+-- The receive side is as large as a window can be advertised without
+-- window scaling, because it is what bounds a bulk transfer: the
+-- sender may have no more outstanding than we have offered, so half a
+-- window is half the rate over the same round trip.
+local RCVBUF_DEFAULT = 64 * 1024
 local SNDBUF_DEFAULT = 32 * 1024
 
 -- The receive window goes on the wire as sixteen bits. Until window
@@ -756,7 +761,10 @@ function T:read(max)
 		end
 	end
 
-	local out = table.concat(taken)
+	-- One chunk is the common case and table.concat would copy it: a
+	-- reader asking for a segment's worth gets exactly the string the
+	-- segment arrived in.
+	local out = #taken == 1 and taken[1] or table.concat(taken)
 
 	self.rcvbytes = self.rcvbytes - #out
 
@@ -777,10 +785,17 @@ function T:read(max)
 	-- delayed ACKs -- is deliberately later work. This much is here
 	-- because without it every read costs a segment, which is not a
 	-- politeness problem but a throughput one.
+	--
+	-- And only where the peer could be waiting on it. A window worth
+	-- several segments is not holding the sender up, so that update
+	-- rides out on the acknowledgment already coming. Without the
+	-- test, a reader taking a segment at a time costs a segment for
+	-- each one, to say nothing new.
 	local unoffered = self.rcvbuf - self.rcvbytes - self.rcv_wnd
 
 	if self.state == tcb.ESTABLISHED and
-	    unoffered >= math.min(self.rcvbuf // 2, self.snd_mss) then
+	    unoffered >= math.min(self.rcvbuf // 2, self.snd_mss) and
+	    self.rcv_wnd < 2 * self.snd_mss then
 		self:_ack()
 	end
 	return out
