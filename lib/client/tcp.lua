@@ -31,6 +31,12 @@ function M.new(handle)
 	function n.localaddr(to)
 		return req({ op = "localaddr", to = to })
 	end
+	-- counters, where the stack keeps any. task/tcp.lua over the
+	-- firmware's TCP4 answers nil, which is not an error: the firmware
+	-- counts nothing this side can see.
+	function n.stats()
+		return req({ op = "stats" })
+	end
 	function n.listen(port)
 		return req({ op = "listen", port = port })
 	end
