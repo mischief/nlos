@@ -50,12 +50,17 @@ function ethwire.new(cap)
 	-- a frame built here is ours, so it is handed to the driver rather
 	-- than copied into the message and out again as a string. One a
 	-- caller passed straight through is not ours to give.
-	function w.send(frame)
-		local r = rpc({ op = "send",
-		    data = buf.is(frame) and frame:movable() and
-		        { __buf = frame } or frame })
 
-		return r and r.ok
+	-- No reply: the driver has nothing to say a caller can act on, and
+	-- waiting for one put a round trip through another proc inside
+	-- every packet sent. sendwait, so a full queue parks rather than
+	-- drops.
+	function w.send(frame)
+		local data = buf.is(frame) and frame:movable() and
+		    { __buf = frame } or frame
+
+		return (thread.sendwait(cap, { op = "send", data = data },
+		    #frame + 256))
 	end
 
 	function w.irqs()
