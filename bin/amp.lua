@@ -262,6 +262,7 @@ end
 -- ---- layout ----
 
 local T = {}	-- transport buttons, filled by drawhead
+local clockshown = nil	-- what the readout last said
 
 local function drawhead()
 	fill(0, 0, W, HEADH, BAR)
@@ -275,6 +276,7 @@ local function drawhead()
 	local x = W - bw * 4 - MARGIN
 
 	text(x - #clock * FW - MARGIN, (HEADH - FH) // 2, clock, GREEN, BAR)
+	clockshown = clock
 
 	T = {}
 	for i, lab in ipairs({ "|<", playing and "||" or ">", "[]", ">|" }) do
@@ -283,6 +285,29 @@ local function drawhead()
 		button(bx, 1, bw - 1, HEADH - 2, lab, FG, BAR)
 		T[i] = { x = bx, w = bw - 1 }
 	end
+end
+
+-- only the readout, and only when it says something new. The title and
+-- the transport do not move while a track plays, and repainting them
+-- costs panel transactions the feeding thread needs.
+local function clockat()
+	local w = 11 * FW
+
+	return W - BTNW * 4 - MARGIN - w - MARGIN, w
+end
+
+local function drawclock()
+	local now = mmss(elapsed) .. " / " .. mmss(total)
+
+	if now == clockshown or not visible then
+		return
+	end
+	clockshown = now
+
+	local x, w = clockat()
+
+	fill(x, 1, w + FW, HEADH - 2, BAR)
+	text(x, (HEADH - FH) // 2, now, GREEN, BAR)
 end
 
 local function drawtabs()
@@ -472,7 +497,12 @@ end
 
 -- ---- threads ----
 
-local ev = prog.ctx and prog.ctx.ev and prog.ctx.ev.__right or sys.SELF
+local ev = prog.events()
+
+if not ev then
+	io.stderr:write("amp: not running under the panel\n")
+	os.exit(1)
+end
 local point = prog.mouse()
 
 if point then
@@ -535,9 +565,9 @@ end)
 -- the clock, so the readout moves while a track plays
 thread.spawn(function()
 	while true do
-		thread.sleep(500)
-		if playing and visible then
-			drawhead()
+		thread.sleep(250)
+		if playing then
+			drawclock()
 		end
 	end
 end)

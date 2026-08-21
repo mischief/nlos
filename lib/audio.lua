@@ -125,7 +125,7 @@ function M.sinks()
 	if sys.i2shave and sys.i2shave() then
 		out[#out + 1] = "i2s"
 	end
-	if sys.usbhost then
+	if sys.usbhost and sys.usbhost() then
 		out[#out + 1] = "usb"
 	end
 	return out
