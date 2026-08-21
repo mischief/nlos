@@ -254,9 +254,17 @@ local function run(path)
 		end
 	end
 
+	-- before the drain, as bin/play.lua reports it: once the file is
+	-- done the device keeps asking and is answered with silence by
+	-- design. A gap the listener heard is one this counted.
+	local lost = dev.underruns()
+
 	thread.sleep(200)
 	dev.stop()
 	f:close()
+	if lost > 0 then
+		note = ("%s: %d late feeds"):format(base(path), lost)
+	end
 end
 
 -- ---- layout ----
