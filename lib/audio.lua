@@ -264,6 +264,48 @@ function M.usbaudio()
 	return false
 end
 
+-- may we look for a card, and what it would cost.
+--
+-- Looking means starting the host, which cannot be undone. Where the
+-- port is the console that spends it -- but only if a host is talking
+-- on it: with nothing attached, the console over that port is already
+-- reaching nobody, so looking costs nothing that works.
+function M.canprobe()
+	if not (sys.usbhave and sys.usbhave()) then
+		return false, "no usb controller"
+	end
+	if M.usbaudio() then
+		return false, "a card is already there"
+	end
+	if sys.usbconsole and sys.usbconsole() and
+	    sys.usbattached and sys.usbattached() then
+		return false, "the console is on that port"
+	end
+	return true
+end
+
+-- look, once. Answers whether a sound card turned up.
+function M.probe()
+	local ok, why = M.canprobe()
+
+	if not ok then
+		return false, why
+	end
+	if not sys.usbhost() then
+		return false, "the controller would not start"
+	end
+
+	local until_ = sys.uptime_ms() + SETTLE_MS
+
+	repeat
+		if M.usbaudio() then
+			return true
+		end
+		thread.sleep(100)
+	until sys.uptime_ms() >= until_
+	return false, "nothing on the port"
+end
+
 -- what this machine could play through now. usbhave, never usbhost:
 -- the latter starts the controller, and where the console is that port
 -- the console goes with it. The port is listed only with a card on it,

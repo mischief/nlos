@@ -174,6 +174,28 @@ ok(not started, "none of which started the controller")
 audio.setsink("i2s")
 attached = nil
 
+-- ---- looking for one costs the console, or costs nothing ----
+--
+-- Starting the host cannot be undone. Where the port is the console
+-- that matters only while somebody is on it: with no host attached,
+-- that console already reaches nobody.
+local usbattached = true
+
+package.loaded["los.sys"].usbattached = function() return usbattached end
+
+usbattached = true
+ok(select(1, audio.canprobe()) == false,
+    "with the console in use, we do not look")
+ok(audio.probe() == false, "and probing refuses")
+ok(not started, "so nothing started the controller")
+
+usbattached = false
+ok(audio.canprobe() == true, "with nothing on the port, looking is free")
+
+attached = config(0x01)
+ok(select(1, audio.canprobe()) == false, "a card already there needs no look")
+attached = nil
+
 -- ---- the volume ----
 
 conf = nil

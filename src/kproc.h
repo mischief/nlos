@@ -26,7 +26,7 @@ struct rqset;
 #define MAXMSGRIGHTS	32
 #define MAXMSGBUFS	4
 #define MAXWATCH	8	/* monitors per proc */
-#define NSYSCALL	64
+#define NSYSCALL	96	/* per-proc call counters; kapi is 65 */
 #define TRACESRC	32	/* distinct source files remembered */
 #define TRACECO		16	/* coroutines distinguished, as in debug.c */
 

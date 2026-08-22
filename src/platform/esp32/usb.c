@@ -24,6 +24,9 @@
  */
 #if CONFIG_LUAOS_USB_HOST
 
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+#include <driver/usb_serial_jtag.h>
+#endif
 #include <usb/usb_host.h>
 
 #define USB_TASK_STACK 8192
@@ -518,6 +521,21 @@ platform_usb_isconsole(void)
 #endif
 }
 
+/* is a host talking to us on that port right now? A host sends a
+ * start-of-frame every millisecond and IDF watches for them, so this
+ * is "the console is in use" -- which is what makes claiming the port
+ * expensive. With no host there, that console is already nobody's.
+ */
+int
+platform_usb_hostattached(void)
+{
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+	return usb_serial_jtag_is_connected() ? 1 : 0;
+#else
+	return 0;
+#endif
+}
+
 int
 platform_usb_have(void)
 {
@@ -552,6 +570,12 @@ platform_usb_have(void)
 }
 int
 platform_usb_isconsole(void)
+{
+	return 0;
+}
+
+int
+platform_usb_hostattached(void)
 {
 	return 0;
 }

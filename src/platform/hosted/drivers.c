@@ -463,6 +463,12 @@ platform_usb_have(void)
 }
 
 int
+platform_usb_hostattached(void)
+{
+	return 0;
+}
+
+int
 platform_usb_desc(void *p, int max)
 {
 	(void)p;

@@ -414,10 +414,35 @@ options[1] = {
 -- held is where the finger has it while the drag is going on. The
 -- setting is written on release, since /config is flash and a drag is
 -- a hundred positions.
+-- looking for a sound card is a thing to be asked for, not something
+-- to do while drawing a list: it starts the host controller, and that
+-- cannot be undone until the next boot.
+options[2] = {
+	label = "usb audio",
+	read = function()
+		if audio.usbaudio() then
+			return "a card is on the port"
+		end
+
+		local _, why = audio.canprobe()
+
+		return why or "none found; touch to look"
+	end,
+	next = function() return true end,
+	set = function()
+		local found, why = audio.probe()
+
+		if found then
+			return true
+		end
+		return nil, why
+	end,
+}
+
 local held = nil
 local dragging = nil
 
-options[2] = {
+options[3] = {
 	label = "volume",
 	slider = true,
 	read = function()

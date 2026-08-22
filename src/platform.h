@@ -169,6 +169,11 @@ int	platform_usbhost(void);
  */
 int	platform_usb_have(void);
 
+/* whether a host is talking to us on that port now. Where the console
+ * is that port, this is whether the console is in use.
+ */
+int	platform_usb_hostattached(void);
+
 /* the audio device on that port, as the descriptors describe it. The
  * choice of interface, setting, endpoint and rate is made above, in
  * lib/uac.lua: this only carries it out. Bytes are signed 16-bit

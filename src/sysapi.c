@@ -1988,6 +1988,17 @@ api_usbhave(lua_State *L)
 	return 1;
 }
 
+/* sys.usbattached() -> is a host talking to us on that port right now.
+ * Where the console is that port, this is whether claiming it would
+ * take a console somebody is using or one nobody is.
+ */
+static int
+api_usbattached(lua_State *L)
+{
+	lua_pushboolean(L, platform_usb_hostattached());
+	return 1;
+}
+
 /* sys.usbdesc() -> the active configuration descriptor as a string, or
  * nil where nothing is plugged in. lib/usb.lua reads it.
  */
@@ -2714,6 +2725,7 @@ static const luaL_Reg kapi[] = {
 	{ "battery", api_battery },
 	{ "usbhost", api_usbhost },
 	{ "usbhave", api_usbhave },
+	{ "usbattached", api_usbattached },
 	{ "usbdesc", api_usbdesc },
 	{ "usbplay", api_usbplay },
 	{ "usbwrite", api_usbwrite },
