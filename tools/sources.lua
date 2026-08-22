@@ -27,6 +27,7 @@ local groups = {}
 groups.kernel = {
 	"src/native_glue.c",
 	"src/adpcm_native.c",
+	"src/pcm_native.c",
 	"src/gefs_native.c",
 	"src/debug.c",
 	"src/dirs.c",

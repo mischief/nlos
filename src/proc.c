@@ -1369,6 +1369,11 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 */
 	lua_pushcfunction(p->L, luaopen_adpcm_native);
 	lua_setfield(p->L, -2, "adpcm.native");
+	/* pcm.native (src/pcm_native.c): the volume, applied to the
+	 * samples because no device here applies one of its own.
+	 */
+	lua_pushcfunction(p->L, luaopen_pcm_native);
+	lua_setfield(p->L, -2, "pcm.native");
 
 	/* dev: the backend interface, in C so a proc with a namespace does
 	 * not carry a copy of it. Registered under the bare name, so

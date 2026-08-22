@@ -81,24 +81,55 @@ local function i2sopen(rate, channels)
 	}
 end
 
--- what to play through, remembered across boots. "usb", "i2s", or
--- "auto"; anything else, or no file at all, is auto.
+-- what to play through and how loudly, remembered across boots.
+-- `key value` a line; a file holding a bare sink name is one written
+-- before there was anything else to say.
 M.CONF = "/config/audio"
 
-function M.sink()
+local function settings()
 	local f = io.open(M.CONF, "r")
+	local out = { sink = "auto", volume = 100 }
 
 	if not f then
-		return "auto"
+		return out
 	end
 
-	local s = (f:read("l") or ""):lower():gsub("%s", "")
+	for line in f:lines() do
+		local k, v = line:match("^%s*(%S+)%s+(%S+)%s*$")
 
+		if k == "sink" then
+			out.sink = v:lower()
+		elseif k == "volume" then
+			out.volume = tonumber(v) or out.volume
+		elseif not k then
+			local bare = line:lower():gsub("%s", "")
+
+			if bare == "usb" or bare == "i2s" then
+				out.sink = bare
+			end
+		end
+	end
 	f:close()
-	if s == "usb" or s == "i2s" then
-		return s
+	if out.sink ~= "usb" and out.sink ~= "i2s" then
+		out.sink = "auto"
 	end
-	return "auto"
+	out.volume = math.max(0, math.min(100, math.floor(out.volume)))
+	return out
+end
+
+local function save(t)
+	local f, why = io.open(M.CONF, "w")
+
+	if not f then
+		return nil, tostring(why)
+	end
+	f:write("sink ", t.sink, "\n", "volume ", t.volume, "\n")
+	f:close()
+	return true
+end
+
+function M.sink()
+	return settings().sink
 end
 
 -- setsink(name) -> true, or nil and why. /config is a mount rather
@@ -108,14 +139,79 @@ function M.setsink(name)
 		return nil, "no such sink"
 	end
 
-	local f, why = io.open(M.CONF, "w")
+	local t = settings()
 
-	if not f then
-		return nil, tostring(why)
+	t.sink = name
+	return save(t)
+end
+
+-- 0 to 100. Applied to the samples: see src/pcm_native.c for why
+-- neither device applies it itself.
+function M.volume()
+	return settings().volume
+end
+
+function M.setvolume(pct)
+	pct = tonumber(pct)
+	if not pct then
+		return nil, "volume is a number"
 	end
-	f:write(name, "\n")
-	f:close()
-	return true
+
+	local t = settings()
+
+	t.volume = math.max(0, math.min(100, math.floor(pct)))
+	return save(t)
+end
+
+-- what a percentage does to a sample. Squared, because loudness is not
+-- linear in amplitude: halfway down the scale should sound halfway
+-- down, and linear scaling there is barely quieter.
+local function factor(pct)
+	return math.floor(256 * (pct / 100) * (pct / 100) + 0.5)
+end
+
+local native = nil
+
+do
+	local ok, m = pcall(require, "pcm.native")
+
+	native = ok and m or nil
+end
+
+-- the same thing in lua, for a machine without the module. Slow on
+-- purpose rather than absent: a volume that silently did nothing is
+-- worse than one that costs.
+local function luagain(s, q)
+	if q == 256 then
+		return s
+	end
+
+	local out = {}
+	local sp, sb, sc = string.pack, string.byte, table.concat
+
+	for i = 1, #s - 1, 2 do
+		local lo, hi = sb(s, i, i + 1)
+		local v = lo | (hi << 8)
+
+		if v >= 32768 then
+			v = v - 65536
+		end
+		v = (v * q) // 256
+		if v > 32767 then
+			v = 32767
+		elseif v < -32768 then
+			v = -32768
+		end
+		out[#out + 1] = sp("<i2", v)
+	end
+	return sc(out) .. (#s % 2 == 1 and s:sub(#s) or "")
+end
+
+function M.gain(s, q)
+	if native then
+		return native.gain(s, q)
+	end
+	return luagain(s, q)
 end
 
 -- what this machine could play through, whether or not it would.
@@ -166,11 +262,39 @@ function M.open(rate, channels, width)
 		local d, no = fn(rate, channels, width)
 
 		if d then
-			return d
+			return M.leveled(d)
 		end
 		why = why or no
 	end
 	return nil, why or "no audio device"
+end
+
+-- the device with the volume in front of it. The setting is read here
+-- rather than per write -- a file read costs more than the scaling on
+-- this hardware -- so setgain is how a program changes it mid-track.
+function M.leveled(dev, pct)
+	local q = factor(pct or M.volume())
+	local raw = dev.write
+
+	dev.write = function(s)
+		if q == 256 then
+			return raw(s)
+		end
+
+		local took = raw(M.gain(s, q))
+
+		-- the caller resumes from the unscaled bytes, so a take
+		-- that stops mid-sample would put every later pair one
+		-- byte out. Give the half-sample back.
+		if took and took % 2 == 1 then
+			return took - 1
+		end
+		return took
+	end
+	dev.setgain = function(n)
+		q = factor(math.max(0, math.min(100, tonumber(n) or 100)))
+	end
+	return dev
 end
 
 return M

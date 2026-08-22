@@ -31,10 +31,12 @@
 #include <driver/i2c_master.h>
 #include <esp_timer.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "esp32.h"
 #include "lcd.h"
 #include "touch.h"
+#include "kernel.h"
 
 #define GT911_PRODUCT_ID	0x8140
 #define GT911_XMAX		0x8048	/* config: resolution, little-endian */
@@ -128,18 +130,46 @@ esp_touch_present(void)
 		return present;
 	probed = 1;
 
-	if (esp_tdeck_i2c(&bh) != 0)
+	/* absent and broken look the same from above -- the machine comes
+	 * up without a pointer either way -- so each way of failing says
+	 * so once.
+	 */
+	if (esp_tdeck_i2c(&bh) != 0) {
+		kernel_log("touch: no i2c bus");
 		return 0;
-	if (i2c_master_bus_add_device(bh, &dev, &tp) != ESP_OK)
+	}
+	if (i2c_master_bus_add_device(bh, &dev, &tp) != ESP_OK) {
+		kernel_log("touch: 0x5d would not attach to the bus");
 		return 0;
+	}
 
 	/* the product id reads as the ascii "911", which is what tells a
 	 * GT911 apart from whatever else answers at this address.
 	 */
-	if (reg_read(GT911_PRODUCT_ID, id, sizeof id) != 0)
+	if (reg_read(GT911_PRODUCT_ID, id, sizeof id) != 0) {
+		char m[96];
+		int n = snprintf(m, sizeof m, "touch: no answer at 0x5d; bus has");
+		int a;
+
+		/* which addresses do answer, since a silent panel and a
+		 * silent bus want different repairs: the keyboard's C3 at
+		 * 0x55 is the other device on these wires.
+		 */
+		for (a = 0x08; a < 0x78 && n < (int)sizeof m - 6; a++) {
+			if (i2c_master_probe(bh, a, 50) == ESP_OK)
+				n += snprintf(m + n, sizeof m - n, " %02x", a);
+		}
+		kernel_log(m);
 		return 0;
-	if (id[0] != '9' || id[1] != '1' || id[2] != '1')
+	}
+	if (id[0] != '9' || id[1] != '1' || id[2] != '1') {
+		char m[64];
+
+		snprintf(m, sizeof m, "touch: 0x5d is not a GT911: %02x%02x%02x",
+		    id[0], id[1], id[2]);
+		kernel_log(m);
 		return 0;
+	}
 
 	/* the panel's resolution, so to_screen scales rather than assumes.
 	 * A controller that will not say keeps the built-in guess: wrong
