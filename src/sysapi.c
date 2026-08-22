@@ -2771,6 +2771,15 @@ static const luaL_Reg kapi[] = {
 	{ NULL, NULL }
 };
 
+/* the counters are per proc and sized in kproc.h, which cannot see this
+ * table: it is a static here, and struct kproc is laid out long before
+ * the linker meets it. So the two are matched here, where both are in
+ * scope -- add a call and the build says so, rather than proc 0 dying
+ * at boot with the api half counted.
+ */
+_Static_assert(sizeof(kapi) / sizeof(kapi[0]) - 1 <= NSYSCALL,
+    "NSYSCALL is smaller than the syscall table: raise it in kproc.h");
+
 int
 los_sys_open(lua_State *L)
 {
@@ -2778,11 +2787,6 @@ los_sys_open(lua_State *L)
 
 	while (kapi[n].name)
 		n++;
-	/* a table that outgrew its counters would silently stop counting
-	 * the tail of itself, so say so at the door instead.
-	 */
-	if (n > NSYSCALL)
-		return luaL_error(L, "NSYSCALL too small for kapi (%d)", n);
 
 	lua_createtable(L, 0, n);
 	for (int i = 0; i < n; i++) {
