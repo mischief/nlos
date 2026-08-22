@@ -46,7 +46,14 @@ void	vfs_embed_register(void);
 #define TDECK_TFT_CS		12
 #define TDECK_TFT_DC		11
 #define TDECK_TFT_BL		42
+/* the SX1262, fourth device on the shared spi bus. BUSY is the one
+ * that matters: the chip takes its own time over a command and reading
+ * it before the pin drops gets the previous answer.
+ */
 #define TDECK_RADIO_CS		9
+#define TDECK_RADIO_BUSY	13
+#define TDECK_RADIO_RST		17
+#define TDECK_RADIO_DIO1	45
 #define TDECK_I2C_SDA		18
 #define TDECK_I2C_SCL		8
 #define TDECK_KB_ADDR		0x55	/* the keyboard is its own C3 */

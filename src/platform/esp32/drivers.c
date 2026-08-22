@@ -23,6 +23,7 @@
 #include "kbd.h"
 #include "ball.h"
 #include "touch.h"
+#include "lora.h"
 #include "lcd.h"
 #include "wifi.h"
 #include "ble.h"
@@ -147,6 +148,11 @@ platform_boot_extra_modules(lua_State *L)
 	 */
 	luaL_requiref(L, "los.platform.rng", luaopen_los_platform_rng, 0);
 	lua_pop(L, 1);
+
+	/* the radio, which says what it found either way. Nothing drives
+	 * it yet: this is the probe, and what it proves is the wiring.
+	 */
+	esp_lora_present();
 
 	/* say so either way, the way init reports every other device.
 	 * A keyboard that did not answer is otherwise indistinguishable
