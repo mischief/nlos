@@ -287,7 +287,12 @@ function Conn:request(req)
 			self.dead = true
 			return nil, cerr
 		end
-		rbody = sink and nil or body
+		-- the sink already has the bytes, so there is no body to
+		-- answer with. Not `sink and nil or body`: nil is false,
+		-- so that answers chunked()'s bare true instead.
+		if not sink then
+			rbody = body
+		end
 	elseif te ~= "" then
 		-- another coding leaves the body's end unknown, and a body
 		-- whose end is unknown cannot be told from the next

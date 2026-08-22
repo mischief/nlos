@@ -171,20 +171,28 @@ function ops.open(space, m, reply)
 	    reply = reply }
 end
 
+-- an id nobody was given is the one error these answer. Not `h and nil
+-- or "no such socket"`: nil is false, so that names the error on every
+-- successful call as well.
+local function answer(reply, h, ok)
+	if h then
+		sys.send(reply, ok)
+	else
+		sys.send(reply, nil, "no such socket")
+	end
+	sys.close(reply)
+end
+
 function ops.state(space, m, reply)
 	local h = sock(space, m.id)
 
-	sys.send(reply, h and platform.state(h) or nil,
-	    h and nil or "no such socket")
-	sys.close(reply)
+	answer(reply, h, h and platform.state(h))
 end
 
 function ops.send(space, m, reply)
 	local h = sock(space, m.id)
 
-	sys.send(reply, h and platform.send(h, m.data or "") or nil,
-	    h and nil or "no such socket")
-	sys.close(reply)
+	answer(reply, h, h and platform.send(h, m.data or ""))
 end
 
 function ops.recv(space, m, reply)
@@ -220,8 +228,7 @@ function ops.close(space, m, reply)
 		space.socks[m.id] = nil
 	end
 	if reply then
-		sys.send(reply, h and true or nil, h and nil or "no such socket")
-		sys.close(reply)
+		answer(reply, h, true)
 	end
 end
 

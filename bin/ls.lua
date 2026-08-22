@@ -46,7 +46,13 @@ local function width()
 	return (type(cols) == "number" and cols > 0) and cols or WIDTH
 end
 
-local cols = long and nil or width()
+-- one name a line for -l, columns otherwise. Not `long and nil or
+-- width()`: nil is false, so that columnises a long listing too.
+local cols = nil
+
+if not long then
+	cols = width()
+end
 
 -- Down the column and then across, as ls has always done: a reader
 -- looking for a name scans one column rather than jigging along a row.

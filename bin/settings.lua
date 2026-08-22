@@ -589,8 +589,13 @@ if point then
 					if o then
 						local ok, why = o.set(o.next())
 
-						optnote = ok and nil or
-						    tostring(why)
+						-- not `ok and nil or why`:
+						-- nil is false, so that
+						-- reports "nil" on success
+						optnote = nil
+						if not ok then
+							optnote = tostring(why)
+						end
 						draw(true)
 					end
 				end
