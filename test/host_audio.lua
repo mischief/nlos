@@ -12,6 +12,15 @@ package.path = scriptdir .. "/../lib/?.lua;" .. package.path
 
 local n, fails = 0, 0
 
+local function tablefind(t, want)
+	for _, v in ipairs(t) do
+		if v == want then
+			return true
+		end
+	end
+	return false
+end
+
 local function ok(cond, name)
 	n = n + 1
 	if cond then
@@ -26,10 +35,12 @@ end
 -- that must not be started, and a config file in memory.
 local started = false
 local conf = nil
+local attached = nil	-- the descriptor a card on the port would answer
 
 package.loaded["los.sys"] = {
 	i2shave = function() return true end,
 	usbhave = function() return true end,
+	usbdesc = function() return attached end,
 	usbhost = function()
 		started = true
 		error("usbhost started the controller", 0)
@@ -113,7 +124,8 @@ local names = table.concat(sinks, ",")
 
 ok(not started, "sinks() does not start the usb host to list it")
 ok(names:find("i2s") ~= nil, "the amplifier is listed: " .. names)
-ok(names:find("usb") ~= nil, "so is the port, without claiming it")
+ok(names:find("usb") == nil,
+    "the port is not, with nothing on it: " .. names)
 
 -- ---- the setting round trips ----
 
@@ -134,6 +146,33 @@ local dev, why = audio.open(48000, 2, 16)
 ok(dev ~= nil and dev.kind == "i2s",
     "auto takes the amplifier: " .. tostring(dev and dev.kind or why))
 ok(not started, "and does not touch the console's port on the way")
+
+-- ---- the port is a sink only with a card on it ----
+--
+-- A configuration descriptor and one interface: what the class byte
+-- says is the whole question here, and lib/usb is tested against a
+-- real adapter's bytes elsewhere.
+local function config(class)
+	return string.char(9, 0x02, 18, 0, 1, 1, 0, 0x80, 50) ..
+	    string.char(9, 0x04, 0, 0, 0, class, 1, 0, 0)
+end
+
+attached = nil
+ok(audio.usbaudio() == false, "nothing on the port is not a sink")
+ok(not tablefind(audio.sinks(), "usb"), "so it is not listed")
+ok(select(1, audio.setsink("usb")) == nil, "and cannot be chosen")
+
+attached = config(0x03)		-- a keyboard, say
+ok(audio.usbaudio() == false, "a device that is not a sound card either")
+ok(select(1, audio.setsink("usb")) == nil, "and still cannot be chosen")
+
+attached = config(0x01)		-- AUDIO
+ok(audio.usbaudio() == true, "a sound card on the port is a sink")
+ok(tablefind(audio.sinks(), "usb"), "so it is listed")
+ok(audio.setsink("usb") == true, "and can be chosen")
+ok(not started, "none of which started the controller")
+audio.setsink("i2s")
+attached = nil
 
 -- ---- the volume ----
 

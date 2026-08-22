@@ -138,6 +138,12 @@ function M.setsink(name)
 	if name ~= "usb" and name ~= "i2s" and name ~= "auto" then
 		return nil, "no such sink"
 	end
+	-- pinning the sink to a port with nothing on it is a machine that
+	-- plays nowhere until somebody remembers this was set. auto still
+	-- reaches the port, and reaches it when a card is there.
+	if name == "usb" and not M.usbaudio() then
+		return nil, "no usb sound card"
+	end
 
 	local t = settings()
 
@@ -228,19 +234,47 @@ function M.gain(s, q)
 	return luagain(s, q)
 end
 
--- what this machine could play through, whether or not it would.
+-- is there a sound card on the port now?
 --
--- usbhave, never usbhost: the latter starts the controller, and on a
--- board whose console is that port the console is gone until the next
--- boot. Asking what the machine can do must not change what it is
--- doing.
+-- Only what is already visible: seeing anything at all means the host
+-- controller is running, and starting it is what takes the console on
+-- a board where that port is the console. So this answers no on a
+-- machine that has never looked, which is the safe way to be wrong.
+function M.usbaudio()
+	if not (sys.usbhave and sys.usbhave() and sys.usbdesc) then
+		return false
+	end
+
+	local desc = sys.usbdesc()
+
+	if not desc then
+		return false
+	end
+
+	local cfg = require("usb").parse(desc)
+
+	if not cfg then
+		return false
+	end
+	for _, itf in ipairs(cfg.interfaces or {}) do
+		if itf.class == require("usb").AUDIO then
+			return true
+		end
+	end
+	return false
+end
+
+-- what this machine could play through now. usbhave, never usbhost:
+-- the latter starts the controller, and where the console is that port
+-- the console goes with it. The port is listed only with a card on it,
+-- since choosing it otherwise buys silence and sometimes the console.
 function M.sinks()
 	local out = {}
 
 	if sys.i2shave and sys.i2shave() then
 		out[#out + 1] = "i2s"
 	end
-	if sys.usbhave and sys.usbhave() then
+	if M.usbaudio() then
 		out[#out + 1] = "usb"
 	end
 	return out
