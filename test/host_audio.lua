@@ -148,6 +148,20 @@ ok(audio.volume() == 100, "a volume above the scale is clamped to it")
 audio.setvolume(-10)
 ok(audio.volume() == 0, "and below it to zero")
 
+-- the cycle a tap walks: whole fifths, wrapping at the top, and an
+-- odd value rounds onto them rather than carrying its offset around
+local step = {}
+local v = 0
+
+for _ = 1, 6 do
+	step[#step + 1] = v
+	v = audio.nextvolume(v)
+end
+ok(table.concat(step, ",") == "0,20,40,60,80,100",
+    "the volume cycles in fifths: " .. table.concat(step, ","))
+ok(audio.nextvolume(100) == 0, "and wraps at the top")
+ok(audio.nextvolume(25) == 40, "an odd value rounds onto the steps")
+
 -- silence is what a caller asked for, not something to skip
 local loud = string.pack("<i2i2i2", 20000, -20000, 0)
 

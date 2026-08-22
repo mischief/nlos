@@ -163,6 +163,20 @@ function M.setvolume(pct)
 	return save(t)
 end
 
+-- the next stop up from where the volume is, wrapping at the top. A
+-- value set from somewhere else rounds onto the steps rather than
+-- carrying its offset around for ever.
+M.VOLSTEP = 20
+
+function M.nextvolume(v)
+	local up = ((tonumber(v) or 0) // M.VOLSTEP) * M.VOLSTEP + M.VOLSTEP
+
+	if up > 100 then
+		return 0
+	end
+	return up
+end
+
 -- what a percentage does to a sample. Squared, because loudness is not
 -- linear in amplitude: halfway down the scale should sound halfway
 -- down, and linear scaling there is barely quieter.

@@ -410,15 +410,13 @@ options[1] = {
 
 -- in fifths: a tap cycles, so eleven stops would be a long way round
 -- to turn it down.
-local VOLSTEP = 20
-
 options[2] = {
 	label = "volume",
 	read = function()
 		return audio.volume() .. "%"
 	end,
 	next = function()
-		return (audio.volume() + VOLSTEP) % (100 + VOLSTEP)
+		return audio.nextvolume(audio.volume())
 	end,
 	set = audio.setvolume,
 }
