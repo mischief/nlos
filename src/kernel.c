@@ -124,6 +124,7 @@ static int have_udp;
 static int have_ws;
 static int have_hci;
 static int have_fb;
+static int have_lora;
 static int have_blk;
 static int have_flash;
 static int have_wire;
@@ -747,6 +748,7 @@ kernel_init(void)
 	have_hci = platform_have_hci();
 	have_p9 = platform_have_p9();
 	have_fb = platform_have_fb();
+	have_lora = platform_have_lora();
 	have_blk = platform_have_blk();
 	have_flash = platform_have_flash();
 	have_wire = platform_have_wire();
@@ -940,6 +942,14 @@ spawn_init(const char *code, size_t len, int is_file)
 		  .priv = PRIV_FB, .devport = 0, .devrecv = 0,
 		  .what = "the framebuffer", .enabled = have_fb,
 		  .capname = "fb" },
+		/* the LoRa radio. No devport: the chip says a packet is
+		 * done on a pin this task reads, so there is no interrupt
+		 * for the kernel to turn into a message.
+		 */
+		{ .path = "/task/lora.lua", .chunkname = "=lora",
+		  .priv = PRIV_LORA, .devport = 0, .devrecv = 0,
+		  .what = "the lora radio", .enabled = have_lora,
+		  .capname = "lora" },
 	};
 	size_t ndrivers = sizeof drivers / sizeof drivers[0];
 	int pids[sizeof drivers / sizeof drivers[0]];

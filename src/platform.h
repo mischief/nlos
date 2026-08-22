@@ -84,6 +84,11 @@ int	platform_net_ready(void);
  */
 int	platform_have_hci(void);
 
+/* a LoRa radio on the spi bus. The task that owns it speaks the chip;
+ * this only says whether there is one to speak to.
+ */
+int	platform_have_lora(void);
+
 /* HCI packets taken from the controller since boot. The hci pump's edge
  * detection, kept apart from platform_dev_irqs so a packet wakes the
  * task that wants one.

@@ -306,6 +306,12 @@ platform_have_hci(void)
 	return 0;
 }
 
+int
+platform_have_lora(void)
+{
+	return 0;
+}
+
 unsigned long
 platform_hci_irqs(void)
 {
@@ -547,3 +553,13 @@ platform_i2s_underruns(void)
 	return 0;
 }
 
+
+/* no radio here; the symbol exists for the link, as p9's does */
+int luaopen_los_platform_lora(lua_State *L);
+
+int
+luaopen_los_platform_lora(lua_State *L)
+{
+	lua_newtable(L);
+	return 1;
+}

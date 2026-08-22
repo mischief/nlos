@@ -78,12 +78,22 @@ esp_lora_xfer(const uint8_t *tx, uint8_t *rx, int n)
 	return e == ESP_OK ? 0 : -1;
 }
 
+/* DIO1 is how the chip says a packet is done, sent or received. Read
+ * rather than waited on: the caller above polls, and an interrupt here
+ * would only move the polling into a queue.
+ */
+int
+esp_lora_irq(void)
+{
+	return gpio_get_level(TDECK_RADIO_DIO1);
+}
+
 /* NRESET is active low and the chip wants 100us of it; the datasheet's
  * own figure. Afterwards it walks itself through its boot and raises
  * BUSY until it is done.
  */
-static int
-reset(void)
+int
+esp_lora_reset(void)
 {
 	gpio_set_level(TDECK_RADIO_RST, 0);
 	vTaskDelay(pdMS_TO_TICKS(2));
@@ -167,7 +177,7 @@ esp_lora_present(void)
 		return 0;
 	}
 
-	if (reset() != 0) {
+	if (esp_lora_reset() != 0) {
 		kernel_log("lora: busy never dropped after reset");
 		return 0;
 	}
@@ -214,6 +224,18 @@ esp_lora_xfer(const uint8_t *tx, uint8_t *rx, int n)
 	(void)rx;
 	(void)n;
 	return -1;
+}
+
+int
+esp_lora_reset(void)
+{
+	return -1;
+}
+
+int
+esp_lora_irq(void)
+{
+	return 0;
 }
 
 #endif

@@ -220,6 +220,12 @@ platform_have_hci(void)
 	return esp_ble_bringup() == 0;
 }
 
+int
+platform_have_lora(void)
+{
+	return esp_lora_present();
+}
+
 unsigned long
 platform_hci_irqs(void)
 {
@@ -530,6 +536,57 @@ int
 luaopen_los_platform_hci(lua_State *L)
 {
 	luaL_newlib(L, hcilib);
+	return 1;
+}
+
+/* ---- los.platform.lora: the radio's wires ----
+ *
+ * A transfer is bytes out and the same number back, which is what the
+ * chip's every command is. lib/sx1262.lua is the chip.
+ */
+
+static int
+lora_xfer(lua_State *L)
+{
+	size_t n;
+	const char *tx = luabuf_check(L, 1, &n);
+	uint8_t rx[64];
+
+	if (n < 1 || n > sizeof rx)
+		return luaL_error(L, "lora.xfer: %d bytes", (int)n);
+	if (esp_lora_xfer((const uint8_t *)tx, rx, (int)n) != 0)
+		return 0;		/* nil: the chip stayed busy */
+	lua_pushlstring(L, (const char *)rx, n);
+	return 1;
+}
+
+static int
+lora_reset(lua_State *L)
+{
+	lua_pushboolean(L, esp_lora_reset() == 0);
+	return 1;
+}
+
+static int
+lora_irq(lua_State *L)
+{
+	lua_pushboolean(L, esp_lora_irq());
+	return 1;
+}
+
+static const luaL_Reg loralib[] = {
+	{ "xfer", lora_xfer },
+	{ "reset", lora_reset },
+	{ "irq", lora_irq },
+	{ NULL, NULL },
+};
+
+int luaopen_los_platform_lora(lua_State *L);
+
+int
+luaopen_los_platform_lora(lua_State *L)
+{
+	luaL_newlib(L, loralib);
 	return 1;
 }
 

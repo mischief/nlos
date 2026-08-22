@@ -506,6 +506,12 @@ platform_have_hci(void)
 	return 0;
 }
 
+int
+platform_have_lora(void)
+{
+	return 0;
+}
+
 static const luaL_Reg hci_emptylib[] = { { NULL, NULL } };
 
 int luaopen_los_platform_hci(lua_State *L);
@@ -1024,6 +1030,16 @@ int luaopen_los_platform_ws(lua_State *L);
 
 int
 luaopen_los_platform_ws(lua_State *L)
+{
+	lua_newtable(L);
+	return 1;
+}
+
+/* no radio here; the symbol exists for the link, as p9's does */
+int luaopen_los_platform_lora(lua_State *L);
+
+int
+luaopen_los_platform_lora(lua_State *L)
 {
 	lua_newtable(L);
 	return 1;

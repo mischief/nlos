@@ -934,6 +934,7 @@ function M.main()
 	-- the bluetooth controller, if the launcher lent one. bin/hcitool
 	-- and the host stack are what ask.
 	ctx.hci = ctx.hci and ctx.hci.__right or nil
+	ctx.lora = ctx.lora and ctx.lora.__right or nil
 	-- the bluetooth service. What an ordinary program asks for: blesrv
 	-- arbitrates the controller, where hci above it is the raw radio.
 	ctx.ble = ctx.ble and ctx.ble.__right or nil
@@ -1184,6 +1185,14 @@ function M.hci()
 	local ctx = M.ctx
 
 	return ctx and ctx.hci or nil
+end
+
+-- the radio task, which owns the chip. Raw spi to it is the whole
+-- radio, so what a program is lent is the port and not the wires.
+function M.lora()
+	local ctx = M.ctx
+
+	return ctx and ctx.lora or nil
 end
 
 -- the bluetooth service, which is what a program should ask for: one

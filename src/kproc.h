@@ -421,6 +421,12 @@ enum {
 	 * something lib/websocket.lua assembles over one.
 	 */
 	PRIV_WS		= 1 << 13,
+
+	/* the LoRa radio, as spi transfers and the two pins around them.
+	 * What the opcodes mean is lib/sx1262.lua's, on the far side of
+	 * this task's port -- the same split the hci one above makes.
+	 */
+	PRIV_LORA	= 1 << 14,
 };
 
 /* does this cpu hold a given bucket, every bucket, or any bucket at

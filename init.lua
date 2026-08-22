@@ -359,6 +359,8 @@ local repl_worker_src = [[
 	local dbgh = m.dbg and m.dbg.__right
 	-- the bluetooth controller, where this machine has one.
 	local hcih = m.hci and m.hci.__right
+	-- the lora radio, likewise: the task, not the bus
+	local lorah = m.lora and m.lora.__right
 	-- the bluetooth service, which blesrv publishes and init grants.
 	local bleh = m.ble and m.ble.__right
 
@@ -445,6 +447,7 @@ local repl_worker_src = [[
 		    -- same programs under the panel's terminal take both.
 		    dns = dnsh,
 		    udp = udph, power = powerh, dbg = dbgh, hci = hcih,
+		    lora = lorah,
 		    ble = bleh },
 		    "lua-os. programs live in /bin; `lua` is a prompt.\n")
 	end
@@ -592,6 +595,11 @@ while true do
 	-- the whole radio, so this goes no further than the console.
 	if caps_of.hci then
 		grant.hci = { __right = caps_of.hci }
+	end
+	-- the lora radio, on the same terms: one task owns the chip and
+	-- this is a right to ask it, not to the spi bus under it.
+	if caps_of.lora then
+		grant.lora = { __right = caps_of.lora }
 	end
 	if avail.tcp then
 		grant.tcp = { __right = avail.tcp }

@@ -169,6 +169,9 @@ function M.new(caps)
 		-- whole radio, so a session that arrives over a network
 		-- gets none.
 		hci = caps.hci,
+		-- the lora radio, same terms: one task owns the chip and a
+		-- session that arrived over a network is lent nothing.
+		lora = caps.lora,
 		-- the bluetooth service, which is what a program that is
 		-- not a diagnostic should hold: blesrv arbitrates, raw hci
 		-- does not.
@@ -516,6 +519,9 @@ function Sh:spawn1(path, argv, streams)
 	-- stack above it. Same rule again.
 	if self.hci then
 		msg.hci = { __right = self.hci }
+	end
+	if self.lora then
+		msg.lora = { __right = self.lora }
 	end
 	if self.ble then
 		msg.ble = { __right = self.ble }
