@@ -408,20 +408,53 @@ options[1] = {
 	set = audio.setsink,
 }
 
--- in fifths: a tap cycles, so eleven stops would be a long way round
--- to turn it down.
+-- dragged, not cycled: a level is a position, and walking to it a step
+-- at a time is the wrong shape for a finger.
+--
+-- held is where the finger has it while the drag is going on. The
+-- setting is written on release, since /config is flash and a drag is
+-- a hundred positions.
+local held = nil
+local dragging = nil
+
 options[2] = {
 	label = "volume",
+	slider = true,
 	read = function()
-		return audio.volume() .. "%"
-	end,
-	next = function()
-		return audio.nextvolume(audio.volume())
+		return (held or audio.volume()) .. "%"
 	end,
 	set = audio.setvolume,
 }
 
 local optnote = nil
+
+-- the track a slider is dragged along, right of the label and left of
+-- the reading it sets.
+local READW = 5 * FW
+
+local function trackat()
+	local x = MARGIN + LABELW
+
+	return x, W - x - READW - MARGIN * 2
+end
+
+local function drawslider(o, y)
+	local x, w = trackat()
+	local pct = math.max(0, math.min(100, held or audio.volume()))
+	local mid = y + ROWH // 2
+	local fill = (w * pct) // 100
+
+	fb.fill({ x = x, y = mid - 2, w = w, h = 4 }, 0x2a2a3a, true)
+	if fill > 0 then
+		fb.fill({ x = x, y = mid - 2, w = fill, h = 4 }, HEAD, true)
+	end
+
+	-- wide enough to be under a fingertip rather than under a cursor
+	local knob = math.min(x + w - 3, math.max(x, x + fill - 3))
+
+	fb.fill({ x = knob, y = y + 2, w = 6, h = ROWH - 4 }, FG, true)
+	text(x + w + MARGIN, y, pct .. "%", FG, nil, READW)
+end
 
 local function drawopts()
 	fb.fill({ x = 0, y = TOP, w = W, h = H - TOP }, BG, true)
@@ -433,13 +466,28 @@ local function drawopts()
 			break
 		end
 		text(MARGIN, y, o.label, DIM, nil, LABELW)
-		text(MARGIN + LABELW, y, o.read(), FG, nil, W - LABELW - MARGIN)
+		if o.slider then
+			drawslider(o, y)
+		else
+			text(MARGIN + LABELW, y, o.read(), FG, nil,
+			    W - LABELW - MARGIN)
+		end
 		fb.fill({ x = 0, y = y + ROWH + 3, w = W, h = 1 }, 0x1c1c24)
 	end
 
 	if optnote then
 		text(MARGIN, H - ROWH, optnote, WARN, nil, W - MARGIN)
 	end
+end
+
+-- the end of a drag: one write, rather than one a position.
+local function pctat(x)
+	local x0, w = trackat()
+
+	if w <= 0 then
+		return 0
+	end
+	return math.max(0, math.min(100, ((x - x0) * 100 + w // 2) // w))
 end
 
 local function optat(y)
@@ -507,6 +555,26 @@ local function draw(all)
 	shown = seen
 end
 
+local function commit()
+	local o = dragging
+
+	dragging = nil
+	if not o then
+		return
+	end
+
+	local ok, why = o.set(held)
+
+	held = nil
+	optnote = nil
+	if not ok then
+		optnote = tostring(why)
+	end
+	draw(true)
+end
+
+-- where along the track a touch fell, as a percentage
+
 -- a wider label moves every value, so what is on the glass is no longer
 -- where the diff believes it is: that repaints the window rather than
 -- the rows that changed.
@@ -571,6 +639,39 @@ local function scroll(by)
 	return false
 end
 
+-- a touch that starts something: the tab bar, a slider, or an option
+-- that cycles. Its own function because a drag whose release went
+-- elsewhere ends here too, and that touch is a press like any other.
+local function press(x, y)
+	if y < TABH then
+		view = x < W // 2 and "status" or "options"
+		optnote = nil
+		draw(true)
+		return
+	end
+	if view ~= "options" then
+		return
+	end
+
+	local o = optat(y)
+
+	if o and o.slider then
+		dragging = o
+		held = pctat(x)
+		drawopts()
+	elseif o then
+		local ok, why = o.set(o.next())
+
+		-- not `ok and nil or why`: nil is false, so that reports
+		-- "nil" on success
+		optnote = nil
+		if not ok then
+			optnote = tostring(why)
+		end
+		draw(true)
+	end
+end
+
 -- the pointer is a port of its own, and a thread of its own reads it:
 -- the loop below has to end when dio does, and a read that returns
 -- nothing is how that arrives.
@@ -591,27 +692,26 @@ if point then
 			elseif (b & mouse.WHEELDOWN) ~= 0 then
 				scroll(1)
 			elseif (b & 1) ~= 0 and not down then
-				if y < TABH then
-					view = x < W // 2 and "status" or
-					    "options"
-					optnote = nil
-					draw(true)
-				elseif view == "options" then
-					local o = optat(y)
+				press(x, y)
+			elseif (b & 1) ~= 0 and dragging then
+				-- A drag that leaves the window is a drag
+				-- whose release goes to whoever it landed
+				-- on, so this may be a new touch elsewhere
+				-- rather than the same finger. Take what
+				-- the drag had and let the row decide.
+				if optat(y) ~= dragging then
+					commit()
+					press(x, y)
+				else
+					local now = pctat(x)
 
-					if o then
-						local ok, why = o.set(o.next())
-
-						-- not `ok and nil or why`:
-						-- nil is false, so that
-						-- reports "nil" on success
-						optnote = nil
-						if not ok then
-							optnote = tostring(why)
-						end
-						draw(true)
+					if now ~= held then
+						held = now
+						drawopts()
 					end
 				end
+			elseif (b & 1) == 0 and dragging then
+				commit()
 			end
 			down = (b & 1) ~= 0
 		end
