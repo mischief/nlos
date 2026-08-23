@@ -104,6 +104,10 @@ local nodes = {}		-- what the service last told us
 local shownodes = false
 local unread = 0
 local visible = true
+-- where the view button starts, set when the bar is drawn so the place
+-- that is touched and the place that is painted cannot drift apart
+local btnx = W
+local quitting = false
 local me, myname = "?", "lua-os"
 local chan, quiet = nil, false
 
@@ -124,11 +128,18 @@ local function paintbar()
 	-- what is waiting behind the node list, which is otherwise a
 	-- message arriving on a screen that does not show messages
 	local behind = unread > 0 and ("  %d new"):format(unread) or ""
-
-	fill(0, 0, W, ROWH, 0x202028)
-	text(0, 0, ("%s %s  %d node%s%s%s"):format(myname, where, n,
+	local label = shownodes and "[chat]" or "[nodes]"
+	local s = ("%s %s  %d node%s%s%s"):format(myname, where, n,
 	    n == 1 and "" or "s", quiet and "  listening only" or "",
-	    behind), quiet and WARN or DIM, 0x202028)
+	    behind)
+
+	btnx = W - #label * FW
+	fill(0, 0, W, ROWH, 0x202028)
+	-- clipped short of the button: this bar is the only thing that
+	-- says which view is up, and text through it would hide that
+	text(0, 0, head(s, btnx // FW - 1), quiet and WARN or DIM, 0x202028)
+	fill(btnx, 0, W - btnx, ROWH, 0x384050)
+	text(btnx, 0, label, FG, 0x384050)
 end
 
 local function paintinput()
@@ -151,7 +162,7 @@ end
 local function paintnodes()
 	local y = TOP
 
-	text(0, y, "heard -- tab goes back", DIM)
+	text(0, y, "heard", DIM)
 	y = y + ROWH
 
 	local list = {}
@@ -254,6 +265,40 @@ local function say(s, color)
 	paintbody()
 end
 
+local function toggleview()
+	shownodes = not shownodes
+	if not shownodes then
+		unread = 0
+	end
+	paintbar()
+	paintbody(true)
+end
+
+-- The keyboard here has no tab and no arrows, so the button in the bar
+-- is how the view changes and the trackball is how the text scrolls.
+-- A press, not a release: the finger is already gone by then.
+local down = false
+
+local function pointer(x, y, b)
+	if (b & mouse.WHEEL) ~= 0 then
+		if (b & mouse.WHEELUP) ~= 0 then
+			F:scroll(-1)
+			paintbody()
+		elseif (b & mouse.WHEELDOWN) ~= 0 then
+			F:scroll(1)
+			paintbody()
+		end
+		return
+	end
+
+	local now = (b & 1) ~= 0
+
+	if now and not down and y < ROWH and x >= btnx then
+		toggleview()
+	end
+	down = now
+end
+
 -- ---- the service ----
 
 local reply = sys.newport("meshui.reply")
@@ -328,9 +373,10 @@ end
 
 local HELP = {
 	"/announce   say who we are",
-	"/nodes      the node list, as tab does",
+	"/nodes      the node list, as the button does",
 	"/clear      forget the transcript",
-	"esc leaves, up and down scroll",
+	"the button top right changes view",
+	"the trackball scrolls, /quit leaves",
 }
 
 local function docommand(s)
@@ -353,6 +399,9 @@ local function docommand(s)
 	elseif cmd == "nodes" then
 		shownodes = true
 		paintbody(true)
+	elseif cmd == "quit" then
+		-- this keyboard has no escape either
+		quitting = true
 	elseif cmd == "clear" then
 		lines = {}
 		retext()
@@ -375,9 +424,7 @@ local function submit()
 	-- Sending from the node list otherwise answers into a transcript
 	-- that is not up, and reads as a key that did nothing.
 	if shownodes then
-		shownodes, unread = false, 0
-		paintbar()
-		paintbody(true)
+		toggleview()
 	end
 
 	if s:sub(1, 1) == "/" then
@@ -425,6 +472,28 @@ if quiet then
 	say("* this channel is somebody else's; nothing will go out", WARN)
 end
 
+-- The pointer is a port of its own, and a thread of its own reads it:
+-- records do not arrive on the event port beside the keys. A read that
+-- returns nothing is how dio going away arrives here.
+local point = prog.mouse()
+
+if not point then
+	say("* no pointer: the view button cannot be tapped", WARN)
+end
+
+if point then
+	thread.spawn(function()
+		while true do
+			local x, y, b = point.read()
+
+			if not b then
+				return
+			end
+			pointer(x, y, b)
+		end
+	end)
+end
+
 -- built once and kept: alt neither keeps nor caches this, and rebuilding
 -- it every trip round the loop is most of what an alt costs. The timer
 -- is re-armed in place when it fires, which is the one case that moves.
@@ -434,7 +503,12 @@ local cases = {
 	{ port = sys.timer(15000) },
 }
 
-while true do
+-- a thread like any other, and thread.run() below is what schedules
+-- them: a bare loop in the chunk parks the proc and the pointer never
+-- gets a turn.
+thread.spawn(function()
+
+while not quitting do
 	local which, m = thread.alt(cases)
 
 	if which == 3 then
@@ -446,36 +520,35 @@ while true do
 	elseif which == 2 then
 		arrived(m)
 	elseif which == 1 and type(m) == "string" then
-		if not mouse.parse(m) then
-			if m == "\r" or m == "\n" then
-				submit()
-			elseif m == "\27" then
-				break
-			elseif m == "\8" or m == "\127" then
-				typed = typed:sub(1, #typed - 1)
-				paintinput()
-			elseif m == "\t" then
-				shownodes = not shownodes
-				if not shownodes then
-					unread = 0
-				end
-				paintbar()
-				paintbody(true)
-			elseif m == "\27[A" then
-				F:scroll(-1)
-				paintbody()
-			elseif m == "\27[B" then
-				F:scroll(1)
-				paintbody()
-			elseif m:byte(1) >= 0x20 and m:byte(1) ~= 0x7f then
-				-- a whole character, which is one to four
-				-- bytes: what arrives is a keystroke, not a
-				-- byte of one.
-				typed = typed .. m
-				paintinput()
-			end
+		-- tab, escape and the arrows are here for a terminal. This
+		-- board's keyboard has none of them, which is what the
+		-- button and the trackball above are for.
+		if m == "\r" or m == "\n" then
+			submit()
+		elseif m == "\27" then
+			break
+		elseif m == "\8" or m == "\127" then
+			typed = typed:sub(1, #typed - 1)
+			paintinput()
+		elseif m == "\t" then
+			toggleview()
+		elseif m == "\27[A" then
+			F:scroll(-1)
+			paintbody()
+		elseif m == "\27[B" then
+			F:scroll(1)
+			paintbody()
+		elseif m:byte(1) >= 0x20 and m:byte(1) ~= 0x7f then
+			-- a whole character, which is one to four bytes:
+			-- what arrives is a keystroke, not a byte of one.
+			typed = typed .. m
+			paintinput()
 		end
 	elseif which == 1 and type(m) == "table" and m.t == "win" then
 		onwin(m.state)
 	end
 end
+
+end)
+
+thread.run()
