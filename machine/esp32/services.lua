@@ -78,7 +78,7 @@ return {
 	    channel = "luaos" } },
 
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
-	  optcaps = { "tcp", "ip", "dns", "power", "ble" } },
+	  optcaps = { "tcp", "ip", "dns", "power", "ble", "mesh" } },
 
 	-- the wall clock. "time" is the right to sys.settime, and this is
 	-- the only entry naming it: everything else reads the clock and

@@ -103,29 +103,34 @@ local interval = math.max(tonumber(cfg.announce) or 10800, 3600)
 -- hour later when the timer comes round and nobody is watching.
 local quiet = false
 
-local inbox = {}	-- decoded, waiting for a client
+local inbox = {}	-- decoded, waiting for a client that polls
+local subs = {}		-- rights to push arrivals to, for those that do not
 local nodes = {}	-- number -> what it has told us
 local seen = {}		-- (from,id) -> when, so a flood is heard once
 local nseen = 0
 local counters = { rx = 0, tx = 0, dup = 0, undecoded = 0 }
 
-local reply = sys.newport("meshsrv.reply")
-local right = sys.sendright(reply)
+-- One reply port per thread, not one for the task. Three threads talk
+-- to the radio, and a shared port lets one of them take another's
+-- answer: what comes back from a send is not a frame, and the reader
+-- that treats it as one dies quietly with the radio still listening.
+local function asker(name)
+	local port = sys.newport(name)
+	local right = sys.sendright(port)
 
-local function ask(m, secs)
-	m.reply = { __right = right }
+	return function(m, secs)
+		m.reply = { __right = right }
 
-	local ok = sys.send(lora, m)
-
-	if not ok then
-		return nil
+		if not sys.send(lora, m) then
+			return nil
+		end
+		return thread.recvtimeout(port, (secs or 5) * 1000)
 	end
-	return thread.recvtimeout(reply, (secs or 5) * 1000)
 end
 
 -- ---- what the radio has to be told ----
 
-local function configure()
+local function configure(ask)
 	return ask({ op = "config", freq = math.floor(chan.freq * 1e6),
 	    sf = chan.sf, bw = chan.bw, cr = chan.cr, sync = mt.SYNCWORD,
 	    preamble = 16 }, 15)
@@ -223,6 +228,17 @@ local function arrived(frame, rssi, snr)
 		m.lat, m.lon = p.lat, p.lon
 	end
 
+	-- Pushed to whoever asked to be told, and queued for whoever
+	-- polls: a subscriber and a poller are different clients and each
+	-- gets the whole stream. Two pollers still share one inbox, which
+	-- is what the push is here to avoid.
+	for i = #subs, 1, -1 do
+		if not sys.send(subs[i], m) then
+			sys.close(subs[i])
+			table.remove(subs, i)
+		end
+	end
+
 	inbox[#inbox + 1] = m
 	if #inbox > 64 then
 		table.remove(inbox, 1)
@@ -230,11 +246,16 @@ local function arrived(frame, rssi, snr)
 end
 
 local function pump()
+	local ask = asker("meshsrv.pump")
+
 	while true do
 		local r = ask({ op = "recv" })
 		local got = r and r.ok
 
-		if got then
+		-- a frame, and not merely something that is not false: a
+		-- reader that indexes whatever arrives stops reading the
+		-- first time it is handed anything else
+		if type(got) == "table" and got.data then
 			arrived(got.data, got.rssi, got.snr)
 		else
 			thread.sleep(100)
@@ -248,7 +269,7 @@ local function packetid()
 	return rand()
 end
 
-local function sendtext(text, to)
+local function sendtext(ask, text, to)
 	if quiet then
 		return nil, "listening to somebody else's channel"
 	end
@@ -280,7 +301,7 @@ end
 
 -- who we are, which is what makes this node a name in other people's
 -- lists rather than a number.
-local function announce()
+local function announce(ask)
 	if quiet then
 		return nil, "listening to somebody else's channel"
 	end
@@ -310,17 +331,21 @@ end
 -- their floor and it is kept: the air is shared and a nodeinfo is not
 -- urgent. `mesh announce` is there for when it is.
 local function beacon()
+	local ask = asker("meshsrv.beacon")
+
 	thread.sleep(15000)
 
 	while true do
 		if not quiet then
-			announce()
+			announce(ask)
 		end
 		thread.sleep(interval * 1000)
 	end
 end
 
 local function serve()
+	local ask = asker("meshsrv.serve")
+
 	while true do
 		local m = thread.recv(sys.SELF)
 
@@ -335,7 +360,8 @@ local function serve()
 			if m.op == "recv" then
 				answer({ ok = table.remove(inbox, 1) })
 			elseif m.op == "send" then
-				local sent, why = sendtext(m.text or "", m.to)
+				local sent, why = sendtext(ask, m.text or "",
+				    m.to)
 
 				answer({ ok = sent, err = why })
 			elseif m.op == "nodes" then
@@ -346,7 +372,7 @@ local function serve()
 				end
 				answer({ ok = out })
 			elseif m.op == "announce" then
-				local said, why = announce()
+				local said, why = announce(ask)
 
 				answer({ ok = said, err = why })
 			elseif m.op == "status" then
@@ -355,6 +381,18 @@ local function serve()
 				    chan = chan, hop = hoplimit,
 				    quiet = quiet,
 				    counters = counters } })
+			elseif m.op == "subscribe" then
+				-- kept, not closed with the reply: this one
+				-- is ours until the client goes away, and a
+				-- failed send is how we learn that it has
+				local r = m.port and m.port.__right
+
+				if r then
+					subs[#subs + 1] = r
+					answer({ ok = true })
+				else
+					answer({ err = "no port to push to" })
+				end
 			elseif m.op == "tune" then
 				local c = mt.channel({
 					preset = mt.PRESETS[m.preset or "LONG_FAST"],
@@ -370,7 +408,7 @@ local function serve()
 					chan, key, channel = c, c.key, c.hash
 					hoplimit = tonumber(m.hop) or hoplimit
 					quiet = m.quiet ~= false
-					answer({ ok = configure() and c,
+					answer({ ok = configure(ask) and c,
 					    quiet = quiet })
 				end
 			elseif m.op == "name" then
@@ -388,7 +426,8 @@ local function serve()
 	end
 end
 
-if not configure() then
+-- before any thread runs, so this port is nobody else's
+if not configure(asker("meshsrv.start")) then
 	sys.log("meshsrv: the radio would not take the mesh settings")
 end
 sys.log(("meshsrv: %s on channel %02x"):format(mt.nodeid(me), channel))

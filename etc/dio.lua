@@ -26,6 +26,7 @@
 --		named per entry rather than given to everything: the
 --		radio is a singleton, and a program that never asked for
 --		it cannot advertise as somebody else.
+--	mesh	lend this one the lora mesh, on the same terms as ble.
 --	category
 --		which heading the launcher files it under. Groups appear
 --		in the order first named below, one open at a time, and
@@ -89,6 +90,13 @@ return {
 		  category = "chat", label = "B", color = 0xb10dc9,
 		  keys = true, ble = true,
 		  desc = "the bitchat mesh, over bluetooth" },
+		-- the lora mesh. Keys to type, and mesh = true for the
+		-- service: the radio is one node and this holds a right
+		-- to it rather than to the chip.
+		{ name = "mesh", cmd = "/bin/meshui.lua",
+		  category = "chat", label = "M", color = 0x2ecc40,
+		  keys = true, mesh = true,
+		  desc = "the meshtastic network, over lora" },
 		-- notes off the relays. Keys to type one, net to reach a
 		-- relay; the identity is an nsec on /config, not here.
 		{ name = "nostr", cmd = "/bin/nostrui.lua",

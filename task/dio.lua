@@ -118,6 +118,9 @@ local ptr = job.ptr and job.ptr.__right
 -- the radio, lent on to an app whose entry asks for it. Held rather
 -- than used: dio draws, and what talks bluetooth is a program.
 local bleh = job.ble and job.ble.__right
+-- the mesh, on the same terms as the radio above it: one chip, one
+-- node, and an app holds a right to the service rather than to either.
+local meshh = job.mesh and job.mesh.__right
 
 local function say(s)
 	if cons then
@@ -988,6 +991,8 @@ local function start(i, openarg)
 				-- that could use the radio.
 				ble = entry.ble and bleh and
 				    { __right = bleh } or nil,
+				mesh = entry.mesh and meshh and
+				    { __right = meshh } or nil,
 				-- the stack and the resolver, on the same
 				-- terms: an app that talks to a server says
 				-- so, and one that does not cannot.
