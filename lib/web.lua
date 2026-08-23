@@ -170,12 +170,21 @@ function M.fetch(net, dns, page, opts)
 		if not res then
 			return nil, err
 		end
-		if not REDIRECT[res.status] then
-			return res
-		end
-
 		local to = res.headers.location
 
+		if not REDIRECT[res.status] then
+			-- a page may redirect in its own head instead, which
+			-- is how a search engine's result link reaches the
+			-- result when the script that would have done it is
+			-- not run. Only an immediate one: a refresh minutes
+			-- out is a page that means to be read first.
+			local ref = res.info and res.info.refresh
+
+			if not ref or ref.after > 5 or ref.url == at then
+				return res
+			end
+			to = ref.url
+		end
 		if not to or to == "" then
 			return nil, "redirect with no location"
 		end

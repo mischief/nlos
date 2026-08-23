@@ -70,20 +70,23 @@ local function tagend(s, i)
 	return nil
 end
 
+-- An attribute is entity-encoded like any other text, and a url is
+-- where it matters: a query joined with &amp; asks for a parameter
+-- called amp;something, which a server answers with 400.
 function M.attrs(raw)
 	local a = {}
 
 	for k, v in raw:gmatch('([%w:%-]+)%s*=%s*"([^"]*)"') do
-		a[k:lower()] = v
+		a[k:lower()] = M.unescape(v)
 	end
 	for k, v in raw:gmatch("([%w:%-]+)%s*=%s*'([^']*)'") do
 		if a[k:lower()] == nil then
-			a[k:lower()] = v
+			a[k:lower()] = M.unescape(v)
 		end
 	end
 	for k, v in raw:gmatch("([%w:%-]+)%s*=%s*([^%s\"'>]+)") do
 		if a[k:lower()] == nil then
-			a[k:lower()] = v
+			a[k:lower()] = M.unescape(v)
 		end
 	end
 	return a
@@ -158,8 +161,11 @@ end
 -- rather than parsed toward, since what is inside may contain anything.
 -- select goes here with them: its options are the choices of a control
 -- nothing here can work, and a country list is a page of them.
+--
+-- noscript does NOT: this reader runs no scripts, so what a page put
+-- there is what it meant this reader to have.
 local OPAQUE = { script = true, style = true, svg = true,
-    noscript = true, template = true, select = true, datalist = true }
+    template = true, select = true, datalist = true }
 
 -- The links around a page rather than the page, by the standard's own
 -- definition of these two. Dropping them is worth about a twelfth of
@@ -265,6 +271,23 @@ function P:open(name, raw)
 	if name == "base" and a.href then
 		self.base = self.base and url.resolve(self.base, a.href)
 		    or a.href
+		return
+	end
+	-- how a page redirects a reader that runs nothing. Recorded, not
+	-- acted on: whether to follow it is the fetcher's business.
+	if name == "meta" and a["http-equiv"]
+	    and a["http-equiv"]:lower() == "refresh" then
+		local after, to = (a.content or ""):match(
+		    "^%s*(%d*%.?%d*)%s*[;,]%s*[Uu][Rr][Ll]%s*=%s*(.+)$")
+
+		if to then
+			to = to:gsub("^['\"]", ""):gsub("['\"]%s*$", "")
+			self.refresh = {
+				after = tonumber(after) or 0,
+				url = self.base and url.resolve(self.base, to)
+				    or to,
+			}
+		end
 		return
 	end
 	if name == "br" then
@@ -585,6 +608,7 @@ function S:eof()
 	end
 	self.done = true
 	self.info.base = self.p.base
+	self.info.refresh = self.p.refresh
 	self.info.nbytes = self.nbytes
 	return self.p.blocks, self.info
 end

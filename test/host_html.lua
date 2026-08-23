@@ -68,9 +68,21 @@ is(a.href, "/x", "a double quoted value")
 is(a.class, "y", "a single quoted one")
 is(a.rel, "nofollow", "and one with no quotes at all")
 
-a = html.attrs('a href="/l/?uddg=x&amp;rut=y"')
-is(a.href, "/l/?uddg=x&amp;rut=y",
-    "an = inside a quoted value does not start another attribute")
+a = html.attrs('a href="/l/?uddg=x&amp;rut=y&amp;v=l"')
+is(a.href, "/l/?uddg=x&rut=y&v=l",
+    "a value is entity-decoded, or a query joins on amp;rut and a " ..
+    "server answers 400")
+is(a["amp;rut"], nil,
+    "and an = inside a quoted value starts no attribute of its own")
+
+-- the wrapper a search engine puts around every result it returns
+local ddg = html.parse(
+    '<a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fx.example%2Fa' ..
+    '&amp;rut=abc">hit</a>', { base = "https://lite.duckduckgo.com/lite/" })
+
+is(doc.runlink(ddg[1], 1),
+    "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fx.example%2Fa&rut=abc",
+    "so a result link is the url the engine meant to hand over")
 
 -- ---- blocks ----
 
@@ -240,6 +252,41 @@ is(flat(html.parse("<nav>menu</nav><p>body</p>", { nochrome = true })),
     "para:body", "unless a caller says it did not come for the chrome")
 is(flat(html.parse("<footer>small print</footer><p>b</p>",
     { nochrome = true })), "para:b", "which goes for the footer too")
+
+-- ---- redirecting a reader that runs nothing ----
+
+-- what a search engine's result link actually serves: the redirect is
+-- a script, with a meta refresh left inside noscript for whoever is
+-- not running one. That is us.
+local DDGL = "<html><head><meta name='referrer' content='origin'></head>" ..
+    "<body><script>window.parent.location.replace(\"https://x/a\");" ..
+    "</script><noscript><META http-equiv='refresh' " ..
+    "content=\"0;URL=https://en.wikipedia.org/wiki/Salami\"></noscript>" ..
+    "</body></html>"
+
+local _, dinfo = html.parse(DDGL, { base = "https://duckduckgo.com/l/" })
+
+ok(dinfo.refresh, "a meta refresh is picked up")
+is(dinfo.refresh and dinfo.refresh.url,
+    "https://en.wikipedia.org/wiki/Salami", "with where it points")
+is(dinfo.refresh and dinfo.refresh.after, 0, "and how long it waits")
+
+local _, rinfo2 = html.parse(
+    "<meta http-equiv='refresh' content='5; url=next'>",
+    { base = "https://e.com/a/b" })
+
+is(rinfo2.refresh.url, "https://e.com/a/next",
+    "a relative one resolves against the page")
+is(rinfo2.refresh.after, 5, "and a delay is kept, for a caller to judge")
+
+is(select(2, html.parse("<meta http-equiv='refresh' content='nonsense'>"))
+    .refresh, nil, "content that names no url is not a redirect")
+is(select(2, html.parse("<meta name='description' content='0;url=/x'>"))
+    .refresh, nil, "and neither is a meta that is not a refresh")
+
+is(flat(html.parse("<noscript><p>no script here</p></noscript>")),
+    "para:no script here",
+    "noscript is content, because this reader runs no scripts")
 
 -- ---- the article, where a page says which part is it ----
 
