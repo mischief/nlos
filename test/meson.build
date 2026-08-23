@@ -691,6 +691,15 @@ if lua54_dep.found()
     env: adpcm_env,
     depends: [crypto_native_host],
   )
+
+  # the radio's registers, against a wire that only records. A modem
+  # parameter that disagrees with everyone else's reads as a quiet
+  # antenna, so the bytes are pinned rather than the behaviour.
+  test('sx1262', lua_interp,
+    args: [files('host_sx1262.lua')],
+    protocol: 'tap',
+    timeout: 60,
+  )
 endif
 
 # lib/ble/hci.lua, sans-io like zmodem above it. The codec half needs

@@ -149,7 +149,11 @@ function Radio:modem(sf, bwkhz, cr)
 		return nil, "spreading factor out of range"
 	end
 
-	local ldro = (1000 * (1 << sf) / bwkhz) > 16.0 and 1 or 0
+	-- low data rate optimize, on when a symbol runs past 16ms. A
+	-- symbol is 2^sf/bw, and with bandwidth in kHz that is already
+	-- milliseconds: scaling it again turns this on everywhere and
+	-- leaves the radio talking only to others with the same fault.
+	local ldro = ((1 << sf) / bwkhz) > 16.0 and 1 or 0
 
 	self.sf, self.bw, self.cr, self.ldro = sf, bwkhz, cr, ldro
 	return self:cmd(C.SETMODPARAMS,

@@ -82,9 +82,51 @@ do
 	    ("and lands on 906.875MHz: %.4f"):format(freq))
 end
 
-ok(mt.channelhash("", mt.DEFAULTKEY) == 0x02,
-    ("the default channel hashes to 0x02: 0x%02x"):format(
-    mt.channelhash("", mt.DEFAULTKEY)))
+-- an unnamed channel is hashed under the preset's display name, not
+-- under the empty string. Getting this wrong is invisible between two
+-- machines that agree and wrong against everybody else.
+ok(mt.channelhash("LongFast", mt.DEFAULTKEY) == 0x08,
+    ("the default channel hashes to 0x08: 0x%02x"):format(
+    mt.channelhash("LongFast", mt.DEFAULTKEY)))
+
+do
+	local p = mt.PRESETS.MEDIUM_FAST
+
+	ok(p.sf == 9 and p.bw == 250 and p.cr == 5,
+	    "MediumFast is sf9 bw250 cr4/5")
+	ok(p.name == "MediumFast", "and is named MediumFast: " .. p.name)
+end
+
+do
+	local c = mt.channel({ preset = mt.PRESETS.LONG_FAST })
+
+	ok(c.slot == 19 and math.abs(c.freq - 906.875) < 0.0005,
+	    ("LongFast tunes 906.875MHz: %.4f"):format(c.freq))
+	ok(c.hash == 0x08, ("and rides channel 0x08: 0x%02x"):format(c.hash))
+end
+
+do
+	local c = mt.channel({ preset = mt.PRESETS.MEDIUM_FAST })
+
+	ok(c.slot == 44 and math.abs(c.freq - 913.125) < 0.0005,
+	    ("MediumFast tunes 913.125MHz: %.4f"):format(c.freq))
+	ok(c.hash == 0x1f, ("and rides channel 0x1f: 0x%02x"):format(c.hash))
+end
+
+-- a channel url carries the common keys as one byte, which is what
+-- psk="AQ==" in their config dump means
+ok(mt.psk(1) == mt.DEFAULTKEY, "psk index 1 is the default key untouched")
+ok(mt.psk(2) ~= mt.DEFAULTKEY and mt.psk(2):sub(1, 15) ==
+    mt.DEFAULTKEY:sub(1, 15), "index 2 moves only the last byte")
+ok(mt.psk(0) == nil, "index 0 is no encryption")
+
+do
+	-- a slot given by hand counts from one, as their config does
+	local c = mt.channel({ preset = mt.PRESETS.LONG_FAST, slot = 1 })
+
+	ok(c.slot == 0 and math.abs(c.freq - 902.125) < 0.0005,
+	    ("slot 1 is the bottom of the band: %.4f"):format(c.freq))
+end
 
 -- ---- the frame ----
 
@@ -103,6 +145,7 @@ do
 end
 
 ok(select(1, mt.parse("short")) == nil, "a runt frame is refused")
+ok(select(1, mt.parse(nil)) == nil, "and so is nothing at all")
 
 -- the header is little-endian, which is what their struct is on every
 -- board they build for
@@ -133,7 +176,7 @@ if haveaes then
 
 	-- what a receiver actually does
 	local h = { to = mt.BROADCAST, from = from, id = id, hoplimit = 3,
-	    channel = mt.channelhash("", mt.DEFAULTKEY) }
+	    channel = mt.channel({}).hash }
 	local frame = mt.seal(h, { portnum = mt.PORT_TEXT,
 	    payload = "hi from lua-os" })
 	local gh, d = mt.open(frame)

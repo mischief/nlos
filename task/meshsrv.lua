@@ -30,12 +30,78 @@ local function rand()
 	return seed
 end
 
--- the top bit set, which is what their firmware does for a number it
--- made up rather than one from a hardware address
-local me = rand() | 0x80000000
+-- A number has to outlive a reboot. Their firmware takes one from the
+-- hardware address; the radio has no claim on ours, so it is drawn once
+-- and kept. Without this every boot is a new stranger in everyone
+-- else's node list, and theirs are not swept quickly.
+local CONFDIR = "/config/meshtastic"
+local IDFILE = CONFDIR .. "/id"
+
+local function keptid()
+	local N = require("ns").current()
+	local raw = N and N:readfile(IDFILE)
+	local kept = raw and tonumber(raw:match("%x+") or "", 16)
+
+	if kept then
+		return kept & 0xffffffff
+	end
+
+	-- the top bit set, which is what their firmware does for a number
+	-- it made up rather than one from a hardware address
+	local n = rand() | 0x80000000
+
+	-- /config is empty on a freshly reamed partition
+	if N and not N:stat(CONFDIR) then
+		local d = N:create(CONFDIR, "rw", true)
+
+		if d then
+			d:close()
+		end
+	end
+
+	if not (N and N:writefile(IDFILE, ("%08x\n"):format(n))) then
+		sys.log("meshsrv: cannot keep a node number; this boot is new")
+	end
+	return n
+end
+
+local me = keptid()
 local name = cfg.name or "lua-os"
-local key = mt.DEFAULTKEY
-local channel = mt.channelhash("", key)
+
+-- a key given as hex, so two machines can be told to share one without
+-- either of them holding the public network's
+local function hexkey(s)
+	if type(s) ~= "string" or #s ~= 32 then
+		return nil
+	end
+	return (s:gsub("%x%x", function(b)
+		return string.char(tonumber(b, 16))
+	end))
+end
+
+local chan = mt.channel({
+	preset = mt.PRESETS[cfg.preset or "LONG_FAST"],
+	region = mt.REGIONS[cfg.region or "US"],
+	name = cfg.channel,
+	key = hexkey(cfg.key) or (cfg.psk and mt.psk(tonumber(cfg.psk))),
+	slot = tonumber(cfg.slot),
+	offset = tonumber(cfg.offset),
+})
+
+if not chan then
+	sys.log("meshsrv: no such preset or region")
+	return
+end
+
+local key = chan.key
+local channel = chan.hash
+local hoplimit = tonumber(cfg.hop) or 3
+local interval = math.max(tonumber(cfg.announce) or 10800, 3600)
+
+-- Tuning to somebody else's channel is for listening. Nothing goes out
+-- while this is set, so visiting a network cannot beacon into it an
+-- hour later when the timer comes round and nobody is watching.
+local quiet = false
 
 local inbox = {}	-- decoded, waiting for a client
 local nodes = {}	-- number -> what it has told us
@@ -60,11 +126,8 @@ end
 -- ---- what the radio has to be told ----
 
 local function configure()
-	local p = mt.PRESETS.LONG_FAST
-	local freq = mt.slot("LongFast", mt.REGIONS.US, p.bw)
-
-	return ask({ op = "config", freq = math.floor(freq * 1e6),
-	    sf = p.sf, bw = p.bw, cr = p.cr, sync = mt.SYNCWORD,
+	return ask({ op = "config", freq = math.floor(chan.freq * 1e6),
+	    sf = chan.sf, bw = chan.bw, cr = chan.cr, sync = mt.SYNCWORD,
 	    preamble = 16 }, 15)
 end
 
@@ -186,12 +249,16 @@ local function packetid()
 end
 
 local function sendtext(text, to)
+	if quiet then
+		return nil, "listening to somebody else's channel"
+	end
+
 	local h = {
 		to = to or mt.BROADCAST,
 		from = me,
 		id = packetid(),
-		hoplimit = 3,
-		hopstart = 3,
+		hoplimit = hoplimit,
+		hopstart = hoplimit,
 		channel = channel,
 	}
 	local frame = mt.seal(h, { portnum = mt.PORT_TEXT, payload = text },
@@ -214,6 +281,10 @@ end
 -- who we are, which is what makes this node a name in other people's
 -- lists rather than a number.
 local function announce()
+	if quiet then
+		return nil, "listening to somebody else's channel"
+	end
+
 	local pb = require("protobuf")
 	local user = pb.encode({
 		{ 1, "bytes", mt.nodeid(me) },
@@ -222,14 +293,30 @@ local function announce()
 	})
 	local h = {
 		to = mt.BROADCAST, from = me, id = packetid(),
-		hoplimit = 3, hopstart = 3, channel = channel,
+		hoplimit = hoplimit, hopstart = hoplimit, channel = channel,
 	}
 	local frame = mt.seal(h, { portnum = mt.PORT_NODEINFO,
 	    payload = user }, key)
 
 	if frame then
 		duplicate(h)
-		ask({ op = "send", data = frame }, 30)
+		counters.tx = counters.tx + 1
+		return ask({ op = "send", data = frame }, 30)
+	end
+end
+
+-- a node that never says who it is stays a number in everybody's list,
+-- so this goes out once the radio is up and then on a timer. An hour is
+-- their floor and it is kept: the air is shared and a nodeinfo is not
+-- urgent. `mesh announce` is there for when it is.
+local function beacon()
+	thread.sleep(15000)
+
+	while true do
+		if not quiet then
+			announce()
+		end
+		thread.sleep(interval * 1000)
 	end
 end
 
@@ -248,7 +335,9 @@ local function serve()
 			if m.op == "recv" then
 				answer({ ok = table.remove(inbox, 1) })
 			elseif m.op == "send" then
-				answer({ ok = sendtext(m.text or "", m.to) })
+				local sent, why = sendtext(m.text or "", m.to)
+
+				answer({ ok = sent, err = why })
 			elseif m.op == "nodes" then
 				local out = {}
 
@@ -257,12 +346,33 @@ local function serve()
 				end
 				answer({ ok = out })
 			elseif m.op == "announce" then
-				announce()
-				answer({ ok = true })
+				local said, why = announce()
+
+				answer({ ok = said, err = why })
 			elseif m.op == "status" then
 				answer({ ok = { me = mt.nodeid(me), name = name,
 				    channel = channel, waiting = #inbox,
+				    chan = chan, hop = hoplimit,
+				    quiet = quiet,
 				    counters = counters } })
+			elseif m.op == "tune" then
+				local c = mt.channel({
+					preset = mt.PRESETS[m.preset or "LONG_FAST"],
+					region = mt.REGIONS[m.region or "US"],
+					name = m.channel,
+					slot = tonumber(m.slot),
+					offset = tonumber(m.offset),
+				})
+
+				if not c then
+					answer({ err = "no such preset or region" })
+				else
+					chan, key, channel = c, c.key, c.hash
+					hoplimit = tonumber(m.hop) or hoplimit
+					quiet = m.quiet ~= false
+					answer({ ok = configure() and c,
+					    quiet = quiet })
+				end
 			elseif m.op == "name" then
 				name = tostring(m.name or name):sub(1, 32)
 				answer({ ok = name })
@@ -284,5 +394,6 @@ end
 sys.log(("meshsrv: %s on channel %02x"):format(mt.nodeid(me), channel))
 
 thread.spawn(pump)
+thread.spawn(beacon)
 thread.spawn(serve)
 thread.run()

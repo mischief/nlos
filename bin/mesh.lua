@@ -3,6 +3,7 @@
 --	mesh status | nodes | announce
 --	mesh watch [SECONDS]
 --	mesh send TEXT
+--	mesh tune PRESET [SLOT] [HOP]
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -57,6 +58,17 @@ if cmd == "status" then
 	end
 	print(("%s (%s) channel %02x, %d waiting"):format(s.me, s.name,
 	    s.channel, s.waiting))
+
+	local c = s.chan
+
+	if c then
+		print(("%s  %.4f MHz  slot %d/%d  sf%d bw%d cr4/%d  hop %d")
+		    :format(c.name, c.freq, c.slot + 1, c.nslots, c.sf, c.bw,
+		    c.cr, s.hop or 0))
+	end
+	if s.quiet then
+		print("listening only: this channel is not ours")
+	end
 	print(("rx %d  tx %d  dup %d  undecoded %d"):format(s.counters.rx,
 	    s.counters.tx, s.counters.dup, s.counters.undecoded))
 elseif cmd == "nodes" then
@@ -85,11 +97,27 @@ elseif cmd == "send" then
 
 	local r = ask({ op = "send", text = text }, 40)
 
-	print(r and r.ok and "sent" or "not sent")
+	print(r and r.ok and "sent" or ("not sent: " ..
+	    tostring(r and r.err or "no answer")))
 elseif cmd == "announce" then
 	local r = ask({ op = "announce" }, 40)
+	print(r and r.ok and "announced" or ("not announced: " ..
+	    tostring(r and r.err or "no answer")))
+elseif cmd == "tune" then
+	local r = ask({ op = "tune", preset = arg[2], slot = arg[3],
+	    hop = arg[4] }, 20)
+	local c = r and r.ok
 
-	print(r and r.ok and "announced" or "not announced")
+	if not c then
+		print("mesh: the radio would not take it")
+		os.exit(1)
+	end
+	print(("%s  %.4f MHz  slot %d/%d  sf%d bw%d cr4/%d  channel %02x")
+	    :format(c.name, c.freq, c.slot + 1, c.nslots, c.sf, c.bw, c.cr,
+	    c.hash))
+	if r.quiet then
+		print("listening only: nothing will go out on this channel")
+	end
 elseif cmd == "watch" then
 	local secs = tonumber(arg[2]) or 300
 	local until_ = sys.uptime_ms() + secs * 1000
@@ -105,6 +133,6 @@ elseif cmd == "watch" then
 		end
 	end
 else
-	io.stderr:write("usage: mesh status|nodes|watch|send|announce\n")
+	io.stderr:write("usage: mesh status|nodes|watch|send|announce|tune\n")
 	os.exit(1)
 end

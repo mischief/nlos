@@ -17,6 +17,9 @@ M.HEADER = 16
 M.BROADCAST = 0xffffffff
 
 function M.parse(frame)
+	if type(frame) ~= "string" then
+		return nil, "not bytes"
+	end
 	if #frame < M.HEADER then
 		return nil, "shorter than a header"
 	end
@@ -61,6 +64,19 @@ end
 -- radio and nobody else.
 M.DEFAULTKEY = "\xd4\xf1\xbb\x3a\x20\x29\x07\x59" ..
     "\xf0\xbc\xff\xab\xcf\x4e\x69\x01"
+
+-- a key given as one byte, which is how a channel url carries the
+-- common ones. Index 1 is the default key untouched and each one after
+-- adds to its last byte; index 0 is no encryption at all.
+function M.psk(index)
+	if index == 0 then
+		return nil
+	end
+
+	local last = M.DEFAULTKEY:byte(16) + index - 1
+
+	return M.DEFAULTKEY:sub(1, 15) .. string.char(last & 0xff)
+end
 
 -- a byte, and only a hint: the receiver still has to try the key. Name
 -- and key are xored together, so two channels can collide and the
@@ -110,21 +126,65 @@ M.REGIONS = {
 }
 
 -- the presets, as their firmware defines them: spreading factor,
--- bandwidth in kHz, and the coding rate's denominator.
+-- bandwidth in kHz, and the coding rate's denominator. The name is the
+-- preset's display name, which is not decoration: a channel left
+-- unnamed is hashed under it, so it picks both the slot and the
+-- channel byte.
 M.PRESETS = {
-	SHORT_TURBO = { sf = 7, bw = 500, cr = 5 },
-	SHORT_FAST = { sf = 7, bw = 250, cr = 5 },
-	SHORT_SLOW = { sf = 8, bw = 250, cr = 5 },
-	MEDIUM_FAST = { sf = 9, bw = 250, cr = 5 },
-	MEDIUM_SLOW = { sf = 10, bw = 250, cr = 5 },
-	LONG_FAST = { sf = 11, bw = 250, cr = 5 },
-	LONG_MODERATE = { sf = 11, bw = 125, cr = 8 },
-	LONG_SLOW = { sf = 12, bw = 125, cr = 8 },
-	LONG_TURBO = { sf = 11, bw = 500, cr = 8 },
+	SHORT_TURBO = { name = "ShortTurbo", sf = 7, bw = 500, cr = 5 },
+	SHORT_FAST = { name = "ShortFast", sf = 7, bw = 250, cr = 5 },
+	SHORT_SLOW = { name = "ShortSlow", sf = 8, bw = 250, cr = 5 },
+	MEDIUM_FAST = { name = "MediumFast", sf = 9, bw = 250, cr = 5 },
+	MEDIUM_SLOW = { name = "MediumSlow", sf = 10, bw = 250, cr = 5 },
+	LONG_FAST = { name = "LongFast", sf = 11, bw = 250, cr = 5 },
+	LONG_MODERATE = { name = "LongMod", sf = 11, bw = 125, cr = 8 },
+	LONG_SLOW = { name = "LongSlow", sf = 12, bw = 125, cr = 8 },
+	LONG_TURBO = { name = "LongTurbo", sf = 11, bw = 500, cr = 8 },
 }
 
 -- what every radio on the network uses, and not the sx1262's default
 M.SYNCWORD = 0x2b
+
+-- a channel, whole: what to tune and what to put in the header. An
+-- unnamed channel takes the preset's name, and that name decides both
+-- the slot and the channel byte, so the two cannot disagree.
+function M.channel(opt)
+	opt = opt or {}
+
+	local p = opt.preset or M.PRESETS.LONG_FAST
+	local region = opt.region or M.REGIONS.US
+	local key = opt.key or M.DEFAULTKEY
+	local name = opt.name
+
+	if not name or name == "" then
+		name = p.name
+	end
+
+	local freq, ch, n = M.slot(name, region, p.bw)
+
+	if not freq then
+		return nil, ch
+	end
+
+	-- a slot given by hand counts from one, as their config does:
+	-- zero is what "no opinion" looks like, and means the hash
+	if opt.slot and opt.slot > 0 then
+		ch = (opt.slot - 1) % n
+		freq = region.lo + (p.bw / 2000) + ch * (p.bw / 1000)
+	end
+
+	return {
+		name = name,
+		freq = freq + (opt.offset or 0),
+		slot = ch,
+		nslots = n,
+		hash = M.channelhash(name, key),
+		sf = p.sf,
+		bw = p.bw,
+		cr = p.cr,
+		key = key,
+	}
+end
 
 -- ---- the cipher ----
 
