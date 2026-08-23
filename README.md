@@ -385,5 +385,8 @@ argued in AGENTS.md.
 - [docs/graphics.md](docs/graphics.md) -- writing a program that draws:
   where the pixels live, what a pointer record promises, and how to
   measure a frame rather than squint at one.
+- [docs/memory.md](docs/memory.md) -- where the memory goes: the pool,
+  the shared heap over it, what the stats line does and does not
+  count, and what a page or a proc costs. Measured on esp32.
 - [docs/namespace-design.md](docs/namespace-design.md) -- a parked design;
   a recorded argument rather than a commitment.
