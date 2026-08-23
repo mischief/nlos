@@ -545,6 +545,14 @@ test('nmea-parser', lua_interp,
   timeout: 20,
 )
 
+# gemini, on the same terms: the url rules, the reply machine and
+# gemtext, with the TLS connection they ride left to the caller.
+test('gemini-protocol', lua_interp,
+  args: [files('host_gemini.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # lib/geometry.lua: the identities are the test. A rotation keeps a
 # length, a frame round-trips, and a satellite placed from a bearing is
 # seen again at that bearing -- which is what a sky plot rests on.
