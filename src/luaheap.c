@@ -15,6 +15,7 @@
 #endif
 
 #include "kstat.h"
+#include "lock.h"
 #include "luaheap.h"
 
 /* lua's own alignment requirement is LUAI_MAXALIGN, which is the widest
@@ -163,6 +164,12 @@ struct luaheap {
 	 * apart from chunk tails when reporting
 	 */
 	atomic_size_t rounded, large_asked;
+
+	/* Held across every entry point, because one heap may be shared
+	 * by procs that two cpus run at once. A compiler barrier where
+	 * NCPU is 1, so a uniprocessor pays nothing for it.
+	 */
+	struct lock lk;
 };
 
 /* the smallest class that fits, or NCLASS for the large path.
@@ -486,8 +493,8 @@ release_freechunks(struct luaheap *h)
 	return freed;
 }
 
-size_t
-luaheap_reclaim(struct luaheap *h)
+static size_t
+reclaim_locked(struct luaheap *h)
 {
 	if (!h)
 		return 0;
@@ -548,8 +555,8 @@ release_largefree(struct luaheap *h)
  * large block comes straight from the chunk source and sits in no
  * chunk, so releasing one never empties one.
  */
-size_t
-luaheap_release(struct luaheap *h)
+static size_t
+release_locked(struct luaheap *h)
 {
 	if (!h)
 		return 0;
@@ -593,8 +600,8 @@ large_free(struct luaheap *h, void *ptr, size_t asked)
 	h->ops->chunk_free(h->ud, l, l->size);
 }
 
-void *
-luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
+static void *
+realloc_locked(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 {
 	size_t oc, nc;
 
@@ -677,8 +684,8 @@ luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
 	return q;
 }
 
-void
-luaheap_stats(const struct luaheap *h, struct luaheap_stats *out)
+static void
+stats_locked(const struct luaheap *h, struct luaheap_stats *out)
 {
 	if (!out)
 		return;
@@ -720,4 +727,63 @@ luaheap_stats(const struct luaheap *h, struct luaheap_stats *out)
 	    out->waste - out->rounding - out->headers : 0;
 
 	out->cached = KSTAT_GET(h->largecached);
+}
+
+/* ---- the public entry points ----
+ *
+ * One heap may be shared, so each takes the lock and none of the paths
+ * above can return while holding it.
+ */
+void *
+luaheap_realloc(struct luaheap *h, void *ptr, size_t osize, size_t nsize)
+{
+	void *p;
+
+	if (!h)
+		return 0;
+	lock(&h->lk);
+	p = realloc_locked(h, ptr, osize, nsize);
+	unlock(&h->lk);
+	return p;
+}
+
+size_t
+luaheap_reclaim(struct luaheap *h)
+{
+	size_t n;
+
+	if (!h)
+		return 0;
+	lock(&h->lk);
+	n = reclaim_locked(h);
+	unlock(&h->lk);
+	return n;
+}
+
+size_t
+luaheap_release(struct luaheap *h)
+{
+	size_t n;
+
+	if (!h)
+		return 0;
+	lock(&h->lk);
+	n = release_locked(h);
+	unlock(&h->lk);
+	return n;
+}
+
+/* const to callers, since it reports rather than changes; the lock is
+ * this heap's own and taking it is not a change they can see.
+ */
+void
+luaheap_stats(const struct luaheap *h, struct luaheap_stats *out)
+{
+	struct luaheap *m = (struct luaheap *)h;
+
+	if (!h || !out)
+		return;
+	lock(&m->lk);
+	stats_locked(h, out);
+	unlock(&m->lk);
 }

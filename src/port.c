@@ -12,6 +12,7 @@
 #include "lua.h"
 #include "lock.h"
 #include "cpu.h"
+#include "machine.h"
 #include "kernel.h"
 #include "kproc.h"
 #include "port.h"

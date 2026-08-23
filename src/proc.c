@@ -50,6 +50,13 @@
  */
 #define GCSTEP_MAX_KB	(16 * 1024)
 
+/* one lua heap for the machine, or one per proc: a lock on every
+ * allocation against every heap's chunk tails.
+ */
+#ifndef SHARED_LUAHEAP
+#define SHARED_LUAHEAP (NCPU == 1)
+#endif
+
 static int kernel_cowrap_resume(lua_State *L, lua_State *co, int narg);
 static void preempt_hook(lua_State *L, lua_Debug *ar);
 static void trace_put(struct kproc *p, struct ktrace *t, int line, int src,
@@ -78,11 +85,7 @@ atomic_int nlive;
 
 static int nextpid;
 
-/* the machine-wide heap, where NCPU is 1. Null above that, and that is
- * the test for whether a proc owns the heap it points at. The
- * arrangement follows NCPU rather than platform_ncpu() -- see
- * docs/proc.md, which is worth reading before changing that.
- */
+/* null where each proc owns its own. See docs/proc.md. */
 struct luaheap *shared_heap;
 
 static unsigned int brokeseq;
@@ -1243,12 +1246,12 @@ proc_new(const char *code, size_t codelen, const char *chunkname, int is_file,
 	 * reaches this proc's heap -- and, where there is one cpu, every
 	 * other proc's too. See the comment at shared_heap.
 	 */
-	if (NCPU > 1) {
-		KSTAT_SET(p->heap, luaheap_new(&kalloc_ops, 0));
-	} else {
+	if (SHARED_LUAHEAP) {
 		if (!shared_heap)
 			shared_heap = luaheap_new(&kalloc_ops, 0);
 		KSTAT_SET(p->heap, shared_heap);
+	} else {
+		KSTAT_SET(p->heap, luaheap_new(&kalloc_ops, 0));
 	}
 	if (!KSTAT_GET(p->heap))
 		return -1;

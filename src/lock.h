@@ -69,10 +69,17 @@
 #include <stdatomic.h>
 
 #include "kstat.h"
-#include "machine.h"
 
 #ifndef NCPU
 #define NCPU 1
+#endif
+
+/* Only the spin below reaches it, so a uniprocessor build needs no
+ * machine at all -- which is what lets luaheap.c's host bench and unit
+ * test link this without a platform.
+ */
+#if NCPU > 1
+#include "machine.h"
 #endif
 
 static inline void
