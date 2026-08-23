@@ -257,6 +257,16 @@ lines = gemini.wrap(gemini.parse("supercalifragilistic"), 8)
 is(lines[1].text, "supercal",
     "a word longer than the line is broken rather than run off it")
 
+-- gemini is utf-8, so a column is a codepoint and not a byte
+lines = gemini.wrap(gemini.parse("\u{e9}\u{e9}\u{e9} \u{e9}\u{e9}\u{e9}"), 4)
+is(#lines, 2, "an accented word takes the columns it looks like it takes")
+is(lines[1].text, "\u{e9}\u{e9}\u{e9}", "and is not broken up by its bytes")
+
+lines = gemini.wrap(gemini.parse(string.rep("\u{1f30d}", 6)), 4)
+is(lines[1].text, string.rep("\u{1f30d}", 4),
+    "a hard break falls on a character boundary")
+is(lines[2].text, string.rep("\u{1f30d}", 2), "and what is left follows")
+
 lines = gemini.wrap(gemini.parse("* one\n> two"), 20)
 is(lines[1].text, "* one", "an item is drawn with its bullet back")
 is(lines[2].text, "> two", "and a quote with its mark")

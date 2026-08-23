@@ -504,6 +504,23 @@ local PREFIX = {
 	quote = "> ",
 }
 
+-- a column is a codepoint, not a byte: gemini is utf-8 and a page of
+-- it wraps by what a reader sees. Text that is not valid utf-8 falls
+-- back to bytes rather than refusing to lay out.
+local function wlen(s)
+	return utf8.len(s) or #s
+end
+
+local function wsub(s, i, j)
+	local a = utf8.offset(s, i)
+	local b = j and utf8.offset(s, j + 1)
+
+	if not a then
+		return s:sub(i, j)
+	end
+	return s:sub(a, b and b - 1 or nil)
+end
+
 local function fold(text, width, first, cont, emit)
 	if width < 4 then
 		width = 4
@@ -513,24 +530,24 @@ local function fold(text, width, first, cont, emit)
 		return
 	end
 
-	local pre, room = first, width - #first
+	local pre, room = first, width - wlen(first)
 	local out = ""
 
 	for word in text:gmatch("%S+") do
 		if out == "" then
 			out = word
-		elseif #out + 1 + #word <= room then
+		elseif wlen(out) + 1 + wlen(word) <= room then
 			out = out .. " " .. word
 		else
 			emit(pre .. out, false)
-			pre, room, out = cont, width - #cont, word
+			pre, room, out = cont, width - wlen(cont), word
 		end
 		-- a word longer than the line is broken rather than left
 		-- to run off the edge, since nothing below can wrap it
-		while #out > room do
-			emit(pre .. out:sub(1, room), false)
-			out = out:sub(room + 1)
-			pre, room = cont, width - #cont
+		while wlen(out) > room do
+			emit(pre .. wsub(out, 1, room), false)
+			out = wsub(out, room + 1)
+			pre, room = cont, width - wlen(cont)
 		end
 	end
 	if out ~= "" then
@@ -585,6 +602,172 @@ function M.wrap(nodes, cols, opts)
 		end
 	end
 	return lines
+end
+
+-- ---- sugar for a caller that does have a connection ----
+--
+-- Not part of the machine above, the way zmodem's drive() is not: this
+-- is the loop a caller holding a dial/send/recv/close writes anyway.
+
+-- what a client follows before it decides the server is going in
+-- circles. The spec's own number.
+M.MAXREDIRECT = 5
+
+local function parseip(s)
+	local a, b, c, d = s:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+
+	if not a then
+		return nil
+	end
+	return tonumber(a), tonumber(b), tonumber(c), tonumber(d)
+end
+
+local function dial(tcp, dns, u, opts)
+	local ok, tlstcp = pcall(require, "tlstcp")
+
+	if not ok then
+		return nil, "no tls on this machine: " .. tostring(tlstcp)
+	end
+	if not opts.rand then
+		return nil, "tls needs entropy, and this caller was lent none"
+	end
+
+	-- gemini is TLS always, and trust is the caller's to decide: pass
+	-- a verify, or take first-use, which without a store is every use.
+	local t = tlstcp.new(tcp, {
+		rand = opts.rand,
+		insecure = opts.insecure,
+		verify = opts.verify or (not opts.insecure and
+		    tlstcp.tofu(u.host, opts.onkey) or nil),
+	})
+	local a, b, c, d = parseip(u.host)
+	local named = a == nil
+
+	if not a then
+		if not dns then
+			return nil, "no resolver, and host is not an ip: "
+			    .. u.host
+		end
+
+		local ip = dns.resolve(u.host)
+
+		if not ip then
+			return nil, "cannot resolve " .. u.host
+		end
+		a, b, c, d = parseip(ip)
+		if not a then
+			return nil, "resolver returned junk: " .. tostring(ip)
+		end
+	end
+
+	local sock, err = t.dial(a, b, c, d, u.port, named and u.host or nil)
+
+	if not sock then
+		return nil, err or "connect failed"
+	end
+	return t, sock
+end
+
+-- one request, no redirects. The reply is a table: status, meta, url,
+-- and the body unless opts.sink took it.
+function M.request_once(tcp, dns, url, opts)
+	opts = opts or {}
+
+	local u, uerr = M.url(url)
+
+	if not u then
+		return nil, uerr
+	end
+
+	local line, lerr = M.request(u)
+
+	if not line then
+		return nil, lerr
+	end
+
+	local t, sock = dial(tcp, dns, u, opts)
+
+	if not t then
+		return nil, sock
+	end
+
+	-- a sink is for the page, not for the one-line body a failure or a
+	-- redirect may still carry, so the status decides where bytes go.
+	-- Declared before it is built: the closure names it.
+	local r
+
+	r = M.response({ sink = opts.sink and function(part)
+		if M.class(r.status) == M.SUCCESS then
+			opts.sink(part)
+		else
+			r.body[#r.body + 1] = part
+		end
+	end or nil })
+
+	if not t.send(sock, line) then
+		t.close(sock)
+		return nil, "send failed"
+	end
+
+	while true do
+		local part, rerr = t.recv(sock)
+
+		if not part then
+			if rerr then
+				t.close(sock)
+				return nil, rerr
+			end
+			break
+		end
+
+		local fed, ferr = r:feed(part)
+
+		if not fed then
+			t.close(sock)
+			return nil, ferr
+		end
+	end
+	t.close(sock)
+
+	local done, derr = r:eof()
+
+	if not done then
+		return nil, derr
+	end
+	r.url = u.url
+	return r
+end
+
+-- and the same, following redirects the way every client does. Each
+-- hop is resolved against the one before it, so a server may move a
+-- page with a relative meta. opts.onredirect(from, to, status) is told.
+function M.fetch(tcp, dns, url, opts)
+	opts = opts or {}
+
+	local max = opts.maxredirect or M.MAXREDIRECT
+	local at = url
+
+	for _ = 0, max do
+		local r, err = M.request_once(tcp, dns, at, opts)
+
+		if not r then
+			return nil, err
+		end
+		if M.class(r.status) ~= M.REDIRECT then
+			return r
+		end
+		if r.meta == "" then
+			return nil, "redirect to nowhere"
+		end
+
+		local to = M.resolve(r.url, r.meta)
+
+		if opts.onredirect then
+			opts.onredirect(r.url, to, r.status)
+		end
+		at = to
+	end
+	return nil, "more than " .. max .. " redirects"
 end
 
 return M
