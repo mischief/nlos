@@ -84,6 +84,15 @@ build-hosted/src/platform/hosted/luaos-hosted        # as a process
 build-hosted/src/platform/hosted/luaos-hosted --gui  # and with a window
 ```
 
+Or as targets, which serve this tree as `/` so an edit under `lib/` is
+live on the next run:
+
+```sh
+ninja -C build-hosted hosted         # console only
+ninja -C build-hosted hosted-gui     # with a window
+ninja -C build-hosted hosted-panel   # at the T-Deck's 320x240
+```
+
 `--help` lists the rest: `-r` the directory served as `/`, `-d` a file
 as the disk, `-w` to allow writes into the root, `-m` the memory
 ceiling, `--no-host-fs` to boot the tree built into the binary.

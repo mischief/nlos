@@ -63,6 +63,19 @@ run_target('hosted',
   command: [luaos_hosted, '-r', meson.project_source_root()],
 )
 
+# the same tree with a window, which is the only way to reach the panel
+# and the programs that draw on it.
+run_target('hosted-gui',
+  command: [luaos_hosted, '-r', meson.project_source_root(), '--gui'],
+)
+
+# and at the T-Deck's geometry, since what fits at 1024x768 says
+# nothing about what fits on the board.
+run_target('hosted-panel',
+  command: [luaos_hosted, '-r', meson.project_source_root(),
+    '-g', '320x240'],
+)
+
 # the same binary with no directory behind it, which is what ships.
 run_target('hosted-selfcontained',
   command: [luaos_hosted, '--no-host-fs'],
