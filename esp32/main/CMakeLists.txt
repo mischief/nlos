@@ -104,6 +104,17 @@ idf_component_register(
 # proc owns. lua/ stays vanilla.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE LUA_USER_H="coreg.h")
 
+# How many cpus lock.h and proc.c are built for. Above one, every proc
+# gets a lua heap of its own instead of the machine-wide one, and every
+# lock becomes a real one: both are paid whatever the cores then do.
+set(LUAOS_NCPU "1" CACHE STRING "cpus the kernel is built for")
+target_compile_definitions(${COMPONENT_LIB} PRIVATE NCPU=${LUAOS_NCPU})
+
+# and one heap for all of them whatever that is: per-proc heaps cost
+# 1.6MB of 8MB here, measured at rest, which is more than the lock on
+# every allocation costs.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE SHARED_LUAHEAP=1)
+
 # The search paths come in as a force-included header rather than -D,
 # because LUA_PATH_DEFAULT contains a semicolon and cmake splits those
 # into separate definitions -- see the header for the full story.
