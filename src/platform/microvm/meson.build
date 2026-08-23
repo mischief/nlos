@@ -166,6 +166,7 @@ embed_files = [
   'lib/client/rpc.lua',
   'lib/http.lua',
   'lib/gemini.lua',
+  'lib/menu.lua',
   'lib/crypto/chacha20.lua',
   'lib/crypto/poly1305.lua',
   'lib/crypto/hashstate.lua',

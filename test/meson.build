@@ -553,6 +553,14 @@ test('gemini-protocol', lua_interp,
   timeout: 20,
 )
 
+# the panel's popup menu, which draws through primitives the caller
+# passes: the geometry and the hit test need no framebuffer.
+test('menu', lua_interp,
+  args: [files('host_menu.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
 # lib/geometry.lua: the identities are the test. A rotation keeps a
 # length, a frame round-trips, and a satellite placed from a bearing is
 # seen again at that bearing -- which is what a sky plot rests on.

@@ -235,6 +235,7 @@ lua_payload = files(
   '../../../lib/http.lua',
   '../../../lib/tlstcp.lua',
   '../../../lib/gemini.lua',
+  '../../../lib/menu.lua',
   '../../../lib/tls/client.lua',
   '../../../lib/tls/conn.lua',
   '../../../lib/tls/hello.lua',

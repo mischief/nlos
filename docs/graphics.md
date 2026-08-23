@@ -173,3 +173,20 @@ see.
 Quit with `os.exit(0)`, in the hangup case as well as the keystroke.
 The launcher is where to check: it marks an entry "(1 running)", which
 is the only place the difference shows.
+
+## a menu is how a small screen says what it can do
+
+Keys are invisible, and a row of buttons is the width the content
+wanted. `lib/menu.lua` is the other answer: one square in the corner,
+and a list that covers the page while it is up and is gone the moment
+it is answered. Each row shows the key that does the same thing, so the
+menu teaches the shortcut rather than replacing it.
+
+It draws through two primitives the caller passes -- fill a rectangle,
+put a string somewhere -- and holds only the geometry and what a point
+or a key means. That half needs no framebuffer, so it is tested on the
+host.
+
+Closing one costs a full redraw: nothing keeps a copy of what was
+underneath. Check that with a pixel count -- the frame after a dismiss
+should equal the frame from before the menu opened, exactly.

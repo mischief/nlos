@@ -1,7 +1,7 @@
 -- geminiui: read a gemini capsule on the panel.
 
 --	a link is a row -- touch one to follow it
---	b back, r reload, h the start page, g type a url
+--	the square in the corner, or ?, is the menu and the keys it names
 --	a digit names a link; enter follows it
 --	the trackball scrolls, q leaves
 
@@ -16,6 +16,7 @@ local thread = require("los.thread")
 local mouse = require("mouse")
 local font = require("los.font")
 local gemini = require("gemini")
+local menu = require("menu")
 
 local fb = prog.screen()
 
@@ -121,9 +122,41 @@ local function linecolor(l)
 	return COLOR[l.kind] or FG
 end
 
+-- what lib/menu.lua draws through: it holds the geometry and knows
+-- nothing about a framebuffer.
+local D = {
+	fill = function(x, y, w, h, c)
+		fb.fill({ x = x, y = y, w = w, h = h }, c, true)
+	end,
+	text = function(x, y, s, c)
+		text(x, y, s, c)
+	end,
+}
+
+local PAL = { bg = 0x1c1c24, fg = FG, dim = DIM, sel = 0x26304a,
+    edge = DIM }
+
+local BW = menu.BUTTON
+local nav = menu.new({
+	title = "gemini",
+	top = ROWH + 2,
+	w = W,
+	h = H,
+	rowh = ROWH,
+	fw = FW,
+	items = {
+		{ id = "back", label = "back", key = "b" },
+		{ id = "reload", label = "reload", key = "r" },
+		{ id = "home", label = "start page", key = "h" },
+		{ id = "url", label = "open a url", key = "g" },
+		{ id = "quit", label = "quit", key = "q" },
+	},
+})
+
 local function drawbar()
 	fb.fill({ x = 0, y = 0, w = W, h = ROWH }, BG, true)
-	text(MARGIN, 1, tail(page.url, COLS), busy and DIM or HEAD)
+	menu.drawbutton(D, 0, 1, nav:isopen() and HEAD or DIM, BG)
+	text(BW + MARGIN, 1, tail(page.url, COLS - 2), busy and DIM or HEAD)
 	fb.fill({ x = 0, y = ROWH + 1, w = W, h = 1 }, DIM)
 end
 
@@ -171,6 +204,7 @@ local function draw(all)
 	drawbar()
 	drawbody(all)
 	drawfoot()
+	nav:draw(D, PAL)
 end
 
 local function say(s)
@@ -344,6 +378,41 @@ local function followno(n)
 	say("no link " .. n)
 end
 
+-- ---- the menu ----
+
+-- a full redraw, because what the menu covered is gone: the panel
+-- keeps no copy of what is under a window
+local function closemenu()
+	nav:hide()
+	draw(true)
+end
+
+local function openmenu()
+	nav:show()
+	drawbar()
+	nav:draw(D, PAL)
+end
+
+local function askurl()
+	typing, typed, prompt = "url", "", "url: "
+	drawfoot()
+end
+
+local function pick(id)
+	closemenu()
+	if id == "back" then
+		back()
+	elseif id == "reload" then
+		go(page.url, true)
+	elseif id == "home" then
+		go(HOMEURL)
+	elseif id == "url" then
+		askurl()
+	elseif id == "quit" then
+		os.exit(0)
+	end
+end
+
 -- ---- what is typed ----
 
 local function commit()
@@ -372,6 +441,18 @@ local function commit()
 end
 
 local function key(m)
+	if nav:isopen() then
+		local act, id = nav:key(m)
+
+		if act == "pick" then
+			pick(id)
+		elseif act == "moved" then
+			nav:draw(D, PAL)
+		else
+			closemenu()
+		end
+		return true
+	end
 	if typing then
 		if m == "\r" or m == "\n" then
 			commit()
@@ -401,8 +482,9 @@ local function key(m)
 	elseif m == "h" then
 		go(HOMEURL)
 	elseif m == "g" then
-		typing, typed, prompt = "url", "", "url: "
-		drawfoot()
+		askurl()
+	elseif m == "?" then
+		openmenu()
 	elseif m:match("^%d$") then
 		typing, typed, prompt = "link", m, "link: "
 		drawfoot()
@@ -429,7 +511,7 @@ if point then
 		local down = false
 
 		while true do
-			local _, y, b = point.read()
+			local x, y, b = point.read()
 
 			if not b then
 				return
@@ -444,11 +526,24 @@ if point then
 
 			-- the press edge, not the state: a finger held on a
 			-- link should follow it once
-			if pressed and not down and y >= TOP and y < FOOT then
-				local l = page.lines[top + (y - TOP) // ROWH]
+			if pressed and not down then
+				if nav:isopen() then
+					local act, id = nav:click(x, y)
 
-				if l and l.url then
-					follow(l.url)
+					if act == "pick" then
+						pick(id)
+					elseif act == "dismiss" then
+						closemenu()
+					end
+				elseif menu.inbutton(x, y, 0, 1) then
+					openmenu()
+				elseif y >= TOP and y < FOOT then
+					local l = page.lines[top
+					    + (y - TOP) // ROWH]
+
+					if l and l.url then
+						follow(l.url)
+					end
 				end
 			end
 			down = pressed
