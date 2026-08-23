@@ -94,6 +94,16 @@ is(#list, 3, "and it is not listed twice")
 
 is(names(cfg.remember({}, "first")), "first",
     "the first network remembered is the list")
+
+-- an empty answer to a passphrase prompt is "as before". Overwriting
+-- here loses the credential and the link together, leaving nothing to
+-- reconnect with -- which is what makes it worse than refusing.
+is(cfg.remember(many, "home", nil)[1].psk, "a",
+    "no passphrase keeps the saved one")
+is(cfg.remember(many, "home", "")[1].psk, "a",
+    "and so does an empty one")
+is(cfg.remember(many, "new", nil)[1].psk, nil,
+    "but a network not known stays open")
 is(names(cfg.forget(list, "home")), "cafe,phone", "forgetting drops one")
 is(names(cfg.forget(list, "nowhere")), "cafe,home,phone",
     "and forgetting what is not there changes nothing")

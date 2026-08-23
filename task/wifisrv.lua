@@ -238,9 +238,16 @@ local function control(msg)
 	-- saved before the radio is told, and first in the list: a join
 	-- that is not written down is one the next boot has forgotten,
 	-- and choosing a network is what saying "prefer this" looks like.
-	save(wificfg.remember(known(), ssid, psk))
+	local list = wificfg.remember(known(), ssid, psk)
 
-	local r = ask({ how = "connect", ssid = ssid, psk = psk })
+	save(list)
+
+	-- from the list rather than the message, so that an omitted
+	-- passphrase reaches the radio as the saved one. The two must
+	-- agree: a join that saves a key it did not use associates as
+	-- open, and one that uses a key it did not save is forgotten by
+	-- the next boot.
+	local r = ask({ how = "connect", ssid = ssid, psk = list[1].psk })
 
 	if not r or not r.ok then
 		return nil, dev.Eio
@@ -358,6 +365,9 @@ local IDLE = 20 * 1000		-- between looks while the link is up
 -- takes a new one rather than reading its own cached one forever, and
 -- rare enough that somebody reading the file is not queued behind it.
 local RETRY = 20 * 1000
+-- consecutive passes that may find it still joining before the attempt
+-- is abandoned. Association takes seconds, so this is generous.
+local STUCK = 2
 
 local function joined()
 	local r = ask({ how = "status" })
@@ -382,19 +392,34 @@ thread.spawn(function()
 	first()
 
 	local complained = false
+	local waiting = 0
 
 	while true do
 		local up, st = joined()
 
 		if up then
 			complained = false
+			waiting = 0
 			thread.sleep(IDLE)
 			goto continue
 		end
+
+		-- A join that never finishes is neither up nor down, so
+		-- waiting for it to end is waiting forever. The radio
+		-- retries a credential itself; one that has not settled
+		-- after this long will not, and starting over is what
+		-- lets the loop below choose again.
 		if st and st.state == "joining" then
-			thread.sleep(RETRY)
-			goto continue
+			waiting = waiting + 1
+			if waiting <= STUCK then
+				thread.sleep(RETRY)
+				goto continue
+			end
+			sys.log("wifi: %s has not settled, starting over",
+			    st.ssid or "")
+			ask({ how = "disconnect" })
 		end
+		waiting = 0
 
 		do
 			local list = known()

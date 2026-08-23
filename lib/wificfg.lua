@@ -88,7 +88,21 @@ end
 -- what the app does when somebody joins one: first, because choosing it
 -- is what saying "prefer this" looks like. The same ssid is not listed
 -- twice, so a rejoin moves it rather than growing the file.
+-- No passphrase keeps the one already saved, rather than replacing a
+-- network with an open one of the same name: an empty answer to a
+-- prompt means "as before", and the alternative loses the credential
+-- and the link at once, with nothing left to reconnect with. Forget it
+-- to join the same name openly.
 function M.remember(list, ssid, psk)
+	if psk == nil or psk == "" then
+		for _, n in ipairs(list) do
+			if n.ssid == ssid then
+				psk = n.psk
+				break
+			end
+		end
+	end
+
 	local out = { { ssid = ssid, psk = psk } }
 
 	for _, n in ipairs(list) do
