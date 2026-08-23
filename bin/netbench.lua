@@ -5,20 +5,19 @@
 -- Bare, the body goes to a counter: the network alone. Named a file,
 -- the same transfer with the storage put back in.
 
-local unistd = require("posix.unistd")
 local sys = require("los.sys")
 local prog = require("prog")
 local http = require("http")
 
 local function die(s)
-	unistd.write(2, "netbench: " .. s .. "\n")
+	io.stderr:write("netbench: " .. s .. "\n")
 	os.exit(1)
 end
 
 local url = arg[1]
 
 if not url then
-	unistd.write(2, "usage: netbench url\n")
+	io.stderr:write("usage: netbench url\n")
 	os.exit(2)
 end
 if not url:match("^%a+://") then

@@ -10,7 +10,6 @@
 
 local prog = require("prog")
 local sys = require("los.sys")
-local unistd = require("posix.unistd")
 
 local N = prog.ns()
 
@@ -49,9 +48,9 @@ end
 local ref = app or sym
 
 if ref and fs ~= ref then
-	unistd.write(2, "MISMATCH: the app and the filesystem are different" ..
+	io.stderr:write("MISMATCH: the app and the filesystem are different" ..
 	    " builds\n")
-	unistd.write(2, "flash both partitions; one alone is what makes this\n")
+	io.stderr:write("flash both partitions; one alone is what makes this\n")
 	os.exit(1)
 end
 

@@ -23,11 +23,9 @@
 -- The text and the reader are deliberately two different places. The
 -- text is stdin, which may be a pipe; the answers come from the
 -- terminal, which is a capability the shell lent us. Reading both from
--- fd 0 works only until someone pipes something in, and then the pager
+-- stdin works only until someone pipes something in, and then the pager
 -- eats the file it is meant to be showing.
 
-local unistd = require("posix.unistd")
-local fcntl = require("posix.fcntl")
 local prog = require("prog")
 
 local DEF = 22		-- plan 9's default, for a terminal that will not say
@@ -79,42 +77,6 @@ local function more()
 	return not (c == "q" or c == "Q")
 end
 
--- a line at a time, holding one line rather than the file: the machine
--- this runs on has less memory than the files it will be asked to page.
-local function lines(fd)
-	local buf, done = "", false
-
-	return function()
-		while true do
-			local at = buf:find("\n", 1, true)
-
-			if at then
-				local l = buf:sub(1, at - 1)
-
-				buf = buf:sub(at + 1)
-				return l
-			end
-			if done then
-				if #buf > 0 then
-					local l = buf
-
-					buf = ""
-					return l
-				end
-				return nil
-			end
-
-			local d = unistd.read(fd, 4096)
-
-			if not d or d == "" then
-				done = true
-			else
-				buf = buf .. d
-			end
-		end
-	end
-end
-
 -- How many rows a line takes once the console has drawn it.
 --
 -- A page is a screenful, not a count of newlines. The console wraps at
@@ -149,8 +111,11 @@ local function height(s)
 	return (w + cols - 1) // cols
 end
 
-local function page(fd)
-	local nextline = lines(fd)
+local function page(f)
+	-- f:lines() holds one line rather than the file, and reads through
+	-- nsio's buffer: the machine this runs on has less memory than the
+	-- files it will be asked to page.
+	local nextline = f:lines()
 	local held = nil		-- read but not yet printed
 
 	while true do
@@ -172,7 +137,7 @@ local function page(fd)
 				held = l
 				break
 			end
-			unistd.write(1, l .. "\n")
+			io.write(l .. "\n")
 			n = n + h
 			if n >= pglen then
 				break
@@ -185,20 +150,20 @@ local function page(fd)
 end
 
 if #files == 0 then
-	page(0)
+	page(io.stdin)
 else
 	for _, path in ipairs(files) do
-		local fd, err = fcntl.open(path, fcntl.O_RDONLY)
+		local f, err = io.open(path, "r")
 
-		if not fd then
+		if not f then
 			io.stderr:write("p: " .. path .. ": " .. tostring(err) ..
 			    "\n")
 			os.exit(1)
 		end
 
-		local go = page(fd)
+		local go = page(f)
 
-		unistd.close(fd)
+		f:close()
 		if not go then
 			break
 		end

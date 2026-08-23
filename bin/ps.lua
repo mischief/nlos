@@ -13,12 +13,10 @@
 -- see every proc's name and memory. That is the same bargain webterm
 -- already makes, not a new one.
 
-local unistd = require("posix.unistd")
-
 local ok, ps = pcall(require, "ps")
 
 if not ok then
-	unistd.write(2, "ps: cannot load lib/ps.lua: " .. tostring(ps) .. "\n")
+	io.stderr:write("ps: cannot load lib/ps.lua: " .. tostring(ps) .. "\n")
 	os.exit(1)
 end
 
@@ -30,4 +28,4 @@ local prog = require("prog")
 local tty = prog.tty and prog.tty()
 local cols = tty and tty.size()
 
-unistd.write(1, ps.psfmt(cols) .. "\n")
+io.write(ps.psfmt(cols) .. "\n")

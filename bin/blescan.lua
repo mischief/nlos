@@ -5,7 +5,6 @@
 --
 -- The controller filters no duplicates, so a peer is counted not listed twice.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -15,11 +14,11 @@ local ad = require("ble.ad")
 local uuid = require("ble.uuid")
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 end
 
 local function die(s)
-	unistd.write(2, "blescan: " .. s .. "\n")
+	io.stderr:write("blescan: " .. s .. "\n")
 	os.exit(1)
 end
 

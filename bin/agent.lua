@@ -5,7 +5,6 @@
 --
 -- lib/agent.lua with a terminal in front of it. See docs/agent.md.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local agent = require("agent")
 local llm = require("llm")
@@ -14,12 +13,12 @@ local KEYFILE = "/config/openai/key"
 local MODEL = "gpt-5.4-mini"
 
 local function die(s)
-	unistd.write(2, "agent: " .. s .. "\n")
+	io.stderr:write("agent: " .. s .. "\n")
 	os.exit(1)
 end
 
 local function usage()
-	unistd.write(2, [[
+	io.stderr:write([[
 usage: agent [-m model] [-k keyfile] [-u url] [-v] question...
   -m model    which model to ask (default gpt-5.4-mini)
   -k file     where the key is (default /config/openai/key)
@@ -102,7 +101,7 @@ local A = agent.new({
 	ns = N,
 	cwd = prog.cwd(),
 	trace = verbose and function(call, out)
-		unistd.write(2, ("agent: %s %s -> %s\n"):format(call.name,
+		io.stderr:write(("agent: %s %s -> %s\n"):format(call.name,
 		    call.raw or "", (tostring(out):gsub("%s+$", ""))))
 	end or nil,
 })
@@ -112,4 +111,4 @@ local answer, err = A:run(table.concat(words, " "))
 if not answer then
 	die(tostring(err))
 end
-unistd.write(1, answer .. "\n")
+io.write(answer .. "\n")

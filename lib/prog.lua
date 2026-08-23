@@ -31,21 +31,6 @@
 -- launcher decides what each program is handed, so a program that was
 -- not given a capability has no path to it (see AGENTS.md on why
 -- los.platform.* is registered per-owner rather than gated by a check).
---
--- ---- why this shim looks like luaposix ----
---
--- it is NOT an emulation of luaposix. it is the handful of calls that
--- real utilities turn out to use, under the same names, so a ported
--- program needs no diff at all. seq.lua wants exactly `arg`,
--- unistd.write and os.exit; cat.lua adds unistd.read, unistd.close and
--- fcntl.open. that is the whole surface, and implementing it beats
--- reimplementing a library.
---
--- numeric fds are the one concession: `unistd.write(1, s)` and
--- `fcntl.open(path) -> fd` are the idiom, so there is a per-program fd
--- table. it is not the kernel's -- it is a lua table in this proc,
--- mapping small integers to stream objects, and nothing outside the
--- program can see or name it.
 
 local sys = require("los.sys")
 -- los.thread is required where it is used, not here: see
@@ -153,16 +138,6 @@ local function newfds(ctx)
 	fds[1] = ctx.stdout or null
 	fds[2] = ctx.stderr or ctx.stdout or null
 
-	function fds.alloc(stream)
-		local n = 3
-
-		while fds[n] do
-			n = n + 1
-		end
-		fds[n] = stream
-		return n
-	end
-
 	return fds
 end
 
@@ -182,12 +157,12 @@ end
 -- rest unchanged. it reads through; only what install() defines is its
 -- own. no program needed a single change for this.
 --
--- the posix sliver moves out of package.preload for the same reason,
--- and it is the less obvious half: those closures capture fds and ctx,
--- and package.loaded is per-PROC, so the second program to
--- require("posix.unistd") would have got the first one's file
--- descriptors. so the program's _ENV carries its own require, which
--- answers for the sliver and delegates everything else.
+-- the per-program module table moves out of package.preload for the
+-- same reason, and it is the less obvious half: those closures capture
+-- ctx, and package.loaded is per-PROC, so the second program to
+-- require("prog") would have got the first one's context. so the
+-- program's _ENV carries its own require, which answers for the
+-- program-scoped modules and delegates everything else.
 
 -- End the proc, where this program is the proc. Unwinding ends the
 -- coroutine it is called from, so a program that spawned threads leaves
@@ -499,87 +474,10 @@ local function install(ctx)
 		fds[1]:write(table.concat(parts, "\t") .. "\n")
 	end
 
-	local N = ctx.ns
-
 	-- the per-program module table. lazy, and cached after first use,
 	-- so require() semantics are unchanged from the package.preload
 	-- version it replaces -- only the SCOPE differs.
 	local mods, cache = {}, {}
-
-	mods["posix.unistd"] = function()
-		return {
-			write = function(fd, s)
-				local st = fds[fd]
-
-				if not st then
-					return nil, "bad file descriptor"
-				end
-				return st:write(s)
-			end,
-			read = function(fd, n)
-				local st = fds[fd]
-
-				if not st then
-					return nil, "bad file descriptor"
-				end
-				return st:read(n)
-			end,
-			close = function(fd)
-				local st = fds[fd]
-
-				if st then
-					st:close()
-					fds[fd] = nil
-				end
-				return 0
-			end,
-		}
-	end
-
-	-- posix.dirent.dir maps cleanly onto ns:readdir, so it joins the
-	-- sliver. note where the sliver STOPS: ls also wants posix.pwd,
-	-- posix.grp, getopt and isatty -- users, groups and terminals this
-	-- system does not have -- so ls is the first utility better
-	-- rewritten than ported. see bin/ls.lua.
-	mods["posix.dirent"] = function()
-		return {
-			dir = function(path)
-				local ents, err =
-				    N:readdir(M.abspath(ctx, path or "."))
-
-				if not ents then
-					return nil, err
-				end
-				local names = { ".", ".." }
-
-				for _, e in ipairs(ents) do
-					names[#names + 1] = e.name
-				end
-				return names
-			end,
-		}
-	end
-
-	mods["posix.fcntl"] = function()
-		return {
-			-- the flags utilities actually pass. they are opaque
-			-- tokens as far as anything here cares.
-			O_RDONLY = "r",
-			O_WRONLY = "w",
-			O_RDWR = "rw",
-			O_CREAT = "w",
-			open = function(path, mode)
-				local f, err = N:open(M.abspath(ctx, path),
-				    mode == "w" and "w" or
-				    mode == "rw" and "rw" or "r")
-
-				if not f then
-					return nil, err
-				end
-				return fds.alloc(M.filestream(f))
-			end,
-		}
-	end
 
 	-- require("prog") inside a program gets a view scoped to THAT
 	-- program, so prog.ns()/prog.cwd() answer for the caller rather
@@ -790,11 +688,10 @@ function M.abspath(ctx, path)
 	return ns.clean((ctx.cwd or "/") .. "/" .. path)
 end
 
--- a program's own context, for programs written FOR this system rather
--- than ported to it: prog.ns() is the namespace it was given, prog.cwd()
--- where it started. deliberately separate from the posix.* sliver, which
--- exists to make foreign code run unchanged -- this is the native API,
--- and mixing the two would blur which is which.
+-- a program's own context: prog.ns() is the namespace it was given,
+-- prog.cwd() where it started. What a ported utility needs is lua's io
+-- and nothing from here, so this stays the native API rather than
+-- growing to cover both.
 function M.ns()
 	return M.ctx and M.ctx.ns
 end

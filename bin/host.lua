@@ -11,12 +11,11 @@
 -- The asking is lib/resolv.lua, shared with bin/irc.lua. What is left
 -- here is the argument handling and where to report.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local resolv = require("resolv")
 
 local function die(s)
-	unistd.write(2, "host: " .. s .. "\n")
+	io.stderr:write("host: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -41,7 +40,7 @@ end
 -- already an address: say so and ask nobody. `host 1.2.3.4` otherwise
 -- sends a query whose answer is its own question.
 if resolv.quad(name) then
-	unistd.write(1, name .. "\n")
+	io.write(name .. "\n")
 	os.exit(0)
 end
 
@@ -61,4 +60,4 @@ local answer, why = resolv.resolve(udp, name, server)
 if not answer then
 	die(name .. ": " .. tostring(why))
 end
-unistd.write(1, answer .. "\n")
+io.write(answer .. "\n")

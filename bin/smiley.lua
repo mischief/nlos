@@ -20,7 +20,6 @@
 -- exits 1.
 local prog = require("prog")
 local memdraw = require("memdraw")
-local unistd = require("posix.unistd")
 
 local fb = prog.screen()
 
@@ -147,13 +146,10 @@ end
 
 io.write("smiley: press enter to return to dos\n")
 
--- unistd.read on fd 0 rather than io.read, which the program
--- environment does not provide (see lib/prog.lua's install: io is a
--- three-function shim over the ABI streams, not lua's io). the read
--- goes to whatever the launcher gave us as stdin -- the console when
--- run interactively, and a pipe or a file when not, which is why this
--- does not reach for the console itself.
-unistd.read(0, 256)
+-- The read goes to whatever the launcher gave us as stdin -- the
+-- console when run interactively, and a pipe or a file when not, which
+-- is why this does not reach for the console itself.
+io.read("l")
 
 -- give the screen back the way we found it. black rather than the
 -- background above, because that is what a text console with nothing on

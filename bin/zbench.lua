@@ -7,13 +7,12 @@
 
 local zmodem = require("zmodem")
 local sys = require("los.sys")
-local unistd = require("posix.unistd")
 
 local kb = tonumber(arg[1] or "") or 75
 local body = string.rep("\x00\xff\x11\x7f\x18\x0d\x8d\x90", kb * 128)
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 	sys.log("zbench: " .. (s:gsub("\n$", "")))
 end
 

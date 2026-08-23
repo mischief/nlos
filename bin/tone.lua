@@ -6,10 +6,9 @@
 -- A gap in playback is audible as a click, a wrong rate as a wrong note.
 
 local prog = require("prog")
-local unistd = require("posix.unistd")
 
 local function die(s)
-	unistd.write(2, "tone: " .. s .. "\n")
+	io.stderr:write("tone: " .. s .. "\n")
 	os.exit(1)
 end
 

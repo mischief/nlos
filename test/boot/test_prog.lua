@@ -1,9 +1,8 @@
 -- the program ABI (lib/prog.lua) and the launcher (lib/dos.lua).
 --
--- the claim being tested: two real utilities from the host lua/os tree run here
--- UNCHANGED. bin/seq.lua and bin/cat.lua differ from their originals only
--- in the shebang line. if the posix sliver in prog.lua is right, they
--- need no port at all.
+-- the claim being tested: real utilities from the host lua/os tree run
+-- here. They are ported to lua's io, which lib/nsio.lua serves out of
+-- the program's namespace, and need nothing else from this system.
 local sys = require("los.sys")
 local thread = require("los.thread")
 local dev = require("dev")
@@ -12,7 +11,7 @@ local espfs = require("espfs")
 local dos = require("dos")
 local tap = require("tap")
 
-tap.plan(43)
+tap.plan(44)
 
 local N = ns.new()
 
@@ -94,7 +93,7 @@ local function run(path, argv, stdinport)
 	return table.concat(acc), status, exitmsg, normal
 end
 
--- ---- seq: needs only arg, unistd.write, os.exit ----
+-- ---- seq: needs only arg, io.write, os.exit ----
 local sout, sstatus = run("/bin/seq.lua", { "seq", "5" })
 
 tap.is(sout, "1\n2\n3\n4\n5\n", "seq 5 produced 1..5 unchanged")
@@ -111,11 +110,11 @@ tap.ok(berr:find("invalid argument") ~= nil,
     "seq wrote its usage error to stderr: " .. berr:gsub("\n", ""))
 tap.is(bstatus, 1, "seq exited 1 via os.exit")
 
--- ---- cat: needs fcntl.open, a numeric fd, unistd.read ----
+-- ---- cat: needs io.open and a file handle ----
 local cout, cstatus = run("/bin/cat.lua", { "cat", "/bin/seq.lua" })
 
 tap.ok(cout:find("SPDX", 1, true) ~= nil,
-    "cat read a real file through fcntl.open + a numeric fd")
+    "cat read a real file through io.open")
 tap.is(cstatus, 0, "cat exited 0")
 
 local cbad, cbadstatus = run("/bin/cat.lua", { "cat", "/nope" })
@@ -199,8 +198,8 @@ tap.is(drain2(), "/bin\n", "cd changed the cwd")
 tap.is(dos.once(sh2, "cd /nosuch"), 1, "cd into a missing directory fails")
 drain2()
 
--- ls is native rather than ported: it needs the namespace, not the
--- posix sliver
+-- ls is native rather than ported: it needs the namespace, not just
+-- lua's io
 dos.once(sh2, "cd /")
 drain2()
 dos.once(sh2, "ls /bin")
@@ -234,8 +233,8 @@ tap.is(drain2(), "1\n2\n3\n", "cat < /out.txt read through a file server")
 -- ---- the program environment is the program's own ----
 --
 -- install() used to write arg/os/io/print into _G and register the
--- posix sliver in package.preload, which is per-PROC. correct for
--- exactly one program per proc and silently wrong for any other
+-- program-scoped modules in package.preload, which is per-PROC. correct
+-- for exactly one program per proc and silently wrong for any other
 -- arrangement: two programs in one lua_State would share `arg`, so the
 -- second to start would rewrite the first's argv mid-run. that is the
 -- pipeline case, and it is what a coroutine-per-stage launcher needs.
@@ -243,17 +242,18 @@ tap.is(drain2(), "1\n2\n3\n", "cat < /out.txt read through a file server")
 -- a program can still SEE _G through its env's __index, so it can look
 -- and report -- which is what makes this testable from the inside.
 local envprobe = [[
-local unistd = require("posix.unistd")
+local prog = require("prog")
 local out = {}
 
 -- what install defines must be ours, not the proc's
 out[#out + 1] = "G.arg=" .. tostring(rawget(_G, "arg"))
 out[#out + 1] = "G.exits=" .. tostring(rawget(_G, "exits"))
-out[#out + 1] = "preload=" .. tostring(package.preload["posix.unistd"])
+out[#out + 1] = "preload=" .. tostring(package.preload["prog"])
+out[#out + 1] = "scoped=" .. tostring(prog.cwd ~= nil)
 -- ...while everything we did not define still reads through
 out[#out + 1] = "string=" .. tostring(string ~= nil)
 out[#out + 1] = "myarg=" .. tostring(arg[1])
-unistd.write(1, table.concat(out, " ") .. "\n")
+io.write(table.concat(out, " ") .. "\n")
 ]]
 
 N:writefile("/bin/envprobe.lua", envprobe)
@@ -265,7 +265,9 @@ tap.ok(probeout:find("G.arg=nil") ~= nil,
 tap.ok(probeout:find("G.exits=nil") ~= nil,
     "nor does exits")
 tap.ok(probeout:find("preload=nil") ~= nil,
-    "the posix sliver is per-program, not in package.preload")
+    "a scoped module is per-program, not in package.preload")
+tap.ok(probeout:find("scoped=true") ~= nil,
+    "and the scoped require answers with the program's own view")
 tap.ok(probeout:find("string=true") ~= nil,
     "the rest of the stdlib still reads through to _G")
 tap.ok(probeout:find("myarg=hello") ~= nil,

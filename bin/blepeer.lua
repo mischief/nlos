@@ -5,7 +5,6 @@
 -- The smallest thing that holds a link up: an MTU exchange answered,
 -- everything else refused by opcode. Beyond that is gatt.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -16,11 +15,11 @@ local gatt = require("ble.gatt")
 local uuid = require("ble.uuid")
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 end
 
 local function die(s)
-	unistd.write(2, "blepeer: " .. s .. "\n")
+	io.stderr:write("blepeer: " .. s .. "\n")
 	os.exit(1)
 end
 

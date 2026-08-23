@@ -15,19 +15,17 @@
 -- read out over USB by whoever is holding the board.
 
 -- Through the namespace rather than io.open: an unprivileged proc has
--- none, and the posix shim's open walks before it opens, so it cannot
--- make a file that is not there yet.
-local unistd = require("posix.unistd")
+-- none, and this has to make a file that is not there yet.
 local prog = require("prog")
 
 local N = assert(prog.ns(), "wifi: no namespace")
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 end
 
 local function die(s)
-	unistd.write(2, "wifi: " .. s .. "\n")
+	io.stderr:write("wifi: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -44,18 +42,17 @@ local function ctl(...)
 	end
 end
 
--- One read is one line. A console stream ignores the byte count and
--- replies with the line its editor just finished, newline already
--- stripped -- see lib/prog.lua's PortStream. Asking for a byte at a
--- time therefore gets a whole line, which is not a newline, and the
--- reader then waits for a second line to end the first.
+-- "l", not a byte count: io.read(n) fills to n bytes before it answers,
+-- so a prompt would look hung. The console puts the newline back on an
+-- ABI read, so a line terminates here. "" is an empty line; only nil is
+-- end of input.
 local function readline()
-	local l = unistd.read(0, 512)
+	local l = io.read("l")
 
-	if l == nil or l == "" then
+	if l == nil then
 		return nil
 	end
-	return (l:gsub("[\r\n]+$", ""))
+	return (l:gsub("\r+$", ""))
 end
 
 local function prompt(what, default)

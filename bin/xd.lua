@@ -14,11 +14,8 @@
 -- because a sector of zeroes is one fact and 32 identical lines of it
 -- are the same fact 32 times.
 
-local unistd = require("posix.unistd")
-local fcntl = require("posix.fcntl")
-
 local function die(s)
-	unistd.write(2, "xd: " .. s .. "\n")
+	io.stderr:write("xd: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -76,11 +73,11 @@ local folding = false
 local function emit(s)
 	if s == held then
 		if not folding then
-			unistd.write(1, "*\n")
+			io.write("*\n")
 			folding = true
 		end
 	else
-		unistd.write(1, line(off, s))
+		io.write(line(off, s))
 		held = s
 		folding = false
 	end
@@ -102,7 +99,7 @@ end
 
 local done = false
 
-local function dump(fd, what)
+local function dump(f, what)
 	while not done do
 		local want = 8192
 
@@ -118,12 +115,16 @@ local function dump(fd, what)
 			end
 		end
 
-		local data, err = unistd.read(fd, want)
+		local data, err = f:read(want)
 
+		-- nil is end of input; nil WITH a reason is a fault, and
+		-- lua's io tells them apart that way rather than by the
+		-- empty string a raw read answers with.
 		if not data then
-			die((what or "stdin") .. ": " .. tostring(err))
-		end
-		if data == "" then
+			if err then
+				die((what or "stdin") .. ": " ..
+				    tostring(err))
+			end
 			break
 		end
 		feed(data)
@@ -131,23 +132,23 @@ local function dump(fd, what)
 end
 
 if #paths == 0 then
-	dump(0)
+	dump(io.stdin)
 else
 	for _, path in ipairs(paths) do
-		local fd, err = fcntl.open(path, fcntl.O_RDONLY)
+		local f, err = io.open(path, "r")
 
-		if not fd then
+		if not f then
 			die(path .. ": " .. tostring(err))
 		end
-		dump(fd, path)
-		unistd.close(fd)
+		dump(f, path)
+		f:close()
 	end
 end
 
 -- the tail, and then the end offset on a line of its own: without it a
 -- dump ending in a fold does not say how long the thing was.
 if #carry > 0 then
-	unistd.write(1, line(off, carry))
+	io.write(line(off, carry))
 	off = off + #carry
 end
-unistd.write(1, string.format("%08x\n", off))
+io.write(string.format("%08x\n", off))

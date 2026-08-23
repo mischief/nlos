@@ -8,7 +8,6 @@
 local prog = require("prog")
 local memdraw = require("memdraw")
 local sys = require("los.sys")
-local unistd = require("posix.unistd")
 
 local fb = prog.screen()
 
@@ -21,7 +20,7 @@ local mode = fb.mode()
 local W, H = mode.w, mode.h
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 	sys.log("fbcheck: " .. (s:gsub("\n$", "")))
 end
 

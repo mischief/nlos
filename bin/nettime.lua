@@ -7,12 +7,11 @@
 -- different faults: a resolver that waits, a handshake that computes,
 -- a peer that is far away, or a body that is large.
 
-local unistd = require("posix.unistd")
 local sys = require("los.sys")
 local prog = require("prog")
 
 local function die(s)
-	unistd.write(2, "nettime: " .. s .. "\n")
+	io.stderr:write("nettime: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -36,14 +35,14 @@ do
 end
 
 if not host then
-	unistd.write(2, "usage: nettime [-p port] host [/path]\n")
+	io.stderr:write("usage: nettime [-p port] host [/path]\n")
 	os.exit(2)
 end
 
 local net = prog.net() or die("no network capability")
 local ms = sys.uptime_ms
 local function say(what, t)
-	unistd.write(1, ("  %-12s %5d ms\n"):format(what, t))
+	io.write(("  %-12s %5d ms\n"):format(what, t))
 end
 
 -- What the program costs before it does anything. The tls stack is
@@ -128,4 +127,4 @@ end
 say("rest", ms() - t3)
 tcp.close(conn)
 
-unistd.write(1, ("  %-12s %5d bytes\n"):format("body", n))
+io.write(("  %-12s %5d bytes\n"):format("body", n))

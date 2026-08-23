@@ -16,11 +16,10 @@
 -- No capability beyond the terminal: sys.procs and sys.stats are
 -- observations of the machine, not authority over it.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 
 local function die(s)
-	unistd.write(2, "top: " .. s .. "\n")
+	io.stderr:write("top: " .. s .. "\n")
 	os.exit(1)
 end
 

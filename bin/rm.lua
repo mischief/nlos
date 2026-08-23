@@ -16,7 +16,6 @@
 -- by the backend, not here, so it says so in the same words a
 -- filesystem would.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 
 -- Rooted where the shell is, so a relative name works: prog.ns()
@@ -33,7 +32,7 @@ for _, a in ipairs(arg) do
 		-- everything after is a name, even if it starts with -
 		force = force
 	elseif a:sub(1, 1) == "-" and #a > 1 then
-		unistd.write(2, "usage: rm [-f] file...\n")
+		io.stderr:write("usage: rm [-f] file...\n")
 		os.exit(2)
 	else
 		paths[#paths + 1] = a
@@ -41,7 +40,7 @@ for _, a in ipairs(arg) do
 end
 
 if #paths == 0 then
-	unistd.write(2, "usage: rm [-f] file...\n")
+	io.stderr:write("usage: rm [-f] file...\n")
 	os.exit(2)
 end
 
@@ -51,7 +50,7 @@ for _, p in ipairs(paths) do
 	local ok, err = N:remove(p)
 
 	if not ok and not force then
-		unistd.write(2, ("rm: %s: %s\n"):format(p, tostring(err)))
+		io.stderr:write(("rm: %s: %s\n"):format(p, tostring(err)))
 		status = 1
 	end
 end

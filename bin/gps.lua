@@ -5,17 +5,16 @@
 --	> gps -s         the receiver's counters
 --	> gps -r         the sentences, as they arrive
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 end
 
 local function die(s)
-	unistd.write(2, "gps: " .. s .. "\n")
+	io.stderr:write("gps: " .. s .. "\n")
 	os.exit(1)
 end
 

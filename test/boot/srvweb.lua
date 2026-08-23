@@ -92,7 +92,6 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 		-- it is a PROGRAM because there is no other way to run code
 		-- as a visitor -- the shell has no eval.
 		["probe.lua"] = [==[
-			local unistd = require("posix.unistd")
 			local sys = require("los.sys")
 			local out = {}
 
@@ -120,15 +119,14 @@ try:  help        ls /bin        seq 1 10        cat notes/hello
 			    tostring(rawget(_G, "loadfile") ~= nil)
 			out[#out + 1] = "dofile=" ..
 			    tostring(rawget(_G, "dofile") ~= nil)
-			unistd.write(1, table.concat(out, " ") .. "\n")
+			io.write(table.concat(out, " ") .. "\n")
 		]==],
 
 		["drip.lua"] = [==[
 			local thread = require("los.thread")
-			local unistd = require("posix.unistd")
 
 			for i = 1, 200 do
-				unistd.write(1, "drip " .. i .. "\n")
+				io.write("drip " .. i .. "\n")
 				thread.sleep(50)
 			end
 		]==],

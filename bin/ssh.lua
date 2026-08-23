@@ -12,7 +12,6 @@
 -- The protocol is lib/ssh, sans-io, riding the tcp capability the shell
 -- lent this program: a shell given no network hands out none.
 
-local unistd = require("posix.unistd")
 local thread = require("los.thread")
 local prog = require("prog")
 local client = require("ssh.client")
@@ -20,12 +19,12 @@ local keys = require("ssh.keys")
 local ed25519 = require("crypto.ed25519")
 
 local function die(s)
-	unistd.write(2, "ssh: " .. s .. "\n")
+	io.stderr:write("ssh: " .. s .. "\n")
 	os.exit(1)
 end
 
 local function usage()
-	unistd.write(2, "usage: ssh [-p port] [-i key] [-k file] " ..
+	io.stderr:write("usage: ssh [-p port] [-i key] [-k file] " ..
 	    "[user@]host command...\n")
 	os.exit(2)
 end
@@ -214,7 +213,7 @@ local function promptline(text, echo)
 	local acc = {}
 	local done = false
 
-	unistd.write(1, text)
+	io.write(text)
 	keysink = function(k)
 		for i = 1, #k do
 			local c = k:sub(i, i)
@@ -225,13 +224,13 @@ local function promptline(text, echo)
 				if #acc > 0 then
 					acc[#acc] = nil
 					if echo then
-						unistd.write(1, "\8 \8")
+						io.write("\8 \8")
 					end
 				end
 			elseif c >= " " then
 				acc[#acc + 1] = c
 				if echo then
-					unistd.write(1, c)
+					io.write(c)
 				end
 			end
 		end
@@ -241,7 +240,7 @@ local function promptline(text, echo)
 		pump()
 	end
 	keysink = nil
-	unistd.write(1, "\r\n")
+	io.write("\r\n")
 	return table.concat(acc)
 end
 
@@ -338,7 +337,7 @@ C.verify_host = function(hk)
 		return nil, "host key for " .. host .. " has changed: " .. fp
 	end
 	if verdict == "unknown" then
-		unistd.write(2, ("ssh: %s is unknown, trusting %s\n")
+		io.stderr:write(("ssh: %s is unknown, trusting %s\n")
 		    :format(host, fp))
 	end
 	return true
@@ -377,8 +376,8 @@ local function session()
 		ok, err = C:auth_keyboard(user, function(name, instr, prompts)
 			local out = {}
 
-			if name ~= "" then unistd.write(1, name .. "\r\n") end
-			if instr ~= "" then unistd.write(1, instr .. "\r\n") end
+			if name ~= "" then io.write(name .. "\r\n") end
+			if instr ~= "" then io.write(instr .. "\r\n") end
 			for i, p in ipairs(prompts) do
 				out[i] = promptline(p.text, p.echo)
 			end
@@ -414,7 +413,8 @@ local function session()
 	if not ok then return tostring(err) end
 
 	status, err = C:pump(ch, function(data, which)
-		unistd.write(which == "stderr" and 2 or 1, data)
+		local w = which == "stderr" and io.stderr or io.stdout
+		w:write(data)
 	end)
 	if not status then return tostring(err) end
 	return nil

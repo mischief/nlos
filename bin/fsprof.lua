@@ -12,7 +12,6 @@
 local sys = require("los.sys")
 local ps = require("ps")
 local prog = require("prog")
-local unistd = require("posix.unistd")
 
 local N = assert(prog.ns(), "fsprof: no namespace")
 local verb = (arg and arg[1]) or "readdir"
@@ -55,7 +54,7 @@ local ok, out = pcall(ps.tracehist, who, 12)
 local h = sys.tracehist(who)
 
 pcall(sys.set_trace, who, 0)
-unistd.write(1, (ok and out or tostring(out)) .. "\n")
+io.write((ok and out or tostring(out)) .. "\n")
 
 -- and by count, which is a different question: the top of the cost
 -- list held barely a thousand line events out of a ring of hundreds of

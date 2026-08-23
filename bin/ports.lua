@@ -8,12 +8,10 @@
 -- No capability is required and none is granted: sys.ports is an
 -- observation of the machine rather than authority over it.
 
-local unistd = require("posix.unistd")
-
 local ok, ps = pcall(require, "ps")
 
 if not ok then
-	unistd.write(2, "ports: cannot load lib/ps.lua: " .. tostring(ps) .. "\n")
+	io.stderr:write("ports: cannot load lib/ps.lua: " .. tostring(ps) .. "\n")
 	os.exit(1)
 end
 
@@ -23,4 +21,4 @@ local prog = require("prog")
 local tty = prog.tty and prog.tty()
 local cols = tty and tty.size()
 
-unistd.write(1, ps.portsfmt(cols) .. "\n")
+io.write(ps.portsfmt(cols) .. "\n")

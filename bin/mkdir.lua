@@ -2,13 +2,12 @@
 --
 --	mkdir DIR...
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 
 local N = prog.ns() or os.exit(1)
 
 local function die(s)
-	unistd.write(2, "mkdir: " .. s .. "\n")
+	io.stderr:write("mkdir: " .. s .. "\n")
 	os.exit(1)
 end
 

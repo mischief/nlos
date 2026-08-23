@@ -24,7 +24,6 @@
 --
 -- No TLS on this machine, so the connection is plaintext.
 
-local unistd = require("posix.unistd")
 local sys = require("los.sys")
 local thread = require("los.thread")
 local prog = require("prog")
@@ -32,7 +31,7 @@ local irc = require("irc")
 local resolv = require("resolv")
 
 local function die(s)
-	unistd.write(2, "irc: " .. s .. "\n")
+	io.stderr:write("irc: " .. s .. "\n")
 	os.exit(1)
 end
 

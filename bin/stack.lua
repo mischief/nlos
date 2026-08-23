@@ -11,12 +11,10 @@
 -- identical whether the proc was idle or deadlocked. src/debug.c walks
 -- the target state for the rest.
 
-local unistd = require("posix.unistd")
-
 local ok, ps = pcall(require, "ps")
 
 if not ok then
-	unistd.write(2, "stack: cannot load lib/ps.lua: " .. tostring(ps) .. "\n")
+	io.stderr:write("stack: cannot load lib/ps.lua: " .. tostring(ps) .. "\n")
 	os.exit(1)
 end
 
@@ -24,15 +22,15 @@ local sys = require("los.sys")
 local pid = arg[1] and tonumber(arg[1]) or sys.self()
 
 if not pid then
-	unistd.write(2, "usage: stack [pid]\n")
+	io.stderr:write("usage: stack [pid]\n")
 	os.exit(2)
 end
 
 local got, out = pcall(ps.stack, pid)
 
 if not got then
-	unistd.write(2, "stack: " .. tostring(out) .. "\n")
+	io.stderr:write("stack: " .. tostring(out) .. "\n")
 	os.exit(1)
 end
 
-unistd.write(1, out .. "\n")
+io.write(out .. "\n")

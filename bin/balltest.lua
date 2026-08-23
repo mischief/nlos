@@ -7,7 +7,6 @@
 local prog = require("prog")
 local mouse = require("mouse")
 local sys = require("los.sys")
-local unistd = require("posix.unistd")
 
 local m = prog.mouse()
 
@@ -41,7 +40,7 @@ end
 local secs = tonumber(arg[1] or "") or 20
 local stop = sys.uptime_ms() + secs * 1000
 
-unistd.write(1, ("roll the ball: %d seconds\n"):format(secs))
+io.write(("roll the ball: %d seconds\n"):format(secs))
 
 while sys.uptime_ms() < stop do
 	local x, y, b = m.read()
@@ -52,7 +51,7 @@ while sys.uptime_ms() < stop do
 	if b ~= 0 then
 		local s = ("%4d %4d  %3d  %s\n"):format(x, y, b, name(b))
 
-		unistd.write(1, s)
+		io.write(s)
 		sys.log("balltest: " .. b .. " " .. name(b))
 	end
 end

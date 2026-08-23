@@ -11,14 +11,13 @@ local prog = require("prog")
 local audio = require("audio")
 local wav = require("wav")
 local adpcm = require("adpcm")
-local unistd = require("posix.unistd")
 
 -- big enough that the per-read cost is not the pace: a read costs tens
 -- of milliseconds whatever its size, and 48kHz stereo is 192KB a second
 local CHUNK = 32768
 
 local function die(s)
-	unistd.write(2, "play: " .. s .. "\n")
+	io.stderr:write("play: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -58,7 +57,7 @@ if not dev then
 	die(tostring(why))
 end
 
-unistd.write(1, ("play: %s, %d Hz %d ch, %.1fs, on %s\n"):format(path,
+io.write(("play: %s, %d Hz %d ch, %.1fs, on %s\n"):format(path,
     rate, w.channels, wav.seconds(w), dev.kind))
 
 -- the samples, from where the header said they start. A short write is
@@ -138,5 +137,5 @@ dev.stop()
 f:close()
 
 if lost > 0 then
-	unistd.write(2, ("play: %d ms of silence for want of audio\n"):format(lost))
+	io.stderr:write(("play: %d ms of silence for want of audio\n"):format(lost))
 end

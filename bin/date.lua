@@ -20,14 +20,13 @@
 -- unset or -n says to. Moving it needs the "time" capability, which
 -- /etc/services.lua grants timed and nothing else.
 
-local unistd = require("posix.unistd")
 local sys = require("los.sys")
 local thread = require("los.thread")
 local prog = require("prog")
 local ntp = require("ntp")
 
 local function die(s)
-	unistd.write(2, "date: " .. s .. "\n")
+	io.stderr:write("date: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -52,9 +51,9 @@ end
 
 local function show(unix)
 	if raw then
-		unistd.write(1, tostring(unix) .. "\n")
+		io.write(tostring(unix) .. "\n")
 	else
-		unistd.write(1, ntp.utc(unix) .. " UTC\n")
+		io.write(ntp.utc(unix) .. " UTC\n")
 	end
 	os.exit(0)
 end

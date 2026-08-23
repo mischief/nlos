@@ -3,11 +3,10 @@
 -- No capability and no server: sys.dmesg reads the ring the kernel
 -- writes, so this works on a machine with nothing else running.
 
-local unistd = require("posix.unistd")
 local sys = require("los.sys")
 
 local function die(s)
-	unistd.write(2, "dmesg: " .. s .. "\n")
+	io.stderr:write("dmesg: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -26,7 +25,7 @@ end
 if statonly then
 	local seq, size, oldest, dropped = sys.loginfo()
 
-	unistd.write(1, ("%d bytes held of %d, %d..%d, %d dropped\n"):format(
+	io.write(("%d bytes held of %d, %d..%d, %d dropped\n"):format(
 	    seq - oldest, size, oldest, seq, dropped))
 	os.exit(0)
 end
@@ -40,12 +39,12 @@ local function drain(from)
 		local data, next, dropped = sys.dmesg(cur)
 
 		if dropped > 0 then
-			unistd.write(1, ("[%d bytes lost]\n"):format(dropped))
+			io.write(("[%d bytes lost]\n"):format(dropped))
 		end
 		if data == "" then
 			return next
 		end
-		unistd.write(1, data)
+		io.write(data)
 		cur = next
 	end
 end

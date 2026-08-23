@@ -19,12 +19,10 @@
 -- proportion: the line hook charges the traced proc about 4.7x, and it
 -- charges cheap lines most.
 
-local unistd = require("posix.unistd")
-
 local ok, ps = pcall(require, "ps")
 
 if not ok then
-	unistd.write(2, "trace: cannot load lib/ps.lua: " .. tostring(ps) .. "\n")
+	io.stderr:write("trace: cannot load lib/ps.lua: " .. tostring(ps) .. "\n")
 	os.exit(1)
 end
 
@@ -38,7 +36,7 @@ while arg[i] do
 		i = i + 1
 		n = tonumber(arg[i])
 		if not n then
-			unistd.write(2, "trace: -n wants a number\n")
+			io.stderr:write("trace: -n wants a number\n")
 			os.exit(2)
 		end
 	elseif arg[i] == "-h" then
@@ -61,10 +59,10 @@ if n then
 	local armed, err = pcall(sys.set_trace, pid, n)
 
 	if not armed then
-		unistd.write(2, "trace: " .. tostring(err) .. "\n")
+		io.stderr:write("trace: " .. tostring(err) .. "\n")
 		os.exit(1)
 	end
-	unistd.write(1, string.format(
+	io.write(string.format(
 	    "tracing pid %d, %d lines; read it back with `trace %d`\n",
 	    pid, n, pid))
 	return
@@ -73,8 +71,8 @@ end
 local got, out = pcall(hist and ps.tracehist or ps.trace, pid, rows)
 
 if not got then
-	unistd.write(2, "trace: " .. tostring(out) .. "\n")
+	io.stderr:write("trace: " .. tostring(out) .. "\n")
 	os.exit(1)
 end
 
-unistd.write(1, out .. "\n")
+io.write(out .. "\n")

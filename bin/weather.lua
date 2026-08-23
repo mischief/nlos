@@ -7,12 +7,11 @@
 -- reading. What this holds is the network the shell lent it, and it
 -- says which piece is missing rather than failing further in.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local weather = require("weather")
 
 local function die(s)
-	unistd.write(2, "weather: " .. s .. "\n")
+	io.stderr:write("weather: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -23,7 +22,7 @@ for _, a in ipairs(arg) do
 	if a == "-1" then
 		oneline = true
 	elseif a:sub(1, 1) == "-" and #a > 1 then
-		unistd.write(2, "usage: weather [-1] [place]\n")
+		io.stderr:write("usage: weather [-1] [place]\n")
 		os.exit(2)
 	else
 		where = where and (where .. "+" .. a) or a
@@ -54,14 +53,14 @@ if not w then
 end
 
 if oneline then
-	unistd.write(1, ("%s: %s %s\n"):format(w.place, w.cond, w.temp))
+	io.write(("%s: %s %s\n"):format(w.place, w.cond, w.temp))
 	os.exit(0)
 end
 
 -- the place first and on its own line: with no argument it is the
 -- network's guess at where this machine is, which is worth reading
 -- rather than assuming.
-unistd.write(1, w.place .. "\n")
+io.write(w.place .. "\n")
 
 local rows = {
 	{ "condition", w.cond },
@@ -74,6 +73,6 @@ local rows = {
 
 for _, r in ipairs(rows) do
 	if r[2] and r[2] ~= "" then
-		unistd.write(1, ("  %-14s %s\n"):format(r[1], r[2]))
+		io.write(("  %-14s %s\n"):format(r[1], r[2]))
 	end
 end

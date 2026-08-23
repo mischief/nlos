@@ -8,7 +8,6 @@
 local prog = require("prog")
 local memdraw = require("memdraw")
 local sys = require("los.sys")
-local unistd = require("posix.unistd")
 
 local fb = prog.screen()
 
@@ -24,7 +23,7 @@ local rounds = tonumber(arg[1] or "") or 5
 -- to the log as well as to stdout: the screen is what this is
 -- measuring, so a result drawn over is a result lost.
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 	sys.log("drawbench: " .. (s:gsub("\n$", "")))
 end
 

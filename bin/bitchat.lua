@@ -5,7 +5,6 @@
 -- Public messages only, which are unencrypted: a peer is readable
 -- before any handshake exists. Private traffic rides Noise, not here.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -19,11 +18,11 @@ local x25519 = require("crypto.x25519")
 local sha256 = require("crypto.sha256")
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 end
 
 local function die(s)
-	unistd.write(2, "bitchat: " .. s .. "\n")
+	io.stderr:write("bitchat: " .. s .. "\n")
 	os.exit(1)
 end
 

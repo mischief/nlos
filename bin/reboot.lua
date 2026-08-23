@@ -18,12 +18,11 @@
 -- mode as that, so `-p` there is a restart. Ask the platform, not this
 -- program, which of them your machine can tell apart.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local ns = require("ns")
 
 local function die(s)
-	unistd.write(2, "reboot: " .. s .. "\n")
+	io.stderr:write("reboot: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -73,7 +72,7 @@ end
 -- must happen, and a machine that cannot say so still commits.
 local synced = syncvolumes()
 
-unistd.write(1, ("%s... (%d volume%s synced)\n"):format(
+io.write(("%s... (%d volume%s synced)\n"):format(
     mode == "shutdown" and "powering off" or "rebooting",
     synced, synced == 1 and "" or "s"))
 

@@ -1,10 +1,10 @@
 -- ls: written for this system rather than ported.
 --
--- the ported utilities (seq, cat) run unchanged because the posix sliver
--- in lib/prog.lua covers what they use. ls is where that stops: the
--- original wants posix.pwd, posix.grp and getopt, and users and groups
--- do not exist here. Terminal detection does, under another name:
--- prog.tty() is nil where isatty would be false.
+-- the ported utilities run over lua's io, which lib/nsio.lua serves out
+-- of the program's namespace. ls is where that stops: the original
+-- wants posix.pwd and posix.grp, and users and groups do not exist
+-- here. Terminal detection does, under another name: prog.tty() is nil
+-- where isatty would be false.
 local prog = require("prog")
 
 local N = prog.ns()

@@ -1,6 +1,5 @@
 -- ported from the host lua/os tree, UNCHANGED except this line
 -- SPDX-License-Identifier: ISC
-local unistd = require("posix.unistd")
 
 local first, incr, last
 if #arg == 1 then
@@ -12,12 +11,12 @@ elseif #arg >= 3 then
 end
 
 if not (first and incr and last) then
-	unistd.write(2, "seq: invalid argument\n")
+	io.stderr:write("seq: invalid argument\n")
 	os.exit(1)
 end
 
 local i = first
 while (incr > 0 and i <= last) or (incr < 0 and i >= last) do
-	unistd.write(1, tostring(i) .. "\n")
+	io.write(tostring(i) .. "\n")
 	i = i + incr
 end

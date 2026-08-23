@@ -5,7 +5,6 @@
 -- Two requests down one connection. The second is what keep-alive is
 -- for, and the memory is per-proc live bytes either side of each step.
 
-local unistd = require("posix.unistd")
 local sys = require("los.sys")
 local prog = require("prog")
 local http = require("http")
@@ -19,7 +18,7 @@ local opts = { rand = prog.rand() or error("no entropy"),
     verify = require("tlstcp").tofu(host) }
 
 local function say(s)
-	unistd.write(1, s .. "\n")
+	io.write(s .. "\n")
 end
 
 local function kb(n)

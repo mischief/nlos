@@ -10,8 +10,6 @@
 -- interpreted: no -e, no backslash escapes. The shell already has
 -- quotes, and a program that reinvents them disagrees with them.
 
-local unistd = require("posix.unistd")
-
 local out = {}
 local nl = true
 local from = 1
@@ -25,4 +23,4 @@ for i = from, #arg do
 	out[#out + 1] = arg[i]
 end
 
-unistd.write(1, table.concat(out, " ") .. (nl and "\n" or ""))
+io.write(table.concat(out, " ") .. (nl and "\n" or ""))

@@ -8,13 +8,12 @@
 -- there survives reflashing the filesystem, which is where wifi's
 -- credentials already live for the same reason.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local keys = require("ssh.keys")
 local ed25519 = require("crypto.ed25519")
 
 local function die(s)
-	unistd.write(2, "keygen: " .. s .. "\n")
+	io.stderr:write("keygen: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -31,7 +30,7 @@ while arg[i] and arg[i]:sub(1, 1) == "-" and #arg[i] > 1 do
 	elseif o == "-y" then
 		pubonly = true
 	else
-		unistd.write(2, "usage: keygen [-y] [-f path] [comment]\n")
+		io.stderr:write("usage: keygen [-y] [-f path] [comment]\n")
 		os.exit(2)
 	end
 end

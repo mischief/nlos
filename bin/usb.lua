@@ -7,10 +7,9 @@ local sys = require("los.sys")
 local thread = require("los.thread")
 local usb = require("usb")
 local uac = require("uac")
-local unistd = require("posix.unistd")
 
 local function say(s)
-	unistd.write(1, s .. "\n")
+	io.write(s .. "\n")
 end
 
 -- what enumerated, once it has. The raw descriptor is in the log either
@@ -28,7 +27,7 @@ local function report(desc)
 end
 
 if not sys.usbhost() then
-	unistd.write(2, "usb: this machine has no host controller\n")
+	io.stderr:write("usb: this machine has no host controller\n")
 	os.exit(1)
 end
 

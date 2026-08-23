@@ -173,7 +173,7 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'layout', 'strictglobals', 'bufout', 'bufmove', 'serialize', 'mntshare', 'althup', 'dio', 'ninepc',
               'efigefs', 'version', 'oom', 'selfpipe', 'reboot', 'nsfs', 'vi', 'zmodem', 'atexit',
               'history', 'top', 'xd', 'portq', 'intr', 'intrsh', 'intrread', 'sibwake', 'reclaim', 'lazy', 'strseed',
-              'clock', 'log', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
+              'clock', 'log', 'utils', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
               'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr']
 foreach t : boot_tests
   test('boot-' + t, boottest,
@@ -591,6 +591,14 @@ test('geometry', lua_interp,
 # is what lua answers, not a table of expectations written here.
 test('io-formats', lua_interp,
   args: [files('host_nsio.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
+# option parsing, ours against luaposix's C getopt where it is
+# installed. lib/getopt.lua is what the ported utilities parse with.
+test('getopt', lua_interp,
+  args: [files('host_getopt.lua')],
   protocol: 'tap',
   timeout: 20,
 )

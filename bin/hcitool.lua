@@ -4,18 +4,17 @@
 --	hcitool adv [NAME]       go on the air as NAME, default lua-os
 --	hcitool noadv            stop
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
 local hcilib = require("ble.hci")
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 end
 
 local function die(s)
-	unistd.write(2, "hcitool: " .. s .. "\n")
+	io.stderr:write("hcitool: " .. s .. "\n")
 	os.exit(1)
 end
 

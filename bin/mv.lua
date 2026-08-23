@@ -10,18 +10,17 @@
 -- The fallback is not atomic. A copy that dies halfway leaves a short
 -- file at the new name and the whole one at the old.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 
 local N = assert(prog.ns(), "mv: no namespace")
 
 local function die(msg)
-	unistd.write(2, "mv: " .. msg .. "\n")
+	io.stderr:write("mv: " .. msg .. "\n")
 	os.exit(1)
 end
 
 local function usage()
-	unistd.write(2, "usage: mv file... target\n")
+	io.stderr:write("usage: mv file... target\n")
 	os.exit(2)
 end
 
@@ -108,13 +107,13 @@ for _, from in ipairs(args) do
 		local st = N:stat(from)
 
 		if not st then
-			unistd.write(2, ("mv: %s: %s\n"):format(from,
+			io.stderr:write(("mv: %s: %s\n"):format(from,
 			    tostring(err)))
 			status = 1
 			goto continue
 		end
 		if st.dir then
-			unistd.write(2, ("mv: %s: cannot move a directory here"
+			io.stderr:write(("mv: %s: cannot move a directory here"
 			    .. " (%s)\n"):format(from, tostring(err)))
 			status = 1
 			goto continue
@@ -123,7 +122,7 @@ for _, from in ipairs(args) do
 		local copied, cerr = copy(from, to)
 
 		if not copied then
-			unistd.write(2, ("mv: %s: %s\n"):format(from,
+			io.stderr:write(("mv: %s: %s\n"):format(from,
 			    tostring(cerr)))
 			status = 1
 			goto continue
@@ -132,7 +131,7 @@ for _, from in ipairs(args) do
 		local gone, rerr = N:remove(from)
 
 		if not gone then
-			unistd.write(2, ("mv: %s copied but not removed: %s\n")
+			io.stderr:write(("mv: %s copied but not removed: %s\n")
 			    :format(from, tostring(rerr)))
 			status = 1
 		end

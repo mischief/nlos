@@ -18,12 +18,11 @@
 -- The body goes to stdout and nothing else does, so `fetch ... | p` and
 -- `fetch ... > file` behave. Diagnostics go to stderr.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local http = require("http")
 
 local function die(s)
-	unistd.write(2, "fetch: " .. s .. "\n")
+	io.stderr:write("fetch: " .. s .. "\n")
 	os.exit(1)
 end
 
@@ -37,7 +36,7 @@ for _, a in ipairs(arg) do
 	elseif a == "-k" then
 		insecure = true
 	elseif a:sub(1, 1) == "-" and #a > 1 then
-		unistd.write(2, "usage: fetch [-ik] url\n")
+		io.stderr:write("usage: fetch [-ik] url\n")
 		os.exit(2)
 	else
 		url = url or a
@@ -45,7 +44,7 @@ for _, a in ipairs(arg) do
 end
 
 if not url then
-	unistd.write(2, "usage: fetch [-ik] url\n")
+	io.stderr:write("usage: fetch [-ik] url\n")
 	os.exit(2)
 end
 
@@ -71,7 +70,7 @@ local opts = {
 	verify = not insecure and require("tlstcp").tofu(
 	    url:match("^https://([^:/]+)") or "",
 	    function(h, fp)
-		unistd.write(2, ("fetch: %s is %s\n"):format(h, fp))
+		io.stderr:write(("fetch: %s is %s\n"):format(h, fp))
 	    end) or nil,
 }
 if url:match("^https://") and not opts.rand then
@@ -84,16 +83,16 @@ end
 -- which is where they belong anyway, ahead of nothing.
 if showhead then
 	opts.onhead = function(status, headers)
-		unistd.write(1, ("HTTP %s\n"):format(tostring(status)))
+		io.write(("HTTP %s\n"):format(tostring(status)))
 		for k, v in pairs(headers or {}) do
-			unistd.write(1, ("%s: %s\n"):format(k, v))
+			io.write(("%s: %s\n"):format(k, v))
 		end
-		unistd.write(1, "\n")
+		io.write("\n")
 	end
 end
 
 opts.sink = function(part)
-	unistd.write(1, part)
+	io.write(part)
 	return true
 end
 

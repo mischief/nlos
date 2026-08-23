@@ -6,8 +6,6 @@
 -- from outside cannot separate a program that has run from one that has
 -- only started.
 
-local unistd = require("posix.unistd")
-
 collectgarbage()
 collectgarbage()
 
@@ -18,6 +16,6 @@ for k in pairs(package.loaded) do
 end
 table.sort(t)
 
-unistd.write(1, string.format("lua=%d modules=%d\n%s\n",
+io.write(string.format("lua=%d modules=%d\n%s\n",
     math.floor(collectgarbage("count") * 1024), #t,
     table.concat(t, " ")))

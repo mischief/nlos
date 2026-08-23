@@ -5,7 +5,6 @@
 --	ble adv NAME              advertise, and serve a chat service
 --	ble connect ADDR [-r]     open a link, and hold it
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -13,11 +12,11 @@ local uuid = require("ble.uuid")
 local gap = require("ble.gap")
 
 local function out(s)
-	unistd.write(1, s)
+	io.write(s)
 end
 
 local function die(s)
-	unistd.write(2, "ble: " .. s .. "\n")
+	io.stderr:write("ble: " .. s .. "\n")
 	os.exit(1)
 end
 

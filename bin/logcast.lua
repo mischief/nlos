@@ -10,13 +10,12 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local prog = require("prog")
-local unistd = require("posix.unistd")
 
 local PORT = 9998
 local POLL = 200
 
 local function die(s)
-	unistd.write(2, "logcast: " .. s .. "\n")
+	io.stderr:write("logcast: " .. s .. "\n")
 	os.exit(1)
 end
 
