@@ -91,8 +91,22 @@ trace("after open", boot)
 if not up then
 	panel.f:write("reboot\r\n")
 	panel.f:flush()
-	boot, up = panel:expect(BANNER, 40)
+	boot, up = panel:expect(BANNER, 20)
 	trace("after reboot", boot)
+end
+
+-- and if it cannot be asked, made to. A test that wedges the machine
+-- leaves a console reading nothing, and every test after it fails for
+-- a reason of its own -- eight passes then seven identical failures.
+-- esptool drives DTR and RTS itself, which is the way back into a
+-- board that is not listening.
+if not up then
+	panel:close()
+	os.execute(("esptool --port %s --before default-reset " ..
+	    "--after hard-reset chip-id >/dev/null 2>&1"):format(port))
+	panel = hostpanel.open(port)
+	boot, up = panel:expect(BANNER, 40)
+	trace("after hard reset", boot)
 end
 
 if not up then
