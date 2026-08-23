@@ -338,6 +338,15 @@ local function go(url, keep)
 		})
 
 		busy = false
+
+		-- the handshake is over and the page is text now: gemini is
+		-- TLS always, so this is the larger half of what the program
+		-- had loaded and none of it is wanted until the next fetch
+		local ok, tlstcp = pcall(require, "tlstcp")
+
+		if ok then
+			tlstcp.unload()
+		end
 		if not res then
 			say(tostring(err))
 			drawbar()

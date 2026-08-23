@@ -176,4 +176,31 @@ function M.new(tcp, opts)
 	return t
 end
 
+-- The whole stack this pulls in, and what it costs to hold: a
+-- handshake needs curves, hashes and a certificate parser, and a
+-- program that has finished reading a page needs none of them until it
+-- asks for another.
+local STACK = {
+	"tlstcp", "tls.conn", "tls.client", "tls.server", "tls.record",
+	"tls.keys", "tls.hello", "tls.wire", "tls.tofu",
+	"x509.cert", "x509.der",
+	"crypto.bignum", "crypto.sha256", "crypto.sha512", "crypto.sha384",
+	"crypto.hmac", "crypto.hkdf", "crypto.chacha20", "crypto.poly1305",
+	"crypto.aead", "crypto.x25519", "crypto.field25519",
+	"crypto.ed25519", "crypto.p256", "crypto.rsa", "crypto.mlkem768",
+	"crypto.hashstate", "crypto.keccak",
+}
+
+-- Let go of it. Safe while a connection is open -- the objects hold
+-- their own functions -- but the next dial pays to compile it again,
+-- so this is for a program that reads more than it fetches. Not
+-- crypto.util or crypto.drbg: the caller's entropy came from there.
+function M.unload()
+	for _, m in ipairs(STACK) do
+		package.loaded[m] = nil
+	end
+	collectgarbage()
+	collectgarbage()
+end
+
 return M

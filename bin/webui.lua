@@ -326,6 +326,15 @@ local function go(u, keep)
 		})
 
 		busy = false
+
+		-- the handshake is over and the page is blocks now: the
+		-- curves and the certificate parser are worth more as
+		-- memory than as something already loaded
+		local ok, tlstcp = pcall(require, "tlstcp")
+
+		if ok then
+			tlstcp.unload()
+		end
 		if not res then
 			say(tostring(err))
 			drawbar()
