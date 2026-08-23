@@ -202,9 +202,12 @@ kputs(const char *s)
  * not a ring offset -- so a reader that fell behind is told what it lost.
  */
 #define LOGRING	(32 * 1024)
+#define LOGEARLY 1024		/* until there is an allocator to ask */
 #define LOGCHUNK 2048		/* the most one sys.dmesg call copies */
 
-static char logring[LOGRING];
+static char logearly[LOGEARLY];
+static char *logring = logearly;
+static size_t logsize = LOGEARLY;
 static unsigned long long logseq;	/* bytes ever written */
 static unsigned long long loglost;	/* bytes overwritten unread */
 static struct lock loglock = LOCK_INIT;
@@ -212,7 +215,7 @@ static struct lock loglock = LOCK_INIT;
 static unsigned long long
 logoldest(void)
 {
-	return logseq > LOGRING ? logseq - LOGRING : 0;
+	return logseq > logsize ? logseq - logsize : 0;
 }
 
 /* Nothing in here may log: the gc error path calls kernel_log, and a
@@ -223,21 +226,46 @@ logput(const char *s, size_t n)
 {
 	if (n == 0)
 		return;
-	if (n > LOGRING) {		/* LOGLINE bounds every caller */
-		s += n - LOGRING;
-		n = LOGRING;
+	if (n > logsize) {		/* LOGLINE bounds every caller */
+		s += n - logsize;
+		n = logsize;
 	}
 	lock(&loglock);
 
 	unsigned long long before = logoldest();
-	size_t w = (size_t)(logseq % LOGRING);
-	size_t first = LOGRING - w < n ? LOGRING - w : n;
+	size_t w = (size_t)(logseq % logsize);
+	size_t first = logsize - w < n ? logsize - w : n;
 
 	memcpy(logring + w, s, first);
 	if (first < n)
 		memcpy(logring, s + first, n - first);
 	logseq += n;
 	loglost += logoldest() - before;
+	unlock(&loglock);
+}
+
+/* Off the static array as soon as there is an allocator to ask. On a
+ * board this is tens of KB of the scarcest memory there is, and
+ * platform_chunk_alloc answers from PSRAM where the machine has some.
+ * Byte by byte because a position in a ring is modulo its size, so
+ * every retained byte moves: see logoldest.
+ */
+static void
+loginit(void)
+{
+	char *p = platform_chunk_alloc(LOGRING);
+
+	if (!p)
+		return;
+
+	lock(&loglock);
+
+	unsigned long long i;
+
+	for (i = logoldest(); i < logseq; i++)
+		p[i % LOGRING] = logring[i % logsize];
+	logring = p;
+	logsize = LOGRING;
 	unlock(&loglock);
 }
 
@@ -712,6 +740,7 @@ pump_keyboard(void)
 int
 kernel_init(void)
 {
+	loginit();		/* while the boot lines are still few */
 	calibrate_reductions();	/* kernel_clock_init already ran in efi_main */
 	rq_init();		/* before any proc exists to be dispatched */
 	uart_init();
@@ -1822,8 +1851,8 @@ kernel_dmesg(long long from, char *out, size_t max, unsigned long long *next,
 	if (n > max)
 		n = max;
 	if (n) {
-		size_t o = (size_t)(start % LOGRING);
-		size_t first = LOGRING - o < n ? LOGRING - o : n;
+		size_t o = (size_t)(start % logsize);
+		size_t first = logsize - o < n ? logsize - o : n;
 
 		memcpy(out, logring + o, first);
 		if (first < n)
@@ -1843,7 +1872,7 @@ kernel_loginfo(unsigned long long *seq, size_t *size,
 {
 	lock(&loglock);
 	*seq = logseq;
-	*size = LOGRING;
+	*size = logsize;
 	*oldest = logoldest();
 	*lost = loglost;
 	unlock(&loglock);
