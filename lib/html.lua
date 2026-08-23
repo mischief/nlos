@@ -365,11 +365,18 @@ end
 
 -- ---- reading it as it arrives ----
 
--- What a page may become, in blocks. The bytes are not held -- they
--- are consumed and dropped -- so this is the bound that matters: it
--- counts content, not markup, and a page of chrome no longer spends a
--- budget meant for an article.
-M.MAXBLOCKS = 4000
+-- What a page may become, counted in content rather than in markup:
+-- the bytes themselves are consumed and dropped.
+--
+-- Measured over a search page, a news front page and an encyclopedia
+-- article: a block costs about 650 bytes whatever it holds. A caller
+-- with little memory should set the count from what is free.
+M.BLOCKCOST = 650
+M.MAXBLOCKS = 1200
+
+-- and a second bound for the page that is one enormous block, which
+-- the count alone would not catch
+M.MAXTEXT = 96 * 1024
 
 local S = {}
 
@@ -385,9 +392,11 @@ function M.parser(opts)
 		buf = "",
 		info = {},
 		max = opts.maxblocks or M.MAXBLOCKS,
+		maxtext = opts.maxtext or M.MAXTEXT,
 		nochrome = opts.nochrome,
 		wantmain = opts.main,
 		nbytes = 0,
+		ntext = 0,
 	}, S)
 end
 
@@ -423,6 +432,12 @@ function S:emit(kind, a, b)
 		if self.title then
 			self.title = self.title .. a
 		else
+			self.ntext = self.ntext + #a
+			if self.ntext > self.maxtext then
+				self.info.truncated = "text"
+				self.done = true
+				return
+			end
 			self.p:text(M.unescape(a))
 		end
 	elseif kind == "open" then

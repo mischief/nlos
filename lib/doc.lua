@@ -74,9 +74,24 @@ function M.runlink(b, i)
 	return l ~= false and l or nil
 end
 
--- the block's text, and where each run sits in it. Columns, so the
--- spans a fold produces are in the same unit the fold counts in.
+local NOMARKS = {}
+
+-- The block's text, and where each run sits in it, in columns.
+--
+-- Run once a block per scroll, so the one-run case takes the string
+-- that is already there rather than concatenating a copy of it: most
+-- blocks are one run, and a copy apiece is what a scroll costs.
 local function flatten(b)
+	if b.n == 1 then
+		local link = b.link[1]
+
+		if not link then
+			return b.text[1], NOMARKS
+		end
+		return b.text[1], { { from = 1, to = wlen(b.text[1]),
+		    link = link } }
+	end
+
 	local parts, at, marks = {}, 1, {}
 
 	for i = 1, b.n do
@@ -130,56 +145,92 @@ local function spansfor(marks, off, len, indent)
 	return out or NOSPANS
 end
 
--- greedy, on spaces, and a word longer than the line is broken rather
--- than left to run off it
+-- Shared rather than made per call: fold runs once a block and a
+-- scroll folds every block it passes over, so a closure here is a
+-- closure a screenful of times.
+local function space(text, i)
+	local c = string.byte(text, i)
+
+	return c == 32 or c == 9 or c == 10 or c == 13
+end
+
+local function colspan(text, i, j)
+	if j < i then
+		return 0
+	end
+	return utf8.len(text, i, j) or (j - i + 1)
+end
+
+-- Greedy, on spaces, and a word longer than the line is broken rather
+-- than left to run off it.
+--
+-- Prefix and body go to emit apart, joined only by a caller that wants
+-- the line: counting, or scrolling past a long block to reach a
+-- window, then costs no string at all.
 local function fold(text, marks, width, first, cont, emit)
 	if width < 4 then
 		width = 4
 	end
 	if text == "" then
-		emit(first, 0, 0, #first)
+		emit(first, "", 0, 0, #first)
 		return
 	end
 
+	local byte = string.byte
+	local n = #text
 	local pre, room = first, width - wlen(first)
-	local out, at = "", 1
-	local start = 1
+	local p, pcol = 1, 1
 
-	local function flush()
-		emit(pre .. out, start, wlen(out), wlen(pre))
+	while p <= n and space(text, p) do
+		p = p + 1
+		pcol = pcol + 1
+	end
+
+	while p <= n do
+		local at, taken, last = p, 0, nil
+
+		while at <= n do
+			local sp = at
+
+			while sp <= n and not space(text, sp) do
+				sp = sp + 1
+			end
+
+			local add = colspan(text, at, sp - 1)
+			local sep = at > p and 1 or 0
+
+			if taken + sep + add > room then
+				break
+			end
+			taken = taken + sep + add
+			last = sp - 1
+			at = sp
+			while at <= n and space(text, at) do
+				at = at + 1
+			end
+		end
+
+		if not last then
+			-- one word wider than the line: cut it where the line
+			-- ends, since nothing below can wrap it
+			local upto = p
+
+			taken = 0
+			while upto <= n and taken < room do
+				upto = upto + 1
+				while upto <= n and byte(text, upto) >= 0x80
+				    and byte(text, upto) < 0xc0 do
+					upto = upto + 1
+				end
+				taken = taken + 1
+			end
+			last, at = upto - 1, upto
+		end
+
+		emit(pre, text:sub(p, last), pcol, taken, wlen(pre))
+		pcol = pcol + taken + colspan(text, last + 1, at - 1)
+		p = at
 		pre, room = cont, width - wlen(cont)
-		out = ""
-	end
-
-	for word in text:gmatch("%S+") do
-		local n = wlen(word)
-
-		-- where this word begins in the block, which is what a
-		-- span is measured against
-		at = (text:find(word, at, true) or at)
-
-		local col = wlen(text:sub(1, at - 1)) + 1
-
-		if out == "" then
-			start, out = col, word
-		elseif wlen(out) + 1 + n <= room then
-			out = out .. " " .. word
-		else
-			flush()
-			start, out = col, word
-		end
-		at = at + #word
-		while wlen(out) > room do
-			local head = wsub(out, 1, room)
-
-			emit(pre .. head, start, room, wlen(pre))
-			start = start + room
-			out = wsub(out, room + 1)
-			pre, room = cont, width - wlen(cont)
-		end
-	end
-	if out ~= "" then
-		flush()
 	end
 end
 
@@ -190,8 +241,8 @@ local function foldblock(b, cols, take)
 	local text, marks = flatten(b)
 	-- the marks travel with each line rather than being returned
 	-- after them: a caller building lines needs them as they come
-	local emit = function(s, off, len, indent)
-		take(s, off, len, indent, marks)
+	local emit = function(pre, body, off, len, indent)
+		take(pre, body, off, len, indent, marks)
 	end
 
 	do
@@ -202,15 +253,15 @@ local function foldblock(b, cols, take)
 
 			for line in (text .. "\n"):gmatch("(.-)\n") do
 				if last then
-					emit(last, 1, wlen(last), 0)
+					emit("", last, 1, wlen(last), 0)
 				end
 				last = line
 			end
 			if last and last ~= "" then
-				emit(last, 1, wlen(last), 0)
+				emit("", last, 1, wlen(last), 0)
 			end
 		elseif b.kind == "rule" then
-			emit(string.rep("-", cols), 0, 0, 0)
+			emit("", string.rep("-", cols), 0, 0, 0)
 		elseif b.kind == "head" then
 			local p = PREFIX.head[b.level or 1] or ""
 
@@ -233,10 +284,12 @@ local function foldblock(b, cols, take)
 	return marks
 end
 
--- one line, as a viewer wants it. Spans are 1-based columns into text.
-local function line(b, i, s, off, len, indent, marks)
+-- one line, as a viewer wants it. Spans are 1-based columns into text,
+-- and the prefix is joined on here because this is where a line is
+-- first wanted whole.
+local function line(b, i, pre, body, off, len, indent, marks)
 	return {
-		text = s,
+		text = pre == "" and body or (pre .. body),
 		kind = b.kind,
 		level = b.level,
 		block = i,
@@ -250,9 +303,10 @@ function M.wrap(blocks, cols)
 	local lines = {}
 
 	for i, b in ipairs(blocks) do
-		foldblock(b, cols, function(s, off, len, indent, marks)
-			lines[#lines + 1] = line(b, i, s, off, len, indent,
-			    marks)
+		foldblock(b, cols, function(pre, body, off, len, indent,
+		    marks)
+			lines[#lines + 1] = line(b, i, pre, body, off, len,
+			    indent, marks)
 		end)
 	end
 	return lines
@@ -325,10 +379,13 @@ function Layout:lines(lineno, n)
 		local b = self.blocks[i]
 		local at = self.first[i]
 
-		foldblock(b, self.cols, function(s, off, len, indent, marks)
+		-- a line before the window costs nothing: the strings that
+		-- would have made it are never joined
+		foldblock(b, self.cols, function(pre, body, off, len, indent,
+		    marks)
 			if at >= lineno and #out < n then
-				out[#out + 1] = line(b, i, s, off, len,
-				    indent, marks)
+				out[#out + 1] = line(b, i, pre, body, off,
+				    len, indent, marks)
 			end
 			at = at + 1
 		end)

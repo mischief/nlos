@@ -231,5 +231,38 @@ ok(idx * 4 < full, ("an index is far smaller than the lines it stands " ..
     "for (%.1fk vs %.1fk)"):format(idx, full))
 ok(kept.nlines == #lines2, "while standing for exactly as many")
 
+-- ---- what a scroll costs ----
+
+-- The board ran out of memory scrolling a bloated news page, and the
+-- fault was here: folding a block allocated a string per word to throw
+-- away. A window is asked for on every scroll, so this is the number
+-- that has to stay small.
+local html = require("html")
+local f2 = assert(io.open(scriptdir .. "/fixtures/bloated-news.html", "rb"))
+local bloat = f2:read("a")
+
+f2:close()
+
+local BL = doc.layout(html.parse(bloat, { base = "https://x/" }), 48)
+
+ok(BL.nlines > 500, "the fixture is a page worth scrolling")
+
+collectgarbage()
+collectgarbage("stop")
+
+local before = collectgarbage("count") * 1024
+local ROUNDS = 100
+
+for i = 1, ROUNDS do
+	BL:lines(1 + (i * 7) % (BL.nlines - 16), 16)
+end
+
+local per = (collectgarbage("count") * 1024 - before) / ROUNDS
+
+collectgarbage("restart")
+
+ok(per < 24 * 1024, ("a scroll allocates %.1fk, which is a window and " ..
+    "not the blocks it passed over"):format(per / 1024))
+
 io.write(("1..%d\n"):format(count))
 os.exit(failed == 0 and 0 or 1)

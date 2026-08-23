@@ -57,6 +57,31 @@ local ROWS = (FOOT - TOP) // ROWH
 
 local SEARCH = "https://lite.duckduckgo.com/lite/?q="
 
+-- What a page may take of what is left, asked fresh before each fetch
+-- because the answer moves. A page big enough to take the machine down
+-- takes every other program's drawing with it -- a font call that
+-- cannot allocate is how it shows -- so this is a bound on the machine
+-- and not merely on this program.
+local SHARE = 6
+
+local function pagelimit()
+	local ok, st = pcall(sys.stats)
+
+	if not ok or type(st) ~= "table" or not st.memavail then
+		return nil
+	end
+
+	local n = st.memavail // (SHARE * html.BLOCKCOST)
+
+	if n < 60 then
+		n = 60
+	end
+	if n > html.MAXBLOCKS then
+		n = html.MAXBLOCKS
+	end
+	return n
+end
+
 -- the start page, as html, so it goes through the same reader a
 -- fetched page does and there is no second path for the one page that
 -- ships with the program
@@ -275,6 +300,9 @@ local function show(u, blocks, info, keep)
 	say((info and info.truncated and "(part) " or "")
 	    .. (n > 0 and (n .. " links, a digit names one") or "read"))
 	draw(true)
+	-- what the parse threw off is a page's worth of garbage, and the
+	-- next thing this program does is wait
+	collectgarbage()
 end
 
 local function go(u, keep)
@@ -320,6 +348,7 @@ local function go(u, keep)
 		local res, err = web.fetch(net, dns, u, {
 			rand = rand,
 			main = wantmain,
+			maxblocks = pagelimit(),
 			onredirect = function(_, to)
 				say("-> " .. tail(to, COLS - 4))
 			end,

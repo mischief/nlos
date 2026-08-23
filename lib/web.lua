@@ -100,6 +100,7 @@ function M.get(net, dns, page, opts)
 					base = page,
 					nochrome = opts.nochrome,
 					main = opts.main,
+					maxtext = opts.maxtext,
 					maxblocks = opts.maxblocks,
 				})
 			elseif mime:match("^text/") then
