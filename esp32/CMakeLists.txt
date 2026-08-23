@@ -54,12 +54,26 @@ if(NOT EXISTS "${LUAOS_HOSTLIB}/los.so")
         "Or point -DLUAOS_HOSTLIB=<dir> at a build directory that has one.")
 endif()
 
-# CONFIGURE_DEPENDS: a new program is missing from the board otherwise,
-# and the build still reports success.
-file(GLOB_RECURSE luafs_sources CONFIGURE_DEPENDS
+# The boot tests, carried on the volume so a run is one flash and then
+# nothing but reboots: a test ends by resetting the board, and the
+# partition survives that where a pushed file would have to be sent
+# again. Off by default -- what ships is not a test rig.
+option(LUAOS_BOARD_TESTS "carry test/boot on the luafs volume" OFF)
+
+set(luafs_dirs bin/=/bin lib/=/lib task/=/task etc/=/etc)
+set(luafs_globs
     "${luafs_root}/bin/*" "${luafs_root}/lib/*"
     "${luafs_root}/task/*" "${luafs_root}/etc/*"
     "${luafs_root}/machine/esp32/*")
+
+if(LUAOS_BOARD_TESTS)
+    list(APPEND luafs_dirs test/boot/=/test)
+    list(APPEND luafs_globs "${luafs_root}/test/boot/*")
+endif()
+
+# CONFIGURE_DEPENDS: a new program is missing from the board otherwise,
+# and the build still reports success.
+file(GLOB_RECURSE luafs_sources CONFIGURE_DEPENDS ${luafs_globs})
 
 # what the firmware image already carries, which this one must not: the
 # partition is mounted over the image, so a file in both is the
@@ -84,7 +98,7 @@ add_custom_command(OUTPUT "${luafs_img}"
     COMMAND ${CMAKE_COMMAND} -E env "LUAOS_HOSTLIB=${LUAOS_HOSTLIB}"
         "${LUA_EXE}" tools/mkfatimg.lua "${luafs_img}" "${luafs_size}"
         --exclude-from "${luafs_skip}"
-        bin/=/bin lib/=/lib task/=/task etc/=/etc
+        ${luafs_dirs}
         # what this board runs. The path is /etc/services.lua on every
         # machine, so the build picks the list and the boot payload
         # reads one name -- see machine/.

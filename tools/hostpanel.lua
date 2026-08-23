@@ -281,6 +281,38 @@ end
 -- streaming a screen into a console with nobody receiving, and every
 -- command typed afterwards lands in the middle of it. Draining is how
 -- the line becomes a line again.
+-- expect(needle, limit) -- read until `needle` appears, or give up.
+
+-- What ask() cannot do: it stops at a gap and calls that the end, so a
+-- pause between a board's last service and its prompt reads as a
+-- machine with nothing left to say. Waiting for words that mean
+-- something is not a race. Waiting for silence is.
+
+-- Returns the text read and whether it matched. Plain, not a pattern.
+function Panel:expect(needle, limit)
+	local out = {}
+	local deadline = os.time() + (limit or 30)
+	local seen = ""
+
+	while os.time() <= deadline do
+		if self.hu.readable(self.fd, 0.5) then
+			local c = self.f:read(1)
+
+			if not c then
+				break
+			end
+			out[#out + 1] = c
+			-- the tail only: a whole-buffer find per byte is
+			-- quadratic, and a boot is thousands of them
+			seen = (seen .. c):sub(-#needle)
+			if seen == needle then
+				return (table.concat(out):gsub("\r", "")), true
+			end
+		end
+	end
+	return (table.concat(out):gsub("\r", "")), false
+end
+
 function Panel:drain(limit, quiet)
 	local deadline = os.time() + (limit or 6)
 	local n = 0

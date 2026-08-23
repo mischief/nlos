@@ -57,6 +57,14 @@ qemu)
 esac
 
 # Refused rather than guessed. esptool would pick one of two identical
+# The boot tests, carried on the volume rather than sent one at a time.
+# An environment variable and not a board, because it is a property of
+# the run: the same board is flashed with tests to run them and without
+# them the rest of the time.
+if [ -n "$LUAOS_BOARD_TESTS" ]; then
+	set -- -DLUAOS_BOARD_TESTS=ON "$@"
+fi
+
 # boards on its own, and flashing the wrong one is quiet: it succeeds.
 case " $* " in
 *" flash "*)
