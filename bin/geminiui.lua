@@ -254,6 +254,12 @@ local function show(url, lines, keep)
 
 	say(n > 0 and (n .. " links, a digit names one") or "")
 	draw(true)
+	-- the page that was here is gone: collect it, then hand back the
+	-- chunks it sat in, which nothing else asks for
+	collectgarbage()
+	if sys.reclaim then
+		sys.reclaim()
+	end
 end
 
 -- text that is not gemtext is still text: shown as it is, folded to

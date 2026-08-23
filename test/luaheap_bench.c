@@ -174,6 +174,16 @@ static const char WORKLOAD[] =
 "local s = table.concat(buf, ',')\n"
 "local parts = 0\n"
 "for _ in s:gmatch('[^,]+') do parts = parts + 1 end\n"
+/* pattern work per item, which is what a parser does and what the
+ * generic loop above misses: gmatch allocates a state per call, sized
+ * by LUA_MAXCAPTURES rather than by the pattern.
+ */
+"local kv = ('name=value; '):rep(8)\n"
+"for i = 1, 400 do\n"
+"  for k, v in kv:gmatch('(%w+)=(%w+)') do parts = parts + #k + #v end\n"
+"  local a = kv:find('(%w+)=')\n"
+"  parts = parts + (a or 0)\n"
+"end\n"
 "collectgarbage()\n"
 "return #acc + sum + parts\n";
 

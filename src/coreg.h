@@ -90,4 +90,11 @@ unsigned int	kernel_strseed(void);
 
 #define luai_makeseed(L)	kernel_strseed()
 
+/* How many captures a pattern may hold, and so how big the state a
+ * gmatch() call allocates is: 608 bytes at 32, which is past the last
+ * heap class and takes a large block rounded to 1024. At 16 it is 352
+ * and lands in a class. Every pattern in this tree uses at most four.
+ */
+#define LUA_MAXCAPTURES		16
+
 #endif

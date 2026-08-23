@@ -41,17 +41,12 @@
 
 #if CONFIG_SPIRAM
 
-/* A board with PSRAM, where the chunk size decides which memory the
- * heap lives in rather than how much of it is wasted.
- *
- * CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL serves any allocation at or below
- * its threshold (4096) from internal sram, so a chunk under that never
- * reaches PSRAM however much is fitted -- the whole Lua heap comes out
- * of internal sram with the PSRAM sitting unused beside it. Above the
- * threshold there is nothing to tune for: chunks come from PSRAM and
- * the tail of one costs nothing worth counting.
+/* PSRAM is named by platform_chunk_alloc, so ALWAYSINTERNAL's
+ * threshold decides nothing here. Small because a chunk returns only
+ * when every block in it is free: one survivor per twenty blocks gives
+ * back 65% of a dropped page at 2K, 13% at 8K.
  */
-#define LUAHEAP_CHUNK		(8 * 1024)
+#define LUAHEAP_CHUNK		(2 * 1024)
 #define LUAHEAP_LARGE_CACHED	4
 
 #else

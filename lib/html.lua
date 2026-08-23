@@ -73,20 +73,44 @@ end
 -- An attribute is entity-encoded like any other text, and a url is
 -- where it matters: a query joined with &amp; asks for a parameter
 -- called amp;something, which a server answers with 400.
+-- One pass with find rather than three gmatch loops over the same tag.
+-- gmatch allocates a match state of 608 bytes, which is a third of a
+-- chunk; three of those per tag was most of what parsing a page
+-- allocated at all. find keeps its state on the C stack.
 function M.attrs(raw)
 	local a = {}
+	local n = #raw
+	local i = 1
 
-	for k, v in raw:gmatch('([%w:%-]+)%s*=%s*"([^"]*)"') do
-		a[k:lower()] = M.unescape(v)
-	end
-	for k, v in raw:gmatch("([%w:%-]+)%s*=%s*'([^']*)'") do
-		if a[k:lower()] == nil then
-			a[k:lower()] = M.unescape(v)
+	while i <= n do
+		local s, e, name = raw:find("([%w:%-]+)%s*=%s*", i)
+
+		if not s then
+			break
 		end
-	end
-	for k, v in raw:gmatch("([%w:%-]+)%s*=%s*([^%s\"'>]+)") do
-		if a[k:lower()] == nil then
-			a[k:lower()] = M.unescape(v)
+
+		local q = raw:sub(e + 1, e + 1)
+		local v
+
+		if q == '"' or q == "'" then
+			local close = raw:find(q, e + 2, true)
+
+			if not close then
+				break
+			end
+			v = raw:sub(e + 2, close - 1)
+			i = close + 1
+		else
+			local close = raw:find("[%s>]", e + 1) or n + 1
+
+			v = raw:sub(e + 1, close - 1)
+			i = close
+		end
+
+		local k = name:lower()
+
+		if a[k] == nil then
+			a[k] = M.unescape(v)
 		end
 	end
 	return a

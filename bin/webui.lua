@@ -322,9 +322,14 @@ local function show(u, blocks, info, keep)
 	say((cut and ("(part: %s at %d) "):format(cut, lastlimit or 0) or "")
 	    .. (n > 0 and (n .. " links, a digit names one") or "read"))
 	draw(true)
-	-- what the parse threw off is a page's worth of garbage, and the
-	-- next thing this program does is wait
+	-- What the parse threw off is a page's worth of garbage, and the
+	-- next thing this program does is wait. The collect frees the
+	-- objects; the reclaim is what hands the chunks they sat in back
+	-- to the machine, which nothing else here would ever ask for.
 	collectgarbage()
+	if sys.reclaim then
+		sys.reclaim()
+	end
 end
 
 local function go(u, keep)

@@ -183,6 +183,15 @@ stats_mt.__tostring = function()
 		    (s.chunklargest or 0) // 1024)
 	end
 
+	-- los.buf's storage, which comes from the chunk pool and not from
+	-- a lua heap, so it appears in neither figure above and a machine
+	-- short of chunks cannot otherwise be told why.
+	local buf = ""
+
+	if (s.buf_used or 0) > 0 then
+		buf = string.format(" buf=%dK", s.buf_used // 1024)
+	end
+
 	-- the battery, where there is one. Absent on every machine that
 	-- runs on wall power, which is most of them.
 	-- on the charger there is no charge to report: the pin is reading
@@ -200,12 +209,12 @@ stats_mt.__tostring = function()
 	-- what a chunk costs buy nothing, and say nothing about it.
 	return string.format(
 	    "procs=%d%s ports=%d heap=%dK lua=%dK/%dK (%.2fx) " ..
-	    "mem=%dK/%dK free max=%dK%s%s",
+	    "mem=%dK/%dK free max=%dK%s%s%s",
 	    s.procs, broke, s.ports, (s.heap_used or 0) // 1024,
 	    live // 1024, mapped // 1024,
 	    live > 0 and mapped / live or 0,
 	    (s.memavail or 0) // 1024, (s.memtotal or 0) // 1024,
-	    (s.memlargest or 0) // 1024, chunk, bat)
+	    (s.memlargest or 0) // 1024, chunk, buf, bat)
 end
 M.stats = setmetatable({}, stats_mt)
 

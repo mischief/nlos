@@ -79,14 +79,22 @@ function M.dotseg(p)
 	local trail = p:sub(-1) == "/" or p:match("/%.%.?$") ~= nil
 	    or p == "." or p == ".."
 
-	for seg in p:gmatch("[^/]+") do
+	-- find rather than gmatch: this runs once for every link on a
+	-- page, and a gmatch state is 608 bytes to walk a path with
+	local i, n = 1, #p
+
+	while i <= n do
+		local sl = p:find("/", i, true)
+		local seg = p:sub(i, (sl or n + 1) - 1)
+
 		if seg == ".." then
 			if #out > 0 then
 				table.remove(out)
 			end
-		elseif seg ~= "." then
+		elseif seg ~= "." and seg ~= "" then
 			out[#out + 1] = seg
 		end
+		i = (sl or n) + 1
 	end
 
 	local s = table.concat(out, "/")
