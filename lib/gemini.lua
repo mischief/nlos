@@ -5,6 +5,8 @@
 -- The protocol carries no length, so the peer's close IS the
 -- terminator: a truncated page reads as a whole one at this layer.
 
+local url = require("url")
+
 local M = {}
 
 M.PORT = 1965
@@ -22,142 +24,15 @@ function M.class(status)
 	return status // 10
 end
 
--- ---- percent encoding ----
+-- ---- urls ----
 
-function M.escape(s)
-	return (s:gsub("[^%w%-%._~]", function(c)
-		return string.format("%%%02X", c:byte())
-	end))
-end
+-- the generic rules are lib/url.lua's, which every hypertext protocol
+-- shares. What is gemini's is below: what it refuses, and how it spells
+-- a url that two people typed differently.
+M.escape, M.unescape = url.escape, url.unescape
+M.resolve = url.resolve
 
-function M.unescape(s)
-	return (s:gsub("%%(%x%x)", function(h)
-		return string.char(tonumber(h, 16))
-	end))
-end
-
--- ---- URLs ----
-
--- RFC 3986's five parts, each absent rather than empty when it is not
--- there: an authority of "" and no authority at all resolve
--- differently, and a query of "" is a search that found nothing.
-local function split(s)
-	local t = {}
-	local rest = s
-	local i = rest:find("#", 1, true)
-
-	if i then
-		t.fragment = rest:sub(i + 1)
-		rest = rest:sub(1, i - 1)
-	end
-	i = rest:find("?", 1, true)
-	if i then
-		t.query = rest:sub(i + 1)
-		rest = rest:sub(1, i - 1)
-	end
-
-	local scheme, afterscheme = rest:match("^(%a[%w+.%-]*):(.*)$")
-
-	if scheme then
-		t.scheme = scheme:lower()
-		rest = afterscheme
-	end
-
-	local auth, afterauth = rest:match("^//([^/?#]*)(.*)$")
-
-	if auth then
-		t.authority = auth
-		rest = afterauth
-	end
-	t.path = rest
-	return t
-end
-
-local function recompose(t)
-	local s = t.scheme and (t.scheme .. ":") or ""
-
-	if t.authority then
-		s = s .. "//" .. t.authority
-	end
-	s = s .. (t.path or "")
-	if t.query then
-		s = s .. "?" .. t.query
-	end
-	if t.fragment then
-		s = s .. "#" .. t.fragment
-	end
-	return s
-end
-
--- RFC 3986 5.2.4. A trailing slash survives a "." or ".." that ends the
--- path, because "/a/.." names the directory and not the file beside it.
-local function dotseg(p)
-	local out = {}
-	local abs = p:sub(1, 1) == "/"
-	local trail = p:sub(-1) == "/" or p:match("/%.%.?$") ~= nil
-	    or p == "." or p == ".."
-
-	for seg in p:gmatch("[^/]+") do
-		if seg == ".." then
-			if #out > 0 then
-				table.remove(out)
-			end
-		elseif seg ~= "." then
-			out[#out + 1] = seg
-		end
-	end
-
-	local s = table.concat(out, "/")
-
-	if abs then
-		s = "/" .. s
-	end
-	if trail and #out > 0 then
-		s = s .. "/"
-	end
-	return s
-end
-
-local function merge(base, p)
-	if base.authority and base.path == "" then
-		return "/" .. p
-	end
-	return (base.path:gsub("[^/]*$", "")) .. p
-end
-
--- RFC 3986 5.2.2: what a link on a page means, given the page it is
--- on. Every gemtext link is relative until proven otherwise, so this
--- is on the path of every click.
-function M.resolve(base, ref)
-	local B, R = split(base), split(ref)
-	local T = {}
-
-	if R.scheme then
-		T.scheme, T.authority = R.scheme, R.authority
-		T.path, T.query = dotseg(R.path), R.query
-	else
-		T.scheme = B.scheme
-		if R.authority then
-			T.authority = R.authority
-			T.path, T.query = dotseg(R.path), R.query
-		else
-			T.authority = B.authority
-			if R.path == "" then
-				T.path = B.path
-				T.query = R.query or B.query
-			else
-				if R.path:sub(1, 1) == "/" then
-					T.path = dotseg(R.path)
-				else
-					T.path = dotseg(merge(B, R.path))
-				end
-				T.query = R.query
-			end
-		end
-	end
-	T.fragment = R.fragment
-	return recompose(T)
-end
+local split = url.split
 
 -- a gemini URL, in the pieces a dial needs. base makes it the answer
 -- to "what does this link point at", which is the same parse.

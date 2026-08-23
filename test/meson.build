@@ -561,6 +561,23 @@ test('menu', lua_interp,
   timeout: 20,
 )
 
+# blocks of inline runs folded to a width, and which link a cell lands
+# on once they are. What a viewer asks and a host can answer.
+test('doc-layout', lua_interp,
+  args: [files('host_doc.lua')],
+  protocol: 'tap',
+  timeout: 20,
+)
+
+# html as something to read: entities, unclosed tags, links resolved
+# against the page, and the two bounds that keep a page from anywhere
+# from costing whatever it likes. The fixture is a real search result.
+test('html-reader', lua_interp,
+  args: [files('host_html.lua')],
+  protocol: 'tap',
+  timeout: 30,
+)
+
 # lib/geometry.lua: the identities are the test. A rotation keeps a
 # length, a frame round-trips, and a satellite placed from a bearing is
 # seen again at that bearing -- which is what a sky plot rests on.
