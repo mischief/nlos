@@ -44,6 +44,17 @@ function M.plan(n)
 	sys.atexit(M.done)
 end
 
+-- A whole file skipped, for what only the guest can know: the room
+-- left, whether a network came up, whether the hardware a test names is
+-- fitted. What the harness can decide from outside belongs outside,
+-- because reaching this at all costs a transfer and a boot.
+--
+-- Ends the payload: a plan of zero admits no assertions after it.
+function M.skip(why)
+	emit(("1..0 # SKIP %s\n"):format(why or "not applicable here"))
+	M.done()
+end
+
 -- wait for boot to stop moving, and return the machine's port count.
 -- On more than one cpu the services are still starting when a payload
 -- takes its baseline, and the console makes its input port lazily.
