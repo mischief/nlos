@@ -87,15 +87,6 @@ void	vfs_embed_register(void);
  */
 int	esp_tdeck_power_on(void);
 
-/* the gnss receiver, in gps.c. open() also sets the baud of a port
- * already up: a receiver at the wrong one answers with noise rather
- * than silence, so trying is the only way to tell which is fitted.
- */
-int	esp_gps_open(int baud);
-int	esp_gps_read(char *out, int n);
-int	esp_gps_write(const char *s, int n);
-unsigned long esp_gps_rx(void);
-
 /* bring up the shared SPI bus, powering the rail first. Idempotent, so
  * whichever of blk and lcd probes first pays for it.
  */
@@ -120,5 +111,15 @@ int	esp_gpio_isr(void);
 
 
 #endif
+
+/* The gnss receiver, in gps.c, which answers on every board: a T-Deck
+ * has one and the rest say so by failing. Outside the guard above
+ * because drivers.c binds it either way, and a board without a
+ * receiver is a board whose gps.open() returns false.
+ */
+int	esp_gps_open(int baud);
+int	esp_gps_read(char *out, int n);
+int	esp_gps_write(const char *s, int n);
+unsigned long esp_gps_rx(void);
 
 #endif

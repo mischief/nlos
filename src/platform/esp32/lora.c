@@ -11,6 +11,10 @@
  */
 
 #include <sdkconfig.h>
+/* out here because the stubs below the #else need it too, and a board
+ * without the radio is still a board that has to compile
+ */
+#include <stdint.h>
 
 #if CONFIG_LUAOS_BOARD_TDECK
 
