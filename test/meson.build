@@ -680,6 +680,17 @@ if lua54_dep.found()
     env: adpcm_env,
     depends: [adpcm_native_host],
   )
+
+  # the mesh protocol, against the constants their firmware defines.
+  # crypto.so for the same reason adpcm.so is here: the cipher under
+  # test should be the one the board runs.
+  test('meshtastic', lua_interp,
+    args: [files('host_meshtastic.lua')],
+    protocol: 'tap',
+    timeout: 60,
+    env: adpcm_env,
+    depends: [crypto_native_host],
+  )
 endif
 
 # lib/ble/hci.lua, sans-io like zmodem above it. The codec half needs
