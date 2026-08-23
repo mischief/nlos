@@ -102,6 +102,7 @@ local shownrow = {}
 local typed = ""
 local nodes = {}		-- what the service last told us
 local shownodes = false
+local unread = 0
 local visible = true
 local me, myname = "?", "lua-os"
 local chan, quiet = nil, false
@@ -120,10 +121,14 @@ local function paintbar()
 	local where = chan and
 	    ("%s %.1f"):format(chan.name, chan.freq) or "no channel"
 
+	-- what is waiting behind the node list, which is otherwise a
+	-- message arriving on a screen that does not show messages
+	local behind = unread > 0 and ("  %d new"):format(unread) or ""
+
 	fill(0, 0, W, ROWH, 0x202028)
-	text(0, 0, ("%s %s  %d node%s%s"):format(myname, where, n,
-	    n == 1 and "" or "s", quiet and "  listening only" or ""),
-	    quiet and WARN or DIM, 0x202028)
+	text(0, 0, ("%s %s  %d node%s%s%s"):format(myname, where, n,
+	    n == 1 and "" or "s", quiet and "  listening only" or "",
+	    behind), quiet and WARN or DIM, 0x202028)
 end
 
 local function paintinput()
@@ -146,7 +151,7 @@ end
 local function paintnodes()
 	local y = TOP
 
-	text(0, y, "heard", DIM)
+	text(0, y, "heard -- tab goes back", DIM)
 	y = y + ROWH
 
 	local list = {}
@@ -241,6 +246,10 @@ local function say(s, color)
 	-- what makes a busy mesh readable rather than jumping.
 	if stick then
 		F:scroll(F:nlines())
+	end
+	if shownodes then
+		unread = unread + 1
+		paintbar()
 	end
 	paintbody()
 end
@@ -361,6 +370,16 @@ local function submit()
 	if s == "" then
 		return
 	end
+
+	-- what you just did belongs on the screen you are looking at.
+	-- Sending from the node list otherwise answers into a transcript
+	-- that is not up, and reads as a key that did nothing.
+	if shownodes then
+		shownodes, unread = false, 0
+		paintbar()
+		paintbody(true)
+	end
+
 	if s:sub(1, 1) == "/" then
 		return docommand(s)
 	end
@@ -437,6 +456,10 @@ while true do
 				paintinput()
 			elseif m == "\t" then
 				shownodes = not shownodes
+				if not shownodes then
+					unread = 0
+				end
+				paintbar()
 				paintbody(true)
 			elseif m == "\27[A" then
 				F:scroll(-1)
