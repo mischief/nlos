@@ -251,6 +251,7 @@ set(EMBED_FILES
     task/lora.lua
     task/meshsrv.lua
     lib/meshtastic.lua
+    lib/nodedb.lua
     lib/protobuf.lua
     lib/sx1262.lua
     task/ip.lua

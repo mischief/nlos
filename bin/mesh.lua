@@ -71,6 +71,7 @@ if cmd == "status" then
 	end
 	print(("rx %d  tx %d  dup %d  undecoded %d"):format(s.counters.rx,
 	    s.counters.tx, s.counters.dup, s.counters.undecoded))
+	print(("%d of %d nodes kept"):format(s.known or 0, s.nodemax or 0))
 elseif cmd == "nodes" then
 	local r = ask({ op = "nodes" })
 	local list = r and r.ok or {}

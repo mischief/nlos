@@ -98,6 +98,11 @@ local channel = chan.hash
 local hoplimit = tonumber(cfg.hop) or 3
 local interval = math.max(tonumber(cfg.announce) or 10800, 3600)
 
+-- Whether a gateway may put what we send on a public broker, where it
+-- is archived and searchable. Off is their firmware's default; on is
+-- what makes a message reach the map sites everyone reads.
+local okmqtt = cfg.mqtt ~= false
+
 -- Tuning to somebody else's channel is for listening. Nothing goes out
 -- while this is set, so visiting a network cannot beacon into it an
 -- hour later when the timer comes round and nobody is watching.
@@ -105,9 +110,13 @@ local quiet = false
 
 local inbox = {}	-- decoded, waiting for a client that polls
 local subs = {}		-- rights to push arrivals to, for those that do not
-local nodes = {}	-- number -> what it has told us
+-- Bounded, because a public mesh is bigger than this machine: about
+-- 350 bytes an entry here, and the local network has a thousand of
+-- them. The one heard longest ago goes.
+local nodes = require("nodedb").new(cfg.nodes or 200)
 local seen = {}		-- (from,id) -> when, so a flood is heard once
 local nseen = 0
+local SEENMAX = 256
 local counters = { rx = 0, tx = 0, dup = 0, undecoded = 0 }
 
 -- One reply port per thread, not one for the task. Three threads talk
@@ -150,9 +159,9 @@ local function duplicate(h)
 	seen[k] = sys.uptime_ms()
 	nseen = nseen + 1
 
-	-- bounded rather than swept: an id is a random word, so what is
-	-- worth remembering is the recent past and not all of it
-	if nseen > 256 then
+	-- an id is a random word, so what is worth remembering is the
+	-- recent past and not all of it
+	if nseen > SEENMAX then
 		local old = sys.uptime_ms() - 600000
 
 		for kk, when in pairs(seen) do
@@ -161,18 +170,33 @@ local function duplicate(h)
 				nseen = nseen - 1
 			end
 		end
+
+		-- A mesh busy enough that nothing is ten minutes old must
+		-- still fit, or the sweep frees nothing and runs again on
+		-- every packet. Half at a time, so this is one sort per
+		-- few hundred rather than a scan per arrival.
+		if nseen > SEENMAX then
+			local all = {}
+
+			for kk, when in pairs(seen) do
+				all[#all + 1] = { kk, when }
+			end
+			table.sort(all, function(a, b)
+				return a[2] < b[2]
+			end)
+			for i = 1, #all // 2 do
+				seen[all[i][1]] = nil
+				nseen = nseen - 1
+			end
+		end
 	end
 	return false
 end
 
 local function note(num, fields)
-	local n = nodes[num] or { num = num, id = mt.nodeid(num) }
+	local n = nodes:note(num, fields, sys.uptime_ms())
 
-	for k, v in pairs(fields) do
-		n[k] = v
-	end
-	n.heard = sys.uptime_ms()
-	nodes[num] = n
+	n.id = n.id or mt.nodeid(num)
 	return n
 end
 
@@ -282,8 +306,8 @@ local function sendtext(ask, text, to)
 		hopstart = hoplimit,
 		channel = channel,
 	}
-	local frame = mt.seal(h, { portnum = mt.PORT_TEXT, payload = text },
-	    key)
+	local frame = mt.seal(h, { portnum = mt.PORT_TEXT, payload = text,
+	    ok_to_mqtt = okmqtt }, key)
 
 	if not frame then
 		return nil, "cannot seal"
@@ -317,7 +341,7 @@ local function announce(ask)
 		hoplimit = hoplimit, hopstart = hoplimit, channel = channel,
 	}
 	local frame = mt.seal(h, { portnum = mt.PORT_NODEINFO,
-	    payload = user }, key)
+	    payload = user, ok_to_mqtt = okmqtt }, key)
 
 	if frame then
 		duplicate(h)
@@ -365,12 +389,7 @@ local function serve()
 
 				answer({ ok = sent, err = why })
 			elseif m.op == "nodes" then
-				local out = {}
-
-				for _, n in pairs(nodes) do
-					out[#out + 1] = n
-				end
-				answer({ ok = out })
+				answer({ ok = nodes:list() })
 			elseif m.op == "announce" then
 				local said, why = announce(ask)
 
@@ -380,6 +399,8 @@ local function serve()
 				    channel = channel, waiting = #inbox,
 				    chan = chan, hop = hoplimit,
 				    quiet = quiet,
+				    known = nodes:count(),
+				    nodemax = nodes.max,
 				    counters = counters } })
 			elseif m.op == "subscribe" then
 				-- kept, not closed with the reply: this one

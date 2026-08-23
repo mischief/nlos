@@ -128,6 +128,34 @@ do
 	    ("slot 1 is the bottom of the band: %.4f"):format(c.freq))
 end
 
+-- ---- the bitfield a gateway reads ----
+--
+-- Their firmware will not put another node's packet on a public broker
+-- unless field 9 is present and bit 0 is set. Absent means no, so a
+-- message without it is seen on the gateway and nowhere further.
+do
+	local d = mt.data(mt.encodedata({ portnum = 1, payload = "hi" }))
+
+	ok(d.bitfield ~= nil, "the bitfield is always written, even as zero")
+	ok(d.ok_to_mqtt == false, "and says no when it was not asked for")
+end
+
+do
+	local d = mt.data(mt.encodedata({ portnum = 1, payload = "hi",
+	    ok_to_mqtt = true }))
+
+	ok(d.bitfield & mt.OK_TO_MQTT ~= 0, "asking sets bit 0")
+	ok(d.ok_to_mqtt == true, "which is what a gateway checks")
+end
+
+do
+	local d = mt.data(mt.encodedata({ portnum = 1, payload = "hi",
+	    want_response = true, ok_to_mqtt = true }))
+
+	ok(d.bitfield == (mt.OK_TO_MQTT | mt.WANTS_RESPONSE),
+	    ("both bits share the field: %d"):format(d.bitfield))
+end
+
 -- ---- the frame ----
 
 do

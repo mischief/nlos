@@ -278,6 +278,13 @@ function M.position(payload)
 	}
 end
 
+-- The bitfield a gateway reads before putting this on a public broker.
+-- A packet without one is not uplinked at all: their firmware treats
+-- absent as "do not", so the message is seen on the gateway itself and
+-- nowhere beyond it.
+M.OK_TO_MQTT = 1
+M.WANTS_RESPONSE = 2
+
 -- the Data message, of which a reader wants two fields. The rest are
 -- carried through as they came so nothing is lost by not naming them.
 function M.data(plain)
@@ -294,6 +301,8 @@ function M.data(plain)
 		source = f[5],
 		request_id = f[6],
 		reply_id = f[7],
+		bitfield = f[9],
+		ok_to_mqtt = ((f[9] or 0) & M.OK_TO_MQTT) ~= 0,
 	}
 end
 
@@ -321,6 +330,19 @@ function M.encodedata(d)
 	if d.reply_id then
 		fields[#fields + 1] = { 7, "i32", d.reply_id }
 	end
+
+	-- always written, even as zero, because a gateway asks whether the
+	-- field is there before it asks what is in it
+	local bits = 0
+
+	if d.ok_to_mqtt then
+		bits = bits | M.OK_TO_MQTT
+	end
+	if d.want_response then
+		bits = bits | M.WANTS_RESPONSE
+	end
+	fields[#fields + 1] = { 9, "varint", bits }
+
 	return pb.encode(fields)
 end
 

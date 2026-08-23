@@ -700,6 +700,14 @@ if lua54_dep.found()
     protocol: 'tap',
     timeout: 60,
   )
+
+  # the node table, which exists to have a ceiling: a mesh larger than
+  # the table must not be able to grow it.
+  test('nodedb', lua_interp,
+    args: [files('host_nodedb.lua')],
+    protocol: 'tap',
+    timeout: 60,
+  )
 endif
 
 # lib/ble/hci.lua, sans-io like zmodem above it. The codec half needs
