@@ -365,6 +365,25 @@ function Layout:link(n)
 	return nil
 end
 
+-- every link to its number, in one pass. The only thing here that
+-- grows with the page, so it is built by whoever needs to name a link
+-- and not by whoever only draws.
+function Layout:linkmap()
+	local map, n = {}, 0
+
+	for _, b in ipairs(self.blocks) do
+		for i = 1, b.n do
+			local l = b.link[i]
+
+			if l and not map[l] then
+				n = n + 1
+				map[l] = n
+			end
+		end
+	end
+	return map, n
+end
+
 function Layout:nlinks()
 	local seen, n = {}, 0
 

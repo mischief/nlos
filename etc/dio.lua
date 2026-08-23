@@ -86,6 +86,9 @@ return {
 		  category = "net", label = "@", color = 0x1f77b4,
 		  keys = true, net = true,
 		  desc = "read a capsule, and follow its links" },
+		{ name = "web", cmd = "/bin/webui.lua", category = "net",
+		  label = "W", color = 0x17becf, keys = true, net = true,
+		  desc = "read a page: text and links, no pictures" },
 
 		-- the mesh. Keys, because a chat is typed, and the radio,
 		-- which is what ble = true above means.

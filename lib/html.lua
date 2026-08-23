@@ -156,8 +156,10 @@ end
 
 -- content that is not text at all. Their close tag is looked for
 -- rather than parsed toward, since what is inside may contain anything.
+-- select goes here with them: its options are the choices of a control
+-- nothing here can work, and a country list is a page of them.
 local OPAQUE = { script = true, style = true, svg = true,
-    noscript = true, template = true }
+    noscript = true, template = true, select = true, datalist = true }
 
 -- The links around a page rather than the page, by the standard's own
 -- definition of these two. Dropping them is worth about a twelfth of
@@ -384,11 +386,33 @@ function M.parser(opts)
 		info = {},
 		max = opts.maxblocks or M.MAXBLOCKS,
 		nochrome = opts.nochrome,
+		wantmain = opts.main,
 		nbytes = 0,
 	}, S)
 end
 
 function S:emit(kind, a, b)
+	-- A page that says where its content is: <main> is the article
+	-- and everything before it was the page around the page. Dropped
+	-- the moment it opens rather than at the end, so the header never
+	-- sits in memory beside it, and the close ends the read.
+	if self.wantmain and not self.aftermain then
+		if kind == "open" and a == "main" then
+			self.p:flush()
+			self.p.blocks = {}
+			self.inmain = true
+			return
+		end
+		if self.inmain and kind == "close" and a == "main" then
+			self.p:flush()
+			self.aftermain = true
+			self.done = true
+			return
+		end
+	end
+	if self.aftermain then
+		return
+	end
 	if self.skip then
 		if kind == "close" and a == self.skip then
 			self.skip = nil
@@ -428,6 +452,10 @@ function S:step(final)
 	local i = 1
 
 	while i <= #buf do
+		if self.done then
+			self.buf = ""
+			return
+		end
 		if #self.p.blocks >= self.max then
 			self.info.truncated = "blocks"
 			self.done = true

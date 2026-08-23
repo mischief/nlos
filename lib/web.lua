@@ -13,10 +13,6 @@ local url = require("url")
 
 local M = {}
 
--- What a page may cost, in the two units that matter: bytes bound the
--- read, and lib/html.lua's block count bounds what those bytes expand
--- into. A page over this is read up to here and marked short, which is
--- truthful where a refusal would be unhelpful.
 -- The bytes are not held, so this is only the point at which a page
 -- stops being one: a stream that never ends, or one nothing here could
 -- read anyway. lib/html.lua's block count is the bound that decides
@@ -66,14 +62,29 @@ function M.get(net, dns, page, opts)
 	opts = opts or {}
 
 	local status, headers
-	local parser, cap, cut = nil, nil, nil
+	local parser, cap, cut, stopped = nil, nil, nil, false
 	local n = 0
 	local maxbytes = opts.maxbytes or M.MAXBYTES
+	local t = url.split(page)
+	local verify = opts.verify
+
+	-- https with no verifier of the caller's own: trust on first use,
+	-- which without a store is every use. opts.onkey is told what was
+	-- accepted, and opts.insecure skips even that.
+	if t.scheme == "https" and not verify and not opts.insecure then
+		local ok, tlstcp = pcall(require, "tlstcp")
+
+		if not ok then
+			return nil, "no tls on this machine"
+		end
+		verify = tlstcp.tofu((t.authority or ""):gsub(":%d+$", ""),
+		    opts.onkey)
+	end
 
 	local res, err = require("http").get(net, dns, page, {
 		rand = opts.rand,
 		insecure = opts.insecure,
-		verify = opts.verify,
+		verify = verify,
 		-- the type arrives before the body does, which is what
 		-- lets the bytes go straight where they belong
 		onhead = function(st, h)
@@ -88,6 +99,7 @@ function M.get(net, dns, page, opts)
 				parser = html.parser({
 					base = page,
 					nochrome = opts.nochrome,
+					main = opts.main,
 					maxblocks = opts.maxblocks,
 				})
 			elseif mime:match("^text/") then
@@ -101,8 +113,12 @@ function M.get(net, dns, page, opts)
 				return false
 			end
 			if parser then
+				-- the parser stops for two reasons: it hit
+				-- the bound, or it has the whole article and
+				-- the rest of the page is not wanted
 				if not parser:feed(part) then
-					cut = "blocks"
+					stopped = true
+					cut = parser.info.truncated
 					return false
 				end
 				return true
@@ -114,7 +130,7 @@ function M.get(net, dns, page, opts)
 		end,
 	})
 
-	if not res and not cut then
+	if not res and not cut and not stopped then
 		return nil, err
 	end
 

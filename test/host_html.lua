@@ -230,12 +230,27 @@ blocks = html.parse('<p>a <a href="/x">b</a> c <a href="/x">d</a></p>',
     { base = "https://e.com/" })
 is(blocks[1].n, 4, "but a link is a run, and the text after it another")
 
+is(flat(html.parse("<select><option>a</option><option>b</option>" ..
+    "</select><p>body</p>")), "para:body",
+    "the choices of a control nothing here can work are not content")
+
 is(flat(html.parse("<nav>menu</nav><p>body</p>")), "para:menu|para:body",
     "navigation is kept, being text like any other")
 is(flat(html.parse("<nav>menu</nav><p>body</p>", { nochrome = true })),
     "para:body", "unless a caller says it did not come for the chrome")
 is(flat(html.parse("<footer>small print</footer><p>b</p>",
     { nochrome = true })), "para:b", "which goes for the footer too")
+
+-- ---- the article, where a page says which part is it ----
+
+is(flat(html.parse("<p>chrome</p><main><p>real</p></main><p>after</p>",
+    { main = true })), "para:real",
+    "a page with a main element is that element, and nothing around it")
+is(flat(html.parse("<p>chrome</p><main><p>real</p></main>")),
+    "para:chrome|para:real",
+    "unless the caller did not ask, when it is all still there")
+is(flat(html.parse("<p>a</p><p>b</p>", { main = true })), "para:a|para:b",
+    "and a page with no main element is unchanged by asking")
 
 -- ---- fed in pieces ----
 

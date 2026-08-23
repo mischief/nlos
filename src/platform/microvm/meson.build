@@ -80,6 +80,7 @@ embed_files = [
   'bin/ls.lua',
   'bin/cat.lua',
   'bin/gemini.lua',
+  'bin/web.lua',
   'lib/console.lua',
   'lib/fbcons.lua',
   'task/cons.lua',

@@ -68,6 +68,7 @@ lua_payload = files(
   '../../../bin/rev.lua',
   '../../../bin/fetch.lua',
   '../../../bin/gemini.lua',
+  '../../../bin/web.lua',
   '../../../bin/reboot.lua',
   '../../../bin/top.lua',
   '../../../bin/xd.lua',
