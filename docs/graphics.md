@@ -190,3 +190,38 @@ host.
 Closing one costs a full redraw: nothing keeps a copy of what was
 underneath. Check that with a pixel count -- the frame after a dismiss
 should equal the frame from before the menu opened, exactly.
+
+## a scroll costs a window, not the page under it
+
+A viewer that keeps an index and folds a window on demand trades steady
+memory for allocation per scroll, and that trade goes bad quietly. The
+board ran out of memory scrolling a news page and took every other
+program's drawing down with it: `font.render: no room for 6912 bytes`
+in the console and in the tray, not in the program at fault.
+
+Two habits cause it. Splitting text into words allocates a string per
+word, thrown away immediately. Building a line by concatenating onto
+the end of it allocates every prefix of that line on the way. Both run
+once per block per scroll.
+
+Measure the garbage, not the peak:
+
+	collectgarbage()
+	collectgarbage("stop")
+	local before = collectgarbage("count") * 1024
+	for i = 1, 100 do view:lines(somewhere(i), rows) end
+	local per = (collectgarbage("count") * 1024 - before) / 100
+	collectgarbage("restart")
+
+Find the break by measuring and cut the line once: `utf8.len(s, i, j)`
+counts a byte range and allocates nothing, where `s:sub(1, n)` counts
+by making a copy. Hand the caller the prefix and the body apart, so a
+line nobody wanted is never joined.
+
+## ask the machine what it has
+
+A bound picked on a 512MB host is not a bound. `sys.stats()` reports
+memavail; take a fraction of it, and recompute before each piece of
+work rather than once at startup. A program that takes what it likes
+is every other program's problem -- the failure lands on whoever
+allocates next, which is rarely the one at fault.
