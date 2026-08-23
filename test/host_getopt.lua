@@ -107,5 +107,49 @@ for _, c in ipairs(OPERANDS) do
 	    " is " .. want .. " (got " .. optind .. ")")
 end
 
+-- ---- parse: the whole line at once ----
+--
+-- No luaposix equivalent to check against, so these are the properties
+-- the callers depend on, written out.
+local PARSE = {
+	{ "flags set", { "-l", "-a", "f" }, "la", { l = true, a = true }, 3 },
+	{ "clustered", { "-la", "f" }, "la", { l = true, a = true }, 2 },
+	{ "with argument", { "-n", "16", "f" }, "n:", { n = "16" }, 3 },
+	{ "attached argument", { "-n16", "f" }, "n:", { n = "16" }, 2 },
+	{ "no options", { "f" }, "la", {}, 1 },
+	{ "repeat keeps last", { "-n1", "-n2" }, "n:", { n = "2" }, 3 },
+	-- the case the iterator cannot report: "--" is consumed, and what
+	-- follows is an operand however it is spelled
+	{ "double dash", { "--", "-f" }, "f", {}, 2 },
+	{ "double dash alone", { "-f", "--", "-x" }, "f", { f = true }, 3 },
+	{ "lone dash is an operand", { "-" }, "f", {}, 1 },
+}
+
+for _, c in ipairs(PARSE) do
+	local name, argv, spec, wantflags, wantind = c[1], c[2], c[3], c[4], c[5]
+	local flags, optind = getopt.parse(argv, spec)
+	local same = flags ~= nil and optind == wantind
+
+	if same then
+		for k, v in pairs(wantflags) do
+			same = same and flags[k] == v
+		end
+		for k in pairs(flags) do
+			same = same and wantflags[k] ~= nil
+		end
+	end
+	is(same, "parse " .. name .. ": " .. table.concat(argv, " ") ..
+	    " (optind " .. tostring(optind) .. ", wanted " .. wantind .. ")")
+end
+
+local flags, err = getopt.parse({ "-x" }, "f")
+
+is(flags == nil and err == "unknown option -x", "parse rejects -x: " ..
+    tostring(err))
+
+flags, err = getopt.parse({ "-n" }, "n:")
+is(flags == nil and err == "option -n wants an argument",
+    "parse rejects a missing argument: " .. tostring(err))
+
 io.write("1.." .. count .. "\n")
 os.exit(failed == 0 and 0 or 1)

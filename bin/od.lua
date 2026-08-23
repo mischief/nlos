@@ -1,20 +1,20 @@
 -- SPDX-License-Identifier: ISC
+local getopt = require("getopt")
 
-local fmt = "o" -- default octal
-local files = {}
-for _, a in ipairs(arg) do
-	if a == "-x" then
-		fmt = "x"
-	elseif a == "-c" then
-		fmt = "c"
-	elseif a == "-o" then
-		fmt = "o"
-	elseif a == "-d" then
-		fmt = "d"
-	else
-		files[#files + 1] = a
+-- the format IS the option letter, and the last one given wins
+local fmt = "o"
+local optind = 1
+
+for opt, _, oi in getopt.opts(arg, "xcod") do
+	if opt == "?" then
+		io.stderr:write("usage: od [-xcod] [file]\n")
+		os.exit(2)
 	end
+	fmt = opt
+	optind = oi
 end
+
+local files = table.move(arg, optind, #arg, 1, {})
 
 local f = io.stdin
 

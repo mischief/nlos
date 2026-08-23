@@ -6,23 +6,19 @@
 -- here. Terminal detection does, under another name: prog.tty() is nil
 -- where isatty would be false.
 local prog = require("prog")
+local getopt = require("getopt")
 
 local N = prog.ns()
-local long, all = false, false
-local paths = {}
+local flags, optind = getopt.parse(arg, "la")
 
-for _, a in ipairs(arg) do
-	if a == "-l" then
-		long = true
-	elseif a == "-a" then
-		all = true
-	elseif a:sub(1, 1) == "-" then
-		io.stderr:write("ls: unknown option " .. a .. "\n")
-		os.exit(2)
-	else
-		paths[#paths + 1] = a
-	end
+if not flags then
+	io.stderr:write("ls: " .. optind .. "\n")
+	os.exit(2)
 end
+
+local long, all = flags.l, flags.a
+local paths = table.move(arg, optind, #arg, 1, {})
+
 if #paths == 0 then
 	paths[1] = prog.cwd()
 end
