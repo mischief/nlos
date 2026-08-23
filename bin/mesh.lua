@@ -3,7 +3,7 @@
 --	mesh status | nodes | announce
 --	mesh watch [SECONDS]
 --	mesh send TEXT
---	mesh tune PRESET [SLOT] [HOP]
+--	mesh tune PRESET [SLOT] [HOP] [talk]
 
 local sys = require("los.sys")
 local thread = require("los.thread")
@@ -104,8 +104,21 @@ elseif cmd == "announce" then
 	print(r and r.ok and "announced" or ("not announced: " ..
 	    tostring(r and r.err or "no answer")))
 elseif cmd == "tune" then
-	local r = ask({ op = "tune", preset = arg[2], slot = arg[3],
-	    hop = arg[4] }, 20)
+	-- tuning somewhere is for listening. Transmitting on a channel
+	-- that is not the configured one has to be asked for.
+	local talk = false
+	local rest = {}
+
+	for i = 3, #arg do
+		if arg[i] == "talk" then
+			talk = true
+		else
+			rest[#rest + 1] = arg[i]
+		end
+	end
+
+	local r = ask({ op = "tune", preset = arg[2], slot = rest[1],
+	    hop = rest[2], quiet = not talk }, 20)
 	local c = r and r.ok
 
 	if not c then

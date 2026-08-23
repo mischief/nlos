@@ -68,14 +68,13 @@ return {
 	-- the mesh, over the radio. Programs hold a right to this rather
 	-- than to the radio: keys, dedup and the node table are its, and
 	-- two clients driving one chip would be two nodes on one antenna.
-	-- A channel of our own, and not the public one. The name picks the
-	-- slot, so this sits about nine megahertz off the local network
-	-- rather than sharing its air: a beacon among a thousand strangers
-	-- is noise they did not ask for. `mesh tune MEDIUM_FAST` goes
-	-- across to listen, which costs them nothing.
+	-- The public channel, which is a real network with real people on
+	-- it: a nodeinfo every three hours is what their firmware does and
+	-- all this sends unasked. Naming a channel here picks a slot of
+	-- its own instead -- `channel = "luaos"` sits about nine megahertz
+	-- off -- and `mesh tune` visits without transmitting.
 	{ path = "/task/meshsrv.lua", caps = { "lora" }, capname = "mesh",
-	  args = { preset = "MEDIUM_FAST", region = "US", hop = 3,
-	    channel = "luaos" } },
+	  args = { preset = "MEDIUM_FAST", region = "US", hop = 3 } },
 
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
 	  optcaps = { "tcp", "ip", "dns", "power", "ble", "mesh" } },
