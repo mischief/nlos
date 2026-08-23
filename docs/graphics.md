@@ -160,3 +160,16 @@ picture identical to the pixel.
 
 `ps` gives every proc's live and peak bytes, so the question "where did
 it go" has an answer that does not need guessing.
+
+## a return does not end the program
+
+`thread.run()` returns when every thread has finished. A panel app
+spawns one to drain the pointer port, and that one is parked on a port
+forever -- so returning from the event loop leaves the proc up with
+nothing driving it. The window stays, the tray still counts it as
+running, and the key that was supposed to quit did nothing anyone can
+see.
+
+Quit with `os.exit(0)`, in the hangup case as well as the keystroke.
+The launcher is where to check: it marks an entry "(1 running)", which
+is the only place the difference shows.
