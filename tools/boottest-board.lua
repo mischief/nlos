@@ -79,8 +79,12 @@ local function trace(what, s)
 	end
 end
 
+-- Short, because this is the case where taking the line already reset
+-- the board: a boot reaches the banner in a few seconds or it was never
+-- coming, and waiting out a long timeout to learn that is most of what
+-- a test costs.
 local BANNER = "programs live in"
-local boot, up = panel:expect(BANNER, 20)
+local boot, up = panel:expect(BANNER, 7)
 
 trace("after open", boot)
 

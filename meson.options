@@ -107,3 +107,18 @@ option('esp32_port', type: 'string', value: '',
 # asks for anyway.
 option('sdl', type: 'feature', value: 'auto',
   description: 'hosted: a framebuffer window through SDL2')
+
+# The boot tests on real hardware, which is where the emulator cannot
+# go: it has no PSRAM, so a guest runs out during the third proc's
+# requires and anything that spawns belongs on a board.
+#
+# Named rather than implied by esp32_port, because a port says which
+# wire and not which machine: flashing a T-Deck image to a headless
+# board succeeds and then boot-loops. Empty means no such tests.
+#
+#     meson setup build -Desp32_test_board=freenove
+#     LUAOS_BOARD_TESTS=1 ESPPORT=/dev/ttyACM3 ninja -C build \
+#         esp32-freenove-flash
+#     ESPPORT=/dev/ttyACM3 meson test -C build --suite board
+option('esp32_test_board', type: 'string', value: '',
+  description: 'board whose flashed image the boot tests run on')
