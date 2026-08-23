@@ -611,12 +611,18 @@ luaopen_los_platform_hci(lua_State *L)
  * chip's every command is. lib/sx1262.lua is the chip.
  */
 
+/* a whole received packet comes back through here, so this holds the
+ * chip's buffer and the command bytes ahead of it rather than what a
+ * short command needs
+ */
+#define LORA_XFERMAX	260
+
 static int
 lora_xfer(lua_State *L)
 {
 	size_t n;
 	const char *tx = luabuf_check(L, 1, &n);
-	uint8_t rx[64];
+	uint8_t rx[LORA_XFERMAX];
 
 	if (n < 1 || n > sizeof rx)
 		return luaL_error(L, "lora.xfer: %d bytes", (int)n);

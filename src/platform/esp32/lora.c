@@ -33,6 +33,13 @@
 #define LORA_HZ		(8 * 1000 * 1000)
 #define BUSY_MS		20
 
+/* the spi hardware's own buffer, and what one transfer may be: the
+ * chip's data buffer is 256 bytes and a read of it is an opcode, an
+ * offset and a discarded byte on top.
+ */
+#define LORA_FIFO	64
+#define LORA_MAXXFER	260
+
 static spi_device_handle_t dev;
 static int probed, present;
 
@@ -58,21 +65,32 @@ waitbusy(void)
 int
 esp_lora_xfer(const uint8_t *tx, uint8_t *rx, int n)
 {
-	spi_transaction_t t = { 0 };
+	esp_err_t e = ESP_OK;
 
-	if (!dev || n <= 0 || n > 64)
+	if (!dev || n <= 0 || n > LORA_MAXXFER)
 		return -1;
 	if (waitbusy() != 0)
 		return -1;
 
-	t.length = n * 8;
-	t.tx_buffer = tx;
-	t.rx_buffer = rx;
-	t.rxlength = rx ? n * 8 : 0;
-
 	gpio_set_level(TDECK_RADIO_CS, 0);
 
-	esp_err_t e = spi_device_polling_transmit(dev, &t);
+	/* In pieces the hardware FIFO holds, with CS low across all of
+	 * them: the chip sees one transfer either way. Longer transactions
+	 * would go by DMA, which cannot reach the psram a lua string lives
+	 * in, and a whole received packet is longer.
+	 */
+	for (int off = 0; off < n && e == ESP_OK; off += LORA_FIFO) {
+		spi_transaction_t t = { 0 };
+		int m = n - off;
+
+		if (m > LORA_FIFO)
+			m = LORA_FIFO;
+		t.length = m * 8;
+		t.tx_buffer = tx + off;
+		t.rx_buffer = rx ? rx + off : NULL;
+		t.rxlength = rx ? m * 8 : 0;
+		e = spi_device_polling_transmit(dev, &t);
+	}
 
 	gpio_set_level(TDECK_RADIO_CS, 1);
 	return e == ESP_OK ? 0 : -1;
