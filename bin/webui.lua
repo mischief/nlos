@@ -62,19 +62,36 @@ local SEARCH = "https://lite.duckduckgo.com/lite/?q="
 -- takes every other program's drawing with it -- a font call that
 -- cannot allocate is how it shows -- so this is a bound on the machine
 -- and not merely on this program.
-local SHARE = 6
+local SHARE = 3
+
+-- chunkavail, not memavail: the lua heap is carved from a pool that on
+-- a board with psram is not the memory memavail reports. A T-Deck
+-- browsing has 39K of the one and 842K of the other, and a page
+-- budgeted against the first is a paragraph.
+local function freeroom(st)
+	if st.chunkavail and st.chunkavail > 0 then
+		return st.chunkavail
+	end
+	return st.memavail
+end
 
 local function pagelimit()
 	local ok, st = pcall(sys.stats)
 
-	if not ok or type(st) ~= "table" or not st.memavail then
+	if not ok or type(st) ~= "table" then
 		return nil
 	end
 
-	local n = st.memavail // (SHARE * html.BLOCKCOST)
+	local free = freeroom(st)
 
-	if n < 60 then
-		n = 60
+	if not free or free <= 0 then
+		return nil
+	end
+
+	local n = free // (SHARE * html.BLOCKCOST)
+
+	if n < 120 then
+		n = 120
 	end
 	if n > html.MAXBLOCKS then
 		n = html.MAXBLOCKS
@@ -107,6 +124,7 @@ local top = 1
 local history = {}
 local typing, typed, prompt = nil, "", ""
 local article = true
+local lastlimit = nil
 local note = ""
 local busy = false
 local visible = true
@@ -297,7 +315,11 @@ local function show(u, blocks, info, keep)
 
 	local n = page.L:nlinks()
 
-	say((info and info.truncated and "(part) " or "")
+	-- what stopped it, and at what: "(part)" alone left nobody able to
+	-- tell a bound doing its job from a page that is simply short
+	local cut = info and info.truncated
+
+	say((cut and ("(part: %s at %d) "):format(cut, lastlimit or 0) or "")
 	    .. (n > 0 and (n .. " links, a digit names one") or "read"))
 	draw(true)
 	-- what the parse threw off is a page's worth of garbage, and the
@@ -342,13 +364,15 @@ local function go(u, keep)
 	-- this size, a menu of somewhere else is not what was asked for
 	local wantmain = article
 
+	lastlimit = pagelimit()
+
 	-- in a thread of its own, so the panel still scrolls and still
 	-- answers a key while a slow server thinks about it
 	thread.spawn(function()
 		local res, err = web.fetch(net, dns, u, {
 			rand = rand,
 			main = wantmain,
-			maxblocks = pagelimit(),
+			maxblocks = lastlimit,
 			onredirect = function(_, to)
 				say("-> " .. tail(to, COLS - 4))
 			end,
