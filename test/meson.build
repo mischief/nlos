@@ -6,6 +6,86 @@
 # hosted has no firmware, no NIC and no framebuffer, and says so by
 # leaving those out rather than by failing them.
 
+# ---- and on a board, which is the same payloads again ----
+#
+# A test is named for what it tests, not for what runs it, so nothing
+# here is renamed for the board: -Desp32_test_board points the same
+# names at real hardware instead of at a boot under qemu. Which
+# machine a build dir tests is a property of the build dir, the way
+# build and build-hosted already are.
+#
+#     meson setup build -Desp32_test_board=freenove
+#     LUAOS_BOARD_TESTS=1 ESPPORT=/dev/ttyACM3 ninja -C build \
+#         esp32-freenove-flash
+#     ESPPORT=/dev/ttyACM3 meson test -C build --suite board
+#
+# The tests ride the luafs volume rather than being sent one at a
+# time, so a run is one flash and then nothing but resets.
+esp32_test_board = get_option('esp32_test_board')
+on_board = esp32_test_board != '' and get_option('esp32_idf') != ''
+
+if on_board and not have_hostutil
+  error('esp32_test_board needs the host lua: the harness opens the ' +
+        'serial port through hostutil')
+endif
+
+board_harness = files('../tools/boottest-board.lua')
+board_env = {
+  'HOSTUTIL_SO': meson.project_build_root() / 'hostutil.so',
+  'LUAOS_ESPPORT': get_option('esp32_port'),
+}
+
+# Why a payload does not run on a board. The answer is the same every
+# run, so it is settled here rather than by spending fifteen seconds
+# finding it out -- tap.skip() is for the other half, where only the
+# guest can know.
+#
+# Most of these ask for something only proc 0 has, and a program
+# launched from a shell is not proc 0. That is a property of how this
+# harness runs them rather than of the board.
+board_skip = {
+  'torture': 'torture forces a yield at every opportunity, which on a ' +
+    'chip whose round trip is already a millisecond is not a test',
+  'sync': 'uses set_torture, as above',
+  'generator': 'uses set_torture, as above',
+  'mntconc': 'uses set_torture, as above',
+
+  # what the kernel grants proc 0 and nobody else
+  'sched': 'asserts the sched grant',
+  'dbgcap': 'asserts the dbg grant',
+  'drivers': 'asserts the whole grant table',
+  'escape': 'asserts what proc 0 may send to',
+  'efigefs': 'asserts the blk grant',
+  'readonly': 'wants the esp capability to reach the real thing',
+
+  # modules the kernel registers by capability, so a program has none
+  'ns': 'los.fs',
+  'nsio': 'los.fs',
+  'layout': 'los.fs',
+  'readdir': 'los.fs',
+  'dev': 'los.fs',
+  'prog': 'los.fs',
+  'procfs': 'los.fs',
+  'version': 'los.fs',
+  'rng': 'los.platform.rng',
+  'sshcrypto': 'los.platform.rng',
+  'mlkem': 'los.platform.rng',
+  'tls': 'los.platform.rng',
+
+  # this board has no screen, which is why it is the one to test on:
+  # nothing else is holding the memory
+  'fb': 'a headless board has no framebuffer',
+  'fbproxy': 'no framebuffer',
+  'fbwin': 'no framebuffer',
+  'fbprog': 'no framebuffer',
+  'fbcons': 'no framebuffer',
+  'dio': 'no framebuffer',
+
+  'oom': 'fills the heap, and a board has no second machine to say so from',
+  'reboot': 'resets the machine out from under the harness',
+  'netboot': 'wants a machine booted over the wire',
+}
+
 if platform == 'hosted'
 # ---- tests ----
 # the payload runs as proc 0 of a process, so these cost milliseconds
@@ -176,13 +256,29 @@ boot_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc', 'recove
               'clock', 'log', 'utils', 'dbg', 'dbgstop', 'dbgbreak', 'dbgstep',
               'dbgread', 'dbgcap', 'dbglib', 'dbghole', 'secp256k1', 'nostr']
 foreach t : boot_tests
-  test('boot-' + t, boottest,
-    args: [luaos_img, files('boot/test_' + t + '.lua')],
-    protocol: 'tap',
-    timeout: 60,
-    is_parallel: true,
-    env: archenv,
-  )
+  # the same name either way: what changes is which machine answers.
+  # Serial on a board, because there is one wire and two of these at
+  # once fight over it.
+  if on_board
+    if not board_skip.has_key(t)
+      test('boot-' + t, lua_interp,
+        args: [board_harness, files('boot/test_' + t + '.lua')],
+        protocol: 'tap',
+        timeout: 120,
+        is_parallel: false,
+        suite: 'board',
+        env: board_env,
+      )
+    endif
+  else
+    test('boot-' + t, boottest,
+      args: [luaos_img, files('boot/test_' + t + '.lua')],
+      protocol: 'tap',
+      timeout: 60,
+      is_parallel: true,
+      env: archenv,
+    )
+  endif
 endforeach
 
 foreach t : shared_tests
@@ -923,80 +1019,3 @@ test('p9serve-host', lua_interp,
   env: gefs_host_env,
   depends: gefs_host_deps,
 )
-
-# ---- the boot tests on a real board ----
-#
-# What the emulator cannot reach: it has no PSRAM, so anything that
-# spawns runs out of room there. A board has 8MB of it.
-#
-# The tests ride the luafs volume rather than being sent one at a time,
-# so a run is one flash and then nothing but resets:
-#
-#     LUAOS_BOARD_TESTS=1 ESPPORT=/dev/ttyACM3 ninja -C build \
-#         esp32-freenove-flash
-#     ESPPORT=/dev/ttyACM3 meson test -C build --suite board
-#
-# Serial, because there is one wire: two of these at once fight over
-# the port, so is_parallel is false and means it.
-esp32_test_board = get_option('esp32_test_board')
-
-if esp32_test_board != '' and get_option('esp32_idf') != ''
-  if not have_hostutil
-    error('esp32_test_board needs the host lua: the harness opens the ' +
-          'serial port through hostutil')
-  endif
-
-  # Why a test does not run on a board. The answer is the same every
-  # run, so it is decided here rather than by spending four seconds
-  # finding it out -- tap.skip() is for the other half, where only the
-  # guest can know.
-  #
-  # Most of these ask for something only proc 0 has, and a program
-  # launched from a shell is not proc 0. That is a property of how this
-  # harness runs them rather than of the board.
-  board_skip = {
-    'torture': 'torture forces a yield at every opportunity, which on a ' +
-      'chip whose round trip is already a millisecond is not a test',
-    'sync': 'uses set_torture, as above',
-    'generator': 'uses set_torture, as above',
-    'mntconc': 'uses set_torture, as above',
-    'sched': 'asserts the sched grant, which the kernel gives proc 0',
-    'ns': 'los.fs is registered by capability, and a program holds none',
-    'layout': 'los.fs, as above',
-    'rng': 'los.platform.rng, as above',
-    'oom': 'fills the heap, and a board has no second machine to say so from',
-    'reboot': 'resets the machine out from under the harness',
-    'netboot': 'wants a machine booted over the wire',
-  }
-
-  # Whichever list this configuration defined. The esp32 targets are
-  # registered whatever -Dplatform is, but the test names live in the
-  # branch for the platform being built, and the two lists are the same
-  # payloads under different harnesses.
-  if is_variable('boot_tests')
-    board_names = boot_tests
-  elif is_variable('hosted_tests')
-    board_names = hosted_tests
-  else
-    board_names = []
-  endif
-
-  board_harness = files('../tools/boottest-board.lua')
-  board_env = {
-    'HOSTUTIL_SO': meson.project_build_root() / 'hostutil.so',
-    'LUAOS_ESPPORT': get_option('esp32_port'),
-  }
-
-  foreach t : board_names
-    if not board_skip.has_key(t)
-      test('board-' + t, lua_interp,
-        args: [board_harness, files('boot/test_' + t + '.lua')],
-        protocol: 'tap',
-        timeout: 120,
-        is_parallel: false,
-        suite: 'board',
-        env: board_env,
-      )
-    endif
-  endforeach
-endif
