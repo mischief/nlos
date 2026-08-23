@@ -13,17 +13,16 @@
 -- are numbered, so a page reads and a link can be named. -r turns that
 -- off, which is what anything not text wants.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local gemini = require("gemini")
 
 local function die(s)
-	unistd.write(2, "gemini: " .. s .. "\n")
+	io.stderr:write("gemini: " .. s .. "\n")
 	os.exit(1)
 end
 
 local function usage()
-	unistd.write(2, "usage: gemini [-ir] [-w cols] url\n")
+	io.stderr:write("usage: gemini [-ir] [-w cols] url\n")
 	os.exit(2)
 end
 
@@ -69,10 +68,10 @@ local opts = {
 	-- the key is printed, not checked: nothing on this machine
 	-- remembers one yet, so first use is every use.
 	onkey = function(h, fp)
-		unistd.write(2, ("gemini: %s is %s\n"):format(h, fp))
+		io.stderr:write(("gemini: %s is %s\n"):format(h, fp))
 	end,
 	onredirect = function(from, to, status)
-		unistd.write(2, ("gemini: %d %s -> %s\n"):format(status,
+		io.stderr:write(("gemini: %d %s -> %s\n"):format(status,
 		    from, to))
 	end,
 }
@@ -86,7 +85,7 @@ end
 -- -r streams, which is what a caller piping bytes somewhere asked for.
 if raw then
 	opts.sink = function(part)
-		unistd.write(1, part)
+		io.write(part)
 		return true
 	end
 end
@@ -97,7 +96,7 @@ if not res then
 	die(tostring(err))
 end
 if showhead then
-	unistd.write(1, ("%d %s\n"):format(res.status, res.meta))
+	io.write(("%d %s\n"):format(res.status, res.meta))
 end
 
 local class = gemini.class(res.status)
@@ -106,9 +105,9 @@ local class = gemini.class(res.status)
 -- query. Said rather than asked: stdin here may be a pipe, and a
 -- prompt read from one would be whatever the pipe held.
 if class == gemini.INPUT then
-	unistd.write(2, ("gemini: %s\n"):format(res.meta ~= "" and res.meta
+	io.stderr:write(("gemini: %s\n"):format(res.meta ~= "" and res.meta
 	    or "input wanted"))
-	unistd.write(2, ("gemini: answer with %s?your+answer\n"):format(
+	io.stderr:write(("gemini: answer with %s?your+answer\n"):format(
 	    res.url))
 	os.exit(1)
 end
@@ -122,7 +121,7 @@ end
 local body = res:take()
 
 if not gemini.isgemtext(res.meta) then
-	unistd.write(1, body)
+	io.write(body)
 	os.exit(0)
 end
 
@@ -132,8 +131,8 @@ local out = {}
 for n = 1, #lines do
 	out[n] = lines[n].text
 end
-unistd.write(1, table.concat(out, "\n"))
-unistd.write(1, "\n")
+io.write(table.concat(out, "\n"))
+io.write("\n")
 
 -- the links, after the page: a number in the text is only useful if
 -- what it stands for can be read, and a url in the middle of a
@@ -146,9 +145,9 @@ for _, l in ipairs(lines) do
 	end
 end
 if links[1] then
-	unistd.write(1, "\n")
+	io.write("\n")
 	for n = 1, #links do
-		unistd.write(1, ("[%d] %s\n"):format(n,
+		io.write(("[%d] %s\n"):format(n,
 		    gemini.resolve(res.url, links[n])))
 	end
 end

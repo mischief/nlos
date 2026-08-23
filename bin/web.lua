@@ -15,18 +15,17 @@
 -- parsed as it arrives, and printed a window at a time out of an
 -- index. A long article costs what its text costs.
 
-local unistd = require("posix.unistd")
 local prog = require("prog")
 local web = require("web")
 local doc = require("doc")
 
 local function die(s)
-	unistd.write(2, "web: " .. s .. "\n")
+	io.stderr:write("web: " .. s .. "\n")
 	os.exit(1)
 end
 
 local function usage()
-	unistd.write(2, "usage: web [-icm] [-w cols] url\n")
+	io.stderr:write("usage: web [-icm] [-w cols] url\n")
 	os.exit(2)
 end
 
@@ -77,10 +76,10 @@ local opts = {
 	-- the key is printed, not checked: nothing here remembers one
 	-- yet, so first use is every use
 	onkey = function(h, fp)
-		unistd.write(2, ("web: %s is %s\n"):format(h, fp))
+		io.stderr:write(("web: %s is %s\n"):format(h, fp))
 	end,
 	onredirect = function(from, to, status)
-		unistd.write(2, ("web: %d %s -> %s\n"):format(status, from,
+		io.stderr:write(("web: %d %s -> %s\n"):format(status, from,
 		    to))
 	end,
 }
@@ -91,7 +90,7 @@ if not res then
 	die(tostring(err))
 end
 if showhead then
-	unistd.write(1, ("%d %s\n"):format(res.status,
+	io.write(("%d %s\n"):format(res.status,
 	    res.headers["content-type"] or ""))
 end
 if res.status >= 400 then
@@ -101,7 +100,7 @@ if not res.blocks then
 	die("not text: " .. web.mime(res.headers))
 end
 if res.info.title then
-	unistd.write(1, res.info.title .. "\n\n")
+	io.write(res.info.title .. "\n\n")
 end
 
 local L = doc.layout(res.blocks, cols)
@@ -143,8 +142,8 @@ while at <= L.nlines do
 	for n, l in ipairs(lines) do
 		out[n] = mark(l)
 	end
-	unistd.write(1, table.concat(out, "\n"))
-	unistd.write(1, "\n")
+	io.write(table.concat(out, "\n"))
+	io.write("\n")
 	at = at + #lines
 end
 
@@ -156,12 +155,12 @@ if nlinks > 0 then
 	for u, k in pairs(nos) do
 		by[k] = u
 	end
-	unistd.write(1, "\n")
+	io.write("\n")
 	for k = 1, nlinks do
-		unistd.write(1, ("[%d] %s\n"):format(k, by[k]))
+		io.write(("[%d] %s\n"):format(k, by[k]))
 	end
 end
 if res.truncated then
-	unistd.write(2, ("web: stopped at the %s bound; the page is longer\n")
+	io.stderr:write(("web: stopped at the %s bound; the page is longer\n")
 	    :format(res.truncated))
 end
