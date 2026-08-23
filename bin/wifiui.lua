@@ -25,9 +25,9 @@ if not fb then
 	io.stderr:write("wifiui: no framebuffer on this machine\n")
 	os.exit(1)
 end
-local W = N and require("wifi").new(N)
+local wifi = N and require("wifi").new(N)
 
-if not W then
+if not wifi then
 	io.stderr:write("wifiui: no /net/wifi in this namespace\n")
 	os.exit(1)
 end
@@ -102,13 +102,13 @@ end
 -- saved" rather than walking a list.
 
 local function status()
-	return W:status()
+	return wifi:status()
 end
 
 local function known()
 	local out = {}
 
-	for _, n in ipairs(W:known()) do
+	for _, n in ipairs(wifi:known()) do
 		out[n.ssid] = true
 	end
 	return out
@@ -340,7 +340,7 @@ local function activate()
 	msg = "joining " .. ap.ssid
 	paint()
 
-	local ok, err = W:join(ap.ssid, psk)
+	local ok, err = wifi:join(ap.ssid, psk)
 
 	if not ok then
 		msg = "join: " .. tostring(err)
@@ -371,7 +371,7 @@ local function rescan()
 	msg = "scanning..."
 	paintmsg()
 	fb.sync()
-	local found, why = W:scan()
+	local found, why = wifi:scan()
 
 	aps, sel, top = found or {}, 1, 1
 	saved = known()
@@ -393,7 +393,7 @@ local function onkey(k)
 		local ap = aps[sel]
 
 		if ap and saved[ap.ssid] then
-			W:forget(ap.ssid)
+			wifi:forget(ap.ssid)
 			saved = known()
 			msg = "forgot " .. ap.ssid
 			paintrow(sel)
