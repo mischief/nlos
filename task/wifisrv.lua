@@ -393,6 +393,7 @@ thread.spawn(function()
 
 	local complained = false
 	local waiting = 0
+	local shun = nil
 
 	while true do
 		local up, st = joined()
@@ -418,6 +419,7 @@ thread.spawn(function()
 			sys.log("wifi: %s has not settled, starting over",
 			    st.ssid or "")
 			ask({ how = "disconnect" })
+			shun = st.ssid
 		end
 		waiting = 0
 
@@ -427,6 +429,17 @@ thread.spawn(function()
 			if #list == 0 then
 				thread.sleep(IDLE)
 				goto continue
+			end
+
+			-- Whatever was tried last and did not join. Preference
+			-- decides between networks that work, not between one
+			-- that does and one that does not, and picking the
+			-- favourite every pass makes the rest of the list
+			-- unreachable. Dropped for one round only: a refusal
+			-- is as often the access point's end as ours.
+			if shun then
+				list = wificfg.forget(list, shun)
+				shun = nil
 			end
 
 			-- whatever the last scan saw, its own or a reader's.
@@ -450,6 +463,7 @@ thread.spawn(function()
 
 			sys.log("wifi: joining %s at %d dBm", pick.ssid, rssi)
 			complained = false
+			shun = pick.ssid
 			ask({ how = "connect", ssid = pick.ssid,
 			    psk = pick.psk })
 			thread.sleep(RETRY)
