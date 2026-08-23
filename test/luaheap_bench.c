@@ -187,6 +187,55 @@ static const char WORKLOAD[] =
 "collectgarbage()\n"
 "return #acc + sum + parts\n";
 
+/* What comes back when a program drops something large, which a peak
+ * figure cannot say. A chunk returns only when every block in it is
+ * free, so the survivors allocated among the dropped thing decide how
+ * much does -- and one survivor costs a whole chunk. Reported rather
+ * than asserted: this is the measurement a chunk size is chosen by.
+ */
+static const char DROP[] =
+"page, kept = {}, {}\n"
+"for i = 1, 4000 do\n"
+"  page[i] = { n = i, s = ('word '):rep(6) .. i }\n"
+"  if i %% %d == 0 then kept[#kept + 1] = { at = i } end\n"
+"end\n"
+"page = nil\n";
+
+static size_t
+reclaimed(int keep)
+{
+	struct luaheap *h = luaheap_new(&host_ops, 0);
+	lua_State *L = h ? lua_newstate(heap_lua_alloc, h) : 0;
+	struct luaheap_stats st;
+	char prog[512];
+
+	if (!L) {
+		return 0;
+	}
+	luaL_openlibs(L);
+	snprintf(prog, sizeof prog, DROP, keep);
+	if (luaL_dostring(L, prog) != LUA_OK) {
+		lua_close(L);
+		luaheap_destroy(h);
+		return 0;
+	}
+	lua_gc(L, LUA_GCCOLLECT);
+	lua_gc(L, LUA_GCCOLLECT);
+	luaheap_stats(h, &st);
+
+	size_t before = st.mapped;
+	size_t got = luaheap_reclaim(h);
+
+	luaheap_stats(h, &st);
+	diag("  a survivor every %3d blocks: %zu of %zu back (%.0f%%), "
+	    "%zu bytes a chunk", keep, got, before,
+	    before ? 100.0 * (double)got / (double)before : 0.0,
+	    st.chunks ? st.mapped / st.chunks : 0);
+	lua_close(L);
+	luaheap_destroy(h);
+	return got;
+}
+
 static int
 run(lua_State *L)
 {
@@ -200,7 +249,7 @@ run(lua_State *L)
 int
 main(void)
 {
-	printf("1..5\n");
+	printf("1..6\n");
 
 	/* ---- through luaheap ---- */
 	struct luaheap *h = luaheap_new(&host_ops, 0);
@@ -306,6 +355,22 @@ main(void)
 
 	ok(st.mapped < now_bytes,
 	    "luaheap holds less memory than the current scheme");
+
+	diag("");
+	diag("what a dropped page hands back, at this build's chunk size:");
+
+	static const int keeps[] = { 5, 20, 100 };
+	size_t back[3];
+
+	for (int i = 0; i < 3; i++) {
+		back[i] = reclaimed(keeps[i]);
+	}
+
+	/* the sparse case only: dense survivors legitimately hand back
+	 * nothing at a large chunk size, which is the finding rather than
+	 * a fault
+	 */
+	ok(back[2] > 0, "a page dropped among sparse survivors frees chunks");
 
 	lua_close(A);
 	lua_close(B);

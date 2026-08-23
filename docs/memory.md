@@ -33,6 +33,9 @@ loadfile buffer.
 
 ## reading the stats line
 
+`stats` at the prompt, or the bare word in the repl. The shape of it,
+with one board's figures standing in for whatever yours says:
+
 	procs=22 ports=86 heap=5614K lua=3174K/4720K (1.49x)
 	mem=39K/276K free max=38K chunks=2802K/8180K free max=2752K buf=278K
 
@@ -47,10 +50,10 @@ Three traps in that line:
 - `buf=` is in neither `lua=` nor the per-proc figures. A machine short
   of memory with a healthy `lua=` is usually holding images.
 - **`mem=` is not where a lua object goes on a board with PSRAM.** It
-  is internal sram: a T-Deck browsing shows 39K free there and 800K in
-  `chunks=`. Budget against `chunkavail`, never `memavail`. The
-  `chunks=` field appears only where the two pools differ, which is
-  what says a platform has this trap at all.
+  is internal sram, and a browsing T-Deck can show tens of K free there
+  while `chunks=` has hundreds. Budget against `chunkavail`, never
+  `memavail`. The `chunks=` field appears only where the two pools
+  differ, which is what says a platform has this trap at all.
 
 `max` is the largest single free run. Free bytes scattered below what a
 chunk costs buy nothing, and a `font.render` that cannot allocate is
@@ -82,25 +85,46 @@ chunks that nothing is using.
 
 ## what things cost
 
-	a proc, before it does anything     ~500K
-	a block of a parsed page            ~650 bytes, whatever it holds
-	a run as two array slots            ~32 bytes
-	a run as a table of its own         ~120 bytes before its text
-	a gmatch state                      608 bytes at 64-bit, 308 at 32
-	Proto, machine-wide                 about 44% of everything live
+Figures move, so ask rather than quote. What to ask, and of what:
+
+	a proc, before it does anything    ps, on a fresh boot
+	the machine, by object type        sys.heapstat()
+	one page of a reader               bin/web.lua's own proc in ps
+	where the allocator's waste is     meson test luaheap-bench
+	what a dropped page hands back     the same, its last section
+	garbage per operation              the recipe above
+
+Two costs are structural rather than measured, and will hold as long as
+the code does:
+
+- A run in `lib/doc.lua` is two array slots. As a table of its own it
+  would be a table header, a hash part and a pointer as well, which is
+  what `M.run`'s comment is about.
+- A `gmatch` state is one allocation per call, sized by
+  `LUA_MAXCAPTURES` and the pointer width -- `sizeof(GMatchState)` in
+  `lua/lstrlib.c`, whose `MatchState` carries `capture[LUA_MAXCAPTURES]`.
+  `coreg.h` sets that constant, and `lib/html.lua`'s `M.attrs` has the
+  comment on why it matters.
+
+`lib/html.lua`'s `M.BLOCKCOST` is what a block of a parsed page costs.
+It is a constant a caller budgets with, so it is in the code with the
+bound it feeds; check it against `ps` if a page ever costs more than
+it says.
 
 ## the rules
 
 **Ask for memory back.** A chunk returns to the pool only when every
-block in it is free, and nothing looks for that on its own: the heap
-keeps its high water mark until a proc exits or an allocation has
-already failed. A program that drops something large should call
-`sys.reclaim()` after collecting. On a dropped page that is 500K.
+block in it is free, and nothing looks for that on its own:
+`luaheap_reclaim` runs when a proc exits or when an allocation has
+already failed, and nowhere else. A program that drops something large
+should call `sys.reclaim()` after collecting. `bin/webui.lua` does it
+where it replaces a page.
 
-**One survivor holds a whole chunk**, which is why esp32 uses 2K
-chunks: with a survivor every twenty blocks, 2K gives back 65% of a
-dropped page and 8K gives 13%. Other platforms are still at 8K, chosen
-against a different cost -- see below.
+**One survivor holds a whole chunk.** That is why `LUAHEAP_CHUNK` is
+smaller on esp32 than elsewhere: dense survivors hand back nothing at a
+large chunk size. `luaheap-bench` reports the figure for whatever size
+a build uses, at three survivor densities, and that report is what a
+chunk size should be chosen by.
 
 **Bound the work, not the result.** A page, a message or a file from
 anywhere is unbounded input. Take a fraction of what is free, ask for
@@ -114,41 +138,61 @@ pointer. It is the difference between a page that fits and one that
 does not.
 
 **`gmatch` allocates a fixed-size state per call**, sized by
-`LUA_MAXCAPTURES` rather than by the pattern. Three of them per tag was
-a third of everything parsing a page allocated. `find` keeps its state
-on the C stack; prefer it in a loop over anything hot.
+`LUA_MAXCAPTURES` rather than by the pattern, and large enough that a
+few per item dominate what a parser allocates at all. `find` keeps its
+state on the C stack. `M.attrs` in `lib/html.lua` and `M.dotseg` in
+`lib/url.lua` are what one looks like rewritten.
 
 **Precompute what is expensive, not what is repeated.** See
 [graphics.md](graphics.md), which has the panel side of all of this.
 
 ## measured, and left alone
 
-**Size classes.** Rounding is 3.4% of live on a 64-bit host and 5.6% on
-the board. The waste is free space inside chunks, which only a reclaim
-or a compacting collector recovers. Retuning the classes wins little;
-the sizes that round badly are 12 and 44 bytes, and neither can be
-helped at 8-byte alignment.
+**Size classes.** `luaheap-bench` breaks the waste into rounding,
+headers and space inside chunks, and prints the request profile the
+classes were chosen from. Rounding is the small term; the space inside
+chunks is the large one, and only a reclaim or a compacting collector
+recovers that. Before retuning, read that report: the sizes that round
+badly round badly because they are not multiples of `ALIGN`, and no
+class can help them.
 
 **Chunk size, for its own sake.** Peak `mapped/live` barely moves
-across 1K to 64K -- 1.23 to 1.26. Release granularity is the reason to
-choose one, not overhead.
+across a sweep from 1K to 64K. Release granularity is the reason to
+choose a size, not overhead -- which is what the bench's last section
+measures.
 
-**Chunk size on the other platforms.** esp32 is 2K for the reason
-above; efi, microvm, hosted and wasm are all 8K, and that number was
-chosen against the chunk source's own per-call cost -- 92 bytes per
-`AllocatePool`, measured on efi -- rather than against how much comes
-back when a page is dropped. Whether release granularity is worth more
-than that per-call cost on those platforms is **not measured**. The
-same goes for their `platform_chunk_alloc`: only esp32's is
-characterised here, and a machine with room to spare may not care.
+**Chunk size on the other platforms.** `LUAHEAP_CHUNK` is set per
+platform in `src/platform/*/param.h`, and each comment says what its
+number was chosen against. esp32's is release granularity, for the
+reason above. The rest were chosen against the chunk source's own
+per-call cost -- `AllocatePool`'s, measured and recorded in
+`luaheap.c` -- from before anything asked what a dropped page hands
+back. Whether release granularity is worth more than that per-call
+cost there is **not measured**, and neither is their
+`platform_chunk_alloc`: only esp32's is characterised here. A machine
+with room to spare may not care.
 
-**`LUA_32BITS`.** Halves `TValue` on a 32-bit target and would put
-float math on the S3's FPU. Measured on the board: 9% less live lua,
-15-19% faster integer and table work, 46% faster float. Not adopted:
-`lua_Integer` becomes 32-bit, and 96 `pack`/`unpack` sites use 8-byte
-fields -- 9P's qid and file lengths, protobuf varints, gefs block
-numbers. `lib/crypto/bignum.lua` multiplies 32-bit limbs into 64-bit
-products, which would overflow **silently**. The float half alone is
-worth 33-41% with none of that risk, but `luaconf.h` defines the
-number types unconditionally, so neither can be set without patching
-the submodule.
+**`LUA_32BITS`.** Halves `TValue` on a 32-bit target, and makes
+`lua_Number` a `float`, which an S3 has an FPU for and a `double` it
+does not. Measured on a T-Deck: less live lua, and faster at integers,
+tables and floats alike, the floats by much the most. Reproduce by
+setting it in `lua/luaconf.h`, flashing, and reading `stats` on a
+fresh boot beside the arithmetic loops it is worth timing.
+
+Not adopted, for two reasons that are properties of the code rather
+than figures:
+
+- `lua_Integer` becomes 32-bit, and the protocols here carry 8-byte
+  fields: 9P's qid and file length in `lib/ninep.lua`, protobuf
+  varints, gefs block numbers. `string.unpack` on `I8` raises where it
+  does not fit. Count them with
+  `grep -rn 'I8' lib task bin --include=*.lua`.
+- `lib/crypto/bignum.lua` multiplies 32-bit limbs into 64-bit
+  products, which would overflow **silently**. Its own comment names
+  the assumption. Smaller limbs would fix it, at roughly four times the
+  multiplies.
+
+The float half alone carries none of that risk and most of the speed,
+but `lua/luaconf.h` defines the number types unconditionally -- unlike
+the knobs it does guard with `#if !defined` -- so a `-D` cannot reach
+them and adopting either means patching the submodule.
