@@ -11,6 +11,7 @@
 -- file at the new name and the whole one at the old.
 
 local prog = require("prog")
+local getopt = require("getopt")
 
 local N = assert(prog.ns(), "mv: no namespace")
 
@@ -24,17 +25,15 @@ local function usage()
 	os.exit(2)
 end
 
-local args = {}
+-- no options of its own, but "--" so a name that starts with a dash
+-- can still be moved
+local flags, optind = getopt.parse(arg, "")
 
-for _, a in ipairs(arg) do
-	if a == "--" then
-		args = args
-	elseif a:sub(1, 1) == "-" and #a > 1 then
-		usage()
-	else
-		args[#args + 1] = a
-	end
+if not flags then
+	usage()
 end
+
+local args = table.move(arg, optind, #arg, 1, {})
 
 if #args < 2 then
 	usage()

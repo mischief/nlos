@@ -8,6 +8,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local prog = require("prog")
+local getopt = require("getopt")
 local audio = require("audio")
 local wav = require("wav")
 local adpcm = require("adpcm")
@@ -23,17 +24,16 @@ end
 
 local rate, path
 
-local i = 1
+local flags, optind = getopt.parse(arg, "r:")
 
-while i <= #arg do
-	if arg[i] == "-r" then
-		i = i + 1
-		rate = tonumber(arg[i]) or die("-r wants a rate")
-	else
-		path = arg[i]
-	end
-	i = i + 1
+if not flags then
+	die(optind)
 end
+if flags.r then
+	rate = tonumber(flags.r) or die("-r wants a rate")
+end
+
+path = arg[optind]
 
 if not path then
 	die("usage: play [-r rate] FILE")

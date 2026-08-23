@@ -14,31 +14,28 @@
 -- because a sector of zeroes is one fact and 32 identical lines of it
 -- are the same fact 32 times.
 
+local getopt = require("getopt")
+
 local function die(s)
 	io.stderr:write("xd: " .. s .. "\n")
 	os.exit(1)
 end
 
 local limit			-- nil is "all of it"
-local paths = {}
-local i = 1
 
-while arg[i] do
-	local a = arg[i]
+local flags, optind = getopt.parse(arg, "n:")
 
-	if a == "-n" then
-		limit = tonumber(arg[i + 1])
-		if not limit or limit < 0 then
-			die("usage: xd [-n bytes] [file...]")
-		end
-		i = i + 2
-	elseif a:sub(1, 1) == "-" and #a > 1 then
+if not flags then
+	die("usage: xd [-n bytes] [file...]")
+end
+if flags.n then
+	limit = tonumber(flags.n)
+	if not limit or limit < 0 then
 		die("usage: xd [-n bytes] [file...]")
-	else
-		paths[#paths + 1] = a
-		i = i + 1
 	end
 end
+
+local paths = table.move(arg, optind, #arg, 1, {})
 
 -- one line of sixteen. The two halves are built together so a short
 -- last line still lines its text up under the column it belongs to.

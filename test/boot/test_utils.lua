@@ -10,7 +10,7 @@ local tap = require("tap")
 
 local caps_of = sys.granted()
 
-tap.plan(36)
+tap.plan(51)
 
 local N = ns.new()
 
@@ -162,5 +162,53 @@ assert(N:writefile("/p.diff", out))
 out, status = run("patch -i /p.diff")
 tap.is(status, 0, "patch applied the hunk: " .. out:gsub("\n", ""))
 tap.is(N:readfile("/p1.txt"), "a\nB\nc\n", "and the file now matches p2")
+
+-- ---- what getopt bought the programs that had hand-rolled loops ----
+--
+-- Clustering, attached arguments and "--" now work everywhere rather
+-- than in whichever programs spelled them out.
+
+tap.is(run("ls -la /"), run("ls -l -a /"),
+    "ls -la is ls -l -a")
+tap.is(run("sort -rn /u1.txt"), run("sort -r -n /u1.txt"),
+    "sort -rn is sort -r -n")
+tap.is(run("cut -d: -f1 /cols.txt"), run("cut -d : -f 1 /cols.txt"),
+    "cut takes its delimiter attached or apart")
+tap.is(run("xd -n4 /u2.txt"), run("xd -n 4 /u2.txt"),
+    "xd -n4 is xd -n 4")
+
+-- "--", on a name that would otherwise read as an option. The programs
+-- that spelled this out by hand all got it wrong: rm's terminator was
+-- matched after -f rather than before it, so it never took effect.
+assert(N:writefile("/-r", "b\na\n"))
+
+out, status = run("sort -- -r")
+tap.is(status, 0, "sort -- takes a file named like an option")
+tap.is(out, "a\nb\n", "and sorted it rather than reversing")
+tap.is(run("sort -r /-r"), "b\na\n",
+    "where the same word without -- is the reverse flag")
+
+out, status = run("ls -Q")
+tap.is(status, 2, "an unknown option is refused")
+tap.ok(out:find("unknown option") ~= nil, "by name: " .. out:gsub("\n", ""))
+
+-- ---- the converted parsers that no other test reaches ----
+
+out, status = run("dmesg -s")
+tap.is(status, 0, "dmesg -s ran")
+tap.ok(out:find("bytes held of") ~= nil, "and sized the ring: " ..
+    out:gsub("\n", ""))
+
+out, status = run("dmesg -x")
+tap.is(status, 1, "dmesg refuses an option it does not have")
+
+-- trace names its pid as an operand, and -n as an option argument. The
+-- operand pair (rows, pid) is the case the old lookahead handled.
+out, status = run("trace -n 64")
+tap.is(status, 0, "trace -n 64 armed a trace: " .. out:gsub("\n", ""))
+tap.ok(out:find("64 lines") ~= nil, "and said how many lines")
+
+out, status = run("trace -n notanumber")
+tap.is(status, 2, "trace -n wants a number")
 
 tap.done()

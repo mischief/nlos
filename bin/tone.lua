@@ -6,34 +6,30 @@
 -- A gap in playback is audible as a click, a wrong rate as a wrong note.
 
 local prog = require("prog")
+local getopt = require("getopt")
 
 local function die(s)
 	io.stderr:write("tone: " .. s .. "\n")
 	os.exit(1)
 end
 
-local rate, freq, secs, path = 8000, 440, 3, nil
-local i = 1
+local flags, optind = getopt.parse(arg, "r:f:s:")
 
-while i <= #arg do
-	local a = arg[i]
-
-	if a == "-r" or a == "-f" or a == "-s" then
-		i = i + 1
-		local v = tonumber(arg[i]) or die(a .. " wants a number")
-
-		if a == "-r" then
-			rate = math.floor(v)
-		elseif a == "-f" then
-			freq = v
-		else
-			secs = v
-		end
-	else
-		path = a
-	end
-	i = i + 1
+if not flags then
+	die(optind)
 end
+
+local function num(o, v, dflt)
+	if not v then
+		return dflt
+	end
+	return tonumber(v) or die("-" .. o .. " wants a number")
+end
+
+local rate = math.floor(num("r", flags.r, 8000))
+local freq = num("f", flags.f, 440)
+local secs = num("s", flags.s, 3)
+local path = arg[optind]
 
 if not path then
 	die("usage: tone [-r rate] [-f hz] [-s seconds] FILE")

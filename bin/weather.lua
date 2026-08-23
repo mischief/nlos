@@ -8,6 +8,7 @@
 -- says which piece is missing rather than failing further in.
 
 local prog = require("prog")
+local getopt = require("getopt")
 local weather = require("weather")
 
 local function die(s)
@@ -15,18 +16,18 @@ local function die(s)
 	os.exit(1)
 end
 
-local oneline = false
+local flags, optind = getopt.parse(arg, "1")
+
+if not flags then
+	io.stderr:write("usage: weather [-1] [place]\n")
+	os.exit(2)
+end
+
+local oneline = flags["1"]
 local where
 
-for _, a in ipairs(arg) do
-	if a == "-1" then
-		oneline = true
-	elseif a:sub(1, 1) == "-" and #a > 1 then
-		io.stderr:write("usage: weather [-1] [place]\n")
-		os.exit(2)
-	else
-		where = where and (where .. "+" .. a) or a
-	end
+for i = optind, #arg do
+	where = where and (where .. "+" .. arg[i]) or arg[i]
 end
 
 local net = prog.net()

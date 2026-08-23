@@ -23,6 +23,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local prog = require("prog")
+local getopt = require("getopt")
 local ntp = require("ntp")
 
 local function die(s)
@@ -30,24 +31,15 @@ local function die(s)
 	os.exit(1)
 end
 
-local server
-local raw = false
-local net = false
+local flags, optind = getopt.parse(arg, "un")
 
-for _, a in ipairs(arg) do
-	if a == "-u" then
-		raw = true
-	elseif a == "-n" then
-		net = true
-	elseif a:sub(1, 1) == "-" and #a > 1 then
-		die("usage: date [-un] [server]")
-	elseif not server then
-		server = a
-		net = true
-	else
-		die("usage: date [-un] [server]")
-	end
+if not flags or optind < #arg then
+	die("usage: date [-un] [server]")
 end
+
+local server = arg[optind]
+-- naming a server is asking to go to the network for the time
+local raw, net = flags.u, flags.n or server ~= nil
 
 local function show(unix)
 	if raw then

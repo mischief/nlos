@@ -20,33 +20,22 @@
 
 local prog = require("prog")
 local http = require("http")
+local getopt = require("getopt")
 
 local function die(s)
 	io.stderr:write("fetch: " .. s .. "\n")
 	os.exit(1)
 end
 
-local showhead = false
-local insecure = false
-local url
+local flags, optind = getopt.parse(arg, "ik")
 
-for _, a in ipairs(arg) do
-	if a == "-i" then
-		showhead = true
-	elseif a == "-k" then
-		insecure = true
-	elseif a:sub(1, 1) == "-" and #a > 1 then
-		io.stderr:write("usage: fetch [-ik] url\n")
-		os.exit(2)
-	else
-		url = url or a
-	end
-end
-
-if not url then
+if not flags or not arg[optind] then
 	io.stderr:write("usage: fetch [-ik] url\n")
 	os.exit(2)
 end
+
+local showhead, insecure = flags.i, flags.k
+local url = arg[optind]
 
 -- a bare host is a url with the scheme left off, which is what anyone
 -- types first

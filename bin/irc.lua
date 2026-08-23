@@ -27,6 +27,7 @@
 local sys = require("los.sys")
 local thread = require("los.thread")
 local prog = require("prog")
+local getopt = require("getopt")
 local irc = require("irc")
 local resolv = require("resolv")
 
@@ -38,27 +39,25 @@ end
 -- ---- arguments ----
 
 local host, port, nick, join = nil, 6667, nil, {}
-local i = 1
 
-while arg[i] do
-	local a = arg[i]
+-- the iterator, not parse: -j may be given more than once and every
+-- channel is wanted, where parse would keep only the last
+local optind = 1
 
-	if a == "-n" then
-		nick = arg[i + 1]
-		i = i + 2
-	elseif a == "-p" then
-		port = tonumber(arg[i + 1])
-		i = i + 2
-	elseif a == "-j" then
-		join[#join + 1] = arg[i + 1]
-		i = i + 2
-	elseif a:sub(1, 1) == "-" and #a > 1 then
-		die("usage: irc [-n nick] [-p port] [-j channel] host")
+for opt, optarg, oi in getopt.opts(arg, "n:p:j:") do
+	if opt == "n" then
+		nick = optarg
+	elseif opt == "p" then
+		port = tonumber(optarg)
+	elseif opt == "j" then
+		join[#join + 1] = optarg
 	else
-		host = a
-		i = i + 1
+		die("usage: irc [-n nick] [-p port] [-j channel] host")
 	end
+	optind = oi
 end
+
+host = arg[optind]
 
 if not host or not port then
 	die("usage: irc [-n nick] [-p port] [-j channel] host")

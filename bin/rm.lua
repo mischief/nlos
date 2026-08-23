@@ -17,27 +17,22 @@
 -- filesystem would.
 
 local prog = require("prog")
+local getopt = require("getopt")
 
 -- Rooted where the shell is, so a relative name works: prog.ns()
 -- resolves against the program's cwd (see lib/prog.lua).
 local N = assert(prog.ns(), "rm: no namespace")
 
-local force = false
-local paths = {}
+-- after "--" everything is a name, even if it starts with a dash
+local flags, optind = getopt.parse(arg, "f")
 
-for _, a in ipairs(arg) do
-	if a == "-f" then
-		force = true
-	elseif a == "--" then
-		-- everything after is a name, even if it starts with -
-		force = force
-	elseif a:sub(1, 1) == "-" and #a > 1 then
-		io.stderr:write("usage: rm [-f] file...\n")
-		os.exit(2)
-	else
-		paths[#paths + 1] = a
-	end
+if not flags then
+	io.stderr:write("usage: rm [-f] file...\n")
+	os.exit(2)
 end
+
+local force = flags.f
+local paths = table.move(arg, optind, #arg, 1, {})
 
 if #paths == 0 then
 	io.stderr:write("usage: rm [-f] file...\n")

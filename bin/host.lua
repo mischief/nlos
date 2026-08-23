@@ -12,6 +12,7 @@
 -- here is the argument handling and where to report.
 
 local prog = require("prog")
+local getopt = require("getopt")
 local resolv = require("resolv")
 
 local function die(s)
@@ -19,19 +20,14 @@ local function die(s)
 	os.exit(1)
 end
 
-local name, server
+-- no options, but parse for the "--" and the refusal of anything else
+local flags, optind = getopt.parse(arg, "")
 
-for _, a in ipairs(arg) do
-	if a:sub(1, 1) == "-" and #a > 1 then
-		die("usage: host name [server]")
-	elseif not name then
-		name = a
-	elseif not server then
-		server = a
-	else
-		die("usage: host name [server]")
-	end
+if not flags or #arg - optind + 1 > 2 then
+	die("usage: host name [server]")
 end
+
+local name, server = arg[optind], arg[optind + 1]
 
 if not name then
 	die("usage: host name [server]")

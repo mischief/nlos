@@ -9,6 +9,7 @@
 -- credentials already live for the same reason.
 
 local prog = require("prog")
+local getopt = require("getopt")
 local keys = require("ssh.keys")
 local ed25519 = require("crypto.ed25519")
 
@@ -17,25 +18,17 @@ local function die(s)
 	os.exit(1)
 end
 
-local path, pubonly = "/config/ssh/id_ed25519", false
-local i = 1
+local flags, optind = getopt.parse(arg, "yf:")
 
-while arg[i] and arg[i]:sub(1, 1) == "-" and #arg[i] > 1 do
-	local o = arg[i]
-
-	i = i + 1
-	if o == "-f" then
-		path = arg[i] or die("-f wants a path")
-		i = i + 1
-	elseif o == "-y" then
-		pubonly = true
-	else
-		io.stderr:write("usage: keygen [-y] [-f path] [comment]\n")
-		os.exit(2)
-	end
+if not flags then
+	io.stderr:write("usage: keygen [-y] [-f path] [comment]\n")
+	os.exit(2)
 end
 
-local comment = arg[i] or "lua-os"
+local path = flags.f or "/config/ssh/id_ed25519"
+local pubonly = flags.y
+
+local comment = arg[optind] or "lua-os"
 local N = prog.ns() or die("no namespace")
 
 local function slurp(p)

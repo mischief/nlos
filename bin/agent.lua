@@ -6,6 +6,7 @@
 -- lib/agent.lua with a terminal in front of it. See docs/agent.md.
 
 local prog = require("prog")
+local getopt = require("getopt")
 local agent = require("agent")
 local llm = require("llm")
 
@@ -28,36 +29,27 @@ usage: agent [-m model] [-k keyfile] [-u url] [-v] question...
 	os.exit(2)
 end
 
-local model, keyfile, url, verbose = MODEL, KEYFILE, nil, false
-local words = {}
-local i = 1
-
-while i <= #arg do
-	local a = arg[i]
-
-	if a == "-m" or a == "-k" or a == "-u" then
-		i = i + 1
-		if not arg[i] then
-			usage()
-		end
-		if a == "-m" then
-			model = arg[i]
-		elseif a == "-k" then
-			keyfile = arg[i]
-		else
-			url = arg[i]
-		end
-	elseif a == "-v" then
-		verbose = true
-	elseif a == "-h" or a == "--help" then
+-- --help by hand: getopt does long options no more than getopt(3) does
+for _, a in ipairs(arg) do
+	if a == "--help" then
 		usage()
-	elseif a:sub(1, 1) == "-" and #a > 1 then
-		die("unknown option: " .. a)
-	else
-		words[#words + 1] = a
 	end
-	i = i + 1
 end
+
+local flags, optind = getopt.parse(arg, "m:k:u:vh")
+
+if not flags then
+	die(optind)
+end
+if flags.h then
+	usage()
+end
+
+local model = flags.m or MODEL
+local keyfile = flags.k or KEYFILE
+local url = flags.u
+local verbose = flags.v
+local words = table.move(arg, optind, #arg, 1, {})
 
 if #words == 0 then
 	usage()

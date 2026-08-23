@@ -14,6 +14,7 @@
 
 local thread = require("los.thread")
 local prog = require("prog")
+local getopt = require("getopt")
 local client = require("ssh.client")
 local keys = require("ssh.keys")
 local ed25519 = require("crypto.ed25519")
@@ -34,25 +35,19 @@ end
 local port, keyfile = 22, nil
 local hostsfile = "/config/ssh/known_hosts"
 local DEFAULTKEY = "/config/ssh/id_ed25519"
-local i = 1
 
-while arg[i] and arg[i]:sub(1, 1) == "-" and #arg[i] > 1 do
-	local o = arg[i]
+local flags, optind = getopt.parse(arg, "p:i:k:")
 
-	i = i + 1
-	if o == "-p" then
-		port = tonumber(arg[i]) or usage()
-	elseif o == "-i" then
-		keyfile = arg[i]
-	elseif o == "-k" then
-		hostsfile = arg[i]
-	else
-		usage()
-	end
-	i = i + 1
+if not flags then
+	usage()
 end
+if flags.p then
+	port = tonumber(flags.p) or usage()
+end
+keyfile = flags.i or keyfile
+hostsfile = flags.k or hostsfile
 
-local target = arg[i]
+local target = arg[optind]
 
 if not target then
 	usage()

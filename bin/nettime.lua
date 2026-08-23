@@ -9,28 +9,29 @@
 
 local sys = require("los.sys")
 local prog = require("prog")
+local getopt = require("getopt")
 
 local function die(s)
 	io.stderr:write("nettime: " .. s .. "\n")
 	os.exit(1)
 end
 
-local host, port, path = nil, 443, "/"
+local flags, optind = getopt.parse(arg, "p:")
 
-do
-	local want = nil
+if not flags then
+	die(optind)
+end
 
-	for _, a in ipairs(arg) do
-		if want == "p" then
-			port = tonumber(a) or die("not a port: " .. a)
-			want = nil
-		elseif a == "-p" then
-			want = "p"
-		elseif a:sub(1, 1) == "/" then
-			path = a
-		else
-			host = host or a
-		end
+local port = flags.p and (tonumber(flags.p) or
+    die("not a port: " .. flags.p)) or 443
+local host, path = nil, "/"
+
+-- a leading slash is the path, wherever among the operands it falls
+for i = optind, #arg do
+	if arg[i]:sub(1, 1) == "/" then
+		path = arg[i]
+	else
+		host = host or arg[i]
 	end
 end
 

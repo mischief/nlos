@@ -27,30 +27,30 @@ if not ok then
 end
 
 local sys = require("los.sys")
-local n, pid, hist, rows
+local getopt = require("getopt")
 
-local i = 1
+local flags, optind = getopt.parse(arg, "n:h")
 
-while arg[i] do
-	if arg[i] == "-n" then
-		i = i + 1
-		n = tonumber(arg[i])
-		if not n then
-			io.stderr:write("trace: -n wants a number\n")
-			os.exit(2)
-		end
-	elseif arg[i] == "-h" then
-		hist = true
-		-- a bare number after -h is the row count, but a lone
-		-- one is the pid, so it takes the second of two
-		if tonumber(arg[i + 1]) and tonumber(arg[i + 2]) then
-			i = i + 1
-			rows = tonumber(arg[i])
-		end
-	else
-		pid = tonumber(arg[i])
-	end
-	i = i + 1
+if not flags then
+	io.stderr:write("trace: " .. optind .. "\n")
+	os.exit(2)
+end
+
+local n = flags.n and tonumber(flags.n)
+
+if flags.n and not n then
+	io.stderr:write("trace: -n wants a number\n")
+	os.exit(2)
+end
+
+-- two operands are rows then pid; a lone one is the pid
+local hist, rows, pid = flags.h, nil, nil
+
+if arg[optind + 1] then
+	rows = tonumber(arg[optind])
+	pid = tonumber(arg[optind + 1])
+else
+	pid = tonumber(arg[optind])
 end
 
 pid = pid or sys.self()

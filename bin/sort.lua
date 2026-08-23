@@ -1,37 +1,16 @@
 -- SPDX-License-Identifier: ISC
+local getopt = require("getopt")
 
-local numeric = false
-local reverse = false
-local key = nil
-local files = {}
+local flags, optind = getopt.parse(arg, "nrk:")
 
-local i = 1
-while i <= #arg do
-	local a = arg[i]
-	if a == "-n" then
-		numeric = true
-	elseif a == "-r" then
-		reverse = true
-	elseif a == "-k" then
-		i = i + 1
-		key = tonumber(arg[i])
-	elseif a == "-nr" or a == "-rn" then
-		numeric = true
-		reverse = true
-	elseif a:sub(1, 1) == "-" then
-		for j = 2, #a do
-			local c = a:sub(j, j)
-			if c == "n" then
-				numeric = true
-			elseif c == "r" then
-				reverse = true
-			end
-		end
-	else
-		files[#files + 1] = a
-	end
-	i = i + 1
+if not flags then
+	io.stderr:write("sort: " .. optind .. "\n")
+	os.exit(2)
 end
+
+local numeric, reverse = flags.n, flags.r
+local key = flags.k and tonumber(flags.k)
+local files = table.move(arg, optind, #arg, 1, {})
 
 -- read input
 local content

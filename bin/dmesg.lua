@@ -4,23 +4,20 @@
 -- writes, so this works on a machine with nothing else running.
 
 local sys = require("los.sys")
+local getopt = require("getopt")
 
 local function die(s)
 	io.stderr:write("dmesg: " .. s .. "\n")
 	os.exit(1)
 end
 
-local follow, statonly = false, false
+local flags, optind = getopt.parse(arg, "fs")
 
-for _, a in ipairs(arg) do
-	if a == "-f" then
-		follow = true
-	elseif a == "-s" then
-		statonly = true
-	else
-		die("usage: dmesg [-f|-s]")
-	end
+if not flags or optind <= #arg then
+	die("usage: dmesg [-f|-s]")
 end
+
+local follow, statonly = flags.f, flags.s
 
 if statonly then
 	local seq, size, oldest, dropped = sys.loginfo()

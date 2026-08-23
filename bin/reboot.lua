@@ -19,6 +19,7 @@
 -- program, which of them your machine can tell apart.
 
 local prog = require("prog")
+local getopt = require("getopt")
 local ns = require("ns")
 
 local function die(s)
@@ -50,17 +51,13 @@ local function syncvolumes()
 	return n
 end
 
-local mode = "cold"
+local flags, optind = getopt.parse(arg, "wp")
 
-for _, a in ipairs(arg) do
-	if a == "-w" then
-		mode = "warm"
-	elseif a == "-p" then
-		mode = "shutdown"
-	else
-		die("usage: reboot [-w | -p]")
-	end
+if not flags or optind <= #arg or (flags.w and flags.p) then
+	die("usage: reboot [-w | -p]")
 end
+
+local mode = flags.w and "warm" or flags.p and "shutdown" or "cold"
 
 local power = prog.power()
 

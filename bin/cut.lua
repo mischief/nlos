@@ -1,22 +1,16 @@
 -- SPDX-License-Identifier: ISC
+local getopt = require("getopt")
 
-local delim = "\t"
-local fields = nil
-local chars = nil
-local files = {}
+local flags, optind = getopt.parse(arg, "d:f:c:")
 
-local i = 1
-while i <= #arg do
-	local a = arg[i]
-	if a == "-d" then i = i + 1; delim = arg[i]
-	elseif a == "-f" then i = i + 1; fields = arg[i]
-	elseif a == "-c" then i = i + 1; chars = arg[i]
-	elseif a:match("^%-d.") then delim = a:sub(3)
-	elseif a:match("^%-f.") then fields = a:sub(3)
-	elseif a:match("^%-c.") then chars = a:sub(3)
-	else files[#files + 1] = a end
-	i = i + 1
+if not flags then
+	io.stderr:write("cut: " .. optind .. "\n")
+	os.exit(2)
 end
+
+local delim = flags.d or "\t"
+local fields, chars = flags.f, flags.c
+local files = table.move(arg, optind, #arg, 1, {})
 
 -- parse range spec like "1,3" or "2-4" or "1-"
 local function parse_spec(spec)

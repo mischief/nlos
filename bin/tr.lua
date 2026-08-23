@@ -1,15 +1,15 @@
 -- SPDX-License-Identifier: ISC
+local getopt = require("getopt")
 
-local delete = false
-local squeeze = false
-local args = {}
+local flags, optind = getopt.parse(arg, "ds")
 
-for _, a in ipairs(arg) do
-	if a == "-d" then delete = true
-	elseif a == "-s" then squeeze = true
-	elseif a == "-ds" or a == "-sd" then delete = true; squeeze = true
-	else args[#args + 1] = a end
+if not flags then
+	io.stderr:write("tr: " .. optind .. "\n")
+	os.exit(2)
 end
+
+local delete, squeeze = flags.d, flags.s
+local args = table.move(arg, optind, #arg, 1, {})
 
 -- expand ranges like a-z, character classes like [:upper:]
 local function expand(s)

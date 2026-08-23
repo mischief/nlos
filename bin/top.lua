@@ -17,6 +17,7 @@
 -- observations of the machine, not authority over it.
 
 local prog = require("prog")
+local getopt = require("getopt")
 
 local function die(s)
 	io.stderr:write("top: " .. s .. "\n")
@@ -25,27 +26,24 @@ end
 
 local delay = 2
 local frames = 0	-- 0 is "until told to stop"
-local i = 1
 
-while arg[i] do
-	local a = arg[i]
+local flags, optind = getopt.parse(arg, "d:n:")
 
-	if a == "-d" or a == "-n" then
-		local v = tonumber(arg[i + 1])
+if not flags or optind <= #arg then
+	die("usage: top [-d seconds] [-n frames]")
+end
 
-		if not v or v < 0 then
-			die("usage: top [-d seconds] [-n frames]")
-		end
-		if a == "-d" then
-			delay = v
-		else
-			frames = math.floor(v)
-		end
-		i = i + 2
-	else
+local function num(v)
+	local n = v and tonumber(v)
+
+	if v and (not n or n < 0) then
 		die("usage: top [-d seconds] [-n frames]")
 	end
+	return n
 end
+
+delay = num(flags.d) or delay
+frames = flags.n and math.floor(num(flags.n)) or frames
 
 local ok, ps = pcall(require, "ps")
 

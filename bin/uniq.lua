@@ -1,21 +1,15 @@
 -- SPDX-License-Identifier: ISC
+local getopt = require("getopt")
 
-local count_mode = false
-local dup_only = false
-local uniq_only = false
-local files = {}
+local flags, optind = getopt.parse(arg, "cdu")
 
-for _, a in ipairs(arg) do
-	if a == "-c" then
-		count_mode = true
-	elseif a == "-d" then
-		dup_only = true
-	elseif a == "-u" then
-		uniq_only = true
-	else
-		files[#files + 1] = a
-	end
+if not flags then
+	io.stderr:write("uniq: " .. optind .. "\n")
+	os.exit(2)
 end
+
+local count_mode, dup_only, uniq_only = flags.c, flags.d, flags.u
+local files = table.move(arg, optind, #arg, 1, {})
 
 local f = io.stdin
 
