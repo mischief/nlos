@@ -31,6 +31,38 @@ framebuffer image is here, not in any proc's lua figure.
 **The C heap** for everything else: port messages, payload copies, the
 loadfile buffer.
 
+## two kinds of memory, on esp32
+
+A board with PSRAM has two pools and they are not interchangeable.
+
+**Internal SRAM is the scarce one.** On an S3 the usable part is
+Internal SRAM 1, which the TRM describes as addressed through the data
+bus or the instruction bus in the same order -- so IRAM code and
+statics come out of one pool, which IDF's size report calls DIRAM. It
+is a few hundred KB against 8MB of PSRAM, roughly two thirds of it is
+gone to IDF before we boot, and no setting buys more. The instruction
+and data caches are carved from Internal SRAM 0 and 2, which have no
+other use, so cache sizing does not compete with this.
+
+**So a static array is spent from the scarce pool.** Anything sized in
+KB should come from `platform_chunk_alloc`, which answers from PSRAM
+where the machine has any: the kernel's transcript is a pointer for
+this reason, with a small static one covering the lines logged before
+there is an allocator to ask.
+
+**But PSRAM disappears during a flash write.** The cache is turned off
+for the duration, so anything touched in that window must be internal:
+ISR code, and the stack of any task that might run. IDF checks the
+second with `esp_task_stack_is_sane_cache_disabled` and aborts, which
+is what a task given a PSRAM stack dies of the first time `fatsrv`
+writes.
+
+**Where it went**, for the static half: `idf.py size` for the DIRAM
+total, `size-components` for which archive owns it, and
+`nm --size-sort -S libmain.a` for the objects inside ours. The
+difference between what that reports and what `stats` says is free is
+runtime allocation -- driver buffers, task stacks, the radio.
+
 ## reading the stats line
 
 `stats` at the prompt, or the bare word in the repl. The shape of it,
@@ -142,6 +174,13 @@ does not.
 few per item dominate what a parser allocates at all. `find` keeps its
 state on the C stack. `M.attrs` in `lib/html.lua` and `M.dotseg` in
 `lib/url.lua` are what one looks like rewritten.
+
+**One heap for the machine is a choice, not a consequence.**
+`SHARED_LUAHEAP` decides it, and sharing costs a lock on every
+allocation -- a compiler barrier where `NCPU` is 1. Per-proc heaps pay
+each heap's chunk tails instead, which on a board is megabytes and can
+put the largest free block below what `dio` wants to start an app.
+Measure `chunks ... free max` at rest before changing it.
 
 **Precompute what is expensive, not what is repeated.** See
 [graphics.md](graphics.md), which has the panel side of all of this.
