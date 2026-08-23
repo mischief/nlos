@@ -21,16 +21,26 @@ local function ok(cond, name)
 	end
 end
 
+-- a value on one line. A sentence ends in cr lf, and a description
+-- carrying those splits the tap line the harness is reading: what it
+-- makes of the halves is an unknown line and a complaint, whether or
+-- not the check itself passed.
+local function shown(v)
+	return (tostring(v):gsub("%c", function(c)
+		return ("\\%d"):format(c:byte())
+	end))
+end
+
 local function is(got, want, name)
-	ok(got == want, ("%s (got %s, want %s)"):format(name, tostring(got),
-	    tostring(want)))
+	ok(got == want, ("%s (got %s, want %s)"):format(name, shown(got),
+	    shown(want)))
 end
 
 -- within a tolerance, since these are degrees carried as floats
 local function near(got, want, eps, name)
 	ok(type(got) == "number" and math.abs(got - want) < eps,
-	    ("%s (got %s, want ~%s)"):format(name, tostring(got),
-	    tostring(want)))
+	    ("%s (got %s, want ~%s)"):format(name, shown(got),
+	    shown(want)))
 end
 
 -- ---- checksums ----
