@@ -91,6 +91,19 @@ foreach t : ['tcp', 'udp']
   )
 endforeach
 
+# the gnss stack, off a recording. The replay driver stands in for a
+# receiver, so this runs wherever the tests do rather than only where a
+# board is plugged in; LUAOS_GPS is the file it reads, and without one
+# the machine simply has no receiver. Slower than its neighbours by
+# design: the recording plays at the rate it was taken.
+test('hosted-gps', lua_interp,
+  args: [hosted_boottest, luaos_hosted, files('boot/hosted_gps.lua')],
+  protocol: 'tap', timeout: 120,
+  env: hosted_env + {
+    'LUAOS_GPS': meson.project_source_root() / 'test/fixtures/gps-cold.nmea',
+  },
+)
+
 # the disk, seeded by the harness. The payloads are the microvm ones:
 # what they exercise is blk and the filesystems over it, which this
 # machine has for the same reason that one does.
