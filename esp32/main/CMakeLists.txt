@@ -249,6 +249,9 @@ set(EMBED_FILES
     # the radio task and the chip it speaks: a driver task loads from
     # the image, not from the volume mounted over it
     task/lora.lua
+    task/meshsrv.lua
+    lib/meshtastic.lua
+    lib/protobuf.lua
     lib/sx1262.lua
     task/ip.lua
     task/tcp4.lua

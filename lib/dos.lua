@@ -176,6 +176,8 @@ function M.new(caps)
 		-- not a diagnostic should hold: blesrv arbitrates, raw hci
 		-- does not.
 		ble = caps.ble,
+		-- the mesh service, same terms as the bluetooth one beside it
+		mesh = caps.mesh,
 		-- where the exit notices of the programs this shell starts
 		-- arrive, and where the console sends the interrupt. A shell
 		-- in a proc of its own reads the mailbox, which is the
@@ -525,6 +527,9 @@ function Sh:spawn1(path, argv, streams)
 	end
 	if self.ble then
 		msg.ble = { __right = self.ble }
+	end
+	if self.mesh then
+		msg.mesh = { __right = self.mesh }
 	end
 	-- the pull flag rides BESIDE stdin, not inside it. a table carrying
 	-- __right is serialized as the right and nothing else (see

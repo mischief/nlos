@@ -363,6 +363,8 @@ local repl_worker_src = [[
 	local lorah = m.lora and m.lora.__right
 	-- the bluetooth service, which blesrv publishes and init grants.
 	local bleh = m.ble and m.ble.__right
+	-- the mesh service, which meshsrv publishes and init grants
+	local meshh = m.mesh and m.mesh.__right
 
 	-- pre-imported as bare globals (_G.x, not local x): the repl's
 	-- evaluate() loads each typed line as its own chunk via load(),
@@ -448,7 +450,7 @@ local repl_worker_src = [[
 		    dns = dnsh,
 		    udp = udph, power = powerh, dbg = dbgh, hci = hcih,
 		    lora = lorah,
-		    ble = bleh },
+		    ble = bleh, mesh = meshh },
 		    "lua-os. programs live in /bin; `lua` is a prompt.\n")
 	end
 
@@ -611,6 +613,9 @@ while true do
 	end
 	if avail.ble then
 		grant.ble = { __right = avail.ble }
+	end
+	if avail.mesh then
+		grant.mesh = { __right = avail.mesh }
 	end
 	if avail.dns then
 		grant.dns = { __right = avail.dns }

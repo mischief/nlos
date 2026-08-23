@@ -65,6 +65,11 @@ return {
 	-- Before the panel, because dio lends this to the apps it starts.
 	{ path = "/task/blesrv.lua", caps = { "hci" }, capname = "ble" },
 
+	-- the mesh, over the radio. Programs hold a right to this rather
+	-- than to the radio: keys, dedup and the node table are its, and
+	-- two clients driving one chip would be two nodes on one antenna.
+	{ path = "/task/meshsrv.lua", caps = { "lora" }, capname = "mesh" },
+
 	{ path = "/task/dio.lua", caps = { "fb", "kbd", "ptr", "cons" },
 	  optcaps = { "tcp", "ip", "dns", "power", "ble" } },
 

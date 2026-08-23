@@ -935,6 +935,7 @@ function M.main()
 	-- and the host stack are what ask.
 	ctx.hci = ctx.hci and ctx.hci.__right or nil
 	ctx.lora = ctx.lora and ctx.lora.__right or nil
+	ctx.mesh = ctx.mesh and ctx.mesh.__right or nil
 	-- the bluetooth service. What an ordinary program asks for: blesrv
 	-- arbitrates the controller, where hci above it is the raw radio.
 	ctx.ble = ctx.ble and ctx.ble.__right or nil
@@ -1193,6 +1194,15 @@ function M.lora()
 	local ctx = M.ctx
 
 	return ctx and ctx.lora or nil
+end
+
+-- the mesh service, which is what a program should ask for: meshsrv
+-- holds the radio and the keys, and a client that held the radio
+-- instead would be alone on the air with it.
+function M.mesh()
+	local ctx = M.ctx
+
+	return ctx and ctx.mesh or nil
 end
 
 -- the bluetooth service, which is what a program should ask for: one

@@ -159,7 +159,64 @@ M.PORT_TEXT = 1
 M.PORT_POSITION = 3
 M.PORT_NODEINFO = 4
 M.PORT_ROUTING = 5
+M.PORT_ADMIN = 6
+M.PORT_WAYPOINT = 8
 M.PORT_TELEMETRY = 67
+
+M.PORTNAME = {
+	[0] = "unknown", [1] = "text", [2] = "remotehw", [3] = "position",
+	[4] = "nodeinfo", [5] = "routing", [6] = "admin",
+	[7] = "text.gz", [8] = "waypoint", [9] = "audio",
+	[10] = "detector", [11] = "alert", [12] = "keyverify",
+	[32] = "reply", [67] = "telemetry",
+}
+
+-- a node number as everyone writes it: an exclamation mark and eight
+-- lowercase hex digits.
+function M.nodeid(num)
+	return ("!%08x"):format(num & 0xffffffff)
+end
+
+-- who a node says it is. The User message behind a nodeinfo payload,
+-- which is what fills in a name for a number.
+function M.user(payload)
+	local f = require("protobuf").decode(payload)
+
+	if type(f[2]) ~= "string" and type(f[3]) ~= "string" then
+		return nil, "not a User message"
+	end
+	return {
+		id = f[1],
+		long = f[2],
+		short = f[3],
+		hw = f[5],
+		licensed = f[6] == 1,
+		role = f[7],
+		key = f[8],
+	}
+end
+
+-- where a node says it is. Degrees are carried as integers a ten
+-- millionth of a degree wide, which is what the i suffix means.
+function M.position(payload)
+	local f = require("protobuf").decode(payload)
+	local function degrees(v)
+		if not v then
+			return nil
+		end
+		if v >= 0x80000000 then
+			v = v - 0x100000000
+		end
+		return v / 1e7
+	end
+
+	return {
+		lat = degrees(f[1]),
+		lon = degrees(f[2]),
+		alt = f[3],
+		time = f[4],
+	}
+end
 
 -- the Data message, of which a reader wants two fields. The rest are
 -- carried through as they came so nothing is lost by not naming them.
