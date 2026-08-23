@@ -360,61 +360,202 @@ function P:close(name)
 	end
 end
 
--- How much of a page becomes blocks. The bytes are bounded by whoever
--- fetched them; this bounds what those bytes expand into, which is a
--- table per block and another per run and is where a hostile page
--- would do its damage.
+
+-- ---- reading it as it arrives ----
+
+-- What a page may become, in blocks. The bytes are not held -- they
+-- are consumed and dropped -- so this is the bound that matters: it
+-- counts content, not markup, and a page of chrome no longer spends a
+-- budget meant for an article.
 M.MAXBLOCKS = 4000
 
--- parse(html, opts) -> blocks, info
---
--- opts.base is the page's own url, which is what a relative href is
--- resolved against. info carries the title, the base as it ended up,
--- and whether a bound cut it short.
-function M.parse(html, opts)
+local S = {}
+
+S.__index = S
+
+-- parser(opts) -> p, then p:feed(bytes) as they arrive and p:eof().
+-- opts.base is the page's own url, which a relative href resolves
+-- against; opts.nochrome drops nav and footer.
+function M.parser(opts)
 	opts = opts or {}
+	return setmetatable({
+		p = new(opts.base),
+		buf = "",
+		info = {},
+		max = opts.maxblocks or M.MAXBLOCKS,
+		nochrome = opts.nochrome,
+		nbytes = 0,
+	}, S)
+end
 
-	local p = new(opts.base)
-	local info = {}
-	local max = opts.maxblocks or M.MAXBLOCKS
-	local skip, title = nil, nil
-
-	for kind, a, b in M.tokens(html) do
-		if #p.blocks >= max then
-			info.truncated = "blocks"
-			break
+function S:emit(kind, a, b)
+	if self.skip then
+		if kind == "close" and a == self.skip then
+			self.skip = nil
 		end
-		if skip then
-			if kind == "close" and a == skip then
-				skip = nil
+		return
+	end
+	if kind == "text" then
+		if self.title then
+			self.title = self.title .. a
+		else
+			self.p:text(M.unescape(a))
+		end
+	elseif kind == "open" then
+		if OPAQUE[a] or (self.nochrome and CHROME[a]) then
+			self.skip = a
+		elseif a == "title" then
+			self.title = ""
+		else
+			self.p:open(a, b)
+		end
+	elseif kind == "close" then
+		if a == "title" and self.title then
+			self.info.title = M.unescape(self.title)
+			    :gsub("%s+", " "):match("^%s*(.-)%s*$")
+			self.title = nil
+		else
+			self.p:close(a)
+		end
+	end
+end
+
+-- Everything the buffer holds a whole token for. What is left needs
+-- more bytes, and is all that is kept: a tag being split across two
+-- reads is the only reason to hold anything at all.
+function S:step(final)
+	local buf = self.buf
+	local i = 1
+
+	while i <= #buf do
+		if #self.p.blocks >= self.max then
+			self.info.truncated = "blocks"
+			self.done = true
+			self.buf = ""
+			return
+		end
+
+		-- inside a script or a style: the close tag is looked for
+		-- rather than parsed toward, and the bytes before it are
+		-- dropped as they go by rather than kept
+		if self.skip then
+			local a, b = buf:find("</" .. self.skip, i, true)
+
+			if not a then
+				local keep = #self.skip + 3
+
+				i = final and #buf + 1
+				    or math.max(i, #buf - keep + 1)
+				break
 			end
-		elseif kind == "text" then
-			if title then
-				title = title .. a
-			else
-				p:text(M.unescape(a))
+
+			local gt = buf:find(">", b + 1, true)
+
+			if not gt then
+				i = a
+				break
 			end
-		elseif kind == "open" then
-			if OPAQUE[a] or (opts.nochrome and CHROME[a]) then
-				skip = a
-			elseif a == "title" then
-				title = ""
+			i = gt + 1
+			self.skip = nil
+		else
+			local lt = buf:find("<", i, true)
+
+			if not lt then
+				self:emit("text", buf:sub(i))
+				i = #buf + 1
+			elseif lt > i then
+				self:emit("text", buf:sub(i, lt - 1))
+				i = lt
+			elseif #buf - i + 1 < 4 and not final then
+				-- too few bytes to tell a comment from a tag
+				break
+			elseif buf:sub(i, i + 3) == "<!--" then
+				local e = buf:find("-->", i, true)
+
+				if not e then
+					if not final then
+						break
+					end
+					i = #buf + 1
+				else
+					i = e + 3
+				end
+			elseif buf:sub(i, i + 1) == "<!"
+			    or buf:sub(i, i + 1) == "<?" then
+				local e = buf:find(">", i, true)
+
+				if not e then
+					if not final then
+						break
+					end
+					i = #buf + 1
+				else
+					i = e + 1
+				end
 			else
-				p:open(a, b)
-			end
-		elseif kind == "close" then
-			if a == "title" and title then
-				info.title = M.unescape(title)
-				    :gsub("%s+", " "):match("^%s*(.-)%s*$")
-				title = nil
-			else
-				p:close(a)
+				local gt = tagend(buf, i)
+
+				if not gt then
+					if not final then
+						break
+					end
+					self:emit("text", buf:sub(i))
+					i = #buf + 1
+				else
+					local raw = buf:sub(i + 1, gt - 1)
+
+					i = gt + 1
+					if raw:sub(1, 1) == "/" then
+						self:emit("close",
+						    (raw:match("^/%s*([%w:%-]+)")
+						    or ""):lower())
+					else
+						local name =
+						    raw:match("^([%w:%-]+)")
+
+						if name then
+							self:emit("open",
+							    name:lower(), raw)
+						end
+					end
+				end
 			end
 		end
 	end
-	p:flush()
-	info.base = p.base
-	return p.blocks, info
+	self.buf = i > #buf and "" or buf:sub(i)
+end
+
+function S:feed(s)
+	if self.done then
+		return false
+	end
+	self.nbytes = self.nbytes + #s
+	self.buf = self.buf .. s
+	self:step(false)
+	return not self.done
+end
+
+function S:eof()
+	if not self.done then
+		self:step(true)
+		self.p:flush()
+	end
+	self.done = true
+	self.info.base = self.p.base
+	self.info.nbytes = self.nbytes
+	return self.p.blocks, self.info
+end
+
+function S:blocks()
+	return self.p.blocks, self.info
+end
+
+-- the whole of a page at once, for a caller that already holds it all
+function M.parse(html, opts)
+	local p = M.parser(opts)
+
+	p:feed(html)
+	return p:eof()
 end
 
 return M

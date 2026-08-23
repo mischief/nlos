@@ -237,6 +237,45 @@ is(flat(html.parse("<nav>menu</nav><p>body</p>", { nochrome = true })),
 is(flat(html.parse("<footer>small print</footer><p>b</p>",
     { nochrome = true })), "para:b", "which goes for the footer too")
 
+-- ---- fed in pieces ----
+
+-- the whole point of the streaming parser: what the network chose to
+-- break in half must not change what the page says
+local function chunked(s, size)
+	local p = html.parser({ base = "https://e.com/a/" })
+
+	for i = 1, #s, size do
+		p:feed(s:sub(i, i + size - 1))
+	end
+	return p:eof()
+end
+
+local SPLITME = '<p>the <a href="x">link</a> here</p>' ..
+    "<!-- a comment --><ul><li>one</li></ul>" ..
+    "<script>var a = '<p>';</script><h2>End</h2>"
+
+local whole = flat(html.parse(SPLITME, { base = "https://e.com/a/" }))
+
+for _, size in ipairs({ 1, 2, 3, 7, 13, 64 }) do
+	is(flat((chunked(SPLITME, size))), whole,
+	    ("fed %d bytes at a time it parses the same"):format(size))
+end
+
+local cb = chunked(SPLITME, 1)
+
+is(cb[1].link[2], "https://e.com/a/x",
+    "and a tag split down the middle still resolves its href")
+
+-- a page fed a byte at a time keeps only what a whole token needs
+local p = html.parser()
+local big = string.rep("<p>a paragraph of some length</p>", 200)
+
+for i = 1, #big, 1 do
+	p:feed(big:sub(i, i))
+end
+ok(#p.buf < 64, "the buffer holds a token, not the page")
+p:eof()
+
 -- ---- the byte bound, which is the other half of it ----
 
 local web = require("web")

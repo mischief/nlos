@@ -17,10 +17,11 @@ local M = {}
 -- read, and lib/html.lua's block count bounds what those bytes expand
 -- into. A page over this is read up to here and marked short, which is
 -- truthful where a refusal would be unhelpful.
--- Measured: blocks and lines together come to about three times the
--- bytes they were made from, and the page is still held while they are
--- built. So this ceiling costs about four times itself at the peak.
-M.MAXBYTES = 64 * 1024
+-- The bytes are not held, so this is only the point at which a page
+-- stops being one: a stream that never ends, or one nothing here could
+-- read anyway. lib/html.lua's block count is the bound that decides
+-- what a page actually costs.
+M.MAXBYTES = 2 * 1024 * 1024
 
 M.MAXREDIRECT = 5
 
@@ -57,32 +58,84 @@ function M.capsink(max)
 	return s
 end
 
--- one request, no redirects. res.truncated says a bound cut it.
+
+-- One request, no redirects, and no page held: the body goes into a
+-- parser as it arrives and what comes back is blocks. res.truncated
+-- says a bound stopped it early.
 function M.get(net, dns, page, opts)
 	opts = opts or {}
 
-	local cap = M.capsink(opts.maxbytes or M.MAXBYTES)
 	local status, headers
+	local parser, cap, cut = nil, nil, nil
+	local n = 0
+	local maxbytes = opts.maxbytes or M.MAXBYTES
 
 	local res, err = require("http").get(net, dns, page, {
 		rand = opts.rand,
 		insecure = opts.insecure,
 		verify = opts.verify,
+		-- the type arrives before the body does, which is what
+		-- lets the bytes go straight where they belong
 		onhead = function(st, h)
+			local mime = M.mime(h)
+
 			status, headers = st, h
+			if REDIRECT[st] then
+				return
+			end
+			if mime == "text/html"
+			    or mime == "application/xhtml+xml" then
+				parser = html.parser({
+					base = page,
+					nochrome = opts.nochrome,
+					maxblocks = opts.maxblocks,
+				})
+			elseif mime:match("^text/") then
+				cap = M.capsink(maxbytes)
+			end
 		end,
-		sink = cap.sink,
+		sink = function(part)
+			n = n + #part
+			if n > maxbytes then
+				cut = "bytes"
+				return false
+			end
+			if parser then
+				if not parser:feed(part) then
+					cut = "blocks"
+					return false
+				end
+				return true
+			end
+			if cap then
+				return cap.sink(part)
+			end
+			return true
+		end,
 	})
 
-	if not res and not cap.cut then
+	if not res and not cut then
 		return nil, err
 	end
+
+	local blocks, info
+
+	if parser then
+		blocks, info = parser:eof()
+	elseif cap then
+		local d = require("doc")
+
+		blocks, info = { d.run(d.block("pre"), cap.take()) }, {}
+	end
+	info = info or {}
+	info.truncated = info.truncated or cut
 	return {
 		status = status or (res and res.status),
 		headers = headers or (res and res.headers) or {},
-		body = cap.take(),
-		nbody = cap.n,
-		truncated = cap.cut and "bytes" or nil,
+		blocks = blocks,
+		info = info,
+		nbytes = n,
+		truncated = info.truncated,
 		url = page,
 	}
 end
@@ -125,28 +178,5 @@ function M.mime(headers)
 	return (ct:match("^%s*([^;%s]*)") or ""):lower()
 end
 
--- a fetched page as blocks. Text that is not html is its own
--- preformatted block, which is what makes a .txt readable in the same
--- viewer without a second path through it.
-function M.blocks(res, opts)
-	opts = opts or {}
-
-	local mime = M.mime(res.headers)
-
-	if mime == "text/html" or mime == "application/xhtml+xml" then
-		local blocks, info = html.parse(res.body,
-		    { base = res.url, maxblocks = opts.maxblocks })
-
-		info.truncated = info.truncated or res.truncated
-		return blocks, info
-	end
-	if mime:match("^text/") then
-		local doc = require("doc")
-
-		return { doc.run(doc.block("pre"), res.body) },
-		    { truncated = res.truncated }
-	end
-	return nil, "not text: " .. mime
-end
 
 return M

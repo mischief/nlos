@@ -183,32 +183,32 @@ local function fold(text, marks, width, first, cont, emit)
 	end
 end
 
--- blocks to lines. Each line is { text, kind, block, spans, level },
--- and spans are 1-based columns into text.
-function M.wrap(blocks, cols, opts)
-	opts = opts or {}
+-- one block, folded. emit(text, off, len, indent) once a line, which
+-- is the only place a line's shape is decided: M.wrap keeps what it
+-- makes and M.layout only counts.
+local function foldblock(b, cols, take)
+	local text, marks = flatten(b)
+	-- the marks travel with each line rather than being returned
+	-- after them: a caller building lines needs them as they come
+	local emit = function(s, off, len, indent)
+		take(s, off, len, indent, marks)
+	end
 
-	local lines = {}
-
-	for i, b in ipairs(blocks) do
-		local text, marks = flatten(b)
-		local function emit(s, off, len, indent)
-			lines[#lines + 1] = {
-				text = s,
-				kind = b.kind,
-				level = b.level,
-				block = i,
-				spans = spansfor(marks, off, len, indent),
-			}
-		end
-
+	do
 		if b.kind == "pre" then
 			-- never folded: wrapping preformatted text wraps
 			-- the picture it draws
+			local last = nil
+
 			for line in (text .. "\n"):gmatch("(.-)\n") do
-				emit(line, 1, wlen(line), 0)
+				if last then
+					emit(last, 1, wlen(last), 0)
+				end
+				last = line
 			end
-			lines[#lines] = nil
+			if last and last ~= "" then
+				emit(last, 1, wlen(last), 0)
+			end
 		elseif b.kind == "rule" then
 			emit(string.rep("-", cols), 0, 0, 0)
 		elseif b.kind == "head" then
@@ -230,7 +230,155 @@ function M.wrap(blocks, cols, opts)
 			fold(text, marks, cols, "", "", emit)
 		end
 	end
+	return marks
+end
+
+-- one line, as a viewer wants it. Spans are 1-based columns into text.
+local function line(b, i, s, off, len, indent, marks)
+	return {
+		text = s,
+		kind = b.kind,
+		level = b.level,
+		block = i,
+		spans = spansfor(marks, off, len, indent),
+	}
+end
+
+-- every block folded and kept. What a caller that holds a small page
+-- wants; a big one wants M.layout, which keeps nothing.
+function M.wrap(blocks, cols)
+	local lines = {}
+
+	for i, b in ipairs(blocks) do
+		foldblock(b, cols, function(s, off, len, indent, marks)
+			lines[#lines + 1] = line(b, i, s, off, len, indent,
+			    marks)
+		end)
+	end
 	return lines
+end
+
+-- ---- an index, for a page too big to keep folded ----
+
+-- How many lines each block folds to, and nothing else. A page is read
+-- through a window of twenty lines and only those need to exist; the
+-- rest is two integers a block, which is what makes a long article
+-- cost what its text costs rather than what its layout would.
+local Layout = {}
+
+Layout.__index = Layout
+
+function M.layout(blocks, cols)
+	local L = setmetatable({
+		blocks = blocks,
+		cols = cols,
+		count = {},
+		first = {},
+		nlines = 0,
+	}, Layout)
+
+	for i, b in ipairs(blocks) do
+		local n = 0
+
+		foldblock(b, cols, function()
+			n = n + 1
+		end)
+		L.count[i] = n
+		L.first[i] = L.nlines + 1
+		L.nlines = L.nlines + n
+	end
+	return L
+end
+
+-- which block holds a line, by walking from a guess. Lines are asked
+-- for in order, so the guess is nearly always right.
+function Layout:blockat(lineno)
+	if lineno < 1 or lineno > self.nlines then
+		return nil
+	end
+
+	local i = self.at or 1
+
+	if self.first[i] and self.first[i] > lineno then
+		i = 1
+	end
+	while i <= #self.blocks do
+		if lineno < self.first[i] + self.count[i] then
+			self.at = i
+			return i, lineno - self.first[i] + 1
+		end
+		i = i + 1
+	end
+	return nil
+end
+
+-- n lines from lineno, folded now and thrown away by the caller when
+-- the screen next changes
+function Layout:lines(lineno, n)
+	local out = {}
+	local i = self:blockat(lineno)
+
+	if not i then
+		return out
+	end
+	while i <= #self.blocks and #out < n do
+		local b = self.blocks[i]
+		local at = self.first[i]
+
+		foldblock(b, self.cols, function(s, off, len, indent, marks)
+			if at >= lineno and #out < n then
+				out[#out + 1] = line(b, i, s, off, len,
+				    indent, marks)
+			end
+			at = at + 1
+		end)
+		i = i + 1
+	end
+	return out
+end
+
+-- what is under a cell, without folding anything but the one block
+function Layout:linkat(lineno, col)
+	local got = self:lines(lineno, 1)
+
+	return M.linkat(got[1], col)
+end
+
+-- the links, in the order they are read. Not stored: a run already
+-- knows where it points, so the nth link is a walk and not a table.
+function Layout:link(n)
+	local seen, at = {}, 0
+
+	for _, b in ipairs(self.blocks) do
+		for i = 1, b.n do
+			local l = b.link[i]
+
+			if l and not seen[l] then
+				seen[l] = true
+				at = at + 1
+				if at == n then
+					return l
+				end
+			end
+		end
+	end
+	return nil
+end
+
+function Layout:nlinks()
+	local seen, n = {}, 0
+
+	for _, b in ipairs(self.blocks) do
+		for i = 1, b.n do
+			local l = b.link[i]
+
+			if l and not seen[l] then
+				seen[l] = true
+				n = n + 1
+			end
+		end
+	end
+	return n
 end
 
 -- what is under a cell: the link whose span covers that column, or

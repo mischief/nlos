@@ -151,5 +151,85 @@ is(doc.linkat(lines[1], 1), nil, "with nothing under any cell")
 
 is(#doc.wrap({}, 20), 0, "an empty document lays out to nothing")
 
+-- ---- the index, which keeps no lines ----
+
+local page = {}
+
+for i = 1, 40 do
+	local b = doc.block(i % 7 == 0 and "head" or "para", { level = 1 })
+
+	doc.run(b, "block " .. i .. " with some words in it to fold ")
+	doc.run(b, "a link here", "/l" .. i)
+	page[i] = b
+end
+
+local L = doc.layout(page, 20)
+local all = doc.wrap(page, 20)
+
+is(L.nlines, #all, "the index counts the lines a full wrap makes")
+
+-- and every line it hands back is the line the full wrap made
+local same = 0
+
+for i = 1, L.nlines do
+	local got = L:lines(i, 1)[1]
+
+	if got and got.text == all[i].text and got.kind == all[i].kind then
+		same = same + 1
+	end
+end
+is(same, L.nlines, "and each one of them, asked for on its own")
+
+local win = L:lines(5, 10)
+
+is(#win, 10, "a window is the number of lines asked for")
+is(win[1].text, all[5].text, "starting where it was asked to")
+is(win[10].text, all[14].text, "and ending ten later")
+
+is(#L:lines(L.nlines, 10), 1, "a window at the end stops at the end")
+is(#L:lines(L.nlines + 5, 10), 0, "and past it is nothing at all")
+
+-- a link is found without folding the rest of the page
+local at = nil
+
+for i = 1, L.nlines do
+	local l = all[i]
+
+	for _, s in ipairs(l.spans) do
+		if s.link == "/l3" then
+			at = { i, s.from }
+			break
+		end
+	end
+	if at then
+		break
+	end
+end
+ok(at, "the page has a link to find")
+is(L:linkat(at[1], at[2]), "/l3", "and the index finds it where it is")
+
+is(L:nlinks(), 40, "it counts the links without keeping them")
+is(L:link(1), "/l1", "and hands over the nth by walking the blocks")
+is(L:link(40), "/l40", "including the last")
+is(L:link(41), nil, "and nothing past it")
+
+-- what it costs is the point of it
+collectgarbage()
+local before = collectgarbage("count")
+local kept = doc.layout(page, 20)
+
+collectgarbage()
+local idx = collectgarbage("count") - before
+
+before = collectgarbage("count")
+local lines2 = doc.wrap(page, 20)
+
+collectgarbage()
+local full = collectgarbage("count") - before
+
+ok(idx * 4 < full, ("an index is far smaller than the lines it stands " ..
+    "for (%.1fk vs %.1fk)"):format(idx, full))
+ok(kept.nlines == #lines2, "while standing for exactly as many")
+
 io.write(("1..%d\n"):format(count))
 os.exit(failed == 0 and 0 or 1)
