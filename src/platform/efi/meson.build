@@ -327,11 +327,11 @@ lua_payload = files(
 # Its size is the partition's size (mkimage reads it), so it is picked
 # here rather than fixed in two places.
 #
-# tools/mkgefs.lua reaches gefs.so through require("gefs.native"), which
-# resolves against the build directory it runs in -- a runtime
-# dependency ninja cannot see in the command line, so it is declared.
-# Without it the two targets are unordered and the build fails whenever
-# ninja reaches this one first.
+# tools/mkgefs.lua reaches gefs.so through require("gefs.native"). The
+# path comes from lua_host_env, since a test setup covers tests and not
+# a build step. `depends` is the other half: a runtime dependency ninja
+# cannot see in the command line, so without it the two targets are
+# unordered and the build fails whenever ninja reaches this one first.
 gefs_img_deps = []
 if lua54_dep.found()
   gefs_img_deps += gefs_native_host
@@ -341,6 +341,7 @@ gefs_img = custom_target('gefs.img',
   output: 'gefs.img',
   command: [lua_interp, files('../../../tools/mkgefs.lua'), '@OUTPUT@',
             '--version', version_txt.full_path()],
+  env: lua_host_env,
   depends: gefs_img_deps + [version_txt],
 )
 

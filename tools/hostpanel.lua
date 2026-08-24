@@ -33,14 +33,10 @@ local Panel = {}
 
 Panel.__index = Panel
 
+-- through LUA_CPATH, which `meson devenv` sets. Outside one, the module
+-- is not on the path and require says so.
 local function hostutil()
-	local so = os.getenv("HOSTUTIL_SO")
-
-	if not so then
-		error("HOSTUTIL_SO is not set " ..
-		    "(build it: ninja -C build hostutil.so)", 0)
-	end
-	return assert(package.loadlib(so, "luaopen_hostutil"))()
+	return require("hostutil")
 end
 
 -- open(port, baud) -> panel

@@ -331,7 +331,6 @@ foreach t : microvm_tests
     protocol: 'tap',
     timeout: 60,
     is_parallel: true,
-    env: gefs_host_env,
     depends: gefs_host_deps,
   )
 endforeach
@@ -378,7 +377,6 @@ foreach n : ['2', '4']
       protocol: 'tap',
       timeout: 60,
       is_parallel: true,
-      env: gefs_host_env,
       depends: gefs_host_deps,
     )
   endforeach
@@ -394,7 +392,6 @@ foreach t : shared_tests
     protocol: 'tap',
     timeout: 60,
     is_parallel: true,
-    env: gefs_host_env,
     depends: gefs_host_deps,
   )
 endforeach
@@ -435,7 +432,6 @@ foreach t : microvm_pci0_tests
     protocol: 'tap',
     timeout: 60,
     is_parallel: true,
-    env: gefs_host_env,
     depends: gefs_host_deps,
   )
 endforeach
@@ -451,7 +447,6 @@ foreach t : microvm_pci_tests
     protocol: 'tap',
     timeout: 60,
     is_parallel: true,
-    env: gefs_host_env,
     depends: gefs_host_deps,
   )
 endforeach
@@ -472,7 +467,6 @@ if have_hostutil and sz_prog.found() and rz_prog.found() and \
     args: [files('../../../tools/zmodemtest.lua'), luaos_microvm_elf],
     protocol: 'tap',
     timeout: 400,
-    env: {'HOSTUTIL_SO': hostutil.full_path()},
     depends: hostutil,
   )
 endif
@@ -483,7 +477,6 @@ if have_hostutil
       files('../../../test/boot/microvm_httpd.lua')],
     protocol: 'tap',
     timeout: 60,
-    env: {'HOSTUTIL_SO': hostutil.full_path()},
     depends: hostutil,
   )
 endif
@@ -500,7 +493,6 @@ if have_hostutil
       files('../../../test/boot/microvm_bulk.lua')],
     protocol: 'tap',
     timeout: 120,
-    env: {'HOSTUTIL_SO': hostutil.full_path()},
     depends: hostutil,
   )
 endif
@@ -519,7 +511,6 @@ if have_hostutil
     args: [files('../../../test/microvm_repl.lua'), luaos_microvm_elf],
     protocol: 'tap',
     timeout: 120,
-    env: {'HOSTUTIL_SO': hostutil.full_path()},
     depends: hostutil,
   )
 endif
@@ -530,7 +521,6 @@ if have_hostutil
       files('../../../test/boot/microvm_serialrx.lua')],
     protocol: 'tap',
     timeout: 120,
-    env: {'HOSTUTIL_SO': hostutil.full_path()},
     depends: hostutil,
   )
 endif

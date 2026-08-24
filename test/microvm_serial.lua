@@ -12,8 +12,7 @@
 -- a message lib/wire.lua delivers as a bare string. Nothing exercised
 -- the real path, so a false negative looked exactly like a dead driver.
 
-local hostutil = assert(package.loadlib(os.getenv("HOSTUTIL_SO") or
-    "./hostutil.so", "luaopen_hostutil"))()
+local hostutil = require("hostutil")
 
 local elf = arg[1]
 local payload = arg[2]

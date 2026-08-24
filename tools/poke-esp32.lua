@@ -1,7 +1,7 @@
 #!/usr/bin/env lua5.4
 -- poke-esp32.lua PORT ACTION... -- drive a board's panel from the host.
 --
---	HOSTUTIL_SO=build/hostutil.so lua5.4 tools/poke-esp32.lua \
+--	meson devenv -C build lua5.4 tools/poke-esp32.lua \
 --	    /dev/ttyACM0 tap 14,40 sleep 1 shot /tmp/after.ppm
 --
 -- Actions run in order over one serial session, so a sequence of

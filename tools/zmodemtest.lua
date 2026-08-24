@@ -1,7 +1,7 @@
 #!/usr/bin/env lua5.4
 -- zmodemtest.lua ELF -- drive bin/rz.lua and bin/sz.lua from real lrzsz.
 --
---	HOSTUTIL_SO=build/hostutil.so lua5.4 tools/zmodemtest.lua \
+--	meson devenv -C build-microvm lua5.4 tools/zmodemtest.lua \
 --	    build-microvm/luaos-microvm.elf
 --
 -- What this covers and test/host_lrzsz.lua cannot is the path either

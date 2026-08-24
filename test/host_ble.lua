@@ -561,15 +561,15 @@ end
 -- ---- against btvirt, where the build found one ----
 
 local btvirt = os.getenv("BTVIRT")
-local so = os.getenv("HOSTUTIL_SO")
+local havehu, loaded = pcall(require, "hostutil")
 
-if not btvirt or btvirt == "" or not so then
+if not btvirt or btvirt == "" or not havehu then
 	io.write("# no btvirt: the codec ran, the controller did not\n")
 	io.write("1.." .. count .. "\n")
 	os.exit(failed == 0 and 0 or 1)
 end
 
-local hu = assert(package.loadlib(so, "luaopen_hostutil"))()
+local hu = loaded
 
 -- tcp on a port of our own, not the default unix socket: meson runs
 -- tests in parallel and every btvirt would otherwise want the same

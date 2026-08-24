@@ -30,10 +30,7 @@ if on_board and not have_hostutil
 endif
 
 board_harness = files('../tools/boottest-board.lua')
-board_env = {
-  'HOSTUTIL_SO': meson.project_build_root() / 'hostutil.so',
-  'LUAOS_ESPPORT': get_option('esp32_port'),
-}
+board_env = {'LUAOS_ESPPORT': get_option('esp32_port')}
 
 # Why a payload does not run on a board. The answer is the same every
 # run, so it is settled here rather than by spending fifteen seconds
@@ -92,10 +89,7 @@ if platform == 'hosted'
 # rather than a boot. Tests naming hardware this machine has not got
 # are absent rather than failing: no NIC, no framebuffer, no firmware.
 hosted_boottest = files('../tools/boottest-hosted.lua')
-hosted_env = {
-  'MESON_SOURCE_ROOT': meson.project_source_root(),
-  'LUA_CPATH': meson.project_build_root() / '?.so;;',
-}
+hosted_env = {'MESON_SOURCE_ROOT': meson.project_source_root()}
 
 hosted_tests = ['spawnarg', 'nsio', 'escape', 'stdout', 'channel', 'proc',
   'recovery', 'ipc', 'budget', 'memlimit', 'math', 'srv', 'mountcmd',
@@ -294,9 +288,6 @@ foreach t : shared_tests
 endforeach
 
 hostenv = archenv
-if have_hostutil
-  hostenv = archenv + {'HOSTUTIL_SO': hostutil.full_path()}
-endif
 
 # does the firmware ship a network stack? this gates the net tests, and
 # it dates from when ours was a binding over the firmware's own
@@ -596,7 +587,6 @@ test('tcp4-codec', lua_interp,
   args: [files('host_tcp4.lua')],
   protocol: 'tap',
   timeout: 20,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -611,7 +601,6 @@ test('svc-start', lua_interp,
   args: [files('host_svc.lua')],
   protocol: 'tap',
   timeout: 20,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -629,7 +618,6 @@ test('mouse-queue', lua_interp,
   args: [files('host_mouse.lua')],
   protocol: 'tap',
   timeout: 20,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -721,7 +709,6 @@ test('ns-rename', lua_interp,
   args: [files('host_rename.lua')],
   protocol: 'tap',
   timeout: 60,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -762,7 +749,6 @@ test('dhcp-codec', lua_interp,
   args: [files('host_dhcp.lua')],
   protocol: 'tap',
   timeout: 20,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -797,7 +783,6 @@ test('bitchat-packet', lua_interp,
   args: [files('host_bitchat.lua')],
   protocol: 'tap',
   timeout: 30,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -814,7 +799,6 @@ test('bitchat-fragment', lua_interp,
   args: [files('host_fragment.lua')],
   protocol: 'tap',
   timeout: 30,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -823,7 +807,6 @@ test('bitchat-relay', lua_interp,
   args: [files('host_relay.lua')],
   protocol: 'tap',
   timeout: 30,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -832,7 +815,6 @@ test('noise', lua_interp,
   args: [files('host_noise.lua')],
   protocol: 'tap',
   timeout: 60,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -841,18 +823,13 @@ test('zmodem-protocol', lua_interp,
   protocol: 'tap',
   timeout: 60,
 )
-# the audio decoder, both halves against each other. adpcm.so is on
-# LUA_CPATH so require("adpcm.native") reaches the same C the guest
-# runs rather than a lookalike.
+# the audio decoder, both halves against each other. The native module
+# reaches the same C the guest runs rather than a lookalike.
 if lua54_dep.found()
-  adpcm_env = environment()
-  adpcm_env.set('LUA_CPATH',
-    meson.project_build_root() / '?.so', separator: ';')
   test('adpcm-decode', lua_interp,
     args: [files('host_adpcm.lua')],
     protocol: 'tap',
     timeout: 60,
-    env: adpcm_env,
     depends: [adpcm_native_host],
   )
 
@@ -863,7 +840,6 @@ if lua54_dep.found()
     args: [files('host_meshtastic.lua')],
     protocol: 'tap',
     timeout: 60,
-    env: adpcm_env,
     depends: [crypto_native_host],
   )
 
@@ -890,7 +866,7 @@ endif
 # real packets with it, which is what checks our encoding against
 # somebody else's reading of the specification.
 if have_hostutil
-  ble_env = {'HOSTUTIL_SO': hostutil.full_path()}
+  ble_env = {}
   if btvirt_prog.found()
     ble_env += {'BTVIRT': btvirt_prog.full_path()}
   endif
@@ -932,8 +908,7 @@ if have_hostutil and sz_prog.found() and rz_prog.found() and socat_prog.found()
     # the peers by the path meson found, not by a name the test repeats:
     # the guard above takes either spelling, so a test naming one of them
     # itself runs on a host where that half is missing.
-    env: {'HOSTUTIL_SO': hostutil.full_path(),
-          'LRZSZ_SZ': sz_prog.full_path(),
+    env: {'LRZSZ_SZ': sz_prog.full_path(),
           'LRZSZ_RZ': rz_prog.full_path()},
     depends: hostutil,
   )
@@ -943,7 +918,6 @@ test('tcb-statemachine', lua_interp,
   args: [files('host_tcb.lua')],
   protocol: 'tap',
   timeout: 20,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -963,7 +937,6 @@ test('tcb-lossy', lua_interp,
   args: [files('host_tcbloss.lua')],
   protocol: 'tap',
   timeout: 20,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -982,7 +955,6 @@ test('gefs-host', lua_interp,
   args: [files('host_gefs.lua')],
   protocol: 'tap',
   timeout: 120,
-  env: gefs_host_env,
   depends: gefs_host_deps,
 )
 
@@ -1003,7 +975,6 @@ test('fat-write', lua_interp,
   args: [files('host_fatwrite.lua')],
   protocol: 'tap',
   timeout: 120,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -1011,7 +982,6 @@ test('fat-host', lua_interp,
   args: [files('host_fat.lua')],
   protocol: 'tap',
   timeout: 60,
-  env: host_env,
   depends: host_deps,
 )
 
@@ -1024,6 +994,5 @@ test('p9serve-host', lua_interp,
   args: [files('host_p9serve.lua')],
   protocol: 'tap',
   timeout: 30,
-  env: gefs_host_env,
   depends: gefs_host_deps,
 )

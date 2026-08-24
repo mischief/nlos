@@ -2,8 +2,8 @@
 -- screenshot-esp32.lua [PORT] [OUT.pbm] [--draw TEXT] [--rows N] --
 -- read the panel back and write a netpbm.
 --
---	HOSTUTIL_SO=build/hostutil.so \
---	    lua5.4 tools/screenshot-esp32.lua /dev/ttyACM0 /tmp/shot.pbm
+--	meson devenv -C build lua5.4 tools/screenshot-esp32.lua \
+--	    /dev/ttyACM0 /tmp/shot.pbm
 --
 -- The transfer, and why the panel cannot simply be read, are in
 -- tools/hostpanel.lua. This is the command line over it; use

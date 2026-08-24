@@ -14,8 +14,7 @@
 --
 -- No fw_cfg payload is passed. That absence is the point.
 
-local hostutil = assert(package.loadlib(os.getenv("HOSTUTIL_SO") or
-    "./hostutil.so", "luaopen_hostutil"))()
+local hostutil = require("hostutil")
 
 local elf = arg[1]
 

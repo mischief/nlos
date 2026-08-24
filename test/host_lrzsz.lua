@@ -23,8 +23,7 @@ local scriptdir = arg[0]:match("^(.*)/[^/]+$") or "."
 
 package.path = scriptdir .. "/../lib/?.lua;" .. package.path
 
-local hostutil = assert(package.loadlib(os.getenv("HOSTUTIL_SO") or
-    "./hostutil.so", "luaopen_hostutil"))()
+local hostutil = require("hostutil")
 local zmodem = require("zmodem")
 
 -- the two programs, as meson found them. Naming them here instead is

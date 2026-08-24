@@ -313,14 +313,13 @@ endif
 # a.b to a.so and calls luaopen_a_b, so require("los.buf") finds
 # luaopen_los_buf with no build subdirectory to arrange.
 #
-# host_deps travels with host_env and must be passed as `depends:` by
-# every test using it. `meson test` builds only what the selected tests
-# declare, not `all`, so build_by_default is no help when a test names a
-# subset: the module is simply absent and the test fails as a missing
-# lua module. It looked like it worked because the default LUA_CPATH
-# ends in ./?.so and the test's cwd is the build directory, so a stale
-# copy from an earlier full build was found by accident.
-host_env = environment()
+# host_deps must be passed as `depends:` by every test using it. `meson
+# test` builds only what the selected tests declare, not `all`, so
+# build_by_default is no help when a test names a subset: the module is
+# simply absent and the test fails as a missing lua module. It looked
+# like it worked because the default LUA_CPATH ends in ./?.so and the
+# test's cwd is the build directory, so a stale copy from an earlier
+# full build was found by accident.
 host_deps = []
 if lua54_dep.found()
   buf_native_host = shared_module('los',
@@ -331,8 +330,6 @@ if lua54_dep.found()
     native: true,
     build_by_default: true,
   )
-  host_env.append('LUA_CPATH',
-    meson.current_build_dir() / '?.so', separator: ';')
   host_deps += buf_native_host
 
   # dev, which every filesystem lib requires. The guest preloads it; on
@@ -387,18 +384,10 @@ endif
 # on all of them, and the efi image's gefs.img is built by running lua
 # against this module.
 #
-# LUA_CPATH is appended rather than set, so a caller's own is kept, and
-# unconditionally as well as inside the branch: the gefs host test also
-# loads los.buf, which is built beside this and by the same test for
-# lua5.4's headers.
-#
 # gefs_host_deps carries both modules, since anything reaching lib/gefs
 # also reaches los.buf. See the note at host_deps for why `depends:` is
 # required rather than merely tidy.
-gefs_host_env = environment()
 gefs_host_deps = []
-gefs_host_env.append('LUA_CPATH',
-  meson.current_build_dir() / '?.so', separator: ';')
 if lua54_dep.found()
   gefs_native_host = shared_module('gefs',
     ['src/gefs_native.c'],
@@ -407,8 +396,6 @@ if lua54_dep.found()
     native: true,
     build_by_default: true,
   )
-  gefs_host_env.append('LUA_CPATH',
-    meson.current_build_dir() / '?.so', separator: ';')
   gefs_host_deps += [gefs_native_host, buf_native_host]
 
   # the decoder's hot loop, so the host test runs the C the guest runs
@@ -422,6 +409,30 @@ if lua54_dep.found()
     build_by_default: true,
   )
 endif
+
+# Every native host module is declared above, so all of them land in the
+# build root and one LUA_CPATH entry reaches the lot. Appended, so a
+# caller's own path survives and a module added elsewhere can add to it.
+#
+# The same block goes to the tests and to `meson devenv`, which is what
+# lets a script say require("hostutil") whether meson runs it or a
+# person does:
+#
+#	meson devenv -C build lua5.4 tools/poke-esp32.lua push bin/x.lua
+#	eval "$(meson devenv -C build --dump)"
+#
+# .lua modules are not here on purpose. Each script prepends its own
+# directory to package.path from arg[0], which works from any build dir
+# and does not let tools/gefs.lua shadow lib/gefs.lua.
+#
+# The ";;" tail is what keeps lua's compiled-in default reachable: a
+# LUA_CPATH that names only this directory would hide every C module
+# the system has.
+lua_host_env = environment()
+lua_host_env.append('LUA_CPATH', meson.project_build_root() + '/?.so;;',
+  separator: ';')
+meson.add_devenv(lua_host_env)
+add_test_setup('default', is_default: true, env: lua_host_env)
 
 # the esp32 boards: run targets that drive ESP-IDF, since that build
 # cannot be replaced by this one. The IDF project itself stays at

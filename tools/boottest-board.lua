@@ -2,7 +2,7 @@
 -- boottest-board.lua TEST.lua -- run one boot test on a real esp32 and
 -- emit the TAP it printed on the console.
 
---	HOSTUTIL_SO=build/hostutil.so ESPPORT=/dev/ttyACM3 \
+--	ESPPORT=/dev/ttyACM3 meson devenv -C build \
 --	    lua5.4 tools/boottest-board.lua test/boot/test_channel.lua
 
 -- The counterpart of boottest.lua and boottest-esp32.lua, differing in

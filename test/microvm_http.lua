@@ -25,8 +25,7 @@ local toolsdir = scriptdir .. "/../tools"
 package.path = scriptdir .. "/?.lua;" .. package.path .. ";" .. toolsdir .. "/?.lua"
 
 local http = require("hosthttp")
-local hostutil = assert(package.loadlib(os.getenv("HOSTUTIL_SO") or
-    "./hostutil.so", "luaopen_hostutil"))()
+local hostutil = require("hostutil")
 
 local elf = arg[1]
 local payload = arg[2]

@@ -9,9 +9,7 @@
 -- everything here returns argv TABLES: hostutil.spawn() is a real
 -- execvp, no shell involved, so there is nothing to quote.
 
-local hostutil_path = os.getenv("HOSTUTIL_SO") or
-    error("HOSTUTIL_SO not set (meson sets this; see meson.build)")
-local hostutil = assert(package.loadlib(hostutil_path, "luaopen_hostutil"))()
+local hostutil = require("hostutil")
 
 local M = {}
 
