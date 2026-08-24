@@ -9,39 +9,12 @@
  * size-class or free-list bug takes.
  */
 
-#include <stdarg.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "luaheap.h"
-
-static int count, failed;
-
-static int
-ok(int cond, const char *name)
-{
-	count++;
-	if (!cond)
-		failed++;
-	printf("%s %d - %s\n", cond ? "ok" : "not ok", count, name);
-	fflush(stdout);
-	return cond;
-}
-
-static void
-diag(const char *fmt, ...)
-{
-	va_list ap;
-
-	fputs("# ", stdout);
-	va_start(ap, fmt);
-	vprintf(fmt, ap);
-	va_end(ap);
-	fputc('\n', stdout);
-	fflush(stdout);
-}
+#include "tap.h"
 
 /* ---- chunk source: plain malloc, with accounting ---- */
 
@@ -158,74 +131,105 @@ rndsize(void)
 	}
 }
 
-int
-main(void)
+/* The heap the scenarios below share. They run in registration order:
+ * create makes it, teardown destroys it, and each one in between leaves
+ * it usable for the next.
+ */
+struct ctx {
+	struct luaheap *h;
+};
+
+static int
+test_create(void *arg)
 {
-	printf("1..12\n");
+	struct ctx *c = arg;
 
-	/* ---- basics ---- */
-	struct luaheap *h = luaheap_new(&host_ops, 0);
+	c->h = luaheap_new(&host_ops, 0);
+	TAP_CHECK(c->h != 0, "a heap can be created");
+	return c->h == 0;
+}
 
-	ok(h != 0, "a heap can be created");
+static int
+test_classes(void *arg)
+{
+	struct ctx *c = arg;
+	void *a = luaheap_realloc(c->h, 0, 0, 32);
+	void *b = luaheap_realloc(c->h, 0, 0, 32);
 
-	void *a = luaheap_realloc(h, 0, 0, 32);
-	void *b = luaheap_realloc(h, 0, 0, 32);
-
-	ok(a && b && a != b, "two allocations of one class are distinct");
-	ok(((uintptr_t)a % 8) == 0 && ((uintptr_t)b % 8) == 0,
+	TAP_CHECK(a && b && a != b, "two allocations of one class are distinct");
+	TAP_CHECK(((uintptr_t)a % 8) == 0 && ((uintptr_t)b % 8) == 0,
 	    "allocations are 8-byte aligned");
 
 	memset(a, 0xaa, 32);
 	memset(b, 0xbb, 32);
-	ok(*(unsigned char *)a == 0xaa && *(unsigned char *)b == 0xbb,
+	TAP_CHECK(*(unsigned char *)a == 0xaa && *(unsigned char *)b == 0xbb,
 	    "the two do not alias");
 
 	/* a freed block should come back rather than growing the heap */
-	luaheap_realloc(h, b, 32, 0);
+	luaheap_realloc(c->h, b, 32, 0);
+	TAP_CHECK(luaheap_realloc(c->h, 0, 0, 32) == b,
+	    "a freed block is reused by its own class");
+	return 0;
+}
 
-	void *c = luaheap_realloc(h, 0, 0, 32);
-
-	ok(c == b, "a freed block is reused by its own class");
+static int
+test_grow(void *arg)
+{
+	struct ctx *c = arg;
+	int kept = 1;
 
 	/* growth inside one class must not move, which is the case this
 	 * design exists to make free
 	 */
-	void *d = luaheap_realloc(h, 0, 0, 20);
-	void *e = luaheap_realloc(h, d, 20, 24);
+	void *d = luaheap_realloc(c->h, 0, 0, 20);
+	void *e = luaheap_realloc(c->h, d, 20, 24);
 
-	ok(d == e, "growing within a class returns the same pointer");
+	TAP_CHECK(d == e, "growing within a class returns the same pointer");
 
 	/* crossing a class must move and must preserve contents */
 	memset(e, 0x5a, 24);
 
-	void *f = luaheap_realloc(h, e, 24, 300);
-	int kept = 1;
+	void *f = luaheap_realloc(c->h, e, 24, 300);
 
 	for (int i = 0; i < 24; i++) {
 		if (((unsigned char *)f)[i] != 0x5a)
 			kept = 0;
 	}
-	ok(f != 0 && kept, "crossing a class preserves the old contents");
+	TAP_CHECK(f != 0 && kept, "crossing a class preserves the old contents");
+	return 0;
+}
+
+static int
+test_large(void *arg)
+{
+	struct ctx *c = arg;
+	int keptbig = 1;
 
 	/* the large path */
-	void *g = luaheap_realloc(h, 0, 0, 40000);
+	void *g = luaheap_realloc(c->h, 0, 0, 40000);
 
-	ok(g != 0, "a block past the largest class is served");
+	TAP_CHECK(g != 0, "a block past the largest class is served");
 	memset(g, 0x77, 40000);
 
-	void *g2 = luaheap_realloc(h, g, 40000, 80000);
-	int keptbig = 1;
+	void *g2 = luaheap_realloc(c->h, g, 40000, 80000);
 
 	for (int i = 0; i < 40000; i++) {
 		if (((unsigned char *)g2)[i] != 0x77)
 			keptbig = 0;
 	}
-	ok(g2 != 0 && keptbig, "a large block survives being grown");
-	luaheap_realloc(h, g2, 80000, 0);
+	TAP_CHECK(g2 != 0 && keptbig, "a large block survives being grown");
+	luaheap_realloc(c->h, g2, 80000, 0);
+	return 0;
+}
 
-	/* ---- torture ---- */
-	nlive = 0;
+static int
+test_torture(void *arg)
+{
+	struct ctx *c = arg;
+	struct luaheap *h = c->h;
 	int bad_overlap = 0, bad_content = 0;
+
+	nlive = 0;
 
 	for (long step = 0; step < 200000; step++) {
 		int op = rnd() % 100;
@@ -284,18 +288,37 @@ main(void)
 		}
 	}
 
-	diag("torture: %d blocks still live", nlive);
-	ok(bad_overlap == 0, "no allocation ever overlapped a live block");
-	ok(bad_content == 0, "no block's contents were ever corrupted");
+	tap_diag("torture: %d blocks still live", nlive);
+	TAP_CHECK(bad_overlap == 0, "no allocation ever overlapped a live block");
+	TAP_CHECK(bad_content == 0, "no block's contents were ever corrupted");
+	return 0;
+}
 
-	/* ---- teardown frees everything ---- */
+static int
+test_teardown(void *arg)
+{
+	struct ctx *c = arg;
 	size_t before = host_live;
 
-	luaheap_destroy(h);
-	diag("chunk source held %zu bytes before destroy, %zu after",
+	luaheap_destroy(c->h);
+	c->h = 0;
+	tap_diag("chunk source held %zu bytes before destroy, %zu after",
 	    before, host_live);
-	ok(host_live == 0,
+	TAP_CHECK(host_live == 0,
 	    "destroy returns every byte, without walking live objects");
+	return 0;
+}
 
-	return failed ? 1 : 0;
+int
+main(void)
+{
+	static struct ctx c;
+
+	TAP_ADD("create", test_create, &c);
+	TAP_ADD("size classes", test_classes, &c);
+	TAP_ADD("growing", test_grow, &c);
+	TAP_ADD("large blocks", test_large, &c);
+	TAP_ADD("torture", test_torture, &c);
+	TAP_ADD("teardown", test_teardown, &c);
+	return tap_run();
 }

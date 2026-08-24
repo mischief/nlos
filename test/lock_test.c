@@ -14,40 +14,13 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
-#include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "machine.h"
 #include "lock.h"
-
-static int count, failed;
-
-static int
-ok(int cond, const char *name)
-{
-	count++;
-	if (!cond)
-		failed++;
-	printf("%s %d - %s\n", cond ? "ok" : "not ok", count, name);
-	fflush(stdout);
-	return cond;
-}
-
-static void
-diag(const char *fmt, ...)
-{
-	va_list ap;
-
-	fputs("# ", stdout);
-	va_start(ap, fmt);
-	vprintf(fmt, ap);
-	va_end(ap);
-	fputc('\n', stdout);
-	fflush(stdout);
-}
+#include "tap.h"
 
 /* more threads than the host has cpus is not a stronger test, it is a
  * different one: a ticket lock hands off in fifo order, so a descheduled
@@ -96,10 +69,12 @@ hammer(void *arg)
 	return 0;
 }
 
-static void
-test_exclusion(void)
+static int
+test_exclusion(void *arg)
 {
 	pthread_t th[NTHREAD];
+
+	(void)arg;
 
 	shared = 0;
 	memset(per, 0, sizeof per);
@@ -107,16 +82,16 @@ test_exclusion(void)
 
 	for (long i = 0; i < NTHREAD; i++)
 		if (pthread_create(&th[i], 0, hammer, (void *)i) != 0) {
-			ok(0, "pthread_create");
-			return;
+			TAP_CHECK(0, "pthread_create");
+			return 1;
 		}
 	atomic_store_explicit(&go, 1, memory_order_relaxed);
 	for (int i = 0; i < NTHREAD; i++)
 		pthread_join(th[i], 0);
 
-	ok(shared == (unsigned long)NTHREAD * NITER,
+	TAP_CHECK(shared == (unsigned long)NTHREAD * NITER,
 	    "every increment under the lock survives");
-	diag("shared=%lu want=%lu", shared, (unsigned long)NTHREAD * NITER);
+	tap_diag("shared=%lu want=%lu", shared, (unsigned long)NTHREAD * NITER);
 
 	/* the ticket lock's reason for being: no cpu is passed over.
 	 * A test-and-set would pass the count above and can fail this.
@@ -125,23 +100,27 @@ test_exclusion(void)
 	for (int i = 0; i < NTHREAD; i++)
 		if (per[i] != NITER)
 			fair = 0;
-	ok(fair, "every thread completed its iterations");
+	TAP_CHECK(fair, "every thread completed its iterations");
+	return 0;
 }
 
-static void
-test_canlock(void)
+static int
+test_canlock(void *arg)
 {
 	struct lock t = LOCK_INIT;
 
-	ok(canlock(&t), "canlock takes a free lock");
-	ok(!canlock(&t), "canlock refuses a held lock");
+	(void)arg;
+
+	TAP_CHECK(canlock(&t), "canlock takes a free lock");
+	TAP_CHECK(!canlock(&t), "canlock refuses a held lock");
 	unlock(&t);
-	ok(canlock(&t), "canlock takes it again once released");
+	TAP_CHECK(canlock(&t), "canlock takes it again once released");
 	unlock(&t);
 
 	lock(&t);
-	ok(!canlock(&t), "canlock refuses one held by lock()");
+	TAP_CHECK(!canlock(&t), "canlock refuses one held by lock()");
 	unlock(&t);
+	return 0;
 }
 
 /* the ordering property, which is the half a counter cannot see: a
@@ -173,10 +152,12 @@ handoff(void *arg)
 	return 0;
 }
 
-static void
-test_handoff(void)
+static int
+test_handoff(void *arg)
 {
 	pthread_t th[NTHREAD];
+
+	(void)arg;
 
 	memset(payload, 0, sizeof payload);
 	seen_bad = 0;
@@ -184,29 +165,28 @@ test_handoff(void)
 
 	for (long i = 0; i < NTHREAD; i++)
 		if (pthread_create(&th[i], 0, handoff, (void *)i) != 0) {
-			ok(0, "pthread_create");
-			return;
+			TAP_CHECK(0, "pthread_create");
+			return 1;
 		}
 	atomic_store_explicit(&go, 1, memory_order_relaxed);
 	for (int i = 0; i < NTHREAD; i++)
 		pthread_join(th[i], 0);
 
-	ok(seen_bad == 0, "a write published before unlock is whole after lock");
-	diag("torn observations: %lu", seen_bad);
+	TAP_CHECK(seen_bad == 0, "a write published before unlock is whole after lock");
+	tap_diag("torn observations: %lu", seen_bad);
+	return 0;
 }
 
 int
 main(void)
 {
-	diag("NCPU=%d, %d threads x %d iterations", NCPU, NTHREAD, NITER);
+	tap_diag("NCPU=%d, %d threads x %d iterations", NCPU, NTHREAD, NITER);
 	if (NCPU == 1)
-		diag("uniprocessor build: lock() is a compiler barrier and "
+		tap_diag("uniprocessor build: lock() is a compiler barrier and "
 		    "the concurrent cases prove nothing");
 
-	test_canlock();
-	test_exclusion();
-	test_handoff();
-
-	printf("1..%d\n", count);
-	return failed ? 1 : 0;
+	TAP_ADD("canlock", test_canlock, NULL);
+	TAP_ADD("exclusion", test_exclusion, NULL);
+	TAP_ADD("handoff", test_handoff, NULL);
+	return tap_run();
 }

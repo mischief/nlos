@@ -19,6 +19,7 @@ static struct tap_test *tests;
 static size_t ntests;
 static size_t cap;
 static bool running;
+static bool header;
 static bool current_failed;
 
 int
@@ -65,11 +66,25 @@ tap_add_or_die(const char *name, tap_fn fn, void *arg, const char *file,
 	exit(EXIT_FAILURE);
 }
 
+/* TAP 13 wants its version line first, and a parser that takes the
+ * whole run as one test rejects anything before it. Any output goes
+ * through here so a diagnostic raised before tap_run() still follows it.
+ */
+static void
+tap_header(void)
+{
+	if (header)
+		return;
+	header = true;
+	puts("TAP version 13");
+}
+
 void
 tap_diag(const char *fmt, ...)
 {
 	va_list ap;
 
+	tap_header();
 	fputs("# ", stdout);
 	va_start(ap, fmt);
 	vfprintf(stdout, fmt, ap);
@@ -94,7 +109,7 @@ tap_run(void)
 	int failed = 0;
 
 	running = true;
-	puts("TAP version 13");
+	tap_header();
 	printf("1..%zu\n", ntests);
 	for (i = 0; i < ntests; i++) {
 		int r;

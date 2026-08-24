@@ -443,6 +443,12 @@ endif
 endif # platform == 'efi'
 
 # ---- host-native tests ----
+# The TAP harness the native tests share. A test is a named function,
+# the plan is the number registered, and a failed check names its own
+# file, line and expression.
+tap_src = files('libtap/tap.c')
+tap_inc = include_directories('libtap')
+
 # src/luaheap.c is the per-lua_State allocator. It has no firmware and
 # no kernel in it -- the chunk source is a pair of function pointers --
 # so it is built and tested natively, on whichever host is driving the
@@ -450,8 +456,8 @@ endif # platform == 'efi'
 # both platforms because neither one is involved.
 
 luaheap_test = executable('luaheap_test',
-  ['luaheap_test.c', '../src/luaheap.c'],
-  include_directories: include_directories('../src'),
+  ['luaheap_test.c', '../src/luaheap.c'] + tap_src,
+  include_directories: [include_directories('../src'), tap_inc],
   native: true,
 )
 test('luaheap', luaheap_test, protocol: 'tap', timeout: 120)
@@ -469,9 +475,9 @@ test('luaheap', luaheap_test, protocol: 'tap', timeout: 120)
 # strings. In the kernel this becomes one seed per boot rather than a
 # constant, so hash flooding stays as hard as lua intends.
 arena_test = executable('arena_test',
-  ['arena_test.c'] + lua_src,
+  ['arena_test.c'] + lua_src + tap_src,
   c_args: ['-Dluai_makeseed(L)=0x9e3779b9u'],
-  include_directories: include_directories('../lua'),
+  include_directories: [include_directories('../lua'), tap_inc],
   dependencies: meson.get_compiler('c', native: true).find_library('m',
     required: false),
   native: true,
@@ -507,8 +513,8 @@ if host_arch in ['x86_64', 'aarch64', 'riscv64']
   endif
 
   lock_test = executable('lock_test',
-    ['lock_test.c'],
-    include_directories: include_directories('../src', '../src' / host_arch),
+    ['lock_test.c'] + tap_src,
+    include_directories: [include_directories('../src', '../src' / host_arch), tap_inc],
     c_args: ['-DNCPU=8', '-DNTHREAD=@0@'.format(nthread)],
     dependencies: thread_dep,
     native: true,
@@ -547,8 +553,8 @@ if host_arch in ['x86_64', 'aarch64', 'riscv64']
   # mutually exclusive, and this target asks for one of them by hand.
   if cc.has_link_argument('-fsanitize=thread') and not asan_build
     lock_test_tsan = executable('lock_test_tsan',
-      ['lock_test.c'],
-      include_directories: include_directories('../src', '../src' / host_arch),
+      ['lock_test.c'] + tap_src,
+      include_directories: [include_directories('../src', '../src' / host_arch), tap_inc],
       c_args: tsan_args,
       link_args: ['-fsanitize=thread'],
       dependencies: thread_dep,
@@ -566,8 +572,8 @@ endif
 luaheap_lua_dep = dependency('lua5.4', native: true, required: false)
 if luaheap_lua_dep.found()
   luaheap_bench = executable('luaheap_bench',
-    ['luaheap_bench.c', '../src/luaheap.c'],
-    include_directories: include_directories('../src'),
+    ['luaheap_bench.c', '../src/luaheap.c'] + tap_src,
+    include_directories: [include_directories('../src'), tap_inc],
     dependencies: luaheap_lua_dep,
     native: true,
   )

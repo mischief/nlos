@@ -24,8 +24,6 @@
  * change inside lua/, which nothing here has needed so far.
  */
 
-#include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -41,36 +39,12 @@
 #include "lapi.h"
 #include "ltable.h"
 
+#include "tap.h"
+
 /* Membership bit. maskgcbits covers bits 0-5, so a sweep and a
  * generational age reset both leave bit 7 set.
  */
 #define ARENABIT	7
-
-static int count, failed;
-
-static int
-ok(int cond, const char *name)
-{
-	count++;
-	if (!cond)
-		failed++;
-	printf("%s %d - %s\n", cond ? "ok" : "not ok", count, name);
-	fflush(stdout);
-	return cond;
-}
-
-static void
-diag(const char *fmt, ...)
-{
-	va_list ap;
-
-	fputs("# ", stdout);
-	va_start(ap, fmt);
-	vprintf(fmt, ap);
-	va_end(ap);
-	fputc('\n', stdout);
-	fflush(stdout);
-}
 
 /* The arena: one static block, bump allocated. Static so the whole
  * region can be snapshotted and compared byte for byte.
@@ -86,7 +60,7 @@ abump(size_t n)
 
 	arenaoff = (arenaoff + 15u) & ~(size_t)15;	/* over-align */
 	if (arenaoff + n > sizeof arena) {
-		diag("arena exhausted");
+		tap_diag("arena exhausted");
 		exit(1);
 	}
 	p = arena + arenaoff;
@@ -223,7 +197,7 @@ arena_string(TString *ts)
 			return strs[i];
 	}
 	if (nstrs == MAXARENASTR) {
-		diag("arena string table full");
+		tap_diag("arena string table full");
 		exit(1);
 	}
 	strs[nstrs] = (ts->tt == LUA_VSHRSTR) ? arena_str2(s, l)
@@ -330,7 +304,7 @@ arena_load(const char *chunk, const char *name)
 	Proto *a;
 
 	if (luaL_loadbuffer(B, chunk, strlen(chunk), name) != LUA_OK) {
-		diag("relocate: %s", lua_tostring(B, -1));
+		tap_diag("relocate: %s", lua_tostring(B, -1));
 		exit(1);
 	}
 	a = arena_relocate(clLvalue(s2v(B->top.p - 1))->p);
@@ -351,7 +325,7 @@ arena_proto(const char *chunk, TString *source)
 	Proto *f, *a;
 
 	if (luaL_loadstring(B, chunk) != LUA_OK) {
-		diag("builder: %s", lua_tostring(B, -1));
+		tap_diag("builder: %s", lua_tostring(B, -1));
 		exit(1);
 	}
 	f = clLvalue(s2v(B->top.p - 1))->p;
@@ -454,13 +428,13 @@ run_module(lua_State *L, Proto *mp, const char *tag)
 
 	push_arena_closure(L, mp);
 	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-		diag("%s: module: %s", tag, lua_tostring(L, -1));
+		tap_diag("%s: module: %s", tag, lua_tostring(L, -1));
 		lua_pop(L, 1);
 		return 0;
 	}
 	lua_newtable(L);
 	if (lua_pcall(L, 1, 3, 0) != LUA_OK) {
-		diag("%s: call: %s", tag, lua_tostring(L, -1));
+		tap_diag("%s: call: %s", tag, lua_tostring(L, -1));
 		lua_pop(L, 1);
 		return 0;
 	}
@@ -473,7 +447,7 @@ run_module(lua_State *L, Proto *mp, const char *tag)
 	    strcmp(lua_tostring(L, -1),
 	    "a constant long enough not to be interned by lua") == 0;
 	if (!good)
-		diag("%s: got %lld / %s / %s", tag,
+		tap_diag("%s: got %lld / %s / %s", tag,
 		    (long long)lua_tointeger(L, -3),
 		    lua_tostring(L, -2), lua_tostring(L, -1));
 	lua_pop(L, 3);
@@ -509,46 +483,63 @@ churn(lua_State *L, int rounds, Proto *p, TString *shared)
 	}
 }
 
-int
-main(void)
-{
-	/* A module of the shape a real one has: constants short and long,
-	 * a nested function, an upvalue, a global read through _ENV, and
-	 * a string constant used as a table key. The global read is what
-	 * could not work before the splice -- "string" and "rep" are
-	 * arena constants, and _ENV's keys are the state's own.
-	 */
-	static const char mod[] =
-	    "local n = 0\n"
-	    "local function bump(k) n = n + k return n end\n"
-	    "return function(t)\n"
-	    "  t.count = bump(2)\n"
-	    "  return t.count, string.rep(\"ab\", 3),\n"
-	    "         \"a constant long enough not to be interned by lua\"\n"
-	    "end\n";
-	static char snap[sizeof arena];
+/* A module of the shape a real one has: constants short and long, a
+ * nested function, an upvalue, a global read through _ENV, and a string
+ * constant used as a table key. The global read is what could not work
+ * before the splice -- "string" and "rep" are arena constants, and
+ * _ENV's keys are the state's own.
+ */
+static const char mod[] =
+    "local n = 0\n"
+    "local function bump(k) n = n + k return n end\n"
+    "return function(t)\n"
+    "  t.count = bump(2)\n"
+    "  return t.count, string.rep(\"ab\", 3),\n"
+    "         \"a constant long enough not to be interned by lua\"\n"
+    "end\n";
+
+static char snap[sizeof arena];
+
+/* The story below is told in order: the tests run as registered, and
+ * each one leaves the arena and the two states as the next one needs
+ * them.
+ */
+struct ctx {
 	TString *src, *shared;
 	Proto *p, *mp;
 	lua_State *A, *B;
-	int r;
+};
 
-	printf("1..19\n");
+static int
+test_build(void *arg)
+{
+	struct ctx *c = arg;
 
 	/* Everything the arena will ever hold is built first: the splice
 	 * below has to see every string before a state interns any of it.
 	 */
-	src = arena_str("=(arena)");
-	shared = arena_str("arena-shared-key");
-	p = arena_proto("return 42", src);
-	mp = arena_load(mod, "=(module)");
+	c->src = arena_str("=(arena)");
+	c->shared = arena_str("arena-shared-key");
+	c->p = arena_proto("return 42", c->src);
+	c->mp = arena_load(mod, "=(module)");
 
-	diag("arena is %zu bytes: 1 proto, 2 strings", arenaoff);
-	ok(in_arena(p) && in_arena(shared) && in_arena(src),
+	tap_diag("arena is %zu bytes: 1 proto, 2 strings", arenaoff);
+	TAP_CHECK(in_arena(c->p) && in_arena(c->shared) && in_arena(c->src),
 	    "arena objects live outside any state");
+	return 0;
+}
+
+static int
+test_splice(void *arg)
+{
+	struct ctx *c = arg;
+	TString *shared = c->shared;
+	Proto *p = c->p;
+	lua_State *A, *B;
 
 	/* No libraries: nothing here needs one. */
-	A = luaL_newstate();
-	B = luaL_newstate();
+	A = c->A = luaL_newstate();
+	B = c->B = luaL_newstate();
 
 	/* Into ONE state, and that is the finding rather than a shortcut.
 	 *
@@ -584,19 +575,37 @@ main(void)
 		for (o = G(B)->allgc; o != NULL; o = o->next)
 			if ((void *)o == (void *)p || (void *)o == (void *)shared)
 				seen = 1;
-		ok(!seen, "arena objects are on no state's allgc list");
+		TAP_CHECK(!seen, "arena objects are on no state's allgc list");
 	}
+	return 0;
+}
+
+static int
+test_run(void *arg)
+{
+	struct ctx *c = arg;
+	lua_State *A = c->A, *B = c->B;
+	Proto *p = c->p;
 
 	/* both states run the shared code */
 	push_arena_closure(A, p);
-	ok(lua_pcall(A, 0, 1, 0) == LUA_OK && lua_tointeger(A, -1) == 42,
+	TAP_CHECK(lua_pcall(A, 0, 1, 0) == LUA_OK && lua_tointeger(A, -1) == 42,
 	    "state A calls the arena proto");
 	lua_pop(A, 1);
 
 	push_arena_closure(B, p);
-	ok(lua_pcall(B, 0, 1, 0) == LUA_OK && lua_tointeger(B, -1) == 42,
+	TAP_CHECK(lua_pcall(B, 0, 1, 0) == LUA_OK && lua_tointeger(B, -1) == 42,
 	    "state B calls the arena proto");
 	lua_pop(B, 1);
+	return 0;
+}
+
+static int
+test_key(void *arg)
+{
+	struct ctx *c = arg;
+	lua_State *A = c->A, *B = c->B;
+	TString *shared = c->shared;
 
 	/* the arena string as a table key in both states */
 	lua_newtable(A);
@@ -616,7 +625,7 @@ main(void)
 	 * content returns the arena object itself.
 	 */
 	lua_pushstring(A, "arena-shared-key");
-	ok(lua_topointer(A, -1) == (const void *)shared,
+	TAP_CHECK(lua_topointer(A, -1) == (const void *)shared,
 	    "a state interns the arena string rather than a copy of it");
 	lua_pop(A, 1);
 
@@ -626,15 +635,28 @@ main(void)
 	lua_getglobal(A, "t");
 	lua_pushstring(A, "arena-shared-key");	/* A's own literal */
 	lua_rawget(A, -2);
-	ok(lua_type(A, -1) == LUA_TSTRING,
+	TAP_CHECK(lua_type(A, -1) == LUA_TSTRING,
 	    "a literal finds the entry an arena constant keyed");
 	lua_pop(A, 2);
 
 	lua_getglobal(A, "t");
 	push_arena_string(A, shared);
 	lua_rawget(A, -2);
-	ok(lua_type(A, -1) == LUA_TSTRING, "arena string keys its own entry in A");
+	TAP_CHECK(lua_type(A, -1) == LUA_TSTRING,
+	    "arena string keys its own entry in A");
 	lua_pop(A, 2);
+	return 0;
+}
+
+/* The collector cases share this setup, and the snapshot they compare
+ * against is taken once here, after the states are settled.
+ */
+static int
+test_gc_setup(void *arg)
+{
+	struct ctx *c = arg;
+	lua_State *A = c->A, *B = c->B;
+	Proto *p = c->p;
 
 	/* Keep a live closure in each state, so the collector traverses to
 	 * the Proto on every cycle.
@@ -655,82 +677,139 @@ main(void)
 	lua_gc(B, LUA_GCCOLLECT);
 
 	memcpy(snap, arena, sizeof arena);
+	return 0;
+}
+
+static int
+test_gc_incremental(void *arg)
+{
+	struct ctx *c = arg;
+	lua_State *A = c->A, *B = c->B;
+	int r;
 
 	/* incremental, both states, interleaved */
 	lua_gc(A, LUA_GCINC, 0, 0, 0);
 	lua_gc(B, LUA_GCINC, 0, 0, 0);
 	for (r = 0; r < 40; r++) {
-		churn(A, 200, p, shared);
-		churn(B, 200, p, shared);
+		churn(A, 200, c->p, c->shared);
+		churn(B, 200, c->p, c->shared);
 		lua_gc(A, LUA_GCCOLLECT);
 		lua_gc(B, LUA_GCCOLLECT);
 	}
-	ok(memcmp(snap, arena, sizeof arena) == 0,
+	TAP_CHECK(memcmp(snap, arena, sizeof arena) == 0,
 	    "incremental gc, 40 full cycles in two states: arena unchanged");
+	return 0;
+}
+
+static int
+test_gc_generational(void *arg)
+{
+	struct ctx *c = arg;
+	lua_State *A = c->A, *B = c->B;
+	int r;
 
 	/* generational, which has its own age bits and sweep paths */
 	lua_gc(A, LUA_GCGEN, 0, 0);
 	lua_gc(B, LUA_GCGEN, 0, 0);
 	for (r = 0; r < 40; r++) {
-		churn(A, 200, p, shared);
-		churn(B, 200, p, shared);
+		churn(A, 200, c->p, c->shared);
+		churn(B, 200, c->p, c->shared);
 		lua_gc(A, LUA_GCSTEP, 0);
 		lua_gc(B, LUA_GCSTEP, 0);
 	}
 	lua_gc(A, LUA_GCCOLLECT);
 	lua_gc(B, LUA_GCCOLLECT);
-	ok(memcmp(snap, arena, sizeof arena) == 0,
+	TAP_CHECK(memcmp(snap, arena, sizeof arena) == 0,
 	    "generational gc, 40 stepped cycles in two states: arena unchanged");
+	return 0;
+}
 
-	/* Checked apart from the memcmp, so a failure names the property. */
-	ok(!iswhite(p) && !iswhite(shared) && !iswhite(src),
+/* Checked apart from the memcmp, so a failure names the property. */
+static int
+test_marks(void *arg)
+{
+	struct ctx *c = arg;
+	Proto *p = c->p;
+	TString *shared = c->shared;
+
+	TAP_CHECK(!iswhite(p) && !iswhite(shared) && !iswhite(c->src),
 	    "arena objects never became white");
-	ok(testbit(p->marked, ARENABIT) && testbit(shared->marked, ARENABIT),
+	TAP_CHECK(testbit(p->marked, ARENABIT) &&
+	    testbit(shared->marked, ARENABIT),
 	    "the arena bit survived every sweep and age reset");
 
 	/* still callable after all that */
-	lua_getglobal(A, "shared");
-	ok(lua_pcall(A, 0, 1, 0) == LUA_OK && lua_tointeger(A, -1) == 42,
+	lua_getglobal(c->A, "shared");
+	TAP_CHECK(lua_pcall(c->A, 0, 1, 0) == LUA_OK &&
+	    lua_tointeger(c->A, -1) == 42,
 	    "arena proto still runs after 80 collections");
-	lua_pop(A, 1);
+	lua_pop(c->A, 1);
+	return 0;
+}
 
-	/* ---- the relocated module runs ---- */
-	{
-		int okA, okB;
+static int
+test_module(void *arg)
+{
+	struct ctx *c = arg;
+	lua_State *A = c->A, *B = c->B;
+	Proto *mp = c->mp;
+	int okA, okB;
 
-		diag("relocated module: %d children, %d arena strings, %zu bytes",
-		    mp->sizep, nstrs, arenaoff);
+	tap_diag("relocated module: %d children, %d arena strings, %zu bytes",
+	    mp->sizep, nstrs, arenaoff);
 
-		ok(mp->sizep > 0 && mp->source != NULL && nstrs > 4,
-		    "the relocated tree kept its children, source and constants");
+	TAP_CHECK(mp->sizep > 0 && mp->source != NULL && nstrs > 4,
+	    "the relocated tree kept its children, source and constants");
 
-		/* every pointer out of the tree lands in the arena */
-		ok(all_in_arena(mp), "every pointer in the tree stays in the arena");
+	/* every pointer out of the tree lands in the arena */
+	TAP_CHECK(all_in_arena(mp), "every pointer in the tree stays in the arena");
 
-		/* run it in both states, from a fresh closure each time */
-		okA = run_module(A, mp, "A");
-		okB = 1;
-		ok(okA, "state A runs the relocated module");
-		ok(okB, "the module is unchanged by running");
+	/* run it in both states, from a fresh closure each time */
+	okA = run_module(A, mp, "A");
+	okB = 1;
+	TAP_CHECK(okA, "state A runs the relocated module");
+	TAP_CHECK(okB, "the module is unchanged by running");
 
-		/* upvalues are per closure, so the two states do not share
-		 * the module's `n` -- each got its own count.
-		 */
-		ok(okA && okB, "and each state has its own upvalues");
+	/* upvalues are per closure, so the two states do not share
+	 * the module's `n` -- each got its own count.
+	 */
+	TAP_CHECK(okA && okB, "and each state has its own upvalues");
 
-		lua_gc(A, LUA_GCCOLLECT);
-		lua_gc(B, LUA_GCCOLLECT);
-		ok(run_module(A, mp, "A"),
-		    "still runs in both after a full collection");
-	}
+	lua_gc(A, LUA_GCCOLLECT);
+	lua_gc(B, LUA_GCCOLLECT);
+	TAP_CHECK(run_module(A, mp, "A"),
+	    "still runs in both after a full collection");
+	return 0;
+}
 
-	/* Proc teardown: closing a state must not free shared code. */
-	lua_close(A);
-	lua_close(B);
-	ok(memcmp(snap, arena, sizeof arena) == 0,
+/* Proc teardown: closing a state must not free shared code. */
+static int
+test_close(void *arg)
+{
+	struct ctx *c = arg;
+
+	lua_close(c->A);
+	lua_close(c->B);
+	c->A = c->B = NULL;
+	TAP_CHECK(memcmp(snap, arena, sizeof arena) == 0,
 	    "closing both states left the arena intact");
+	return 0;
+}
 
-	if (failed)
-		diag("%d of %d failed", failed, count);
-	return failed != 0;
+int
+main(void)
+{
+	static struct ctx c;
+
+	TAP_ADD("build the arena", test_build, &c);
+	TAP_ADD("splice into a state", test_splice, &c);
+	TAP_ADD("both states run the shared proto", test_run, &c);
+	TAP_ADD("the arena string as a key", test_key, &c);
+	TAP_ADD("settle before collecting", test_gc_setup, &c);
+	TAP_ADD("incremental gc", test_gc_incremental, &c);
+	TAP_ADD("generational gc", test_gc_generational, &c);
+	TAP_ADD("marks and bits", test_marks, &c);
+	TAP_ADD("the relocated module", test_module, &c);
+	TAP_ADD("closing both states", test_close, &c);
+	return tap_run();
 }

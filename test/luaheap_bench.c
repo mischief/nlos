@@ -12,7 +12,6 @@
  * 92 is the measured figure carried over.
  */
 
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,32 +21,7 @@
 #include "lualib.h"
 
 #include "luaheap.h"
-
-static int count, failed;
-
-static int
-ok(int cond, const char *name)
-{
-	count++;
-	if (!cond)
-		failed++;
-	printf("%s %d - %s\n", cond ? "ok" : "not ok", count, name);
-	fflush(stdout);
-	return cond;
-}
-
-static void
-diag(const char *fmt, ...)
-{
-	va_list ap;
-
-	fputs("# ", stdout);
-	va_start(ap, fmt);
-	vprintf(fmt, ap);
-	va_end(ap);
-	fputc('\n', stdout);
-	fflush(stdout);
-}
+#include "tap.h"
 
 /* the measured per-allocation cost of the current arrangement */
 #define EFI_ALLOC_OVERHEAD 92
@@ -227,7 +201,7 @@ reclaimed(int keep)
 	size_t got = luaheap_reclaim(h);
 
 	luaheap_stats(h, &st);
-	diag("  a survivor every %3d blocks: %zu of %zu back (%.0f%%), "
+	tap_diag("  a survivor every %3d blocks: %zu of %zu back (%.0f%%), "
 	    "%zu bytes a chunk", keep, got, before,
 	    before ? 100.0 * (double)got / (double)before : 0.0,
 	    st.chunks ? st.mapped / st.chunks : 0);
@@ -246,71 +220,99 @@ run(lua_State *L)
 	return 1;
 }
 
-int
-main(void)
-{
-	printf("1..6\n");
-
-	/* ---- through luaheap ---- */
-	struct luaheap *h = luaheap_new(&host_ops, 0);
-
-	if (!ok(h != 0, "heap created")) {
-		printf("Bail out! no heap\n");
-		return 1;
-	}
-
-	lua_State *A = lua_newstate(heap_lua_alloc, h);
-
-	if (!ok(A != 0, "a lua_State runs on luaheap")) {
-		printf("Bail out! lua_newstate failed\n");
-		return 1;
-	}
-	luaL_openlibs(A);
-	ok(run(A), "the workload completes on luaheap");
-
+/* What the two runs measure, shared so the report and the comparisons
+ * below can be their own tests. The states stay open until main closes
+ * them, since the stats are read from a live heap.
+ */
+struct ctx {
+	struct luaheap *h;
+	lua_State *A, *B;
 	struct luaheap_stats st;
+	struct plain ps;
+	size_t now_bytes;
+};
 
-	luaheap_stats(h, &st);
+static int
+test_luaheap(void *arg)
+{
+	struct ctx *c = arg;
+
+	c->h = luaheap_new(&host_ops, 0);
+	TAP_CHECK(c->h != 0, "heap created");
+	if (c->h == 0)
+		return 1;
+
+	c->A = lua_newstate(heap_lua_alloc, c->h);
+	TAP_CHECK(c->A != 0, "a lua_State runs on luaheap");
+	if (c->A == 0)
+		return 1;
+
+	luaL_openlibs(c->A);
+	TAP_CHECK(run(c->A), "the workload completes on luaheap");
+	luaheap_stats(c->h, &c->st);
+	return 0;
+}
+
+static int
+test_plain(void *arg)
+{
+	struct ctx *c = arg;
+	struct luaheap_stats st = c->st;
+
+	if (c->h == 0)
+		return 1;
 
 	/* ---- through the current arrangement ---- */
-	struct plain ps = { 0, 0, 0, 0 };
-	lua_State *B = lua_newstate(plain_lua_alloc, &ps);
-
-	luaL_openlibs(B);
-	ok(run(B), "the workload completes on plain malloc");
+	c->B = lua_newstate(plain_lua_alloc, &c->ps);
+	luaL_openlibs(c->B);
+	TAP_CHECK(run(c->B), "the workload completes on plain malloc");
 
 	/* peak is the figure that sets how many procs fit, not the
 	 * end-of-run residue
 	 */
+	struct plain ps = c->ps;
 	size_t now_bytes = ps.peak +
 	    (size_t)ps.peak_nlive * EFI_ALLOC_OVERHEAD;
 
-	diag("lua's own view of its heap:  %zu bytes peak", ps.peak);
-	diag("live allocations at peak:    %ld", ps.peak_nlive);
-	diag("");
-	diag("current (modelled, 92B/alloc): %zu bytes  (%.2fx logical)",
+	c->now_bytes = now_bytes;
+
+	tap_diag("lua's own view of its heap:  %zu bytes peak", ps.peak);
+	tap_diag("live allocations at peak:    %ld", ps.peak_nlive);
+	tap_diag("%s", "");
+	tap_diag("current (modelled, 92B/alloc): %zu bytes  (%.2fx logical)",
 	    now_bytes, (double)now_bytes / (double)ps.peak);
-	diag("luaheap (measured):            %zu bytes  (%.2fx logical)",
+	tap_diag("luaheap (measured):            %zu bytes  (%.2fx logical)",
 	    st.mapped, (double)st.mapped / (double)st.peak);
-	diag("");
-	diag("luaheap peak live %zu, mapped %zu, waste %zu",
+	tap_diag("%s", "");
+	tap_diag("luaheap peak live %zu, mapped %zu, waste %zu",
 	    st.peak, st.mapped, st.waste);
-	diag("chunks %lu, large blocks outstanding %lu",
+	tap_diag("chunks %lu, large blocks outstanding %lu",
 	    st.chunks, st.larges);
 
-	diag("");
-	diag("waste %zu = rounding %zu + headers %zu + unused chunk %zu",
+	tap_diag("%s", "");
+	tap_diag("waste %zu = rounding %zu + headers %zu + unused chunk %zu",
 	    st.waste, st.rounding, st.headers, st.unused);
 
 	if (st.mapped && now_bytes) {
-		diag("");
-		diag("ratio: luaheap is %.2fx the size of the current scheme",
+		tap_diag("%s", "");
+		tap_diag("ratio: luaheap is %.2fx the size of the current scheme",
 		    (double)st.mapped / (double)now_bytes);
 	}
 
-	/* ---- the request profile, for choosing classes ---- */
+	return 0;
+}
+
+/* The request profile, for choosing classes. No check of its own: what
+ * the sizes should be is a judgement made from the report, not a
+ * property the build can hold the allocator to.
+ */
+static int
+test_profile(void *arg)
+{
 	size_t order[HIST_EXACT];
 	int n = 0;
+
+	(void)arg;
 
 	for (size_t i = 1; i <= HIST_EXACT; i++) {
 		if (hist[i])
@@ -318,12 +320,12 @@ main(void)
 	}
 	qsort(order, (size_t)n, sizeof order[0], cmp_count);
 
-	diag("");
-	diag("%lu requests total, %lu over %d bytes, %d distinct sizes below",
+	tap_diag("%s", "");
+	tap_diag("%lu requests total, %lu over %d bytes, %d distinct sizes below",
 	    hist_total, hist_big, HIST_EXACT, n);
-	diag("the twenty most-requested sizes:");
+	tap_diag("the twenty most-requested sizes:");
 	for (int i = 0; i < n && i < 20; i++) {
-		diag("  %4zu bytes  %8lu  %5.2f%%", order[i], hist[order[i]],
+		tap_diag("  %4zu bytes  %8lu  %5.2f%%", order[i], hist[order[i]],
 		    100.0 * (double)hist[order[i]] / (double)hist_total);
 	}
 
@@ -348,19 +350,35 @@ main(void)
 		asked += (unsigned long long)hist[i] * i;
 		served += (unsigned long long)hist[i] * got;
 	}
-	diag("");
-	diag("current classes over all requests: asked %llu, served %llu "
+	tap_diag("%s", "");
+	tap_diag("current classes over all requests: asked %llu, served %llu "
 	    "(%.1f%% rounding loss)", asked, served,
 	    100.0 * (double)(served - asked) / (double)asked);
+	return 0;
+}
 
-	ok(st.mapped < now_bytes,
+static int
+test_smaller(void *arg)
+{
+	struct ctx *c = arg;
+
+	if (c->h == 0)
+		return 1;
+	TAP_CHECK(c->st.mapped < c->now_bytes,
 	    "luaheap holds less memory than the current scheme");
+	return 0;
+}
 
-	diag("");
-	diag("what a dropped page hands back, at this build's chunk size:");
-
+static int
+test_reclaim(void *arg)
+{
 	static const int keeps[] = { 5, 20, 100 };
 	size_t back[3];
+
+	(void)arg;
+
+	tap_diag("%s", "");
+	tap_diag("what a dropped page hands back, at this build's chunk size:");
 
 	for (int i = 0; i < 3; i++) {
 		back[i] = reclaimed(keeps[i]);
@@ -370,10 +388,28 @@ main(void)
 	 * nothing at a large chunk size, which is the finding rather than
 	 * a fault
 	 */
-	ok(back[2] > 0, "a page dropped among sparse survivors frees chunks");
+	TAP_CHECK(back[2] > 0, "a page dropped among sparse survivors frees chunks");
+	return 0;
+}
 
-	lua_close(A);
-	lua_close(B);
-	luaheap_destroy(h);
-	return failed ? 1 : 0;
+int
+main(void)
+{
+	static struct ctx c;
+	int r;
+
+	TAP_ADD("luaheap workload", test_luaheap, &c);
+	TAP_ADD("plain malloc workload", test_plain, &c);
+	TAP_ADD("request profile", test_profile, &c);
+	TAP_ADD("smaller than the current scheme", test_smaller, &c);
+	TAP_ADD("reclaim", test_reclaim, &c);
+	r = tap_run();
+
+	if (c.A != 0)
+		lua_close(c.A);
+	if (c.B != 0)
+		lua_close(c.B);
+	if (c.h != 0)
+		luaheap_destroy(c.h);
+	return r;
 }
