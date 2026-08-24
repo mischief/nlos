@@ -147,6 +147,7 @@ freestanding_args = [
   '-fshort-wchar',
   '-nostdinc',
   '-I' + gccinc,
+] + [
   # src/coreg.h, through the hook lua provides for exactly this: it
   # redefines LUA_EXTRASPACE and the luai_userstate* macros so the
   # kernel can keep every lua_State of a proc on a list. lua/ is a
@@ -155,6 +156,13 @@ freestanding_args = [
   '-DLUA_PATH_DEFAULT="/?.lua;/lib/?.lua"',
   '-DLUA_CPATH_DEFAULT=""',
 ] + codegen_args + arch_args
+
+message('lua-os host system: ' + host_machine.system())
+
+openbsd_freestanding_args = []
+if host_machine.system() == 'openbsd'
+  openbsd_freestanding_args = ['-idirafter/usr/include/.']
+endif
 
 if platform != 'hosted'
   plat_args = freestanding_args
@@ -235,6 +243,10 @@ foreach a : [
   endif
 endforeach
 
+if host_machine.system() == 'openbsd' and cc.has_argument('-Wno-error=attributes')
+  hardening_args += '-Wno-error=attributes'
+endif
+
 # see meson.options: off by default because it costs up to 1.9x on the
 # serializer, so a build measuring anything wants it off.
 if get_option('ubsan')
@@ -248,7 +260,7 @@ endif
 # vanilla lua, warnings left to upstream
 lua_lib = static_library('lua54', lua_src,
   include_directories: inc,
-  c_args: plat_args,
+  c_args: plat_args + openbsd_freestanding_args,
 )
 
 

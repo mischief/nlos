@@ -11,6 +11,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+extern char **environ;
+
 #include "blk.h"
 #include "cpu.h"
 #include "efi.h"
@@ -100,7 +102,12 @@ parse_args(int argc, char **argv, const char **root, int *writable,
  * through __wrap_fopen and is answered from the guest's root, or from
  * the embedded tree before there is a root at all. Same reason fs.c's
  * own opens take the real one. */
+#ifdef __OpenBSD__
+FILE *__real_fopen(const char *path, const char *mode);
+#define __real_fopen64 __real_fopen
+#else
 FILE *__real_fopen64(const char *path, const char *mode);
+#endif
 
 /* the host's own nameserver, which is the one a guest sharing its
  * sockets should ask. Read before clearenv, because it is the host's
@@ -156,6 +163,16 @@ static const char *const displayenv[] = {
 };
 
 static void
+hosted_clearenv(void)
+{
+#ifdef __OpenBSD__
+	environ = NULL;
+#else
+	clearenv();
+#endif
+}
+
+static void
 keep_display_env(void)
 {
 	char *saved[16];
@@ -166,7 +183,7 @@ keep_display_env(void)
 
 		saved[n++] = v ? strdup(v) : NULL;
 	}
-	clearenv();
+	hosted_clearenv();
 	for (int i = 0; displayenv[i] && i < n; i++)
 		if (saved[i]) {
 			setenv(displayenv[i], saved[i], 1);
@@ -290,7 +307,7 @@ main(int argc, char **argv)
 	if (hosted_display == HOSTED_GUI)
 		keep_display_env();
 	else
-		clearenv();
+		hosted_clearenv();
 
 	console_init();
 	kernel_clock_init();

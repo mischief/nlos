@@ -33,17 +33,27 @@ extern char __image_end[];	/* microvm.ld */
 
 #define BOOT_PAYLOAD "/boot/microvm.lua"	/* see meson.build embed_files */
 
-/* what to fall back on when the map cannot be read: 16MB-128MB, above
- * our own image (linked at 1MB, well under 16MB even with Lua linked
- * in) and inside the smallest -m worth booting. Unreachable under
- * qemu's microvm, which always supplies a version 1 start_info; it is
- * the whole memory story on a loader that enters at e_entry with no
- * start_info at all (boot.S's entry_elf, OpenBSD vmd), where it also
- * has to stay clear of the PCI hole vmd opens at 0xf0000000 -- 128MB
- * is nowhere near it.
+/* what to fall back on when the map cannot be read: above our own
+ * image (linked at 1MB, well under 16MB even with Lua linked in) and
+ * inside the smallest -m worth booting. Unreachable under qemu's
+ * microvm, which always supplies a version 1 start_info; it is the
+ * whole memory story on a loader that enters at e_entry with no
+ * start_info at all (boot.S's entry_elf, OpenBSD vmd's loadfile_elf.c,
+ * confirmed never populating one), where it also has to stay clear of
+ * the PCI hole vmd opens at 0xf0000000.
+ *
+ * 1008MB, not the original 112MB: this is a FIXED size regardless of
+ * -m, since there is no memmap on this loader to read a real one from
+ * -- so a vmd guest's "mem: NNNNK total" in the boot log never moved
+ * when -m did, only when this constant did. Measured needing more than
+ * 112MB: microvm_bigmsg.lua's later phases run several procs at once
+ * with multiple 60000-byte payloads live, which is a real budget this
+ * platform is not otherwise exempt from meeting. Kept well under the
+ * PCI hole (four megabytes shy of 1GB) with headroom to spare inside
+ * the 4GB boot.S identity-maps.
  */
 #define FALLBACK_BASE 0x1000000UL
-#define FALLBACK_LEN  0x7000000UL
+#define FALLBACK_LEN  0x3F000000UL
 
 /* the first megabyte is legacy holes -- real mode IVT, EBDA, VGA,
  * option ROMs -- and qemu reports parts of it as RAM anyway. Nothing

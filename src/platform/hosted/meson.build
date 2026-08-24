@@ -51,7 +51,8 @@ luaos_hosted = executable('luaos-hosted',
   link_with: lua_lib,
   dependencies: [cc.find_library('m', required: false), sdl_dep,
     dependency('threads')],
-  link_args: ['-Wl,--wrap=fopen', '-Wl,--wrap=fopen64'] +
+  link_args: ['-Wl,--wrap=fopen'] +
+    (host_machine.system() == 'linux' ? ['-Wl,--wrap=fopen64'] : []) +
     (asan_build ? ['-static-libasan'] : []) +
     (tsan_build ? ['-static-libtsan'] : []),
   build_by_default: true,

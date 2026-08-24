@@ -29,4 +29,4 @@ fi
 # guest resets rather than exits cleanly, so one is plausible.
 vmctl stop -f -w "$name" 2>/dev/null || true
 
-exec vmctl start "$name" -b "$elf" -m 256M -c
+exec vmctl start -b "$elf" -m 256M -c "$name"

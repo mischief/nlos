@@ -18,7 +18,11 @@
 
 #ifdef HAVE_SDL
 
+#ifdef __OpenBSD__
+#include <SDL.h>
+#else
 #include <SDL2/SDL.h>
+#endif
 
 /* how often the window is repainted, at most. Every fill and load marks
  * damage and returns; presenting on each one would put a frame's wait

@@ -235,9 +235,10 @@ kernel_src += embedfs_src
 luaos_microvm_elf = executable('luaos-microvm.elf',
   kernel_src + libc_src + arch_src,
   include_directories: inc,
-  c_args: plat_args + hardening_args,
+  c_args: plat_args + openbsd_freestanding_args + hardening_args,
   link_with: lua_lib,
-  link_args: [
+  link_args: (host_machine.system() == 'openbsd' ? ['-no-pie', '-fno-pie'] : []) + [
+    '-Wl,-no-pie',
     '-nostdlib',
     '-static',
     '-Wl,--build-id=none',

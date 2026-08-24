@@ -138,19 +138,56 @@ cookie_read(void *ck, char *buf, size_t n)
 	return 1;
 }
 
+#ifdef __OpenBSD__
+static int
+cookie_write_ob(void *ck, const char *buf, int n)
+{
+	return (int)cookie_write(ck, buf, (size_t)n);
+}
+
+static int
+cookie_read_ob(void *ck, char *buf, int n)
+{
+	return (int)cookie_read(ck, buf, (size_t)n);
+}
+#endif
+
 static FILE *
 cookie_stream(const char *mode, int reader)
 {
+#ifdef __OpenBSD__
+	FILE *f = funopen(NULL, reader ? cookie_read_ob : NULL,
+	    reader ? NULL : cookie_write_ob, NULL, NULL);
+#else
 	cookie_io_functions_t fns = {
 		.read = reader ? cookie_read : NULL,
 		.write = reader ? NULL : cookie_write,
 	};
 	FILE *f = fopencookie(NULL, mode, fns);
+#endif
 
+	(void)mode;
 	if (f)
 		setvbuf(f, NULL, _IONBF, 0);
 	return f;
 }
+
+#ifdef __OpenBSD__
+static void
+console_redirect_standard_streams(FILE *in, FILE *out)
+{
+	(void)in;
+	(void)out;
+}
+#else
+static void
+console_redirect_standard_streams(FILE *in, FILE *out)
+{
+	stdout = out;
+	stderr = out;
+	stdin = in;
+}
+#endif
 
 void
 console_init(void)
@@ -187,9 +224,7 @@ console_init(void)
 	 * is what puts the console out of the guest's reach: every FILE
 	 * lua can name is now one of these.
 	 */
-	stdout = out;
-	stderr = out;
-	stdin = in;
+	console_redirect_standard_streams(in, out);
 }
 
 /* nothing here to reset the machine, and a process that stopped running

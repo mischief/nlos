@@ -500,8 +500,10 @@ if host_arch in ['x86_64', 'aarch64', 'riscv64']
   # NTHREAD x NITER, and the threads spin, so a 32-way host quadruples
   # the test and saturates every core -- which times out the qemu tests
   # meson is running beside it, not just this one.
-  nproc = run_command('nproc', check: false)
-  if nproc.returncode() != 0
+  nproc_prog = find_program('nproc', required: false)
+  if nproc_prog.found()
+    nproc = run_command(nproc_prog, check: false)
+  else
     nproc = run_command('sysctl', '-n', 'hw.ncpu', check: false)
   endif
   ncpu = nproc.returncode() == 0 ? nproc.stdout().strip().to_int() : 4

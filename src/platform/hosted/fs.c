@@ -17,8 +17,13 @@
 
 /* this file's own opens are already host paths, so they take the real
  * one -- the wrapper below would root them a second time. */
+#ifdef __OpenBSD__
+FILE *__real_fopen(const char *path, const char *mode);
+#define __real_fopen64 __real_fopen
+#else
 FILE *__real_fopen(const char *path, const char *mode);
 FILE *__real_fopen64(const char *path, const char *mode);
+#endif
 
 /* one bound for every path here, and it is a frame rather than a limit
  * anyone will reach: a host path is the root plus a guest path, and a
@@ -348,7 +353,7 @@ fs_readdir(void *vf, struct fs_dirent *ent)
 	if (h->isroot && confdir[0] && !h->gaveconf) {
 		h->gaveconf = 1;
 		memset(ent, 0, sizeof *ent);
-		snprintf(ent->name, sizeof ent->name, "%s", CONFDIR + 1);
+		snprintf(ent->name, sizeof ent->name, "%s", &CONFDIR[1]);
 		ent->isdir = 1;
 		return 1;
 	}
@@ -362,7 +367,7 @@ fs_readdir(void *vf, struct fs_dirent *ent)
 		/* and must not say it twice, where the root happens to
 		 * hold a directory of that name as well. */
 		if (h->isroot && confdir[0] &&
-		    strcmp(de->d_name, CONFDIR + 1) == 0)
+		    strcmp(de->d_name, &CONFDIR[1]) == 0)
 			continue;
 		break;
 	}

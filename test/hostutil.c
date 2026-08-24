@@ -545,8 +545,12 @@ l_serial(lua_State *L)
 	case 57600: sp = B57600; break;
 	case 115200: sp = B115200; break;
 	case 230400: sp = B230400; break;
+#ifdef B460800
 	case 460800: sp = B460800; break;
+#endif
+#ifdef B921600
 	case 921600: sp = B921600; break;
+#endif
 	default:
 		return luaL_error(L, "unsupported baud %d", (int)baud);
 	}

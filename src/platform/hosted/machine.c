@@ -4,10 +4,13 @@
 
 #include <errno.h>
 #include <stdatomic.h>
-#include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __OpenBSD__
+#else
+#include <malloc.h>
 #include <sys/random.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -119,10 +122,14 @@ void
 kheap_stats(size_t *live, size_t *peak, unsigned long *blocks,
     unsigned long *total)
 {
+#ifdef __OpenBSD__
+	(void)live;
+#else
 	struct mallinfo2 mi = mallinfo2();
 
 	if (live)
 		*live = mi.uordblks;
+#endif
 	(void)peak;
 	(void)blocks;
 	(void)total;
@@ -170,7 +177,13 @@ hosted_random(void *buf, size_t n)
 	char *p = buf;
 
 	while (n > 0) {
-		ssize_t r = getrandom(p, n, 0);
+		ssize_t r;
+#ifdef __OpenBSD__
+		r = getentropy(p, n > 256 ? 256 : n) == 0 ?
+		    (ssize_t)(n > 256 ? 256 : n) : -1;
+#else
+		r = getrandom(p, n, 0);
+#endif
 
 		if (r < 0) {
 			if (errno == EINTR)
