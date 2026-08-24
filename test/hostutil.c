@@ -552,7 +552,9 @@ l_serial(lua_State *L)
 	}
 
 	/* O_NOCTTY: a tty opened by a test driver must not become the
-	 * driver's controlling terminal, or a hangup on the line kills it.
+	 * driver's controlling terminal, or a hangup on the line kills
+	 * it. O_NONBLOCK so the open never waits for carrier, which is
+	 * cleared below but cannot be until the fd exists.
 	 */
 	fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
 	if (fd < 0) {
@@ -565,19 +567,19 @@ l_serial(lua_State *L)
 		cfmakeraw(&t);
 		cfsetispeed(&t, sp);
 		cfsetospeed(&t, sp);
-		/* CLOCAL: ignore modem control, so a line with no carrier
-		 * still reads. HUPCL off so closing does not drop DTR --
-		 * that drop is a reset on the boards this drives.
+		/* No CLOCAL: this also opens pty slaves, and a BSD pty
+		 * whose slave ignores modem control never hangs up when
+		 * the master closes. Nothing driven here asserts carrier
+		 * anyway. HUPCL off so closing does not drop DTR -- that
+		 * drop is a reset on the boards this drives.
 		 */
-		t.c_cflag |= CLOCAL | CREAD;
-		t.c_cflag &= ~(unsigned)HUPCL;
-		/* block until at least one byte rather than time out.
-		 * A VTIME expiry is a zero-length read, and stdio cannot
-		 * tell that from end of file -- it latches EOF and every
-		 * later read on the handle returns nil, so one quiet
-		 * second would retire the port for good. Lua's io has no
-		 * clearerr to undo it. Callers that need a deadline own
-		 * one already (the process running them).
+		t.c_cflag |= CREAD;
+		t.c_cflag &= ~(unsigned)(CLOCAL | HUPCL);
+		/* block until at least one byte rather than time out. A
+		 * VTIME expiry is a zero-length read, which stdio latches
+		 * as end of file: every later read returns nil, and lua's
+		 * io has no clearerr to undo it. A caller needing a
+		 * deadline owns one already.
 		 */
 		t.c_cc[VMIN] = 1;
 		t.c_cc[VTIME] = 0;
