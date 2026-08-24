@@ -411,8 +411,9 @@ if lua54_dep.found()
 endif
 
 # Every native host module is declared above, so all of them land in the
-# build root and one LUA_CPATH entry reaches the lot. Appended, so a
-# caller's own path survives and a module added elsewhere can add to it.
+# build root and one LUA_CPATH entry reaches the lot. Prepended, so the
+# build tree wins: a module installed under one of our names -- dev, los
+# and chan are ordinary words -- must not answer instead of ours.
 #
 # The same block goes to the tests and to `meson devenv`, which is what
 # lets a script say require("hostutil") whether meson runs it or a
@@ -425,12 +426,13 @@ endif
 # directory to package.path from arg[0], which works from any build dir
 # and does not let tools/gefs.lua shadow lib/gefs.lua.
 #
-# The ";;" tail is what keeps lua's compiled-in default reachable: a
-# LUA_CPATH that names only this directory would hide every C module
-# the system has.
+# The ";;" goes last, where lua expands it to the compiled-in default.
+# Behind the caller's own entries rather than ahead of them, so a module
+# we do not have resolves the way it would outside a build.
 lua_host_env = environment()
-lua_host_env.append('LUA_CPATH', meson.project_build_root() + '/?.so;;',
+lua_host_env.prepend('LUA_CPATH', meson.project_build_root() + '/?.so',
   separator: ';')
+lua_host_env.append('LUA_CPATH', ';', separator: ';')
 meson.add_devenv(lua_host_env)
 add_test_setup('default', is_default: true, env: lua_host_env)
 
