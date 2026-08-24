@@ -155,8 +155,15 @@ for pid, a in pairs(after) do
 end
 table.sort(rows, function(x, y) return x.ms > y.ms end)
 
-print(string.format("cpu: %d ms of %d wall (%d%%), kernel %d ms",
-    sum // cpms, dt, sum // cpms * 100 // dt, dt - sum // cpms))
+-- against every cpu's share of the window, not one's: the procs below
+-- ran at the same time as each other. What is left over is the kernel
+-- and whatever no cpu was doing, which cannot be told apart from here.
+local ncpu = sys.stats().cpus or 1
+local budget = dt * ncpu
+
+print(string.format("cpu: %d ms of %d wall x %d cpu (%d%%), elsewhere %d ms",
+    sum // cpms, dt, ncpu, sum // cpms * 100 // budget,
+    budget - sum // cpms))
 for _, r in ipairs(rows) do
 	if r.ms > 0 then
 		print(string.format("  %-10s %6d ms %3d%% %6d resumes %6.2f ms each",
